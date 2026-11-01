@@ -6,6 +6,38 @@ export type DocumentOperationPhase =
 
 export type DocumentOperationEvent = 'prepare' | 'commit' | 'cancel';
 
+export type PreparedDocumentPhase =
+  | 'prepared'
+  | 'applying'
+  | 'committed'
+  | 'cancelled'
+  | 'failed';
+export type PreparedDocumentEvent = 'begin' | 'succeed' | 'fail' | 'cancel';
+
+export function advancePreparedDocumentChange(
+  phase: PreparedDocumentPhase,
+  event: PreparedDocumentEvent,
+): PreparedDocumentPhase {
+  //@ verify
+  //@ ensures phase === "committed" || phase === "cancelled" || phase === "failed" ==> \result === phase
+  //@ ensures phase !== "committed" ==> (\result === "committed" <==> phase === "applying" && event === "succeed")
+  //@ ensures phase !== "failed" ==> (\result === "failed" <==> phase === "applying" && event === "fail")
+  //@ ensures phase !== "cancelled" ==> (\result === "cancelled" <==> phase === "prepared" && event === "cancel")
+  //@ ensures phase !== "applying" ==> (\result === "applying" <==> phase === "prepared" && event === "begin")
+  //@ ensures phase === "applying" && event === "cancel" ==> \result === "applying"
+  if (phase === 'committed' || phase === 'cancelled' || phase === 'failed')
+    return phase;
+  if (phase === 'prepared') {
+    if (event === 'begin') return 'applying';
+    if (event === 'cancel') return 'cancelled';
+  }
+  if (phase === 'applying') {
+    if (event === 'succeed') return 'committed';
+    if (event === 'fail') return 'failed';
+  }
+  return phase;
+}
+
 export function canReserveDocumentOperation(
   count: number,
   bytes: number,

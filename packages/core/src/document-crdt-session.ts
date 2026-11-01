@@ -1,6 +1,6 @@
 import {
-  advanceDocumentOperation,
-  type DocumentOperationPhase,
+  advancePreparedDocumentChange,
+  type PreparedDocumentPhase,
 } from './policy/document-admission.js';
 
 export interface PreparedDocumentChange<Changes> {
@@ -30,7 +30,7 @@ export function preparedDocumentChange<Changes>(
   discard: () => void,
   snapshot?: () => Changes,
 ): PreparedDocumentChange<Changes> {
-  let phase: DocumentOperationPhase = 'prepared';
+  let phase: PreparedDocumentPhase = 'prepared';
   return {
     changes,
     ...(snapshot
@@ -47,12 +47,23 @@ export function preparedDocumentChange<Changes>(
       if (phase === 'committed') return;
       if (phase !== 'prepared' || !current())
         throw new Error('Prepared document change is stale');
-      phase = advanceDocumentOperation(phase, 'commit', true, true);
-      commit();
+      phase = advancePreparedDocumentChange(phase, 'begin');
+      try {
+        commit();
+        phase = advancePreparedDocumentChange(phase, 'succeed');
+      } catch (error) {
+        phase = advancePreparedDocumentChange(phase, 'fail');
+        try {
+          discard();
+        } catch {
+          throw new Error('Document application and cleanup failed');
+        }
+        throw error;
+      }
     },
     discard: () => {
       if (phase !== 'prepared') return;
-      phase = advanceDocumentOperation(phase, 'cancel', false, false);
+      phase = advancePreparedDocumentChange(phase, 'cancel');
       discard();
     },
   };

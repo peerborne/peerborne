@@ -1,6 +1,10 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
 import {
+  preparedDocumentChange,
+  type PreparedDocumentChange,
+} from './document-crdt-session.js';
+import {
   bootstrap,
   context,
   control,
@@ -34,6 +38,50 @@ function deferred<T = void>() {
 }
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('native prepared plans clean up once after failure and reject reentry or successful-looking retries', () => {
+  fc.assert(
+    fc.property(
+      fc.boolean(),
+      fc.boolean(),
+      fc.nat(8),
+      (fails, cleanupFails, retries) => {
+        let applied = 0,
+          cleaned = 0;
+        let plan!: PreparedDocumentChange<Uint8Array>;
+        plan = preparedDocumentChange(
+          new Uint8Array(),
+          () => true,
+          () => {
+            applied++;
+            expect(plan.isCurrent()).toBe(false);
+            expect(() => plan.commit()).toThrow('stale');
+            plan.discard();
+            expect(cleaned).toBe(0);
+            if (fails) throw new Error('Injected native failure');
+          },
+          () => {
+            cleaned++;
+            if (cleanupFails) throw new Error('Injected cleanup failure');
+          },
+          () => new Uint8Array(),
+        );
+        if (fails) expect(() => plan.commit()).toThrow();
+        else plan.commit();
+        for (let index = 0; index <= retries; index++) {
+          if (fails) expect(() => plan.commit()).toThrow('stale');
+          else expect(() => plan.commit()).not.toThrow();
+          plan.discard();
+          expect(() => plan.snapshot!()).toThrow('Stale');
+          expect(plan.isCurrent()).toBe(false);
+        }
+        expect(applied).toBe(1);
+        expect(cleaned).toBe(fails ? 1 : 0);
+      },
+    ),
+    { seed: 2011109, numRuns: 60 },
+  );
+});
 
 describe('anchored document admission boundaries', () => {
   test('preserves captured input and rejects cancellation or rekey while preparation is suspended', async () => {

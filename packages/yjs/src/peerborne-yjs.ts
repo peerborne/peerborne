@@ -591,7 +591,10 @@ export class YjsProvider
           assertHealthy();
           if (!idle(document) || !idle(shadow))
             throw new Error('Document transaction is still active');
-          if (!compatibleRoots(document, shadow))
+          if (
+            !compatibleRoots(document, shadow) ||
+            !compatibleRoots(shadow, document)
+          )
             throw new Error('Document root type changed during preparation');
           assertStagedYjsValues(decodeUpdateV2(stable).structs);
           complete(shadow);
@@ -612,7 +615,8 @@ export class YjsProvider
             idle(shadow!) &&
             !hasPending(document) &&
             !hasPending(shadow!) &&
-            compatibleRoots(document, shadow!),
+            compatibleRoots(document, shadow!) &&
+            compatibleRoots(shadow!, document),
           () => {
             try {
               document.transact((transaction) => {
@@ -621,6 +625,7 @@ export class YjsProvider
                   hasPending(document) ||
                   hasPending(shadow!) ||
                   !compatibleRoots(document, shadow!) ||
+                  !compatibleRoots(shadow!, document) ||
                   transaction.deleteSet.clients.size !== 0 ||
                   transaction.beforeState.size !==
                     document.store.clients.size ||
@@ -637,16 +642,19 @@ export class YjsProvider
                 copyRootTypes(shadow!, document);
                 applyUpdateV2(document, stable, commitOrigin);
               }, commitOrigin);
+              complete(document);
+              if (closed || invalidated)
+                throw new Error(
+                  'Document changed outside admission while committing',
+                );
+              acceptedShadowVersion = stagedVersion;
+              active = undefined;
+            } catch (error) {
+              invalidated = true;
+              throw error;
             } finally {
               commitTransaction = undefined;
             }
-            complete(document);
-            if (closed || invalidated)
-              throw new Error(
-                'Document changed outside admission while committing',
-              );
-            acceptedShadowVersion = stagedVersion;
-            active = undefined;
           },
           () => {
             discardShadow();
