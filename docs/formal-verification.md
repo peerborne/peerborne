@@ -146,7 +146,7 @@ post-compromise security, key erasure or cryptographic unforgeability.
 ## Property testing after proofs
 
 The inventory audits 33 property-suite files containing 68 explicit
-`fast-check` assertions across all six library packages. Seeds and workload
+`fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
 properties can invoke the same assertion more than once.
