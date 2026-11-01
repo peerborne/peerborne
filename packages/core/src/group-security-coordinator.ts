@@ -1,4 +1,12 @@
 import { isSelfUpdateTransitionAllowed } from './policy/control-chain.js';
+import { observeAdmissionWork } from './internal/admission-work.js';
+import {
+  GroupDocumentOperationGate,
+  GroupDocumentOperationError,
+  GroupDocumentOperationBudget,
+  type GroupDocumentOperationOptions,
+  type PreparedGroupDocumentOperation,
+} from './group-document-operation.js';
 import {
   coordinatorAdmission,
   failedCommitRecovery,
@@ -132,7 +140,16 @@ const MAX_MEMBERSHIP_CHANGES = 4096;
 const MAX_CANONICAL_WELCOME_SET_BYTES = 1024 * 1024;
 const MAX_CONTROL_PREFIX_BYTES = MAX_GROUP_STATE_STORE_COMMITTED_BYTES;
 const FIXED_ID_LENGTH = 32;
+const sharedControlBudget = new GroupDocumentOperationBudget(
+  64,
+  64 * 1024 * 1024,
+);
 const GENESIS_FORK_PARENT_ID = new Uint8Array(FIXED_ID_LENGTH);
+type TrackControlWork = (
+  settlement: Promise<void>,
+  observable: boolean,
+  failure?: 'bad-signature' | 'unauthorized-control',
+) => void;
 const MAX_U64 = (1n << 64n) - 1n;
 const mapSizeGetterValue = Object.getOwnPropertyDescriptor(
   Map.prototype,
@@ -160,10 +177,8 @@ const typedArrayTagGetterValue = Object.getOwnPropertyDescriptor(
 const sharedArrayBufferByteLengthGetter =
   typeof SharedArrayBuffer === 'undefined'
     ? undefined
-    : Object.getOwnPropertyDescriptor(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-      )?.get;
+    : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')
+        ?.get;
 
 if (
   mapSizeGetterValue === undefined ||
@@ -208,6 +223,24 @@ export interface GroupSecurityCoordinatorConfig {
   readonly replayWindowEpochs?: bigint;
   readonly outboxDeliveryTimeoutMs?: number;
   readonly now?: () => number;
+  /** Maximum pending document preparations for this coordinator. Default: 16. */
+  readonly maxDocumentOperations?: number;
+  /** Aggregate pending document input bytes. Default: 16 MiB. */
+  readonly maxDocumentOperationBytes?: number;
+  /** Maximum document input before copying. Default: 1 MiB. */
+  readonly maxDocumentOperationInputBytes?: number;
+  /** Caller waiting deadline; unsettled work retains its credits. Default: 10 s. */
+  readonly documentOperationTimeoutMs?: number;
+  /** Pending incoming control deliveries, separate from document work. Default: 16. */
+  readonly maxPendingControlOperations?: number;
+  /** Control input bytes plus fixed metadata charges. Default: 16 MiB. */
+  readonly maxPendingControlBytes?: number;
+}
+
+/** Captured authenticated group state; it contains no secret key material. */
+export interface GroupSecurityDocumentContext {
+  readonly state: GroupSecurityPublicState;
+  readonly controlHead: Uint8Array;
 }
 
 /**
@@ -277,6 +310,7 @@ export type GroupSecurityCoordinatorFailure =
   | 'removed-from-group'
   | 'outbox-overflow'
   | 'replay-overflow'
+  | 'admission-capacity'
   | 'store-conflict'
   | 'malformed-state'
   | 'delivery-failed'
@@ -368,6 +402,12 @@ export class GroupSecurityCoordinator {
   private readonly replayWindowEpochs: bigint;
   private readonly outboxDeliveryTimeoutMs: number;
   private readonly now: () => number;
+  private readonly documentOperations: GroupDocumentOperationGate;
+  private readonly pendingControls: GroupDocumentOperationBudget;
+  private readonly authenticatedControlRecords =
+    new WeakSet<MembershipControlRecord>();
+  private controlIngress: Promise<void> = Promise.resolve();
+  private activeControlWork: TrackControlWork | undefined;
 
   private constructor(config: GroupSecurityCoordinatorConfig) {
     const snapshot = snapshotCoordinatorConfig(config);
@@ -392,6 +432,17 @@ export class GroupSecurityCoordinator {
       snapshot.outboxDeliveryTimeoutMs ??
       DEFAULT_GROUP_SECURITY_OUTBOX_DELIVERY_TIMEOUT_MS;
     this.now = snapshot.now ?? Date.now;
+    this.documentOperations = new GroupDocumentOperationGate(
+      snapshot.maxDocumentOperations,
+      snapshot.maxDocumentOperationBytes,
+      snapshot.documentOperationTimeoutMs,
+      undefined,
+      snapshot.maxDocumentOperationInputBytes,
+    );
+    this.pendingControls = new GroupDocumentOperationBudget(
+      snapshot.maxPendingControlOperations ?? 16,
+      snapshot.maxPendingControlBytes ?? 16 * 1024 * 1024,
+    );
   }
 
   /** Claims exclusive ownership of `config.provider` after a successful restore. */
@@ -459,6 +510,106 @@ export class GroupSecurityCoordinator {
     return clonePublicState(this.view.publicState);
   }
 
+  /** Optimistic context. Admission independently checks the protected anchor. */
+  get documentContext(): GroupSecurityDocumentContext {
+    this.assertUsable();
+    return {
+      state: clonePublicState(this.view.publicState),
+      controlHead: new Uint8Array(this.view.headRecordId),
+    };
+  }
+
+  get pendingDocumentOperations(): Readonly<{
+    operations: number;
+    bytes: number;
+  }> {
+    return this.documentOperations.budget.usage;
+  }
+
+  get pendingControlOperations(): Readonly<{
+    operations: number;
+    bytes: number;
+  }> {
+    return this.pendingControls.usage;
+  }
+
+  /**
+   * Stage an authenticated, causally authorized document operation outside the
+   * membership queue, then finalize synchronously against the same anchored
+   * state. `prepare` is trusted: it must reject unauthenticated/unauthorized
+   * input, avoid observable mutation, and return a pure synchronous current-
+   * authorization guard and a nonthrowing synchronous finalizer. Its promise
+   * must be safely observable native work and cover all work retaining the
+   * input. Custom thenables fail closed. A throwing,
+   * asynchronous, or non-void finalizer poisons this coordinator.
+   * All visible mutation must finish synchronously; finalizers must not schedule
+   * later mutation. Arbitrary callback correctness is a trusted boundary.
+   *
+   * This seam defines no wire format, role policy, content replay persistence,
+   * or document runtime mode. Callers must bind their document ID, operation
+   * kind, causal parents and signing authority during preparation.
+   */
+  runDocumentOperation(
+    expected: GroupSecurityDocumentContext,
+    input: Uint8Array,
+    prepare: (
+      context: GroupSecurityDocumentContext,
+      input: Uint8Array,
+      signal: AbortSignal,
+    ) => Promise<PreparedGroupDocumentOperation>,
+    options?: GroupDocumentOperationOptions,
+  ): Promise<void> {
+    let expectedSnapshot: GroupSecurityDocumentContext;
+    try {
+      this.assertUsable();
+      expectedSnapshot = snapshotDocumentContext(expected);
+      if (typeof prepare !== 'function')
+        throw new GroupDocumentOperationError('invalid-preparation');
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.documentOperations.run(
+      input,
+      {
+        capture: (signal) =>
+          this.runExclusive(async () => {
+            if (signal.aborted)
+              throw new GroupDocumentOperationError('aborted');
+            const current = await this.anchoredDocumentContext();
+            if (!documentContextsEqual(current, expectedSnapshot))
+              throw new GroupDocumentOperationError('stale-context');
+            return current;
+          }),
+        prepare: (captured, payload, signal) =>
+          prepare(snapshotDocumentContext(captured), payload, signal),
+        commit: (captured, finish, signal) =>
+          this.runExclusive(async () => {
+            if (signal.aborted)
+              throw new GroupDocumentOperationError('aborted');
+            const current = await this.anchoredDocumentContext();
+            finish(documentContextsEqual(current, captured));
+          }),
+        poison: () => {
+          this.poisonedReason = new Error(
+            'document finalizer violated its contract',
+          );
+        },
+      },
+      options,
+    );
+  }
+
+  private async anchoredDocumentContext(): Promise<GroupSecurityDocumentContext> {
+    this.assertUsable();
+    const expected = this.requireCurrentRollbackAnchor();
+    const actual = await this.loadRollbackAnchor();
+    this.rejectRollbackTerminalState(actual);
+    this.assertUsable();
+    if (!groupSecurityRollbackAnchorsEqual(actual, expected))
+      fail('rollback-detected', 'document operation anchor is not current');
+    return this.documentContext;
+  }
+
   pendingOutboxCount(): Promise<number> {
     return this.runExclusive(async () => {
       const snapshot = await this.verifyCurrentStoreSnapshot();
@@ -495,36 +646,128 @@ export class GroupSecurityCoordinator {
     } catch (error) {
       return Promise.reject(error);
     }
+    let releaseLocal: (() => void) | undefined;
+    let releaseShared: (() => void) | undefined;
     try {
+      const capturedControl = captureControlInput(controlRecord);
+      let attachmentBytes = 0;
+      let capturedCommit: GroupSecurityCommit | undefined;
+      let capturedWelcomes: GroupWelcome[] | undefined;
+      let attachmentPreflightError: unknown;
+      try {
+        const commitInput = captureCommitInput(commit);
+        const welcomeInput = captureWelcomeInputs(welcomes);
+        capturedCommit = commitInput.value;
+        capturedWelcomes = welcomeInput.value;
+        attachmentBytes = commitInput.bytes + welcomeInput.bytes;
+      } catch (error) {
+        attachmentPreflightError = error;
+      }
+      try {
+        releaseShared = sharedControlBudget.reserve(
+          capturedControl.bytes + attachmentBytes,
+        );
+        releaseLocal = this.pendingControls.reserve(
+          capturedControl.bytes + attachmentBytes,
+        );
+      } catch {
+        releaseShared?.();
+        fail(
+          'admission-capacity',
+          'pending control delivery capacity is exhausted',
+        );
+      }
       const controlSnapshot = snapshotControlRecord(
-        controlRecord,
+        capturedControl.value,
         'incoming control record',
       );
       serializeMembershipControlRecord(controlSnapshot);
+      if (!sameProtocol(controlSnapshot.protocol, this.storeKey.protocol))
+        fail('protocol-mismatch', 'control protocol does not match group');
+      if (!equalBytes(controlSnapshot.groupId, this.storeKey.groupId))
+        fail('group-mismatch', 'control group does not match');
       let commitSnapshot: GroupSecurityCommit | undefined;
       let welcomeSnapshots: GroupWelcome[] | undefined;
-      let attachmentError: unknown;
+      let attachmentError: unknown = attachmentPreflightError;
       try {
-        commitSnapshot = cloneCommit(commit);
-        welcomeSnapshots = validateWelcomes(welcomes, commitSnapshot);
+        if (attachmentPreflightError !== undefined)
+          throw attachmentPreflightError;
+        commitSnapshot = cloneCommit(capturedCommit!);
+        welcomeSnapshots = validateWelcomes(capturedWelcomes!, commitSnapshot);
       } catch (error) {
         attachmentError = error;
       }
-      return this.runExclusive(() =>
-        this.applyCommitInternal(
-          commitSnapshot,
-          controlSnapshot,
-          welcomeSnapshots,
-          attachmentError,
-        ),
+      const retainedWork = new Set<Promise<void>>();
+      let rejectUnobservable!: (error: GroupSecurityCoordinatorError) => void;
+      const unobservable = new Promise<never>((_, reject) => {
+        rejectUnobservable = reject;
+      });
+      const track: TrackControlWork = (
+        settlement,
+        observable,
+        failure = 'bad-signature',
+      ) => {
+        retainedWork.add(settlement);
+        void settlement.then(() => {
+          retainedWork.delete(settlement);
+        });
+        if (!observable)
+          rejectUnobservable(
+            new GroupSecurityCoordinatorError(
+              failure,
+              'control admission work cannot be safely observed',
+            ),
+          );
+      };
+      const predecessor = this.controlIngress;
+      let finishPosition!: () => void;
+      this.controlIngress = new Promise<void>((resolve) => {
+        finishPosition = resolve;
+      });
+      const authenticated = this.verifyControlAuthenticity(
+        controlSnapshot,
+        track,
+      ).then(
+        () => ({ accepted: true as const }),
+        (error: unknown) => ({ accepted: false as const, error }),
       );
+      const adoption = predecessor.then(async () => {
+        const authentication = await authenticated;
+        if (!authentication.accepted) throw authentication.error;
+        this.authenticatedControlRecords.add(controlSnapshot);
+        return this.runExclusive(async () => {
+          this.activeControlWork = track;
+          try {
+            return await this.applyCommitInternal(
+              commitSnapshot,
+              controlSnapshot,
+              welcomeSnapshots,
+              attachmentError,
+              track,
+            );
+          } finally {
+            this.activeControlWork = undefined;
+          }
+        });
+      });
+      void adoption.then(finishPosition, finishPosition);
+      const work = adoption.finally(async () => {
+        await Promise.all(retainedWork);
+        releaseLocal!();
+        releaseShared!();
+      });
+      return Promise.race([work, unobservable]);
     } catch (error) {
+      releaseLocal?.();
+      releaseShared?.();
       return Promise.reject(
-        new GroupSecurityCoordinatorError(
-          'control-mismatch',
-          'commit delivery is malformed',
-          { cause: error },
-        ),
+        error instanceof GroupSecurityCoordinatorError
+          ? error
+          : new GroupSecurityCoordinatorError(
+              'control-mismatch',
+              'commit delivery is malformed',
+              { cause: error },
+            ),
       );
     }
   }
@@ -1681,7 +1924,13 @@ export class GroupSecurityCoordinator {
     controlRecordValue: MembershipControlRecord,
     welcomeValues: ReadonlyArray<GroupWelcome> | undefined,
     attachmentError?: unknown,
+    track?: TrackControlWork,
   ): Promise<GroupSecurityTransitionResult> {
+    if (!this.authenticatedControlRecords.delete(controlRecordValue))
+      fail(
+        'bad-signature',
+        'control delivery has no owned authentication proof',
+      );
     await this.verifyCurrentStoreSnapshot();
     const controlRecord = cloneControlRecord(controlRecordValue);
     const validated = await this.verifyControl(
@@ -1689,6 +1938,7 @@ export class GroupSecurityCoordinator {
       commitValue,
       welcomeValues,
       attachmentError,
+      track,
     );
     if (commitValue === undefined || welcomeValues === undefined) {
       fail('control-mismatch', 'commit delivery is malformed', attachmentError);
@@ -2407,7 +2657,8 @@ export class GroupSecurityCoordinator {
     const chain = new MembershipControlChain({
       protocol: this.storeKey.protocol,
       groupId: this.storeKey.groupId,
-      verifySignature: this.verifyControlSignature,
+      verifySignature: (payload, signature, actor) =>
+        this.verifySignature(payload, signature, actor),
       authorize: this.authorizeControl,
     });
     for (const record of invitation.controlPrefix) {
@@ -2607,6 +2858,7 @@ export class GroupSecurityCoordinator {
     commit: GroupSecurityCommit | undefined,
     welcomes: ReadonlyArray<GroupWelcome> | undefined,
     attachmentError?: unknown,
+    track?: TrackControlWork,
   ): Promise<ValidatedControl> {
     try {
       serializeMembershipControlRecord(record);
@@ -2620,7 +2872,7 @@ export class GroupSecurityCoordinator {
       fail('group-mismatch', 'control group does not match');
     }
     const recordId = await membershipControlRecordId(record);
-    await this.verifyControlAuthenticity(record);
+    await this.verifyControlAuthenticity(record, track);
     try {
       if (record.action === 'create') {
         validateGenesisControlPayload(record, this.storeKey);
@@ -2748,14 +3000,16 @@ export class GroupSecurityCoordinator {
 
   private async verifyControlAuthenticity(
     record: MembershipControlRecord,
+    track?: TrackControlWork,
   ): Promise<void> {
     const canonical = canonicalMembershipControlPayload(record);
     let valid: unknown = false;
     try {
-      valid = await this.verifyControlSignature(
+      valid = await this.verifySignature(
         new Uint8Array(canonical),
         new Uint8Array(record.signature),
         new Uint8Array(record.actorId),
+        track,
       );
     } catch (error) {
       fail('bad-signature', 'control signature verifier failed', error);
@@ -2766,10 +3020,7 @@ export class GroupSecurityCoordinator {
       const [emptyMembershipHash, emptyWelcomesHash] =
         await this.selfUpdateBindingHashes();
       if (
-        equalBytes(
-          binding.appliedMembershipDeltaHash,
-          emptyMembershipHash,
-        ) &&
+        equalBytes(binding.appliedMembershipDeltaHash, emptyMembershipHash) &&
         (record.action !== 'update' ||
           !equalBytes(record.actorId, record.subjectId) ||
           !equalBytes(binding.welcomeSetHash, emptyWelcomesHash))
@@ -2780,6 +3031,23 @@ export class GroupSecurityCoordinator {
         );
       }
     }
+  }
+  private async verifySignature(
+    payload: Uint8Array,
+    signature: Uint8Array,
+    actor: Uint8Array,
+    track?: TrackControlWork,
+  ): Promise<boolean> {
+    const work = observeAdmissionWork<boolean>(
+      this.verifyControlSignature(payload, signature, actor),
+    );
+    (track ?? this.activeControlWork)?.(work.settlement, work.observable);
+    if (!work.observable)
+      fail('bad-signature', 'control signature work cannot be safely observed');
+    const value = (await work.result).value;
+    if (typeof value !== 'boolean')
+      fail('bad-signature', 'control signature verifier must return a boolean');
+    return value;
   }
 
   private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {
@@ -2815,7 +3083,20 @@ export class GroupSecurityCoordinator {
     };
     let authorized: unknown = false;
     try {
-      authorized = await this.authorizeControl(context);
+      const work = observeAdmissionWork<boolean>(
+        this.authorizeControl(context),
+      );
+      this.activeControlWork?.(
+        work.settlement,
+        work.observable,
+        'unauthorized-control',
+      );
+      if (!work.observable)
+        fail(
+          'unauthorized-control',
+          'control authorization work cannot be safely observed',
+        );
+      authorized = (await work.result).value;
     } catch (error) {
       fail('unauthorized-control', 'control authorizer failed', error);
     }
@@ -4746,6 +5027,12 @@ function snapshotCoordinatorConfig(
       'replayWindowEpochs',
       'outboxDeliveryTimeoutMs',
       'now',
+      'maxDocumentOperations',
+      'maxDocumentOperationBytes',
+      'maxDocumentOperationInputBytes',
+      'documentOperationTimeoutMs',
+      'maxPendingControlOperations',
+      'maxPendingControlBytes',
     ],
     true,
   );
@@ -5240,6 +5527,204 @@ function snapshotExactArray(
     entries[index] = descriptor.value;
   }
   return entries;
+}
+
+function captureInputBytes(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): Uint8Array {
+  validateBytes(value as Uint8Array, field, minimum, maximum);
+  const length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
+  const offset = Reflect.apply(typedArrayByteOffsetGetter, value, []) as number;
+  const buffer = Reflect.apply(
+    typedArrayBufferGetter,
+    value,
+    [],
+  ) as ArrayBuffer;
+  return new Uint8Array(buffer, offset, length);
+}
+
+function captureInputProtocol(
+  value: unknown,
+  allowUnknown = true,
+): GroupSecurityProtocol {
+  const raw = exactOwnDataValues(
+    value,
+    ['id', 'version'],
+    'input protocol',
+    [],
+    allowUnknown,
+  );
+  return { id: raw.id as string, version: raw.version as number };
+}
+
+function captureControlInput(value: unknown): {
+  value: MembershipControlRecord;
+  bytes: number;
+} {
+  const raw = exactOwnDataValues(
+    value,
+    [
+      'version',
+      'protocol',
+      'groupId',
+      'epoch',
+      'operationId',
+      'action',
+      'actorId',
+      'subjectId',
+      'controlPayload',
+      'signature',
+    ],
+    'incoming control budget',
+    ['parentRecordId'],
+    true,
+  );
+  const captured: MembershipControlRecord = {
+    version: raw.version as number,
+    protocol: captureInputProtocol(raw.protocol),
+    groupId: captureInputBytes(
+      raw.groupId,
+      'control group',
+      1,
+      MAX_GROUP_ID_BYTES,
+    ),
+    epoch: raw.epoch as bigint,
+    operationId: captureInputBytes(
+      raw.operationId,
+      'control operation',
+      32,
+      32,
+    ),
+    action: raw.action as MembershipControlAction,
+    actorId: captureInputBytes(
+      raw.actorId,
+      'control actor',
+      1,
+      MAX_IDENTITY_BYTES,
+    ),
+    subjectId: captureInputBytes(
+      raw.subjectId,
+      'control subject',
+      1,
+      MAX_IDENTITY_BYTES,
+    ),
+    controlPayload: captureInputBytes(
+      raw.controlPayload,
+      'control payload',
+      1,
+      MAX_CONTROL_PAYLOAD_BYTES,
+    ),
+    signature: captureInputBytes(
+      raw.signature,
+      'control signature',
+      1,
+      MAX_CONTROL_SIGNATURE_BYTES,
+    ),
+    parentRecordId:
+      raw.parentRecordId === undefined
+        ? undefined
+        : captureInputBytes(raw.parentRecordId, 'control parent', 32, 32),
+  };
+  return {
+    value: captured,
+    bytes:
+      4096 +
+      captured.groupId.byteLength +
+      captured.operationId.byteLength +
+      captured.actorId.byteLength +
+      captured.subjectId.byteLength +
+      captured.controlPayload.byteLength +
+      captured.signature.byteLength +
+      (captured.parentRecordId?.byteLength ?? 0),
+  };
+}
+
+function captureCommitInput(value: unknown): {
+  value: GroupSecurityCommit;
+  bytes: number;
+} {
+  const raw = exactOwnDataValues(
+    value,
+    ['protocol', 'groupId', 'priorEpoch', 'epoch', 'payload'],
+    'incoming commit budget',
+    [],
+    true,
+  );
+  const captured: GroupSecurityCommit = {
+    protocol: captureInputProtocol(raw.protocol),
+    groupId: captureInputBytes(
+      raw.groupId,
+      'commit group',
+      1,
+      MAX_GROUP_ID_BYTES,
+    ),
+    priorEpoch: raw.priorEpoch as bigint,
+    epoch: raw.epoch as bigint,
+    payload: captureInputBytes(
+      raw.payload,
+      'commit payload',
+      1,
+      MAX_PROTOCOL_PAYLOAD_BYTES,
+    ),
+  };
+  return {
+    value: captured,
+    bytes: 4096 + captured.groupId.byteLength + captured.payload.byteLength,
+  };
+}
+
+function captureWelcomeInputs(value: unknown): {
+  value: GroupWelcome[];
+  bytes: number;
+} {
+  const values = snapshotExactArray(
+    value,
+    'incoming Welcome budget',
+    0,
+    MAX_WELCOMES,
+  );
+  const captured: GroupWelcome[] = [];
+  let bytes = 0;
+  for (const welcome of values) {
+    const raw = exactOwnDataValues(
+      welcome,
+      ['protocol', 'groupId', 'epoch', 'recipientKeyPackageRef', 'payload'],
+      'incoming Welcome budget',
+    );
+    const entry: GroupWelcome = {
+      protocol: captureInputProtocol(raw.protocol, false),
+      groupId: captureInputBytes(
+        raw.groupId,
+        'Welcome group',
+        1,
+        MAX_GROUP_ID_BYTES,
+      ),
+      epoch: raw.epoch as bigint,
+      recipientKeyPackageRef: captureInputBytes(
+        raw.recipientKeyPackageRef,
+        'Welcome reference',
+        1,
+        MAX_IDENTITY_BYTES,
+      ),
+      payload: captureInputBytes(
+        raw.payload,
+        'Welcome payload',
+        1,
+        MAX_PROTOCOL_PAYLOAD_BYTES,
+      ),
+    };
+    bytes +=
+      entry.groupId.byteLength +
+      entry.recipientKeyPackageRef.byteLength +
+      entry.payload.byteLength;
+    if (bytes > MAX_CANONICAL_WELCOME_SET_BYTES)
+      throw new Error('Welcome input exceeds aggregate byte limit');
+    captured.push(entry);
+  }
+  return { value: captured, bytes: bytes + captured.length * 512 };
 }
 
 function snapshotControlRecord(
@@ -6373,6 +6858,44 @@ function incrementEpoch(epoch: bigint): bigint {
   return epoch + 1n;
 }
 
+function snapshotDocumentContext(
+  input: GroupSecurityDocumentContext,
+): GroupSecurityDocumentContext {
+  const raw = exactOwnDataValues(
+    input,
+    ['state', 'controlHead'],
+    'document security context',
+    [],
+    true,
+  );
+  return {
+    state: clonePublicState(raw.state as GroupSecurityPublicState),
+    controlHead: copyControlRecordBytes(
+      raw.controlHead,
+      'document control head',
+      32,
+      32,
+    ),
+  };
+}
+
+function documentContextsEqual(
+  a: GroupSecurityDocumentContext,
+  b: GroupSecurityDocumentContext,
+): boolean {
+  return (
+    sameProtocol(a.state.protocol, b.state.protocol) &&
+    equalBytes(a.state.groupId, b.state.groupId) &&
+    a.state.epoch === b.state.epoch &&
+    equalBytes(a.state.treeHash, b.state.treeHash) &&
+    equalBytes(
+      a.state.confirmedTranscriptHash,
+      b.state.confirmedTranscriptHash,
+    ) &&
+    equalBytes(a.controlHead, b.controlHead)
+  );
+}
+
 function clonePublicState(
   state: GroupSecurityPublicState,
 ): GroupSecurityPublicState {
@@ -6613,30 +7136,29 @@ function cloneDelivery(delivery: GroupSecurityDelivery): GroupSecurityDelivery {
     'group-security delivery',
     ['commit'],
   );
-  const welcomeValues = snapshotExactArray(
+  const commit =
+    raw.commit === undefined
+      ? undefined
+      : cloneCommit(raw.commit as GroupSecurityCommit);
+  const values = snapshotExactArray(
     raw.welcomes,
     'group-security delivery Welcomes',
     0,
     MAX_WELCOMES,
   );
-  const welcomes: GroupWelcome[] = [];
-  for (let index = 0; index < welcomeValues.length; index++) {
-    welcomes.push(
-      snapshotWelcome(
-        welcomeValues[index],
-        `group-security delivery Welcome ${index}`,
-      ),
-    );
-  }
+  if (commit === undefined && values.length !== 0)
+    throw new Error('Welcome delivery requires a commit');
+  const capturedWelcomes = captureWelcomeInputs(values);
+  const welcomes =
+    commit === undefined
+      ? []
+      : validateWelcomes(capturedWelcomes.value, commit);
   return {
     controlRecord: snapshotControlRecord(
       raw.controlRecord,
       'group-security delivery control record',
     ),
-    commit:
-      raw.commit === undefined
-        ? undefined
-        : cloneCommit(raw.commit as GroupSecurityCommit),
+    commit,
     welcomes,
   };
 }

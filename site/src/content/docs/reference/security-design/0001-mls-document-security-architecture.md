@@ -1,5 +1,5 @@
 ---
-title: "ADR 0001: MLS document security architecture"
+title: 'ADR 0001: MLS document security architecture'
 description: Proposed architecture and acceptance gates for future MLS-secured Peerborne documents.
 ---
 
@@ -490,6 +490,88 @@ future MLS provider proposed here; its limitations must remain explicit until
 that provider passes the acceptance gates.
 
 ### Delivery, replay, and recovery
+
+#### Coordinator document-admission seam
+
+The coordinator now exposes `documentContext` and `runDocumentOperation` as an
+integration seam. This does not select an MLS document mode or wire the legacy
+`PeerborneDocument` through the control plane.
+
+Admission captures independently owned input bytes before any await. A trusted
+preparation callback authenticates the exact document/operation/causal context,
+checks authorization and stages without observable mutation. Its promise must
+cover all work retaining the input. Expensive preparation runs outside the
+membership queue. The prepared result must contain a pure synchronous
+`isAuthorizationCurrent` guard and a synchronous, nonthrowing `commit` finalizer
+that returns `undefined`; finalizer violations poison the coordinator. Inside the queue, core
+checks the independently protected anchor and the full captured protocol,
+group, epoch, tree/transcript commitments and control head, then requires the
+authorization guard to return `true` immediately before finalizing. A changed
+identity pin or role policy can reject prepared work without a group rekey.
+An outbox acknowledgement that changes only storage metadata does not
+invalidate content. A rekey, observed terminal fork or local removal does.
+These checks are local observations, not globally simultaneous revocation.
+
+Defaults admit at most 16 pending document operations and 16 MiB of input per
+coordinator, with a 1 MiB per-input limit and a 10-second waiting deadline.
+Configuration can lower or raise local limits within their hard bounds; one
+loaded module instance independently caps the aggregate at 64 operations and
+64 MiB. Cancellation ends the caller's wait, but credits remain charged until
+uncancellable work settles. A native promise returned by a malformed guard or
+finalizer also retains its credits until settlement. These are accounted pending-input bounds, not a
+JavaScript heap or frame-time guarantee. Large content needs bounded framing
+or explicit profile qualification.
+
+Malformed object results whose settlement cannot be safely observed retain
+their reservation for the loaded module's lifetime. Core does not invoke their
+constructor, species or `then` accessors to reclaim capacity. This conservative
+quarantine contains a callback contract violation; recovering the lost shared
+capacity requires restarting the owning runtime.
+
+Preparation, control preauthentication, and all verification/authorization
+callbacks during adoption observe the actual callback return without ordinary
+thenable assimilation. Adoption tracking includes store/replay-history
+revalidation and recovery; settled work leaves the pending set promptly.
+They accept native promises
+with a directly trusted constructor path; inherited custom promise prototypes
+are quarantined. Separate settlement signals keep credits charged even if
+unsafe observation rejects the caller first. The gate uses a private dependent
+abort signal so listeners on the caller's signal cannot suppress cancellation.
+
+Incoming control deliveries have separate local count/byte limits and a
+separate module-wide 64-operation/64-MiB budget. Their charge includes input
+byte fields plus fixed metadata allowances. Preflight reserves before large
+copies. An early signature check runs outside the membership queue; a private
+one-use certificate binds that check to the owned record. The verifier runs
+again at adoption to observe application trust changes. Parent/epoch admission,
+causal authorization, fork handling and provider adoption remain
+serialized. Malformed attachments do not hide an authenticated sibling fork.
+An independent bounded ingress queue preserves control arrival order even when
+later epochs authenticate first. It waits outside the membership queue, so
+document finalization and local membership work can still progress. Rejected
+authentication advances the ingress position; quarantined capacity remains charged.
+Decoder-returned Welcome sets are checked for aggregate size before cloning
+the complete set.
+
+Preflight captures metadata and fixed-length native byte views once. The
+reservation and subsequent copies use that captured representation. Proxy
+descriptor changes and later growth of resizable input buffers cannot replace
+the measured payload with a larger one.
+
+This adds an early outer-signature verification to the adoption-time check.
+Removing that repeat safely requires a pinned or versioned identity-verification
+contract; callback results alone cannot establish that application trust stayed
+unchanged. The current performance evidence establishes bounded pending work
+and queue progress under controlled schedules, not a device latency bound.
+
+Checked contracts and recursive finite-history models cover reservation and
+phase rules. Generated schedules and native Node/Chromium tests cover the
+implementation boundary using a fixture-only encrypted content format and
+pinned controller-writer policy. Actual document routing, role-history
+enforcement, durable content replay, browser process recovery, worker placement
+and measured device latency remain acceptance work.
+
+#### Durable delivery and recovery
 
 Control records and Welcome envelopes are content-addressed, idempotent, and
 retryable. Receivers deduplicate by record identity, verify before ACK, retain

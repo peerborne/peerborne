@@ -114,6 +114,18 @@ convergence, replay, and encrypted checkpoint restoration through the real
 coordinator. This fixture uses the test JSON codec and in-memory stores/anchors;
 it does not exercise network delivery or durable browser storage.
 
+The fixture also exercises `runDocumentOperation` with real exporter-derived
+AES-GCM keys and Ed25519 signatures. A test-only envelope binds a document ID,
+operation kind, causal-parent list and full group/control context. It rejects
+cross-document replay using the same key, a reader signing as a writer, and
+tampering. Revoking the pinned credential after preparation rejects the
+operation even without a group rekey. Controlled waits prove that rekey and authenticated removal can
+complete during content preparation, invalidate its finalizer, and permit a
+fresh-context retry after rekey. This pins the controller as the fixture's only
+writer; it is not a runtime role engine or a selected document wire protocol.
+The report records source and built-artifact hashes and rejects source drift
+during a run.
+
 A removed member cannot derive the next epoch's private secrets or verify its
 confirmation tag. The adapter reports an authenticated removal and applied
 membership delta without inventing next-epoch public/private state. The

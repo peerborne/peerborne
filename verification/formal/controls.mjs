@@ -557,6 +557,48 @@ method mapOperand_domain()
       '//@ verify',
       '//@ verify\n  //@ requires false',
     ],
+    [
+      'document-operation-count-overflow',
+      'document-admission.ts',
+      'return count < countLimit &&',
+      'return count <= countLimit &&',
+    ],
+    [
+      'document-operation-byte-overflow',
+      'document-admission.ts',
+      'return count < countLimit && incomingBytes <= byteLimit - bytes;',
+      'return count < countLimit && incomingBytes <= byteLimit;',
+    ],
+    [
+      'document-operation-release-inflation',
+      'document-admission.ts',
+      'return bytes - releasedBytes;',
+      'return bytes + releasedBytes;',
+    ],
+    [
+      'document-operation-cancel-resurrection',
+      'document-admission.ts',
+      "if (event === 'cancel') return 'cancelled';",
+      "if (event === 'cancel') return 'prepared';",
+    ],
+    [
+      'document-operation-stale-commit',
+      'document-admission.ts',
+      "return contextMatches && authorizationMatches ? 'committed' : phase;",
+      "return authorizationMatches ? 'committed' : phase;",
+    ],
+    [
+      'document-operation-authorization-bypass',
+      'document-admission.ts',
+      "return contextMatches && authorizationMatches ? 'committed' : phase;",
+      "return contextMatches ? 'committed' : phase;",
+    ],
+    [
+      'document-operation-commit-resurrection',
+      'document-admission.ts',
+      "if (phase === 'committed' || phase === 'cancelled') return phase;",
+      "if (phase === 'committed') return 'preparing'; if (phase === 'cancelled') return phase;",
+    ],
   ];
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);
