@@ -395,6 +395,11 @@ test('preserves known root types in mirrors and publishes new typed roots', () =
   const session = provider.createDocumentSession(document);
   expect(() =>
     session.prepareLocal('', (draft) => {
+      draft.getXmlFragment('empty');
+    }),
+  ).toThrow('Y.Map, Y.Array and Y.Text');
+  expect(() =>
+    session.prepareLocal('', (draft) => {
       draft.getMap('body').set('invisible', 1);
     }),
   ).toThrow();

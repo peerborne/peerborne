@@ -463,7 +463,8 @@
       "functions": [
         "canReserveDocumentOperation",
         "releaseDocumentOperationBytes",
-        "advanceDocumentOperation"
+        "advanceDocumentOperation",
+        "advancePreparedDocumentChange"
       ],
       "witness": "documentAdmission_domain",
       "consumers": [
@@ -477,7 +478,10 @@
         "DocumentCommitCount",
         "documentAdmission_all_histories",
         "DocumentBudgetStep",
-        "DocumentBudgetHistory"
+        "DocumentBudgetHistory",
+        "advancePreparedDocumentChange_ensures",
+        "PreparedChangeCompletions",
+        "preparedChange_all_histories"
       ]
     },
     {
