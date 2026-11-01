@@ -5,13 +5,15 @@ export function classifyDocumentJournalRecovery(
   anchored: number,
   commitmentMatches: boolean,
   parentMatches: boolean,
+  markerAuthenticated: boolean,
 ): DocumentJournalRecovery {
   //@ verify
   //@ requires 0 <= stored && stored <= 9007199254740991
   //@ requires 0 <= anchored && anchored <= 9007199254740991
-  //@ ensures \result === "current" <==> stored === anchored && commitmentMatches
-  //@ ensures \result === "finish-anchor" <==> stored > anchored && stored - anchored === 1 && parentMatches
-  //@ ensures \result === "reject" <==> !(stored === anchored && commitmentMatches) && !(stored > anchored && stored - anchored === 1 && parentMatches)
+  //@ ensures \result === "current" <==> markerAuthenticated && stored === anchored && commitmentMatches
+  //@ ensures \result === "finish-anchor" <==> markerAuthenticated && stored > anchored && stored - anchored === 1 && parentMatches
+  //@ ensures \result === "reject" <==> !markerAuthenticated || !(stored === anchored && commitmentMatches) && !(stored > anchored && stored - anchored === 1 && parentMatches)
+  if (!markerAuthenticated) return 'reject';
   if (stored === anchored && commitmentMatches) return 'current';
   if (stored > anchored && stored - anchored === 1 && parentMatches)
     return 'finish-anchor';

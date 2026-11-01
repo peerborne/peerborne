@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 113 controls cover 30 accepted originals, a map-comparison
-calibration, 78 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 114 controls cover 30 accepted originals, a map-comparison
+calibration, 79 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree
@@ -75,7 +75,7 @@ It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
 [fallback catalog](../strategy.json). It reports 41 property-suite files and
-89 assertion declarations; parameterized suites can execute declarations more
+90 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 

@@ -151,6 +151,7 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
   private root: Uint8Array;
   private current: AuthorityRecord;
   private readonly controllers = new Map<string, Uint8Array>();
+  private readonly verifiedHeads = new Set<string>();
   private controlAuthority?: DocumentGroupControlAuthority;
 
   private constructor(
@@ -159,6 +160,7 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
     encoded: Uint8Array,
     private readonly auth: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
   ) {
+    this.verifiedHeads.add(documentBytesId(root));
     this.root = root.slice();
     this.head = root.slice();
     this.current = record;
@@ -176,6 +178,14 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
   get genesisId(): Uint8Array {
     return this.root.slice();
   }
+  extendsHead(head: Uint8Array): boolean {
+    return this.verifiedHeads.has(
+      documentBytesId(
+        copyUnsharedUint8Array(head, 32, 32, 'accepted authority head'),
+      ),
+    );
+  }
+
   get headId(): Uint8Array {
     return this.head.slice();
   }
@@ -292,6 +302,7 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
       );
     const revision = this.revision;
     return {
+      headId: this.head.slice(),
       members: this.current.members.map((member) => ({
         ...member,
         memberId: member.memberId.slice(),
@@ -434,6 +445,7 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
     this.revision = next.sequence;
     this.current = next;
     this.head = hash.slice();
+    this.verifiedHeads.add(documentBytesId(this.head));
     this.controllers.set(
       documentBytesId(next.context.controlHead),
       next.members.find((member) => member.role === 3)!.memberId.slice(),

@@ -3,29 +3,32 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
-function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool): DocumentJournalRecovery
+function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
   requires (0 <= anchored)
   requires (anchored <= 9007199254740991)
 {
-  if ((stored == anchored) && commitmentMatches) then
-    DocumentJournalRecovery.current
+  if !(markerAuthenticated) then
+    DocumentJournalRecovery.reject
   else
-    if (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches) then
-      DocumentJournalRecovery.finish_anchor
+    if ((stored == anchored) && commitmentMatches) then
+      DocumentJournalRecovery.current
     else
-      DocumentJournalRecovery.reject
+      if (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches) then
+        DocumentJournalRecovery.finish_anchor
+      else
+        DocumentJournalRecovery.reject
 }
 
-lemma classifyDocumentJournalRecovery_ensures(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool)
+lemma classifyDocumentJournalRecovery_ensures(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool)
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
   requires (0 <= anchored)
   requires (anchored <= 9007199254740991)
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).current? <==> ((stored == anchored) && commitmentMatches))
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).finish_anchor? <==> (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches))
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).reject? <==> (!(((stored == anchored) && commitmentMatches)) && !((((stored > anchored) && ((stored - anchored) == 1)) && parentMatches))))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).current? <==> ((markerAuthenticated && (stored == anchored)) && commitmentMatches))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).finish_anchor? <==> (((markerAuthenticated && (stored > anchored)) && ((stored - anchored) == 1)) && parentMatches))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).reject? <==> (!(markerAuthenticated) || (!(((stored == anchored) && commitmentMatches)) && !((((stored > anchored) && ((stored - anchored) == 1)) && parentMatches)))))
 {
 }
 

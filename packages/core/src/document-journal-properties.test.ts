@@ -6,6 +6,21 @@ import {
 } from 'fake-indexeddb';
 import { CoordinatedDocument } from './coordinated-document.js';
 import {
+  DocumentAuthorityLog,
+  DocumentGroupControlAuthority,
+} from './document-authority-log.js';
+import { GroupSecurityCoordinator } from './group-security-coordinator.js';
+import {
+  context,
+  config,
+  protocol,
+  groupId,
+  id,
+  control,
+  createGroupInput,
+  flushAndCollect,
+} from './__testutils__/group-security-coordinator.js';
+import {
   DocumentReplayJournal,
   InMemoryDocumentJournalRollbackAnchor,
   type DocumentJournalStore,
@@ -18,8 +33,12 @@ import {
   documentFixture,
   testCRDT,
   testChanges,
+  testAuth,
 } from './__testutils__/coordinated-document.js';
-import { documentBytesId } from './internal/document-binary.js';
+import {
+  documentBytesId,
+  DocumentBinaryWriter,
+} from './internal/document-binary.js';
 
 const deviceKey = () =>
   crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
@@ -353,6 +372,7 @@ test('IndexedDB delta commits and outbox draining never read or rewrite a two-me
       context: f.coordinator.documentContext,
       changes: new Uint8Array(2 * 1024 * 1024),
       receipts: [],
+      authorityHead: f.authority.headId,
       authorityRecords: [],
     })
   ).commit();
@@ -388,6 +408,7 @@ test('IndexedDB delta commits and outbox draining never read or rewrite a two-me
               hash: new Uint8Array(32).fill(sequence),
             },
           ],
+          authorityHead: f.authority.headId,
           authorityRecords: [],
           outboundFrame: new Uint8Array(32).fill(sequence),
         })
@@ -437,6 +458,7 @@ test('captures a journal item before waiting on its independent anchor', async (
     context: f.coordinator.documentContext,
     changes,
     receipts: [receipt],
+    authorityHead: f.authority.headId,
     authorityRecords: [],
   });
   changes.fill(99);
@@ -454,4 +476,237 @@ test('captures a journal item before waiting on its independent anchor', async (
   expect(restored[0].changes).toEqual(new Uint8Array([1, 2, 3]));
   expect(restored[0].receipts[0].sequence).toBe(1);
   expect(restored[0].receipts[0].hash).toEqual(new Uint8Array(32).fill(7));
+});
+
+test('storage cannot promote a prepared ciphertext into an accepted journal entry', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uint8Array({ minLength: 28, maxLength: 28 }),
+      async (forgedMarker) => {
+        const f = await documentFixture(),
+          key = await deviceKey(),
+          backing = new InMemoryDocumentJournalStore(),
+          anchor = new InMemoryDocumentJournalRollbackAnchor();
+        const journal = new DocumentReplayJournal(
+          f.authority.documentId,
+          f.authority.genesisId,
+          key,
+          backing,
+          anchor,
+        );
+        await journal.restore();
+        const pending = await journal.prepare({
+          checkpoint: false,
+          context: f.coordinator.documentContext,
+          changes: testChanges.serializeChanges([99]),
+          authorityHead: f.authority.headId,
+          receipts: [
+            {
+              memberId: f.identity,
+              sequence: 1,
+              hash: new Uint8Array(32).fill(7),
+            },
+          ],
+          authorityRecords: [],
+        });
+        const staged = await backing.load(
+          documentBytesId(f.authority.genesisId),
+        );
+        const encoded = new DocumentBinaryWriter()
+          .bytes(staged.pending!.entry)
+          .fixed(forgedMarker)
+          .finish();
+        await pending.discard();
+        const hostile: DocumentJournalStore = {
+          load: async () => ({ revision: 1, entries: [encoded] }),
+          stage: async () => {},
+          commit: async () => {},
+          discard: async () => {},
+        };
+        const recovered = engine(f, key, hostile, anchor);
+        await expect(recovered.activate()).rejects.toThrow('acceptance');
+        expect(
+          await anchor.load(documentBytesId(f.authority.genesisId)),
+        ).toBeUndefined();
+        expect(() => recovered.document).toThrow();
+        await recovered.close();
+      },
+    ),
+    { seed: 2011144, numRuns: 24 },
+  );
+});
+
+test.each([true, false])(
+  'outbox reads wait for the complete journal anchor decision (%s)',
+  async (accepted) => {
+    const f = await documentFixture(),
+      key = await deviceKey(),
+      store = new InMemoryDocumentJournalStore(),
+      anchor = new InMemoryDocumentJournalRollbackAnchor();
+    const original = anchor.compareAndSwap.bind(anchor);
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      }),
+      blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    anchor.compareAndSwap = async (...args) => {
+      entered();
+      await blocked;
+      return accepted ? original(...args) : false;
+    };
+    const document = engine(f, key, store, anchor, true);
+    await document.activate();
+    const mutation = document.change((doc) => {
+      doc.push(1);
+    });
+    const mutationResult = mutation.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await started;
+    let observed = false;
+    const read = document.pendingPublications();
+    const readResult = read.then(
+      (value) => {
+        observed = true;
+        return { value };
+      },
+      (error) => ({ error }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(observed).toBe(false);
+    expect(
+      (await store.load(documentBytesId(f.authority.genesisId))).publications,
+    ).toHaveLength(1);
+    release();
+    const changed = await mutationResult,
+      publications = await readResult;
+    if (accepted) {
+      expect('value' in changed).toBe(true);
+      expect('value' in publications && publications.value.length).toBe(1);
+    } else {
+      expect('error' in changed).toBe(true);
+      expect('error' in publications).toBe(true);
+      expect(observed).toBe(false);
+    }
+    await document.close();
+  },
+);
+
+test('coordinated IndexedDB writes stay proportional to deltas with a large signed role history', async () => {
+  const f = await context(),
+    baseAuth = testAuth(f),
+    padding = 'x'.repeat(3500);
+  const auth = {
+    ...baseAuth,
+    serializePublicKey: async (key: Uint8Array) =>
+      padding + (await baseAuth.serializePublicKey(key)),
+    deserializePublicKey: async (key: string) => {
+      if (!key.startsWith(padding)) throw new Error('Noncanonical fixture key');
+      return baseAuth.deserializePublicKey(key.slice(padding.length));
+    },
+  };
+  const authority = new DocumentGroupControlAuthority(
+    protocol,
+    groupId,
+    f.identities.actorId,
+  );
+  const coordinator = await GroupSecurityCoordinator.bootstrap(
+    { ...config(f), authorizeControl: authority.authorize },
+    createGroupInput,
+    { operationId: id(1), subjectId: f.identities.actorId },
+  );
+  const roster = [
+    {
+      memberId: f.identities.actorId,
+      publicKey: await auth.serializePublicKey(f.identities.actorId),
+      role: 3 as const,
+    },
+    {
+      memberId: f.identities.attackerId,
+      publicKey: await auth.serializePublicKey(f.identities.attackerId),
+      role: 2 as const,
+    },
+  ];
+  const log = await DocumentAuthorityLog.create(
+    '/history-cost',
+    coordinator.documentContext,
+    roster,
+    f.identities.actorId,
+    auth,
+    authority,
+  );
+  for (let index = 0; index < 12; index++) {
+    await flushAndCollect(coordinator);
+    await coordinator.createCommit(
+      { changes: [] },
+      control(index + 2, 'update', f.identities.actorId),
+    );
+    await log.applyUpdate(
+      coordinator,
+      await log.signUpdate(
+        coordinator.documentContext,
+        roster,
+        f.identities.actorId,
+      ),
+    );
+  }
+  expect(
+    log.exportRecords().reduce((sum, record) => sum + record.byteLength, 0),
+  ).toBeGreaterThan(90 * 1024);
+  const store = new IndexedDBDocumentJournalStore(
+      'authority-cost',
+      new FakeIDBFactory(),
+    ),
+    key = await deviceKey(),
+    anchor = new InMemoryDocumentJournalRollbackAnchor();
+  const document = new CoordinatedDocument(
+    log.documentId,
+    [],
+    testCRDT,
+    testChanges,
+    auth,
+    f.identities.actorId,
+    f.identities.actorId,
+    {
+      coordinator,
+      authority: log,
+      journal: new DocumentReplayJournal(
+        log.documentId,
+        log.genesisId,
+        key,
+        store,
+        anchor,
+      ),
+    },
+  );
+  await document.activate();
+  await document.change((draft) => {
+    draft.push(0);
+  });
+  const exportSpy = jest.spyOn(log, 'exportRecords');
+  const put = FakeObjectStore.prototype.put;
+  let writtenBytes = 0;
+  const putSpy = jest
+    .spyOn(FakeObjectStore.prototype, 'put')
+    .mockImplementation(function (this: any, value: any, ...args: any[]) {
+      if (this.name === 'entries') writtenBytes += value.byteLength;
+      if (this.name === 'pending') writtenBytes += value.entry.byteLength;
+      return Reflect.apply(put, this, [value, ...args]);
+    });
+  try {
+    for (let index = 1; index <= 10; index++)
+      await document.change((draft) => {
+        draft.push(index);
+      });
+    expect(exportSpy).not.toHaveBeenCalled();
+    expect(writtenBytes).toBeLessThan(32 * 1024);
+  } finally {
+    putSpy.mockRestore();
+    exportSpy.mockRestore();
+    await document.close();
+    await store.close();
+  }
 });

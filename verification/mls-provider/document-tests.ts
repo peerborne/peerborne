@@ -227,6 +227,12 @@ export async function runProductionDocumentChecks() {
   for (const backend of ['automerge', 'yjs'] as const) {
     const path = `/native-${backend}-private-document`,
       f = await setup(path);
+    const exportRecords = f.logs[0].exportRecords.bind(f.logs[0]);
+    let authorityExports = 0;
+    f.logs[0].exportRecords = () => {
+      authorityExports++;
+      return exportRecords();
+    };
     const provider: any =
       backend === 'automerge' ? new AutomergeProvider() : new YjsProvider();
     const serializer: any =
@@ -350,7 +356,23 @@ export async function runProductionDocumentChecks() {
       const publication = publications.shift()!;
       await docs[1].receiveSecurityFrame(publication.data);
     }
+    check(authorityExports <= 3, 'routine deltas do not copy the role history');
     await docs[1].close();
+    const restoredJournal = await new DocumentReplayJournal(
+      path,
+      f.logs[1].genesisId,
+      keys[1],
+      journalStores[1],
+      journalAnchors[1],
+    ).restore();
+    const retainedHistory = restoredJournal.findLast(
+      (item) => item.authorityRecords.length > 0,
+    );
+    check(
+      retainedHistory?.authorityRecords.length ===
+        f.logs[1].exportRecords().length,
+      'checkpoint retains the complete signed role history',
+    );
     docs[1] = makeDocument(1);
     await docs[1].open();
     check(
@@ -360,6 +382,48 @@ export async function runProductionDocumentChecks() {
     check(
       !(await docs[1].receiveSecurityFrame(first[0].data)),
       'durable native replay floor',
+    );
+    const stage = journalStores[0].stage.bind(journalStores[0]);
+    let entered!: () => void, release!: () => void;
+    const staged = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    journalStores[0].stage = async (...args) => {
+      await stage(...args);
+      entered();
+      await blocked;
+    };
+    const liveMutation = docs[0].change(change('duplicateSurvives', 5));
+    await staged;
+    const beforeDuplicate = await journalStores[0].load(
+      hex(f.logs[0].genesisId),
+    );
+    const duplicate = makeDocument(0);
+    await rejects(() => duplicate.open());
+    const afterDuplicate = await journalStores[0].load(
+      hex(f.logs[0].genesisId),
+    );
+    check(
+      !!beforeDuplicate.pending &&
+        !!afterDuplicate.pending &&
+        equal(beforeDuplicate.pending.token, afterDuplicate.pending.token),
+      'duplicate activation cannot alter a live pending journal',
+    );
+    release();
+    await liveMutation;
+    journalStores[0].stage = stage;
+    const livePublication = publications.splice(0);
+    check(
+      livePublication.length === 1,
+      'live owner survives duplicate activation',
+    );
+    await docs[1].receiveSecurityFrame(livePublication[0].data);
+    check(
+      read(docs[1]).duplicateSurvives === 5,
+      'live mutation remains deliverable',
     );
     const pubsub = swarms[0].heliaNode.libp2p.services.pubsub as any;
     const publish = pubsub.publish;
@@ -403,6 +467,8 @@ export async function runProductionDocumentChecks() {
       nativeCheckpointAndRestart: true,
       durableReplaySuppression: true,
       durablePublicationRetry: true,
+      duplicateActivationIsolated: true,
+      roleHistoryCopiedOnlyAtCheckpoints: true,
       indexedDB: typeof indexedDB !== 'undefined',
     };
   }

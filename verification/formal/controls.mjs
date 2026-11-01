@@ -653,6 +653,12 @@ method mapOperand_domain()
       'return next > previous && sameGroup && headChanged;',
       'return next > previous && headChanged;',
     ],
+    [
+      'document-journal-uncommitted-promotion',
+      'document-journal.ts',
+      "if (!markerAuthenticated) return 'reject';",
+      "if (false) return 'reject';",
+    ],
   ];
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);

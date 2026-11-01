@@ -53,6 +53,9 @@ export interface DocumentMemberAuthority {
 export interface DocumentAuthority {
   readonly documentId: string;
   readonly genesisId: Uint8Array;
+  readonly headId: Uint8Array;
+  /** True only when this authenticated history contains the accepted head as a prefix. */
+  extendsHead(head: Uint8Array): boolean;
   assertCoordinator?(coordinator: GroupSecurityCoordinator): void;
   exportRecords?(): ReadonlyArray<Uint8Array>;
   applyUpdate?(
@@ -61,6 +64,7 @@ export interface DocumentAuthority {
   ): Promise<void>;
   capture(context: GroupSecurityDocumentContext): {
     readonly members: ReadonlyArray<DocumentMemberAuthority>;
+    readonly headId: Uint8Array;
     isCurrent(): boolean;
   };
 }
@@ -97,6 +101,7 @@ export class CoordinatedDocument<
   private receipts = new Map<string, Receipt>();
   private receiptsContext?: GroupSecurityDocumentContext;
   private recovered = false;
+  private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
   private material?: {
     context: GroupSecurityDocumentContext;
@@ -262,6 +267,12 @@ export class CoordinatedDocument<
 
   private authority(context: GroupSecurityDocumentContext) {
     const captured = this.options.authority.capture(context);
+    const headId = copyUnsharedUint8Array(
+      captured.headId,
+      32,
+      32,
+      'document authority head',
+    );
     if (
       !Array.isArray(captured.members) ||
       captured.members.length < 1 ||
@@ -290,7 +301,7 @@ export class CoordinatedDocument<
     }
     if (!members.has(documentBytesId(this.options.coordinator.localMemberId)))
       throw new Error('Local group member has no document access');
-    return { members, isCurrent: () => captured.isCurrent() === true };
+    return { members, headId, isCurrent: () => captured.isCurrent() === true };
   }
 
   private async key(
@@ -323,6 +334,7 @@ export class CoordinatedDocument<
         : new Map<string, Receipt>();
     let journal: PreparedDocumentJournal | undefined;
     let commitAttempted = false;
+    let acceptedAuthorityLease: (() => boolean) | undefined;
     let plan: PreparedDocumentChange<Changes> | undefined;
     let preparation: Promise<unknown> | undefined;
     if (
@@ -343,7 +355,11 @@ export class CoordinatedDocument<
           const task = async () => {
             const lease = this.authority(captured);
             const material = await this.key(captured, work);
-            const aad = documentContentAAD(this.documentId, captured);
+            const aad = documentContentAAD(
+              this.documentId,
+              captured,
+              lease.headId,
+            );
             let unsigned: Uint8Array,
               memberId: Uint8Array,
               sequence: number,
@@ -373,6 +389,7 @@ export class CoordinatedDocument<
               if (
                 frame.documentId !== this.documentId ||
                 !documentBytesEqual(frame.genesisId, this.genesisId) ||
+                !documentBytesEqual(frame.authorityHead, lease.headId) ||
                 !documentContextsMatch(frame.context, captured)
               )
                 throw new Error('Document content context mismatch');
@@ -446,6 +463,7 @@ export class CoordinatedDocument<
               unsigned = encodeDocumentContent({
                 documentId: this.documentId,
                 genesisId: this.genesisId,
+                authorityHead: lease.headId,
                 context: captured,
                 memberId,
                 sequence,
@@ -533,14 +551,18 @@ export class CoordinatedDocument<
                   context: captured,
                   changes,
                   receipts: persistedReceipts,
+                  authorityHead: lease.headId,
                   authorityRecords:
-                    this.options.authority.exportRecords?.() ?? [],
+                    checkpoint || this.persistedAuthorityLease?.() !== true
+                      ? (this.options.authority.exportRecords?.() ?? [])
+                      : [],
                   ...(input === undefined && this.options.persistPublications
                     ? { outboundFrame: result }
                     : {}),
                 }),
               );
               journal = value;
+              acceptedAuthorityLease = lease.isCurrent;
             }
             if (signal.aborted) throw new Error('Document preparation aborted');
             return {
@@ -576,7 +598,10 @@ export class CoordinatedDocument<
           >;
         },
       );
-      if (committed) await journal?.commit();
+      if (committed) {
+        await journal?.commit();
+        if (journal) this.persistedAuthorityLease = acceptedAuthorityLease;
+      }
       return result;
     } catch (error) {
       if (commitAttempted) this.failed = true;
@@ -602,6 +627,12 @@ export class CoordinatedDocument<
     if (this.recovered) return;
     try {
       const records = (await this.options.journal?.restore()) ?? [];
+      for (const record of records) {
+        if (this.options.authority.extendsHead(record.authorityHead) !== true)
+          throw new Error(
+            'Configured authority forks the accepted document history',
+          );
+      }
       for (const record of records) {
         const changes = this.serializer.deserializeChanges(record.changes);
         if (record.checkpoint && !this.session.prepareSnapshot)
@@ -677,6 +708,7 @@ export class CoordinatedDocument<
           );
           if (!this.options.journal) return;
           let prepared: PreparedDocumentJournal | undefined;
+          let authorityLease: (() => boolean) | undefined;
           let preparation: Promise<unknown> | undefined;
           try {
             const context = this.options.coordinator.documentContext;
@@ -686,6 +718,7 @@ export class CoordinatedDocument<
               (captured, _input, _signal, work) => {
                 preparation = (async () => {
                   const lease = this.authority(captured);
+                  authorityLease = lease.isCurrent;
                   if (!this.crdt.getSnapshot)
                     throw new Error(
                       'CRDT provider cannot checkpoint role transitions',
@@ -699,6 +732,7 @@ export class CoordinatedDocument<
                       context: captured,
                       changes,
                       receipts: [],
+                      authorityHead: lease.headId,
                       authorityRecords:
                         this.options.authority.exportRecords?.() ?? [],
                     }),
@@ -718,6 +752,7 @@ export class CoordinatedDocument<
               },
             );
             await prepared!.commit();
+            this.persistedAuthorityLease = authorityLease;
           } catch (error) {
             this.failed = true;
             throw error;
@@ -735,19 +770,43 @@ export class CoordinatedDocument<
     }
   }
 
-  async pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
-    this.assertUsable();
-    return this.options.journal
-      ? this.options.journal.pendingPublications()
-      : this.publications.map((frame) => frame.slice());
+  pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
+    return this.enqueue(0, () => async () => {
+      await this.recover();
+      return this.options.journal
+        ? this.options.journal.pendingPublications()
+        : this.publications.map((frame) => frame.slice());
+    });
   }
 
-  async publicationSent(frame: Uint8Array): Promise<void> {
-    if (this.options.journal) await this.options.journal.publicationSent(frame);
-    else
-      this.publications = this.publications.filter(
-        (value) => !documentBytesEqual(value, frame),
+  publicationSent(frame: Uint8Array): Promise<void> {
+    try {
+      const length = unsharedUint8ArrayByteLength(
+        frame,
+        1,
+        MAX_DOCUMENT_SECURITY_FRAME_BYTES,
+        'published document frame',
       );
+      return this.enqueue(length, () => {
+        const owned = copyUnsharedUint8Array(
+          frame,
+          length,
+          length,
+          'published document frame',
+        );
+        return async () => {
+          await this.recover();
+          if (this.options.journal)
+            await this.options.journal.publicationSent(owned);
+          else
+            this.publications = this.publications.filter(
+              (value) => !documentBytesEqual(value, owned),
+            );
+        };
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   close(): Promise<void> {

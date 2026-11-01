@@ -3,29 +3,32 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
-function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool): DocumentJournalRecovery
+function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
   requires (0 <= anchored)
   requires (anchored <= 9007199254740991)
 {
-  if ((stored == anchored) && commitmentMatches) then
-    DocumentJournalRecovery.current
+  if !(markerAuthenticated) then
+    DocumentJournalRecovery.reject
   else
-    if (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches) then
-      DocumentJournalRecovery.finish_anchor
+    if ((stored == anchored) && commitmentMatches) then
+      DocumentJournalRecovery.current
     else
-      DocumentJournalRecovery.reject
+      if (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches) then
+        DocumentJournalRecovery.finish_anchor
+      else
+        DocumentJournalRecovery.reject
 }
 
-lemma classifyDocumentJournalRecovery_ensures(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool)
+lemma classifyDocumentJournalRecovery_ensures(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool)
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
   requires (0 <= anchored)
   requires (anchored <= 9007199254740991)
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).current? <==> ((stored == anchored) && commitmentMatches))
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).finish_anchor? <==> (((stored > anchored) && ((stored - anchored) == 1)) && parentMatches))
-  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches).reject? <==> (!(((stored == anchored) && commitmentMatches)) && !((((stored > anchored) && ((stored - anchored) == 1)) && parentMatches))))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).current? <==> ((markerAuthenticated && (stored == anchored)) && commitmentMatches))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).finish_anchor? <==> (((markerAuthenticated && (stored > anchored)) && ((stored - anchored) == 1)) && parentMatches))
+  ensures (classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).reject? <==> (!(markerAuthenticated) || (!(((stored == anchored) && commitmentMatches)) && !((((stored > anchored) && ((stored - anchored) == 1)) && parentMatches)))))
 {
 }
 
@@ -47,61 +50,64 @@ lemma canAdvanceDocumentAuthority_ensures(previous: int, next: int, sameGroup: b
 {
 }
 
-function JournalRecoveryHistory(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>): int
+function JournalRecoveryHistory(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>, authenticated: seq<bool>): int
   requires 0 <= anchor <= 9007199254740991
-  requires |stores| == |commitments| && |stores| == |parents|
+  requires |stores| == |commitments| && |stores| == |parents| && |stores| == |authenticated|
   requires forall i :: 0 <= i < |stores| ==> 0 <= stores[i] <= 9007199254740991
-  ensures anchor <= JournalRecoveryHistory(anchor, stores, commitments, parents) <= 9007199254740991
+  ensures anchor <= JournalRecoveryHistory(anchor, stores, commitments, parents, authenticated) <= 9007199254740991
   decreases |stores|
 {
   if |stores| == 0 then anchor else
-    var next := if classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0]).finish_anchor? then stores[0] else anchor;
-    JournalRecoveryHistory(next, stores[1..], commitments[1..], parents[1..])
+    var next := if classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0], authenticated[0]).finish_anchor? then stores[0] else anchor;
+    JournalRecoveryHistory(next, stores[1..], commitments[1..], parents[1..], authenticated[1..])
 }
 
-predicate JournalRecoveryStepsSafe(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>)
+predicate JournalRecoveryStepsSafe(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>, authenticated: seq<bool>)
   requires 0 <= anchor <= 9007199254740991
-  requires |stores| == |commitments| && |stores| == |parents|
+  requires |stores| == |commitments| && |stores| == |parents| && |stores| == |authenticated|
   requires forall i :: 0 <= i < |stores| ==> 0 <= stores[i] <= 9007199254740991
   decreases |stores|
 {
   |stores| == 0 ||
-    (var decision := classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0]);
+    (var decision := classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0], authenticated[0]);
      var next := if decision.finish_anchor? then stores[0] else anchor;
-     (next != anchor ==> next == anchor + 1 && parents[0]) &&
+     (next != anchor ==> next == anchor + 1 && parents[0] && authenticated[0]) &&
+     (!authenticated[0] ==> decision.reject?) &&
      (stores[0] < anchor ==> decision.reject?) &&
      (stores[0] == anchor && !commitments[0] ==> decision.reject?) &&
-     JournalRecoveryStepsSafe(next, stores[1..], commitments[1..], parents[1..]))
+     JournalRecoveryStepsSafe(next, stores[1..], commitments[1..], parents[1..], authenticated[1..]))
 }
 
-lemma journalRecovery_all_histories(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>)
+lemma journalRecovery_all_histories(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>, authenticated: seq<bool>)
   requires 0 <= anchor <= 9007199254740991
-  requires |stores| == |commitments| && |stores| == |parents|
+  requires |stores| == |commitments| && |stores| == |parents| && |stores| == |authenticated|
   requires forall i :: 0 <= i < |stores| ==> 0 <= stores[i] <= 9007199254740991
-  ensures JournalRecoveryStepsSafe(anchor, stores, commitments, parents)
-  ensures anchor <= JournalRecoveryHistory(anchor, stores, commitments, parents) <= 9007199254740991
+  ensures JournalRecoveryStepsSafe(anchor, stores, commitments, parents, authenticated)
+  ensures anchor <= JournalRecoveryHistory(anchor, stores, commitments, parents, authenticated) <= 9007199254740991
   decreases |stores|
 {
   if |stores| > 0 {
-    classifyDocumentJournalRecovery_ensures(stores[0], anchor, commitments[0], parents[0]);
-    var next := if classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0]).finish_anchor? then stores[0] else anchor;
-    journalRecovery_all_histories(next, stores[1..], commitments[1..], parents[1..]);
+    classifyDocumentJournalRecovery_ensures(stores[0], anchor, commitments[0], parents[0], authenticated[0]);
+    var next := if classifyDocumentJournalRecovery(stores[0], anchor, commitments[0], parents[0], authenticated[0]).finish_anchor? then stores[0] else anchor;
+    journalRecovery_all_histories(next, stores[1..], commitments[1..], parents[1..], authenticated[1..]);
   }
 }
 
 method documentJournal_domain()
 {
-  assert classifyDocumentJournalRecovery(0, 0, true, false).current?;
-  assert classifyDocumentJournalRecovery(1, 0, false, true).finish_anchor?;
-  assert classifyDocumentJournalRecovery(0, 1, false, false).reject?;
-  assert classifyDocumentJournalRecovery(1, 1, false, true).reject?;
-  assert classifyDocumentJournalRecovery(2, 0, true, true).reject?;
-  assert classifyDocumentJournalRecovery(9007199254740991, 9007199254740990, false, true).finish_anchor?;
+  assert classifyDocumentJournalRecovery(0, 0, true, false, true).current?;
+  assert classifyDocumentJournalRecovery(1, 0, false, true, true).finish_anchor?;
+  assert classifyDocumentJournalRecovery(0, 1, false, false, true).reject?;
+  assert classifyDocumentJournalRecovery(1, 1, false, true, true).reject?;
+  assert classifyDocumentJournalRecovery(2, 0, true, true, true).reject?;
+  assert classifyDocumentJournalRecovery(9007199254740991, 9007199254740990, false, true, true).finish_anchor?;
+  assert classifyDocumentJournalRecovery(1, 0, false, true, false).reject?;
+  assert classifyDocumentJournalRecovery(1, 1, true, true, false).reject?;
   assert canAdvanceDocumentAuthority(0, 1, true, true);
   assert !canAdvanceDocumentAuthority(1, 1, true, true);
   assert !canAdvanceDocumentAuthority(0, 1, false, true);
   assert !canAdvanceDocumentAuthority(0, 1, true, false);
   assert !canAdvanceDocumentAuthority(18446744073709551615, 0, true, true);
-  journalRecovery_all_histories(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true]);
-  assert JournalRecoveryHistory(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true]) == 2;
+  journalRecovery_all_histories(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]);
+  assert JournalRecoveryHistory(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]) == 2;
 }

@@ -30,6 +30,7 @@ describe('bounded coordinated document wire boundaries', () => {
             sequence,
             changes,
             genesisId: id(1),
+            authorityHead: id(4),
             memberId: id(2),
             parent: id(3),
             kind: 'change',

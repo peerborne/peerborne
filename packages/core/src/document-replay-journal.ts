@@ -67,6 +67,7 @@ export interface DocumentJournalStore {
     expectedRevision: number,
     token: Uint8Array,
     checkpoint: boolean,
+    acceptedEntry: Uint8Array,
   ): Promise<void>;
   discard(key: string, token: Uint8Array): Promise<void>;
   publicationSent?(key: string, id: Uint8Array): Promise<void>;
@@ -82,6 +83,7 @@ export interface DocumentJournalItem {
   readonly context: GroupSecurityDocumentContext;
   readonly changes: Uint8Array;
   readonly receipts: ReadonlyArray<DocumentReplayReceipt>;
+  readonly authorityHead: Uint8Array;
   readonly authorityRecords: ReadonlyArray<Uint8Array>;
 }
 export interface PreparedDocumentJournal {
@@ -95,6 +97,11 @@ const DOMAIN = Uint8Array.from(
 );
 const MAX_SNAPSHOT = 64 * 1024 * 1024,
   MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024;
+export const DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD = 32;
+const ACCEPTED_DOMAIN = Uint8Array.from(
+  'peerborne/document-journal-accepted/v1\0',
+  (value) => value.charCodeAt(0),
+);
 export const MAX_DOCUMENT_JOURNAL_ENTRIES = 128;
 export const MAX_DOCUMENT_JOURNAL_BYTES = 128 * 1024 * 1024;
 const ZERO = new Uint8Array(32);
@@ -102,6 +109,14 @@ const ZERO = new Uint8Array(32);
 function encodeItem(item: DocumentJournalItem): Uint8Array {
   const writer = new DocumentBinaryWriter(MAX_ENTRY);
   writeDocumentContext(writer, item.context);
+  writer.fixed(
+    copyUnsharedUint8Array(
+      item.authorityHead,
+      32,
+      32,
+      'journal authority head',
+    ),
+  );
   writer
     .bytes(item.changes, item.checkpoint ? MAX_SNAPSHOT : 512 * 1024)
     .integer(item.receipts.length, 2);
@@ -155,6 +170,7 @@ function decodeItem(
 ): DocumentJournalItem {
   const reader = new DocumentBinaryReader(bytes, MAX_ENTRY),
     context = readDocumentContext(reader),
+    authorityHead = reader.fixed(32),
     changes = reader.bytes(checkpoint ? MAX_SNAPSHOT : 512 * 1024),
     count = reader.number(2);
   if (count > 256 || (!checkpoint && count !== 1))
@@ -183,7 +199,14 @@ function decodeItem(
     authorityRecords.push(record);
   }
   reader.end();
-  return { checkpoint, context, changes, receipts, authorityRecords };
+  return {
+    checkpoint,
+    context,
+    changes,
+    receipts,
+    authorityHead,
+    authorityRecords,
+  };
 }
 
 function captureJournalSnapshot(
@@ -328,7 +351,8 @@ export class DocumentReplayJournal {
       const anchored = copyAnchor(await this.anchor.load(this.storageKey));
       let bytes = 0,
         previous: Uint8Array | undefined,
-        previousRevision = 0;
+        previousRevision = 0,
+        authenticated = true;
       const items: DocumentJournalItem[] = [];
       let last:
         | { revision: number; commitment: Uint8Array; parent: Uint8Array }
@@ -341,7 +365,11 @@ export class DocumentReplayJournal {
           'journal entry',
         );
         bytes += owned.length;
-        const reader = new DocumentBinaryReader(owned, MAX_ENTRY + 128),
+        const accepted = new DocumentBinaryReader(owned, MAX_ENTRY + 128);
+        const payload = accepted.bytes(MAX_ENTRY + 96),
+          acceptance = accepted.fixed(28);
+        accepted.end();
+        const reader = new DocumentBinaryReader(payload, MAX_ENTRY + 128),
           revision = reader.number(8),
           marker = reader.number(1),
           parent = reader.fixed(32),
@@ -359,6 +387,16 @@ export class DocumentReplayJournal {
             (revision !== 1 || !documentBytesEqual(parent, ZERO)))
         )
           throw new Error('Journal causal chain is invalid');
+        const acceptedMarker = await this.verifyAcceptedMarker(
+          revision,
+          payload,
+          acceptance,
+        );
+        authenticated = authenticated && acceptedMarker;
+        if (!acceptedMarker)
+          throw new Error(
+            'Journal entry has no authenticated acceptance marker',
+          );
         const aad = this.aad(revision, marker === 1, parent);
         const plaintext = await crypto.subtle.decrypt(
           {
@@ -388,6 +426,7 @@ export class DocumentReplayJournal {
         anchored?.revision ?? 0,
         documentJournalAnchorsEqual(anchored, stored),
         !!last && documentBytesEqual(last.parent, anchored?.commitment ?? ZERO),
+        authenticated,
       );
       if (recovery === 'reject')
         throw new Error('Journal rollback or substitution detected');
@@ -484,7 +523,6 @@ export class DocumentReplayJournal {
         .fixed(nonce)
         .bytes(ciphertext, MAX_ENTRY + 16)
         .finish();
-      const commitment = await digest(entry);
       const publication =
         outboundFrame === undefined
           ? undefined
@@ -511,11 +549,14 @@ export class DocumentReplayJournal {
             throw new Error('Journal preparation has already completed');
           done = true;
           try {
+            const accepted = await this.createAcceptedEntry(revision, entry);
+            const commitment = await digest(accepted);
             await this.store.commit(
               this.storageKey,
               expected?.revision ?? 0,
               token.slice(),
               checkpoint,
+              accepted.slice(),
             );
             const actual = this.store.loadAcceptedHead
               ? await this.store.loadAcceptedHead(this.storageKey)
@@ -558,8 +599,8 @@ export class DocumentReplayJournal {
             this.head = next;
             this.entryCount = checkpoint ? 1 : this.entryCount + 1;
             this.retainedBytes = checkpoint
-              ? entry.length
-              : this.retainedBytes + entry.length;
+              ? accepted.length
+              : this.retainedBytes + accepted.length;
           } catch (error) {
             this.failed = true;
             throw error;
@@ -612,6 +653,63 @@ export class DocumentReplayJournal {
     if (!this.store.publicationSent)
       throw new Error('Journal store lacks publication support');
     await this.store.publicationSent(this.storageKey, await digest(frame));
+  }
+
+  private acceptanceAAD(revision: number, commitment: Uint8Array): Uint8Array {
+    return new DocumentBinaryWriter()
+      .fixed(ACCEPTED_DOMAIN)
+      .text(this.documentId)
+      .fixed(this.genesis)
+      .integer(revision, 8)
+      .fixed(commitment)
+      .finish();
+  }
+
+  private async createAcceptedEntry(
+    revision: number,
+    entry: Uint8Array,
+  ): Promise<Uint8Array> {
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const aad = this.acceptanceAAD(revision, await digest(entry));
+    const tag = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce,
+          additionalData: aad as Uint8Array<ArrayBuffer>,
+        },
+        this.key,
+        new Uint8Array(),
+      ),
+    );
+    if (tag.length !== 16) throw new Error('Invalid journal acceptance tag');
+    return new DocumentBinaryWriter(MAX_ENTRY + 128)
+      .bytes(entry, MAX_ENTRY + 96)
+      .fixed(nonce)
+      .fixed(tag)
+      .finish();
+  }
+
+  private async verifyAcceptedMarker(
+    revision: number,
+    entry: Uint8Array,
+    marker: Uint8Array,
+  ): Promise<boolean> {
+    const aad = this.acceptanceAAD(revision, await digest(entry));
+    try {
+      const plaintext = await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: marker.slice(0, 12) as Uint8Array<ArrayBuffer>,
+          additionalData: aad as Uint8Array<ArrayBuffer>,
+        },
+        this.key,
+        marker.slice(12) as Uint8Array<ArrayBuffer>,
+      );
+      return plaintext.byteLength === 0;
+    } catch {
+      return false;
+    }
   }
 
   private aad(

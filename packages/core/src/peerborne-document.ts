@@ -6596,20 +6596,23 @@ export class PeerborneDocument<
       )) !== true
     )
       throw new Error('Document path is not authorized');
-    await engine.activate();
     const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
-    this._pubsubHandler = (event) => {
-      if (event.detail.topic !== this._topic) return;
-      void this.receiveSecurityFrame(event.detail.data).catch(() => {});
-    };
+    let registered = false;
     try {
       this.swarm.registerDocument(this.documentPath, this);
+      registered = true;
+      await engine.activate();
+      this._pubsubHandler = (event) => {
+        if (event.detail.topic !== this._topic) return;
+        void this.receiveSecurityFrame(event.detail.data).catch(() => {});
+      };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.subscribe(this._topic);
       this._subscribed = true;
       return true;
     } catch (error) {
-      await this.close();
+      if (registered) await this.close();
+      else await engine.close();
       throw error;
     }
   }
@@ -6642,17 +6645,38 @@ export class PeerborneDocument<
     await this._coordinated.applyAuthorityUpdate(encoded);
   }
 
+  private _securityPublicationTask?: Promise<void>;
+  private _securityPublicationQueued?: Promise<void>;
+
+
   /** Retry durable encrypted publications without running local change callbacks again. */
   public async retrySecurityPublications(): Promise<void> {
     if (!this._coordinated || !this._subscribed)
       throw new Error('Coordinated document is not open');
-    for (const frame of await this._coordinated.pendingPublications()) {
-      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-        this._topic,
-        frame,
-      );
-      await this._coordinated.publicationSent(frame);
-    }
+    if (this._securityPublicationQueued) return this._securityPublicationQueued;
+    const previous = this._securityPublicationTask ?? Promise.resolve();
+    const task: Promise<void> = previous
+      .catch(() => {})
+      .then(async () => {
+        if (this._securityPublicationQueued === task)
+          this._securityPublicationQueued = undefined;
+        for (const frame of await this._coordinated!.pendingPublications()) {
+          await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+            this._topic,
+            frame,
+          );
+          await this._coordinated!.publicationSent(frame);
+        }
+      })
+      .finally(() => {
+        if (this._securityPublicationTask === task)
+          this._securityPublicationTask = undefined;
+        if (this._securityPublicationQueued === task)
+          this._securityPublicationQueued = undefined;
+      });
+    this._securityPublicationTask = task;
+    this._securityPublicationQueued = task;
+    return task;
   }
 
   private async _changeCoordinated(

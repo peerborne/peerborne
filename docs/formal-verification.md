@@ -204,7 +204,7 @@ same-revision substitution at every modeled step.
 
 ## Property testing after proofs
 
-The inventory audits 41 property-suite files containing 89 explicit
+The inventory audits 41 property-suite files containing 90 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

@@ -54,12 +54,15 @@ application. A direct mutation of the visible Yjs document invalidates its
 session. Staging accepts scalar values and shared `Y.Map`, `Y.Array` and `Y.Text`
 structures. Opaque object/array/binary values, subdocuments and XML child types
 are rejected because they can mutate without a tracked parent update. Application callbacks and the JavaScript environment remain trusted.
+Plan validation also rejects open native transactions and pending dependency
+queues. Mirrors preserve known root shared types; applications must use the same
+root schema on each replica because native Yjs updates do not encode those declarations.
 
 Frames are always signed in coordinated mode, including when the legacy
 `enableSigning` option is false. The signed bytes bind the document path, pinned
-genesis, full authenticated group context/control head, author, safe sequence,
+genesis, signed permission-history head, full authenticated group context/control head, author, safe sequence,
 previous content hash and delta kind. AES-GCM additionally binds the document
-and group context as AAD. Exporter labels separate the content encryption key
+and group context and permission-history head as AAD. Exporter labels separate the content encryption key
 from the opaque epoch routing tag. A guard rechecks group and role authority at
 the synchronous CRDT commit boundary.
 
@@ -97,10 +100,16 @@ can be reconstructed after epoch keys have been dropped. Signing private keys,
 epoch keys and device keys are not stored in journal entries. Applications own
 device-key protection and recovery. Reusing a journal with another document or
 genesis is rejected. Use one active document owner per journal.
+The document reserves its path before accessing the journal, so a duplicate open
+cannot discard the active owner's pending write. Recovery checks every accepted
+permission-history head against the configured verified log before exposing
+document state. A validly signed competing role fork is rejected.
 
 A write stages a pending encrypted entry before CRDT commit. After successful
-admission, an atomic IndexedDB transaction writes its accepted marker and
-outbound frame. The independent anchor advances before the mutation promise
+admission, the journal creates a separate AEAD acceptance tag bound to that exact
+encrypted entry. An atomic IndexedDB transaction stores the authenticated
+accepted record and outbound frame. Staging never creates that acceptance tag;
+a storage attacker cannot promote pending ciphertext into accepted state. The independent anchor advances before the mutation promise
 resolves or publication starts. A pending entry without an accepted marker is
 discarded on restart. A committed entry interrupted before anchor advancement
 can finish exactly that one authenticated anchor step. Older stores and same
@@ -120,6 +129,11 @@ older entries with a native CRDT snapshot and complete replay receipts. Local
 snapshots are bounded to 64 MiB. IndexedDB stores head metadata, accepted entries,
 pending entries and publications separately. Routine commits read no checkpoint
 bytes and write the new delta, rather than rewriting the document's history.
+Each entry stores its permission-history head. The full signed history is copied
+only at checkpoints or after the accepted authority lease changes. To provision
+the authority on restart, restore the latest nonempty `authorityRecords` from the
+decrypted journal using the independently pinned genesis, then configure the
+coordinator and document with that verified log.
 Writable transactions request strict durability and resolve on completion.
 
 The publication outbox has at most 16 frames/16 MiB and survives restart with
@@ -129,6 +143,9 @@ rejects a new change before visible commit. A successful pubsub publication
 removes that frame from the outbox; this is transport handoff, **not** a durable
 peer receipt. Outbox availability is not protected by the replay rollback
 anchor. Without a journal, receipts and the bounded outbox are process-local.
+Outbox reads and acknowledgments run through the document queue; publication
+cannot observe an accepted store record before its anchor decision completes.
+Concurrent retry calls coalesce behind the active publication batch.
 
 ## Evidence and remaining boundaries
 
@@ -141,10 +158,14 @@ policies; the proofs do not establish cryptographic unforgeability or secrecy.
 
 Seeded properties exercise staging, escaped references, wire boundaries,
 role/controller histories, queue saturation, native crypto, restart histories,
-checkpoint receipts, transaction faults, rollback, eviction and outbox recovery.
+checkpoint receipts, transaction faults, forged acceptance markers, rollback,
+eviction and outbox recovery.
 The IndexedDB cost check places a 2 MiB checkpoint, commits ten small deltas,
 and requires zero checkpoint reads and less than 32 KiB of new entry writes.
 This is an I/O cost assertion, not a browser latency guarantee.
+A second check builds more than 90 KiB of valid signed role history and requires
+ten small edits through `CoordinatedDocument` to write less than 32 KiB without
+exporting that history again.
 
 The [native MLS suite](../verification/mls-provider/README.md) exercises actual
 `Peerborne.doc`, `PeerborneDocument`, Automerge and Yjs, MLS exporters, Ed25519,

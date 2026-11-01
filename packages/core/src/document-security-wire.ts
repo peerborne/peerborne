@@ -17,6 +17,7 @@ const ENCRYPTED_MAGIC = new Uint8Array([0x50, 0x42, 0x44, 1]);
 export interface DocumentContentFrame {
   readonly documentId: string;
   readonly genesisId: Uint8Array;
+  readonly authorityHead: Uint8Array;
   readonly context: GroupSecurityDocumentContext;
   readonly memberId: Uint8Array;
   readonly sequence: number;
@@ -76,10 +77,14 @@ export function documentContextsMatch(
 export function documentContentAAD(
   documentId: string,
   context: GroupSecurityDocumentContext,
+  authorityHead: Uint8Array,
 ): Uint8Array {
   const writer = new DocumentBinaryWriter();
   writer.fixed(MAGIC).text(documentId);
   writeDocumentContext(writer, context);
+  writer.fixed(
+    copyUnsharedUint8Array(authorityHead, 32, 32, 'document authority head'),
+  );
   return writer.finish();
 }
 
@@ -92,7 +97,15 @@ export function encodeDocumentContent(frame: DocumentContentFrame): Uint8Array {
   writer
     .fixed(MAGIC)
     .text(frame.documentId)
-    .fixed(copyUnsharedUint8Array(frame.genesisId, 32, 32, 'document genesis'));
+    .fixed(copyUnsharedUint8Array(frame.genesisId, 32, 32, 'document genesis'))
+    .fixed(
+      copyUnsharedUint8Array(
+        frame.authorityHead,
+        32,
+        32,
+        'document authority head',
+      ),
+    );
   writeDocumentContext(writer, frame.context);
   writer
     .fixed(copyUnsharedUint8Array(frame.memberId, 32, 32, 'document member'))
@@ -109,6 +122,7 @@ export function decodeDocumentContent(value: Uint8Array): DocumentContentFrame {
     throw new TypeError('Invalid document content domain');
   const documentId = reader.text(),
     genesisId = reader.fixed(32),
+    authorityHead = reader.fixed(32),
     context = readDocumentContext(reader),
     memberId = reader.fixed(32);
   const sequence = reader.number(8),
@@ -121,6 +135,7 @@ export function decodeDocumentContent(value: Uint8Array): DocumentContentFrame {
   return {
     documentId,
     genesisId,
+    authorityHead,
     context,
     memberId,
     sequence,

@@ -8,6 +8,7 @@ import { GroupSecurityCoordinator } from './group-security-coordinator.js';
 import { CoordinatedDocument } from './coordinated-document.js';
 import {
   context,
+  ContractTestProvider,
   config,
   control,
   createGroupInput,
@@ -275,4 +276,110 @@ describe('causal document controller authority', () => {
     ).rejects.toThrow('cannot write');
     await reopened.close();
   });
+});
+
+test('rejects a validly signed role fork that does not extend the accepted checkpoint authority', async () => {
+  const f = await context(),
+    auth = testAuth(f),
+    controlAuthority = new DocumentGroupControlAuthority(
+      protocol,
+      groupId,
+      f.identities.actorId,
+    );
+  const coordinator = await GroupSecurityCoordinator.bootstrap(
+    { ...config(f), authorizeControl: controlAuthority.authorize },
+    createGroupInput,
+    { operationId: id(1), subjectId: f.identities.actorId },
+  );
+  const writer = {
+    memberId: f.identities.attackerId,
+    publicKey: documentBytesId(f.identities.attackerId),
+    role: 2 as const,
+  };
+  const roster = [
+    {
+      memberId: f.identities.actorId,
+      publicKey: documentBytesId(f.identities.actorId),
+      role: 3 as const,
+    },
+    writer,
+  ];
+  const log = await DocumentAuthorityLog.create(
+    '/fork',
+    coordinator.documentContext,
+    roster,
+    f.identities.actorId,
+    auth,
+    controlAuthority,
+  );
+  const genesis = log.exportRecords()[0],
+    pin = log.genesisId,
+    store = new InMemoryDocumentJournalStore(),
+    anchor = new InMemoryDocumentJournalRollbackAnchor();
+  const key = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  const journal = () =>
+    new DocumentReplayJournal('/fork', pin, key, store, anchor);
+  const first = new CoordinatedDocument(
+    '/fork',
+    [],
+    testCRDT,
+    testChanges,
+    auth,
+    f.identities.actorId,
+    f.identities.actorId,
+    { coordinator, authority: log, journal: journal() },
+  );
+  await first.activate();
+  await first.change((doc) => {
+    doc.push(1);
+  });
+  await coordinator.createCommit(
+    { changes: [] },
+    control(2, 'update', f.identities.actorId),
+  );
+  const revoked = await log.signUpdate(
+    coordinator.documentContext,
+    [roster[0], { ...writer, role: 1 as const }],
+    f.identities.actorId,
+  );
+  const alternate = await log.signUpdate(
+    coordinator.documentContext,
+    roster,
+    f.identities.actorId,
+  );
+  await first.applyAuthorityUpdate(revoked);
+  await first.close();
+  const forkControl = new DocumentGroupControlAuthority(
+    protocol,
+    groupId,
+    f.identities.actorId,
+  );
+  const fork = await DocumentAuthorityLog.restore(
+    [genesis, alternate],
+    pin,
+    auth,
+    forkControl,
+  );
+  const restoredCoordinator = await GroupSecurityCoordinator.restore({
+    ...config({ ...f, provider: new ContractTestProvider() }),
+    authorizeControl: forkControl.authorize,
+  });
+  const recovered = new CoordinatedDocument(
+    '/fork',
+    [],
+    testCRDT,
+    testChanges,
+    auth,
+    f.identities.actorId,
+    f.identities.actorId,
+    { coordinator: restoredCoordinator, authority: fork, journal: journal() },
+  );
+  expect(fork.extendsHead(log.headId)).toBe(false);
+  await expect(recovered.activate()).rejects.toThrow('forks the accepted');
+  expect(() => recovered.document).toThrow();
+  await recovered.close();
 });

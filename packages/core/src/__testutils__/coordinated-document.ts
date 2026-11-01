@@ -87,12 +87,15 @@ export class TestDocumentAuthority implements DocumentAuthority {
     public context: GroupSecurityDocumentContext,
     readonly memberId: Uint8Array,
   ) {}
+  get headId(): Uint8Array { return this.genesisId.slice(); }
+  extendsHead(head: Uint8Array): boolean { return documentBytesEqual(head, this.genesisId); }
   capture(context: GroupSecurityDocumentContext) {
     if (!documentContextsMatch(this.context, context))
       throw new Error('Role log does not cover the group head');
     const version = this.version,
       role = this.role;
     return {
+      headId: this.headId,
       members: [
         {
           memberId: this.memberId.slice(),
