@@ -602,9 +602,8 @@ method mapOperand_domain()
     [
       'document-operation-cancel-resurrection',
       'document-admission.ts',
-      "if (event === 'cancel') return 'cancelled';",
-      "if (event === 'cancel') return 'prepared';",
-      'advanceDocumentOperation',
+      "if (phase === 'committed' || phase === 'cancelled') return phase; if (event === 'cancel') return 'cancelled';",
+      "if (phase === 'committed' || phase === 'cancelled') return phase; if (event === 'cancel') return 'prepared';",
     ],
     [
       'document-operation-stale-commit',
