@@ -159,7 +159,7 @@ method countQuorumDigests(digests: seq<string>) returns (res: map<string, int>)
   requires (|digests| <= 4294967295)
   ensures forall key :: (if key in res then res[key] else 0) == DigestOccurrences(digests, key)
   ensures forall key :: ((key in res) <==> (key in digests))
-  ensures forall key :: ((key in res) ==> ((1 <= res[key]) && (res[key] <= |digests|)))
+  ensures forall key :: ((key in res) ==> (((key in res) && (var i_value := res[key]; (i_value >= 1))) && ((key in res) && (var i_value := res[key]; (i_value <= |digests|)))))
 {
   var counts: map<string, int> := map[];
   var index := 0;
@@ -167,7 +167,7 @@ method countQuorumDigests(digests: seq<string>) returns (res: map<string, int>)
     invariant (0 <= index)
     invariant (index <= |digests|)
     invariant forall key :: ((key in counts) <==> exists j: int :: (((0 <= j) && (j < index)) && (digests[j] == key)))
-    invariant forall key :: ((key in counts) ==> ((1 <= counts[key]) && (counts[key] <= index)))
+    invariant forall key :: ((key in counts) ==> (((key in counts) && (var i_value := counts[key]; (i_value >= 1))) && ((key in counts) && (var i_value := counts[key]; (i_value <= index)))))
     invariant forall key :: (if key in counts then counts[key] else 0) == DigestOccurrences(digests[..index], key)
     decreases (|digests| - index)
   {

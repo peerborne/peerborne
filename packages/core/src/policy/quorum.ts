@@ -88,12 +88,12 @@ export function countQuorumDigests(
   //@ verify
   //@ requires digests.length <= 4294967295
   //@ ensures forall(key: string, \result.has(key) <==> digests.includes(key))
-  //@ ensures forall(key: string, \result.has(key) ==> 1 <= \result.get(key) && \result.get(key) <= digests.length)
+  //@ ensures forall(key: string, \result.has(key) ==> \result[key] >= 1 && \result[key] <= digests.length)
   const counts = new Map<string, number>();
   for (let index = 0; index < digests.length; index++) {
     //@ invariant 0 <= index && index <= digests.length
     //@ invariant forall(key: string, counts.has(key) <==> exists(j: int, 0 <= j && j < index && digests[j] === key))
-    //@ invariant forall(key: string, counts.has(key) ==> 1 <= counts.get(key) && counts.get(key) <= index)
+    //@ invariant forall(key: string, counts.has(key) ==> counts[key] >= 1 && counts[key] <= index)
     //@ decreases digests.length - index
     const digest = digests[index];
     const previous = counts.get(digest);

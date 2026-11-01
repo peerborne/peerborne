@@ -239,6 +239,12 @@ be edited in proof additions. Domain witnesses guard against contradictory
 preconditions. Deliberate semantic mutations must reach the verifier and fail
 an obligation; a parser or generated-drift failure is insufficient.
 
+The pinned compiler has an ordered map-index expression limitation documented
+in the formal workflow. Accepted ordered map-index comparisons keep the lookup
+on the left. A separate audited calibration checks all four supported operators
+against scalar comparisons. Contract translation remains part of the trusted
+toolchain and requires review of the emitted program.
+
 A proof replaces tests only for the same property, implementation, model and
 preconditions. Runtime adapters, compiler behavior, native APIs, dependencies
 and integration assumptions still need evidence, and specifications still need

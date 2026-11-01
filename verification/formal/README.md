@@ -60,9 +60,9 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 93 controls cover 27 accepted originals, 62 semantic/vacuity
-mutations, stale generated code, `assume false`, body-less lemmas and unproved
-imports. Semantic mutations must reach the verifier and fail an obligation;
+directories. Its 94 controls cover 27 accepted originals, a map-comparison
+calibration, 62 semantic/vacuity mutations, stale generated code, `assume false`,
+body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree
 mutations check only the changed function and require that exact function to
@@ -121,3 +121,10 @@ primitives, side channels and browser resource limits are outside these proofs.
 The generated inventory is a scope inventory, not a security coverage
 percentage or an end-to-end verification claim. Keep the fallback evidence
 listed in the catalog for those boundaries.
+
+Keep map-index lookups on the left of ordered comparisons in contracts. The
+pinned compiler can reverse an inequality when lifting a partial map-index
+lookup from its right operand. The map-comparison control checks all four
+supported left-operand comparisons against independent scalar comparisons,
+with a checked domain witness and zero-assumption audit. Guarded `Map.get`
+contracts and map-index equality do not use that problematic expression form.
