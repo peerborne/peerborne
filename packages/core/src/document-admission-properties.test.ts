@@ -634,12 +634,13 @@ describe('anchored document admission boundaries', () => {
           'constructor',
           'species',
           'species-proxy',
+          'prototype-proxy',
           'invalid-constructor',
           'then',
           'frozen',
         ),
-        fc.boolean(),
-        async (decoration, guard) => {
+        fc.constantFrom('prepare', 'guard', 'finalizer'),
+        async (decoration, location) => {
           const held = deferred<void>();
           let accessorReads = 0;
           const forbidden = () => {
@@ -665,28 +666,50 @@ describe('anchored document admission boundaries', () => {
             });
           if (decoration === 'invalid-constructor')
             Object.defineProperty(held.promise, 'constructor', { value: 1 });
+          if (decoration === 'prototype-proxy')
+            Object.setPrototypeOf(
+              held.promise,
+              new Proxy(Promise.prototype, {
+                getOwnPropertyDescriptor(target, key) {
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+                get: forbidden,
+              }),
+            );
           if (decoration === 'then')
             Object.defineProperty(held.promise, 'then', { get: forbidden });
           if (decoration === 'frozen') Object.freeze(held.promise);
           const aggregate = new GroupDocumentOperationBudget(1, 16);
           const gate = new GroupDocumentOperationGate(1, 16, 1000, aggregate);
           const stage = {
-            isAuthorizationCurrent: guard ? () => held.promise : () => true,
-            commit: guard ? () => {} : () => held.promise,
+            isAuthorizationCurrent:
+              location === 'guard' ? () => held.promise : () => true,
+            commit: location === 'finalizer' ? () => held.promise : () => {},
           };
-          await expect(
-            gate.run(new Uint8Array(1), {
-              capture: async () => 0,
-              prepare: async () =>
-                stage as unknown as PreparedGroupDocumentOperation,
-              commit: async (_, finish) => finish(true),
-              poison: () => {},
-            }),
-          ).rejects.toMatchObject({ code: 'invalid-preparation' });
-          expect(gate.budget.usage).toEqual({ operations: 1, bytes: 1 });
+          const pending = gate.run(new Uint8Array(1), {
+            capture: async () => 0,
+            prepare:
+              location === 'prepare'
+                ? () =>
+                    held.promise as unknown as Promise<PreparedGroupDocumentOperation>
+                : async () =>
+                    stage as unknown as PreparedGroupDocumentOperation,
+            commit: async (_, finish) => finish(true),
+            poison: () => {},
+          });
+          const observable = decoration === 'then' || decoration === 'frozen';
+          if (location === 'prepare' && observable) {
+            await turn();
+            expect(gate.budget.usage).toEqual({ operations: 1, bytes: 1 });
+            held.resolve();
+          }
+          await expect(pending).rejects.toMatchObject({
+            code: 'invalid-preparation',
+          });
+          if (location !== 'prepare' || !observable)
+            expect(gate.budget.usage).toEqual({ operations: 1, bytes: 1 });
           held.resolve();
           await turn();
-          const observable = decoration === 'then' || decoration === 'frozen';
           const expected = observable
             ? { operations: 0, bytes: 0 }
             : { operations: 1, bytes: 1 };
@@ -695,7 +718,51 @@ describe('anchored document admission boundaries', () => {
           expect(accessorReads).toBe(0);
         },
       ),
-      { seed: 2011108, numRuns: 24 },
+      {
+        seed: 2011108,
+        numRuns: 42,
+        examples: [
+          ['constructor', 'prepare'],
+          ['prototype-proxy', 'prepare'],
+          ['prototype-proxy', 'guard'],
+        ],
+      },
     );
+  });
+
+  test('observes caller cancellation despite an earlier listener stopping propagation', async () => {
+    const aggregate = new GroupDocumentOperationBudget(1, 16);
+    const gate = new GroupDocumentOperationGate(1, 16, 1000, aggregate);
+    const abort = new AbortController();
+    abort.signal.addEventListener('abort', (event) =>
+      event.stopImmediatePropagation(),
+    );
+    const entered = deferred();
+    const release = deferred();
+    let applied = 0;
+    const pending = gate.run(
+      new Uint8Array(1),
+      {
+        capture: async () => 0,
+        prepare: async () => {
+          entered.resolve();
+          await release.promise;
+          return prepared(() => {
+            applied += 1;
+          });
+        },
+        commit: async (_, finish) => finish(true),
+        poison: () => {},
+      },
+      { signal: abort.signal },
+    );
+    await entered.promise;
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'aborted' });
+    expect(gate.budget.usage).toEqual({ operations: 1, bytes: 1 });
+    release.resolve();
+    await turn();
+    expect(applied).toBe(0);
+    expect(gate.budget.usage).toEqual({ operations: 0, bytes: 0 });
   });
 });

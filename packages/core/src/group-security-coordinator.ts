@@ -1,4 +1,5 @@
 import { isSelfUpdateTransitionAllowed } from './policy/control-chain.js';
+import { observeAdmissionWork } from './internal/admission-work.js';
 import {
   GroupDocumentOperationGate,
   GroupDocumentOperationError,
@@ -144,6 +145,7 @@ const sharedControlBudget = new GroupDocumentOperationBudget(
   64 * 1024 * 1024,
 );
 const GENESIS_FORK_PARENT_ID = new Uint8Array(FIXED_ID_LENGTH);
+type TrackControlWork = (settlement: Promise<void>, observable: boolean) => void;
 const MAX_U64 = (1n << 64n) - 1n;
 const mapSizeGetterValue = Object.getOwnPropertyDescriptor(
   Map.prototype,
@@ -531,7 +533,8 @@ export class GroupSecurityCoordinator {
    * state. `prepare` is trusted: it must reject unauthenticated/unauthorized
    * input, avoid observable mutation, and return a pure synchronous current-
    * authorization guard and a nonthrowing synchronous finalizer. Its promise
-   * must cover all work retaining the input. A throwing,
+   * must be safely observable native work and cover all work retaining the
+   * input. Custom thenables fail closed. A throwing,
    * asynchronous, or non-void finalizer poisons this coordinator.
    * All visible mutation must finish synchronously; finalizers must not schedule
    * later mutation. Arbitrary callback correctness is a trusted boundary.
@@ -688,7 +691,22 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         attachmentError = error;
       }
-      return this.verifyControlAuthenticity(controlSnapshot)
+      const retainedWork: Promise<void>[] = [];
+      let rejectUnobservable!: (error: GroupSecurityCoordinatorError) => void;
+      const unobservable = new Promise<never>((_, reject) => {
+        rejectUnobservable = reject;
+      });
+      const track: TrackControlWork = (settlement, observable) => {
+        retainedWork.push(settlement);
+        if (!observable)
+          rejectUnobservable(
+            new GroupSecurityCoordinatorError(
+              'bad-signature',
+              'control signature work cannot be safely observed',
+            ),
+          );
+      };
+      const work = this.verifyControlAuthenticity(controlSnapshot, track)
         .then(() => {
           this.authenticatedControlRecords.add(controlSnapshot);
           return this.runExclusive(() =>
@@ -697,13 +715,16 @@ export class GroupSecurityCoordinator {
               controlSnapshot,
               welcomeSnapshots,
               attachmentError,
+              track,
             ),
           );
         })
-        .finally(() => {
+        .finally(async () => {
+          await Promise.all(retainedWork);
           releaseLocal!();
           releaseShared!();
         });
+      return Promise.race([work, unobservable]);
     } catch (error) {
       releaseLocal?.();
       releaseShared?.();
@@ -1871,6 +1892,7 @@ export class GroupSecurityCoordinator {
     controlRecordValue: MembershipControlRecord,
     welcomeValues: ReadonlyArray<GroupWelcome> | undefined,
     attachmentError?: unknown,
+    track?: TrackControlWork,
   ): Promise<GroupSecurityTransitionResult> {
     if (!this.authenticatedControlRecords.delete(controlRecordValue))
       fail(
@@ -1884,6 +1906,7 @@ export class GroupSecurityCoordinator {
       commitValue,
       welcomeValues,
       attachmentError,
+      track,
     );
     if (commitValue === undefined || welcomeValues === undefined) {
       fail('control-mismatch', 'commit delivery is malformed', attachmentError);
@@ -2802,6 +2825,7 @@ export class GroupSecurityCoordinator {
     commit: GroupSecurityCommit | undefined,
     welcomes: ReadonlyArray<GroupWelcome> | undefined,
     attachmentError?: unknown,
+    track?: TrackControlWork,
   ): Promise<ValidatedControl> {
     try {
       serializeMembershipControlRecord(record);
@@ -2815,7 +2839,7 @@ export class GroupSecurityCoordinator {
       fail('group-mismatch', 'control group does not match');
     }
     const recordId = await membershipControlRecordId(record);
-    await this.verifyControlAuthenticity(record);
+    await this.verifyControlAuthenticity(record, track);
     try {
       if (record.action === 'create') {
         validateGenesisControlPayload(record, this.storeKey);
@@ -2943,15 +2967,25 @@ export class GroupSecurityCoordinator {
 
   private async verifyControlAuthenticity(
     record: MembershipControlRecord,
+    track?: TrackControlWork,
   ): Promise<void> {
     const canonical = canonicalMembershipControlPayload(record);
     let valid: unknown = false;
     try {
-      valid = await this.verifyControlSignature(
-        new Uint8Array(canonical),
-        new Uint8Array(record.signature),
-        new Uint8Array(record.actorId),
+      const work = observeAdmissionWork<boolean>(
+        this.verifyControlSignature(
+          new Uint8Array(canonical),
+          new Uint8Array(record.signature),
+          new Uint8Array(record.actorId),
+        ),
       );
+      track?.(work.settlement, work.observable);
+      if (!work.observable)
+        fail(
+          'bad-signature',
+          'control signature work cannot be safely observed',
+        );
+      valid = (await work.result).value;
     } catch (error) {
       fail('bad-signature', 'control signature verifier failed', error);
     }
@@ -2961,10 +2995,7 @@ export class GroupSecurityCoordinator {
       const [emptyMembershipHash, emptyWelcomesHash] =
         await this.selfUpdateBindingHashes();
       if (
-        equalBytes(
-          binding.appliedMembershipDeltaHash,
-          emptyMembershipHash,
-        ) &&
+        equalBytes(binding.appliedMembershipDeltaHash, emptyMembershipHash) &&
         (record.action !== 'update' ||
           !equalBytes(record.actorId, record.subjectId) ||
           !equalBytes(binding.welcomeSetHash, emptyWelcomesHash))
@@ -2976,7 +3007,6 @@ export class GroupSecurityCoordinator {
       }
     }
   }
-
   private selfUpdateBindingHashes(): Promise<readonly [Uint8Array, Uint8Array]> {
     if (this.emptySelfUpdateHashes === undefined) {
       this.emptySelfUpdateHashes = Promise.all([

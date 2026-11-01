@@ -1,6 +1,6 @@
 {
   "status": "experimental-adapter-gates-passed",
-  "recordedAt": "2026-11-01T13:46:53.830Z",
+  "recordedAt": "2026-11-01T14:06:04.814Z",
   "node": "v22.19.0",
   "chromium": "145.0.7632.6",
   "platform": "darwin-arm64",
@@ -9,11 +9,16 @@
     "ts-mls-npm-1.6.4-9dcd39acf7.patch": "de53b866b7c744df80bb905480af751632636336f111f690b21eb70e23455a4e"
   },
   "firstPartySources": {
-    "packages/core/src/group-security-coordinator.ts": "c24dc697199490b59c8ad0342fa875c11628c79862898596340456d77597e2cf",
-    "packages/core/src/group-document-operation.ts": "0e915124429205f768dc4e5bedf15d8bae9e54cd1366ef0932e3ce85dcf8024a",
+    "packages/core/src/group-security-coordinator.ts": "6e0d422fda86fd2d56fe648618087b985b7734be89970467e40287033eb6518c",
+    "packages/core/src/group-document-operation.ts": "ee08ce18cf2c6f91eb40fe8995939d1275287261cc066e0a1a67f11679d08ebf",
     "packages/core/src/policy/document-admission.ts": "c76b7ff773e4b697848052ff31ffbf5bdd9a345ff7764e3a5fbe2d89da42ed47",
-    "packages/core/dist/esm/src/group-security-coordinator.js": "f847e8b8a0ba6b0e2e9b016a2a47f141b2aa997a7bb333ad13abd7a655c0aff4",
-    "packages/core/dist/esm/src/group-document-operation.js": "69992a81e3d105ce880cf29e459756b51ec558c25d571b866c9f9b4c9320af0d",
+    "packages/core/src/internal/admission-work.ts": "1ac2e9e4f4d26ca9311ab48eae8cad09af0d2bd16af82a8fc40917c8f6af1fd5",
+    "packages/core/src/internal/native-promise-observation.ts": "407e35997f1efe8bf052159bafcfeef40a5fe49267b578ae976250098efa43c1",
+    "packages/core/dist/esm/src/group-security-coordinator.js": "9e6c92953595b6404d6ef78efbbc09a887dffcbb276be41ec959b0750c2690a2",
+    "packages/core/dist/esm/src/group-document-operation.js": "4acbeb69ce698d3c9fc3460e4634590c49cc7046a2786c8bef50bc07262513f5",
+    "packages/core/dist/esm/src/internal/admission-work.js": "709b4e137fa054545fbda93f7a02648206fb071c0d7e4ccbaeb76a019dcad41d",
+    "packages/core/dist/esm/src/internal/native-promise-observation.js": "98932b95b9b92e5490890bb082a5377ff90a93fa5215c29ef10e5481077c0000",
+    "packages/core/dist/esm/src/policy/document-admission.js": "4284d6a09b7ddaf9992fc1a1fcfd29547da42744562b218665f36f157970793a",
     "verification/mls-provider/coordinator-tests.ts": "c56a3ccd38a966b0c3bd56b04422e77d9e011413a8ce85f9a07572a0859b77f1"
   },
   "nodeResult": {
@@ -48,18 +53,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          519,
-          517,
-          656,
-          546
+          515,
+          507,
+          652,
+          542
         ],
         "welcomes": [
-          814,
-          1040
+          806,
+          1022
         ],
         "states": [
-          1318,
-          1318
+          1310,
+          1310
         ]
       }
     },
@@ -153,18 +158,18 @@
       "zeroEpochRetentionHonored": true,
       "sizes": {
         "commits": [
-          509,
-          511,
-          656,
-          546
+          507,
+          515,
+          660,
+          550
         ],
         "welcomes": [
-          804,
-          1024
+          806,
+          1030
         ],
         "states": [
-          1308,
-          1308
+          1310,
+          1310
         ]
       }
     },

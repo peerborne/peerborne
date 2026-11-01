@@ -80,6 +80,9 @@ rekey/removal/fork invalidation, shared limits, aliased decoder outputs, native
 byte views, current-authorization changes, opaque finalizer failures,
 single-capture proxy fields, resizable backing buffers, and conservative
 quarantine when native promise settlement cannot be safely observed.
+Preparation and both control-verifier phases use the same settlement observer;
+prototype-proxy promises and suppressed caller abort events have execution
+regressions. These JavaScript platform behaviors remain outside the phase proof.
 Node/Chromium MLS checks exercise a
 fixture-only AES-GCM/Ed25519 content envelope, cross-document replay, a reader
 forging a writer message, tampering, rekey retry, credential revocation without

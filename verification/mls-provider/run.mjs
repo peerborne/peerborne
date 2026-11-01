@@ -11,8 +11,13 @@ const evidencePaths = [
   'packages/core/src/group-security-coordinator.ts',
   'packages/core/src/group-document-operation.ts',
   'packages/core/src/policy/document-admission.ts',
+  'packages/core/src/internal/admission-work.ts',
+  'packages/core/src/internal/native-promise-observation.ts',
   'packages/core/dist/esm/src/group-security-coordinator.js',
   'packages/core/dist/esm/src/group-document-operation.js',
+  'packages/core/dist/esm/src/internal/admission-work.js',
+  'packages/core/dist/esm/src/internal/native-promise-observation.js',
+  'packages/core/dist/esm/src/policy/document-admission.js',
   'verification/mls-provider/coordinator-tests.ts',
 ];
 const evidenceHashes = async () =>

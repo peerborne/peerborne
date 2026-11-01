@@ -196,6 +196,8 @@
       ],
       "sources": [
         "packages/core/src/group-document-operation.ts",
+        "packages/core/src/internal/admission-work.ts",
+        "packages/core/src/internal/native-promise-observation.ts",
         "packages/core/src/group-security-coordinator.ts",
         "packages/core/src/policy/document-admission.ts"
       ]

@@ -9,7 +9,7 @@ import {
   unsharedUint8ArrayByteLength,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import { canSafelyObserveNativePromise } from './internal/native-promise-observation.js';
+import { observeAdmissionWork } from './internal/admission-work.js';
 
 export const DEFAULT_DOCUMENT_OPERATION_COUNT = 16;
 export const DEFAULT_DOCUMENT_OPERATION_BYTES = 16 * 1024 * 1024;
@@ -17,7 +17,7 @@ export const DEFAULT_DOCUMENT_OPERATION_INPUT_BYTES = 1024 * 1024;
 export const DEFAULT_DOCUMENT_OPERATION_TIMEOUT_MS = 10_000;
 
 const MAX_DOCUMENT_OPERATION_BYTES = 128 * 1024 * 1024;
-const nativePromiseThen = Promise.prototype.then;
+const nativeAbortAny = AbortSignal.any;
 const nativeAbortedGetter = Object.getOwnPropertyDescriptor(
   AbortSignal.prototype,
   'aborted',
@@ -169,8 +169,14 @@ export class GroupDocumentOperationGate {
         );
       if (Object.keys(raw).some((key) => key !== 'signal'))
         throw new GroupDocumentOperationError('invalid-input');
-      signal = raw.signal;
-      if (isAborted(signal)) throw new GroupDocumentOperationError('aborted');
+      if (isAborted(raw.signal))
+        throw new GroupDocumentOperationError('aborted');
+      signal =
+        raw.signal === undefined
+          ? undefined
+          : (Reflect.apply(nativeAbortAny, AbortSignal, [
+              [raw.signal],
+            ]) as AbortSignal);
       const length = unsharedUint8ArrayByteLength(
         input,
         0,
@@ -219,6 +225,7 @@ export class GroupDocumentOperationGate {
     const onAbort = () => cancel('aborted');
     const timer = setTimeout(() => cancel('timeout'), this.timeoutMs);
     const checkActive = () => {
+      if (isAborted(signal)) cancel('aborted');
       if (cancelled !== undefined) throw cancelled;
     };
     if (signal !== undefined)
@@ -233,7 +240,16 @@ export class GroupDocumentOperationGate {
       checkActive();
       const context = await hooks.capture(controller.signal);
       checkActive();
-      const staged = await hooks.prepare(context, payload, controller.signal);
+      const preparation = observeAdmissionWork<PreparedGroupDocumentOperation>(
+        hooks.prepare(context, payload, controller.signal),
+      );
+      unexpectedWork.push(preparation.settlement);
+      if (!preparation.observable) {
+        const error = new GroupDocumentOperationError('invalid-preparation');
+        rejectInvalid(error);
+        throw error;
+      }
+      const { value: staged } = await preparation.result;
       checkActive();
       let stagedSnapshot: PreparedGroupDocumentOperation;
       try {
@@ -323,15 +339,11 @@ function observeRejectedNativePromise(
     typeof value !== 'function'
   )
     return undefined;
-  try {
-    if (canSafelyObserveNativePromise(value, 'invalid preparation result')) {
-      return Reflect.apply(nativePromiseThen, value, [
-        () => undefined,
-        () => undefined,
-      ]) as Promise<unknown>;
-    }
-  } catch {}
-  // A forbidden object can hide a branded promise. Without safe settlement
-  // observation, never reclaim the reservation on the caller's behalf.
-  return new Promise<never>(() => {});
+  const work = observeAdmissionWork(value);
+  if (work.observable)
+    void work.result.then(
+      () => {},
+      () => {},
+    );
+  return work.settlement;
 }

@@ -371,6 +371,94 @@ describe('control ingress admission', () => {
     );
   });
 
+  test('quarantines unobservable verifier work during preauthentication and adoption', async () => {
+    const base = await sourceDelivery();
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom('preauthentication', 'adoption'),
+        async (phase) => {
+          const source = base.source;
+          const target = {
+            ...source,
+            provider: new ContractTestProvider(),
+            store: new InMemoryGroupStateStore(),
+            rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+            authorization: new AuthorizationPolicy(source.identities.actorId),
+          };
+          const release = deferred();
+          const finished = deferred();
+          let enabled = false;
+          let calls = 0;
+          let accessorReads = 0;
+          const coordinator = await GroupSecurityCoordinator.bootstrap(
+            {
+              ...config(target),
+              maxPendingControlOperations: 1,
+              verifyControlSignature: (payload, signature, actor) => {
+                if (
+                  !enabled ||
+                  ++calls !== (phase === 'preauthentication' ? 1 : 2)
+                )
+                  return source.identities.verify(payload, signature, actor);
+                const pending = release.promise.then(async () => {
+                  try {
+                    return await source.identities.verify(
+                      payload,
+                      signature,
+                      actor,
+                    );
+                  } finally {
+                    finished.resolve();
+                  }
+                });
+                Object.defineProperty(pending, 'constructor', {
+                  get() {
+                    accessorReads += 1;
+                    throw new Error('must not inspect');
+                  },
+                });
+                return pending;
+              },
+            },
+            createGroupInput,
+            { operationId: id(1), subjectId: source.identities.actorId },
+          );
+          enabled = true;
+          const { delivery } = base;
+          try {
+            await expect(
+              coordinator.applyCommit(
+                delivery.commit!,
+                delivery.controlRecord,
+                [],
+              ),
+            ).rejects.toMatchObject({ code: 'bad-signature' });
+            expect(coordinator.pendingControlOperations.operations).toBe(1);
+            expect(coordinator.publicState.epoch).toBe(0n);
+            await expect(
+              coordinator.applyCommit(
+                delivery.commit!,
+                delivery.controlRecord,
+                [],
+              ),
+            ).rejects.toMatchObject({ code: 'admission-capacity' });
+            expect(calls).toBe(phase === 'preauthentication' ? 1 : 2);
+          } finally {
+            release.resolve();
+            await finished.promise;
+          }
+          expect(accessorReads).toBe(0);
+          expect(coordinator.pendingControlOperations.operations).toBe(1);
+        },
+      ),
+      {
+        seed: 2011109,
+        numRuns: 12,
+        examples: [['preauthentication'], ['adoption']],
+      },
+    );
+  });
+
   test('bounds aliased Welcome sets returned by a decoder before visiting the whole set', async () => {
     await fc.assert(
       fc.asyncProperty(

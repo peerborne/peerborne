@@ -528,6 +528,13 @@ constructor, species or `then` accessors to reclaim capacity. This conservative
 quarantine contains a callback contract violation; recovering the lost shared
 capacity requires restarting the owning runtime.
 
+Preparation and both control-signature checks observe the actual callback
+return without ordinary thenable assimilation. They accept native promises
+with a directly trusted constructor path; inherited custom promise prototypes
+are quarantined. Separate settlement signals keep credits charged even if
+unsafe observation rejects the caller first. The gate uses a private dependent
+abort signal so listeners on the caller's signal cannot suppress cancellation.
+
 Incoming control deliveries have separate local count/byte limits and a
 separate module-wide 64-operation/64-MiB budget. Their charge includes input
 byte fields plus fixed metadata allowances. Preflight reserves before large
