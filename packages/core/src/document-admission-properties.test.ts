@@ -39,6 +39,47 @@ function deferred<T = void>() {
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+test('validity predicates cannot reenter application or apply after cancelling a prepared plan', () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom('commit', 'discard', 'snapshot', 'query'),
+      (action) => {
+        let calls = 0,
+          applied = 0,
+          cleaned = 0;
+        let plan!: PreparedDocumentChange<Uint8Array>;
+        plan = preparedDocumentChange(
+          new Uint8Array(),
+          () => {
+            calls++;
+            if (action === 'commit')
+              expect(() => plan.commit()).toThrow('stale');
+            if (action === 'discard') plan.discard();
+            if (action === 'snapshot')
+              expect(() => plan.snapshot!()).toThrow('Stale');
+            if (action === 'query') expect(plan.isCurrent()).toBe(false);
+            return true;
+          },
+          () => {
+            applied++;
+          },
+          () => {
+            cleaned++;
+          },
+          () => new Uint8Array(),
+        );
+        if (action === 'discard') expect(() => plan.commit()).toThrow('stale');
+        else plan.commit();
+        expect(calls).toBe(1);
+        expect(applied).toBe(action === 'discard' ? 0 : 1);
+        expect(cleaned).toBe(action === 'discard' ? 1 : 0);
+        expect(plan.isCurrent()).toBe(false);
+      },
+    ),
+    { seed: 2011110, numRuns: 24 },
+  );
+});
+
 test('native prepared plans clean up once after failure and reject reentry or successful-looking retries', () => {
   fc.assert(
     fc.property(

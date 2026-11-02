@@ -195,7 +195,7 @@ schema on each replica.
 
 ## Property testing after proofs
 
-The inventory audits 38 property-suite files containing 86 explicit
+The inventory audits 38 property-suite files containing 87 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

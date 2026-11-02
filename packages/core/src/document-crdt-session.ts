@@ -31,22 +31,32 @@ export function preparedDocumentChange<Changes>(
   snapshot?: () => Changes,
 ): PreparedDocumentChange<Changes> {
   let phase: PreparedDocumentPhase = 'prepared';
+  let checking = false;
+  const isCurrent = () => {
+    if (phase !== 'prepared' || checking) return false;
+    checking = true;
+    try {
+      return current() === true && phase === 'prepared';
+    } finally {
+      checking = false;
+    }
+  };
   return {
     changes,
     ...(snapshot
       ? {
           snapshot: () => {
-            if (phase !== 'prepared' || !current())
-              throw new Error('Stale document checkpoint');
-            return snapshot();
+            if (!isCurrent()) throw new Error('Stale document checkpoint');
+            const value = snapshot();
+            if (!isCurrent()) throw new Error('Stale document checkpoint');
+            return value;
           },
         }
       : {}),
-    isCurrent: () => phase === 'prepared' && current(),
+    isCurrent,
     commit: () => {
       if (phase === 'committed') return;
-      if (phase !== 'prepared' || !current())
-        throw new Error('Prepared document change is stale');
+      if (!isCurrent()) throw new Error('Prepared document change is stale');
       phase = advancePreparedDocumentChange(phase, 'begin');
       try {
         commit();
