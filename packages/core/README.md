@@ -48,6 +48,17 @@ One attempt remains the default. Retries cover transport establishment only;
 they do not repeat invitation acceptance or security verification. A connected
 transport still needs its relay reservation before it can serve as a rendezvous.
 
+## Resume a saved document
+
+After restoring and opening an authenticated checkpoint, connect to the relay
+and call `document.requestSync()` to request missed updates. Applications can
+repeat the small request after reconnection. Current readers and writers may
+request updates; only current writers answer with ordinary signed, encrypted
+sync messages. Requests bind the document, requester, fresh nonce, timestamp,
+and known roots, and have bounded replay memory and response rates. This uses
+the restored membership and document keys; it does not replace a fresh
+document's trusted-load configuration or recover missed key rotations.
+
 ## Start here
 
 - [Quick start from source](https://peerborne.io/getting-started/quick-start/)
