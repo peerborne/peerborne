@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 101 production functions in 32 proof units. The runtime calls
+LemmaScript checks 107 production functions in 32 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -61,6 +61,14 @@ consumer, proof obligation and non-vacuity witness.
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 | [Sync request time](../packages/core/src/policy/sync-request.ts) | 1 | Exact acceptance within 60 seconds in the past and 30 seconds in the future, across the safe-integer timestamp domain. |
+| [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
+| [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 9 | Authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
+
+Map proofs use immutable map values. Candidate/checkpoint ownership therefore also
+has native JavaScript properties: a missing copy can pass the value-model proof
+while mutating the active map. A dedicated control verifies an intentionally
+aliased variant and confirms that native counterexample. The healthy production
+implementation must pass the separate ownership and generated-history properties.
 
 The coordinator uses these admission policies for bounded document preparation
 and incoming membership deliveries. Document preparation runs outside the
@@ -209,7 +217,7 @@ same-revision substitution at every modeled step. Publication authorization requ
 
 ## Property testing after proofs
 
-The inventory audits 42 property-suite files containing 97 explicit
+The inventory audits 43 property-suite files containing 100 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
