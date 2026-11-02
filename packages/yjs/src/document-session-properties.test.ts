@@ -443,3 +443,95 @@ test('closes admission before mirror destruction can invoke an escaped listener'
   expect(() => session.document).toThrow('closed');
   document.destroy();
 });
+
+test('tracks destroyed documents and silent root additions across stage and mirror lifetimes', () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom(
+        'destroy-stage',
+        'destroy-visible',
+        'silent-root-stage',
+        'destroy-between',
+        'silent-root-between',
+        'destroy-oncommit',
+        'destroy-shadow-oncommit',
+      ),
+      fc.integer(),
+      (action, value) => {
+        const provider = new YjsProvider(),
+          document = provider.newDocument(),
+          session = provider.createDocumentSession(document);
+        let escaped!: Doc;
+        const plan = session.prepareLocal('', (draft) => {
+          escaped = draft;
+          draft.getMap('values').set('accepted', value);
+        });
+        if (action.endsWith('between')) {
+          plan.commit();
+          if (action === 'destroy-between') {
+            escaped.destroy();
+            escaped.getMap('values').set('hidden', 99);
+          } else escaped.getText('late');
+          session
+            .prepareLocal('', (draft) => {
+              expect(draft.share.has('late')).toBe(false);
+              expect(draft.getMap('values').has('hidden')).toBe(false);
+              draft.getMap('values').set('next', value);
+            })
+            .commit();
+          expect(document.getMap('values').toJSON()).toEqual({
+            accepted: value,
+            next: value,
+          });
+          expect(document.share.has('late')).toBe(false);
+        } else if (action.endsWith('oncommit')) {
+          document.on('beforeTransaction', () => {
+            if (action === 'destroy-oncommit') document.destroy();
+            else escaped.destroy();
+          });
+          expect(() => plan.commit()).toThrow();
+          expect(() => session.document).toThrow();
+          expect(document.getMap('values').has('accepted')).toBe(false);
+        } else {
+          if (action === 'destroy-stage') {
+            escaped.destroy();
+            escaped.getMap('values').set('hidden', 99);
+          }
+          if (action === 'destroy-visible') document.destroy();
+          if (action === 'silent-root-stage') escaped.getText('late');
+          expect(plan.isCurrent()).toBe(false);
+          expect(() => plan.snapshot!()).toThrow('Stale');
+          expect(() => plan.commit()).toThrow('stale');
+          plan.discard();
+          if (action === 'destroy-visible')
+            expect(() => session.document).toThrow();
+          else {
+            session
+              .prepareLocal('', (draft) => {
+                expect(draft.share.has('late')).toBe(false);
+                expect(draft.getMap('values').size).toBe(0);
+                draft.getMap('values').set('next', value);
+              })
+              .commit();
+            expect(document.getMap('values').toJSON()).toEqual({ next: value });
+          }
+        }
+        session.close();
+        if (!document.isDestroyed) document.destroy();
+      },
+    ),
+    {
+      seed: 2011126,
+      numRuns: 42,
+      examples: [
+        ['destroy-stage', 1],
+        ['destroy-visible', 1],
+        ['silent-root-stage', 1],
+        ['destroy-between', 1],
+        ['silent-root-between', 1],
+        ['destroy-oncommit', 1],
+        ['destroy-shadow-oncommit', 1],
+      ],
+    },
+  );
+});

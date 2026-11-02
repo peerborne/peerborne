@@ -75,7 +75,7 @@ It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
 [fallback catalog](../strategy.json). It reports 38 property-suite files and
-87 assertion declarations; parameterized suites can execute declarations more
+88 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
