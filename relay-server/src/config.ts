@@ -6,6 +6,7 @@
  */
 
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2'
+import type { GossipsubOpts } from '@libp2p/gossipsub'
 
 /** Topic the relay subscribes to so it can forward peer-discovery messages. */
 export const PUBSUB_PEER_DISCOVERY_TOPIC = 'peerborne._peer-discovery._p2p._pubsub'
@@ -288,6 +289,24 @@ export function listenAddresses(config: RelayConfig): string[] {
       ? [config.wsListenV6, config.tcpListenV6].filter((addr) => addr !== '')
       : []),
   ]
+}
+
+/** Keep proxy transport addresses from becoming client Sybil identities. */
+export function relayPubsubOptions(config: RelayConfig): Partial<GossipsubOpts> {
+  const loopbackOnly = listenAddresses(config).every(address =>
+    address.startsWith('/ip4/127.0.0.1/') || address.startsWith('/ip6/::1/'),
+  )
+  return {
+    allowPublishToZeroTopicPeers: true,
+    canRelayMessage: true,
+    floodPublish: true,
+    maxTopicBytesPerPeer: config.gossipsubMaxTopicBytesPerPeer,
+    ...(loopbackOnly ? {
+      // The Render gateway enforces real client IP limits before proxying.
+      // GossipSub retains disconnected identities and sees only loopback.
+      scoreParams: { IPColocationFactorWhitelist: new Set(['127.0.0.1', '::1']) },
+    } : {}),
+  }
 }
 
 /** Translate typed relay limits to the pinned Circuit Relay v2 API. */
