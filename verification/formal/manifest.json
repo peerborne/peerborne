@@ -532,6 +532,27 @@
       "witness": "syncRequestTime_domain",
       "consumers": ["packages/core/src/sync-request.ts"],
       "verifiedTargets": ["syncRequestTimeAllowed_ensures"]
+    },
+    {
+      "path": "packages/core/src/policy/document-authority.ts",
+      "functions": [
+        "documentAuthorityControllerIndex",
+        "validDocumentAuthorityFields",
+        "isDocumentAuthorityRosterValid",
+        "canBindDocumentController",
+        "bindDocumentController"
+      ],
+      "witness": "documentAuthority_domain",
+      "consumers": ["packages/core/src/document-authority-log.ts"],
+      "verifiedTargets": [
+        "documentAuthorityControllerIndex",
+        "validDocumentAuthorityFields",
+        "isDocumentAuthorityRosterValid",
+        "canBindDocumentController_ensures",
+        "bindDocumentController",
+        "controllerBindings_all_histories",
+        "unsignedAuthorityHeads_excluded"
+      ]
     }
   ]
 }

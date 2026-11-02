@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 101 production functions in 32 proof units. The runtime calls
+LemmaScript checks 106 production functions in 33 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -61,6 +61,23 @@ consumer, proof obligation and non-vacuity witness.
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 | [Sync request time](../packages/core/src/policy/sync-request.ts) | 1 | Exact acceptance within 60 seconds in the past and 30 seconds in the future, across the safe-integer timestamp domain. |
+
+The [document-authority policy](../packages/core/src/policy/document-authority.ts)
+adds five verified production functions, with a shared bounded field validator
+checked in the same unit. A valid detached roster has 1–256
+members, distinct member IDs and public keys, valid roles and exactly one
+controller. Controller bindings accept only fresh heads within the 1,024-record
+history bound. A checked finite-history method preserves every old head/controller
+binding, excludes heads introduced only by unsigned attempts, and retains an
+admitted first transition through subsequent hostile attempts.
+
+The history proof takes correct current-controller authentication as an input;
+it does not prove signatures or group membership. Map values do not model native
+object identity, byte ownership, parsing or asynchronous preparation. Generated
+properties check these boundaries, including races between signed updates and
+signed restoration attempts that reuse an older control head. The latter was
+accepted by the previous implementation and could replace its historical
+controller binding; restoration and live validation now reject it.
 
 The coordinator uses these admission policies for bounded document preparation
 and incoming membership deliveries. Document preparation runs outside the
@@ -209,7 +226,7 @@ same-revision substitution at every modeled step. Publication authorization requ
 
 ## Property testing after proofs
 
-The inventory audits 42 property-suite files containing 97 explicit
+The inventory audits 44 property-suite files containing 102 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

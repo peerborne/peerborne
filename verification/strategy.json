@@ -241,6 +241,18 @@
         "packages/core/src/document-journal-store.ts",
         "packages/core/src/peerborne-document.ts"
       ]
+    },
+    {
+      "id": "document-authority-history",
+      "formalBoundary": "Exact roster shape, role validity, unique identities/keys, single-controller selection and fresh bounded controller binding are proved. Checked finite histories preserve every historical controller and admit a valid signed first transition. Native Map and byte ownership, numeric calibration, canonical wire parsing, Ed25519 signatures and racing asynchronous role updates require runtime properties. A signedByCurrent proof input assumes correct authentication; cryptographic unforgeability and provider membership are not established.",
+      "evidence": [
+        "packages/core/src/authority-policy-properties.test.ts",
+        "packages/core/src/authority-history-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/document-authority.ts",
+        "packages/core/src/document-authority-log.ts"
+      ]
     }
   ],
   "integrationBoundaries": [
