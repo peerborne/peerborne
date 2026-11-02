@@ -132,7 +132,8 @@
         "packages/react/src/hooks-cache.ts",
         "packages/redux/src/reducers.ts",
         "packages/redux/src/actions.ts",
-        "packages/redux/src/default-state-selector.ts"
+        "packages/redux/src/default-state-selector.ts",
+        "packages/react/src/document-cache-key.ts"
       ]
     },
     {

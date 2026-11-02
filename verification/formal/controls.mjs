@@ -306,7 +306,7 @@ method mapOperand_domain()
     ],
     [
       'document-cache-collision',
-      'packages/react/src/hooks-cache.ts',
+      'packages/react/src/document-cache-key.ts',
       'return `${caches.contextKeyPrefix}${documentPath}`;',
       'return `${caches.contextKeyPrefix}`;',
     ],

@@ -237,10 +237,10 @@
       "verifiedTargets": ["hasBootstrapPeers_ensures"]
     },
     {
-      "path": "packages/react/src/hooks-cache.ts",
+      "path": "packages/react/src/document-cache-key.ts",
       "functions": ["getPeerborneDocumentCacheKey"],
       "witness": "hooksCache_domain",
-      "consumers": ["packages/react/src/hooks.ts"],
+      "consumers": ["packages/react/src/hooks-cache.ts"],
       "verifiedTargets": [
         "getPeerborneDocumentCacheKey_ensures",
         "documentCacheKey_injective"

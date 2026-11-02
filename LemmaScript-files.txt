@@ -14,7 +14,7 @@ packages/core/src/policy/encoded-size.ts
 packages/index/src/query-budget.ts
 packages/core/src/internal/canonical-encoding.ts
 packages/core/src/bootstrap-config.ts
-packages/react/src/hooks-cache.ts
+packages/react/src/document-cache-key.ts
 packages/core/src/policy/package-partition.ts
 packages/core/src/policy/store-budget.ts
 packages/core/src/policy/commit-lifecycle.ts
