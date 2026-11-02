@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from '@jest/globals';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
 import { syncInvitationMessageCompletely } from './invitation-catch-up.js';
 import { JSONSerializer } from './json-serializer.js';
@@ -290,37 +297,40 @@ describe('ordinary sync-message context confinement', () => {
     expect(collectACL).not.toHaveBeenCalled();
   });
 
-  test.each([1, 2])('rejects a serializer that mutates on call %i', async (mutationCall) => {
-    let serializationCount = 0;
-    const collectACL = jest.fn(() => undefined);
-    const document = fakeDocument({
-      _syncMessageSerializer: {
-        serializeSyncMessage: (message: {
-          changes?: { change?: { value: number } };
-        }) => {
-          serializationCount += 1;
-          if (serializationCount === mutationCall) {
-            message.changes!.change!.value = 9;
-          }
-          return new Uint8Array([1]);
+  test.each([1, 2])(
+    'rejects a serializer that mutates on call %i',
+    async (mutationCall) => {
+      let serializationCount = 0;
+      const collectACL = jest.fn(() => undefined);
+      const document = fakeDocument({
+        _syncMessageSerializer: {
+          serializeSyncMessage: (message: {
+            changes?: { change?: { value: number } };
+          }) => {
+            serializationCount += 1;
+            if (serializationCount === mutationCall) {
+              message.changes!.change!.value = 9;
+            }
+            return new Uint8Array([1]);
+          },
         },
-      },
-      _isSigningEnabled: () => true,
-      _verifyWriterSignature: async () => true,
-      _collectACLFromTree: collectACL,
-    });
+        _isSigningEnabled: () => true,
+        _verifyWriterSignature: async () => true,
+        _collectACLFromTree: collectACL,
+      });
 
-    await expect(
-      document.sync({
-        documentId: documentPath,
-        signatureContext: 'ordinary-sync-v1',
-        changeId: 'root',
-        changes: { kind: 'document', change: { value: 1 } },
-        signature: 'AQ==',
-      }),
-    ).resolves.toBe(false);
-    expect(collectACL).not.toHaveBeenCalled();
-  });
+      await expect(
+        document.sync({
+          documentId: documentPath,
+          signatureContext: 'ordinary-sync-v1',
+          changeId: 'root',
+          changes: { kind: 'document', change: { value: 1 } },
+          signature: 'AQ==',
+        }),
+      ).resolves.toBe(false);
+      expect(collectACL).not.toHaveBeenCalled();
+    },
+  );
 
   test('membership authentication rejects a serializer that mutates before signing bytes', async () => {
     const verify = jest.fn(async () => true);
@@ -328,9 +338,7 @@ describe('ordinary sync-message context confinement', () => {
       _writerKeysVersion: 0,
       _verifyMembershipWriterSignature: verify,
       _syncMessageSerializer: {
-        serializeSyncMessage: (message: {
-          pathUpdate?: { delta: number };
-        }) => {
+        serializeSyncMessage: (message: { pathUpdate?: { delta: number } }) => {
           message.pathUpdate!.delta = 9;
           return new Uint8Array([1]);
         },
@@ -397,9 +405,9 @@ describe('ordinary sync-message context confinement', () => {
         signature: 'AQ==',
       }),
     );
-    await expect(
-      validator!({}, { data: encryptedPayload() }),
-    ).resolves.toBe('reject');
+    await expect(validator!({}, { data: encryptedPayload() })).resolves.toBe(
+      'reject',
+    );
     decryptBlock.mockResolvedValueOnce(
       serializer.serializeSyncMessage({
         documentId: '/another-document',
@@ -408,9 +416,9 @@ describe('ordinary sync-message context confinement', () => {
         signature: 'AQ==',
       }),
     );
-    await expect(
-      validator!({}, { data: encryptedPayload() }),
-    ).resolves.toBe('reject');
+    await expect(validator!({}, { data: encryptedPayload() })).resolves.toBe(
+      'reject',
+    );
     expect(verify).not.toHaveBeenCalled();
     await document.close();
   });
@@ -419,15 +427,20 @@ describe('ordinary sync-message context confinement', () => {
     'GossipSub validator rejects a serializer that mutates on call %i',
     async (mutationCall) => {
       const json = new JSONSerializer<any>();
-      const validators = new Map<string, (...args: any[]) => Promise<unknown>>();
+      const validators = new Map<
+        string,
+        (...args: any[]) => Promise<unknown>
+      >();
       const pubsub = {
         addEventListener: jest.fn(),
         removeEventListener: jest.fn(),
         subscribe: jest.fn(),
         unsubscribe: jest.fn(),
         topicValidators: {
-          set: (topic: string, validator: (...args: any[]) => Promise<unknown>) =>
-            validators.set(topic, validator),
+          set: (
+            topic: string,
+            validator: (...args: any[]) => Promise<unknown>,
+          ) => validators.set(topic, validator),
           get: (topic: string) => validators.get(topic),
           delete: (topic: string) => validators.delete(topic),
         },
@@ -641,6 +654,7 @@ describe('snapshot-bearing invitation sync', () => {
       _hashes: hashes,
       _latestSnapshot: latestSnapshot,
       _documentChangeCount: 0,
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       _isSigningEnabled: () => false,
       _crdtProvider: { remoteChange: (_doc: unknown, state: unknown) => state },
       _collectACLFromTree: () => ({ aclEntries: [], changes: [] }),
@@ -739,5 +753,22 @@ describe('snapshot-bearing invitation sync', () => {
     await expect(document.sync(message)).resolves.toBe(true);
     expect(document._latestSnapshot?.lastChangeNodeCID).toBe('boundary-cid');
     expect(document._isLatestSnapshotFrom(message)).toBe(false);
+  });
+
+  test('notifies subscribers when the response root is the applied snapshot boundary', async () => {
+    const document = snapshotDocument();
+    const message = snapshotMessage('ordinary-sync-v1');
+    message.changeId = 'boundary-cid';
+    message.changes = { kind: crdtDocumentChangeNode };
+    document._syncDocumentChanges = async () => undefined;
+    await expect(document.sync(message)).resolves.toBe(true);
+    expect(document._document).toEqual(message.snapshot.state);
+    expect(document._hashes.has('boundary-cid')).toBe(true);
+    expect(document._fireOrDeferRemoteUpdateHandlers).toHaveBeenCalledWith([
+      'boundary-cid',
+    ]);
+    document._fireOrDeferRemoteUpdateHandlers.mockClear();
+    await expect(document.sync(message)).resolves.toBe(true);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
   });
 });

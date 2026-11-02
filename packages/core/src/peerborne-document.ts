@@ -7536,6 +7536,7 @@ export class PeerborneDocument<
       }
     }
 
+    let appliedSnapshot = false;
     // Apply snapshot if present and more recent than ours.
     // Happens before full change sync so document changes that are already
     // covered by the snapshot don't need to be applied first (CRDTs handle
@@ -7587,6 +7588,7 @@ export class PeerborneDocument<
             : this._crdtProvider.remoteChange(this._document, incoming.state);
           this._latestSnapshot = incoming;
           this._latestSnapshotSource = sourceSnapshot;
+          appliedSnapshot = true;
           // Ensure our local document change count is at least as high as
           // the snapshot's compactedCount. This prevents re-triggering
           // compaction below the threshold after applying a remote snapshot.
@@ -7622,6 +7624,11 @@ export class PeerborneDocument<
     }
 
     assertStillActive();
+    if (appliedSnapshot) {
+      await this._fireOrDeferRemoteUpdateHandlers(
+        message.snapshot!.lastChangeNodeCID ? [message.snapshot!.lastChangeNodeCID] : [],
+      );
+    }
     return true;
   }
 
