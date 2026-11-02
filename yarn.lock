@@ -3215,6 +3215,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@libp2p/interface@npm:^3.4.0":
+  version: 3.4.0
+  resolution: "@libp2p/interface@npm:3.4.0"
+  dependencies:
+    "@multiformats/dns": "npm:^1.0.6"
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    main-event: "npm:^1.0.5"
+    multiformats: "npm:^14.0.0"
+    progress-events: "npm:^1.1.0"
+    uint8arraylist: "npm:^3.0.2"
+  checksum: 10/36647398af41e355f064cef23286a7f77a74b3888495f5de5d385fc0c41624ac1c86ace6e12f361c18617fcf0416d6277a2b6b1741950345cf4e199378e072b2
+  languageName: node
+  linkType: hard
+
 "@libp2p/kad-dht@npm:^16.3.2":
   version: 16.4.3
   resolution: "@libp2p/kad-dht@npm:16.4.3"
@@ -4707,7 +4721,7 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.2.11"
     "@libp2p/gossipsub": "npm:^17.1.2"
     "@libp2p/identify": "npm:^4.1.14"
-    "@libp2p/interface": "npm:^3.2.5"
+    "@libp2p/interface": "npm:^3.4.0"
     "@libp2p/tcp": "npm:^11.0.27"
     "@libp2p/websockets": "npm:^10.1.21"
     "@peerborne/automerge": "workspace:packages/automerge"
@@ -4752,7 +4766,7 @@ __metadata:
     "@libp2p/dcutr": "npm:^3.0.26"
     "@libp2p/gossipsub": "npm:^17.1.2"
     "@libp2p/identify": "npm:^4.1.14"
-    "@libp2p/interface": "npm:^3.2.5"
+    "@libp2p/interface": "npm:^3.4.0"
     "@libp2p/kad-dht": "npm:^16.4.5"
     "@libp2p/mdns": "npm:^12.0.32"
     "@libp2p/peer-id": "npm:^6.0.14"
@@ -12257,7 +12271,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"main-event@npm:^1.0.4":
+"main-event@npm:^1.0.4, main-event@npm:^1.0.5":
   version: 1.0.5
   resolution: "main-event@npm:1.0.5"
   checksum: 10/db9c6ff4d79fd4aa3f20517e07b57df39d6d020540f1916b0fb35a506753e2cf3583ee37eef930eaadeca4c6bff4b13cbeeaa0e2a18ea142ee65bd78dc91a768
