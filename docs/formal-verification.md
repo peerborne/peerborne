@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 99 production functions in 31 proof units. The runtime calls
+LemmaScript checks 100 production functions in 31 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -204,11 +204,11 @@ CRDT adapters, IndexedDB and independent anchor conformance checked separately.
 The content policy proves exact replay, gap, parent and role admission; the
 journal policy proves exact current/single-step/reject recovery and same-group
 strict epoch advancement. Inductive histories reject counter rollback and
-same-revision substitution at every modeled step.
+same-revision substitution at every modeled step. Publication authorization requires a positive, nonfuture revision and a token bound to that revision by the authenticated accepted journal. Token generation, accepted-map reconstruction and checkpoint retention remain native property-test boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 42 property-suite files containing 94 explicit
+The inventory audits 42 property-suite files containing 95 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

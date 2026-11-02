@@ -3,6 +3,28 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+function isAcceptedDocumentPublication(revision: int, currentRevision: int, bindingRevision: int): bool
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+{
+  (((1 <= revision) && (revision <= currentRevision)) && (bindingRevision == revision))
+}
+
+lemma isAcceptedDocumentPublication_ensures(revision: int, currentRevision: int, bindingRevision: int)
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  ensures (isAcceptedDocumentPublication(revision, currentRevision, bindingRevision) <==> (((1 <= revision) && (revision <= currentRevision)) && (bindingRevision == revision)))
+{
+}
+
 function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)

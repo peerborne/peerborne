@@ -3,6 +3,28 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+function isAcceptedDocumentPublication(revision: int, currentRevision: int, bindingRevision: int): bool
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+{
+  (((1 <= revision) && (revision <= currentRevision)) && (bindingRevision == revision))
+}
+
+lemma isAcceptedDocumentPublication_ensures(revision: int, currentRevision: int, bindingRevision: int)
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  ensures (isAcceptedDocumentPublication(revision, currentRevision, bindingRevision) <==> (((1 <= revision) && (revision <= currentRevision)) && (bindingRevision == revision)))
+{
+}
+
 function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
@@ -95,6 +117,11 @@ lemma journalRecovery_all_histories(anchor: int, stores: seq<int>, commitments: 
 
 method documentJournal_domain()
 {
+  assert isAcceptedDocumentPublication(1, 1, 1);
+  assert !isAcceptedDocumentPublication(1, 1, 0);
+  assert !isAcceptedDocumentPublication(2, 1, 2);
+  assert !isAcceptedDocumentPublication(0, 0, 0);
+  assert isAcceptedDocumentPublication(9007199254740991, 9007199254740991, 9007199254740991);
   assert classifyDocumentJournalRecovery(0, 0, true, false, true).current?;
   assert classifyDocumentJournalRecovery(1, 0, false, true, true).finish_anchor?;
   assert classifyDocumentJournalRecovery(0, 1, false, false, true).reject?;

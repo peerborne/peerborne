@@ -149,7 +149,7 @@ Concurrent retry calls coalesce behind the active publication batch.
 Staged storage contains only a publication hash and size reservation. The
 network-ready frame stays in private memory until admission succeeds, then the
 journal seals it with the device key under a separate publication domain bound
-to its document, genesis, accepted revision and frame hash. Every recovered
+to its document, genesis, accepted revision, frame hash and a random publication token. That token must occur in the authenticated accepted journal branch. Checkpoints preserve tokens for the pending outbox; an aborted transaction cannot authorize a publication when a revision is reused. Every recovered
 publication is authenticated independently of retained history, including after
 checkpoint pruning. Storage can suppress or replay previously accepted outbox
 records; it cannot turn a rejected preparation into a publishable frame.

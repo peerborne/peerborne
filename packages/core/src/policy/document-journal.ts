@@ -1,5 +1,20 @@
 export type DocumentJournalRecovery = 'current' | 'finish-anchor' | 'reject';
 
+export function isAcceptedDocumentPublication(
+  revision: number,
+  currentRevision: number,
+  bindingRevision: number,
+): boolean {
+  //@ verify
+  //@ requires 0 <= revision && revision <= 9007199254740991
+  //@ requires 0 <= currentRevision && currentRevision <= 9007199254740991
+  //@ requires 0 <= bindingRevision && bindingRevision <= 9007199254740991
+  //@ ensures \result <==> 1 <= revision && revision <= currentRevision && bindingRevision === revision
+  return (
+    1 <= revision && revision <= currentRevision && bindingRevision === revision
+  );
+}
+
 export function classifyDocumentJournalRecovery(
   stored: number,
   anchored: number,

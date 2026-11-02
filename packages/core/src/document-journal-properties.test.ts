@@ -820,10 +820,74 @@ test('authenticates each stored publication after its original journal entry was
           hostile,
           anchor,
         );
-        await journal.restore();
-        await expect(journal.pendingPublications()).rejects.toThrow();
+        await expect(
+          (async () => {
+            await journal.restore();
+            return journal.pendingPublications();
+          })(),
+        ).rejects.toThrow();
       },
     ),
     { seed: 2011148, numRuns: 24 },
   );
 });
+
+test.each([false, true])(
+  'rejects an aborted publication after its revision is reused (compacted=%s)',
+  async (compacted) => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer(),
+        fc.integer(),
+        async (abortedValue, acceptedValue) => {
+          const f = await documentFixture(),
+            key = await deviceKey(),
+            store = new InMemoryDocumentJournalStore(),
+            anchor = new InMemoryDocumentJournalRollbackAnchor();
+          const commit = store.commit.bind(store);
+          let abandoned!: { id: Uint8Array; frame: Uint8Array };
+          store.commit = async (...args) => {
+            abandoned = {
+              id: args[5]!.id.slice(),
+              frame: args[5]!.frame.slice(),
+            };
+            throw new Error('Injected transaction abort');
+          };
+          let document = engine(f, key, store, anchor, true);
+          await document.activate();
+          await expect(
+            document.change((draft) => {
+              draft.push(abortedValue);
+            }),
+          ).rejects.toThrow('abort');
+          await document.close();
+          store.commit = commit;
+          document = engine(f, key, store, anchor, true);
+          await document.activate();
+          expect(document.document).toEqual([]);
+          const acceptedFrame = await document.change((draft) => {
+            draft.push(acceptedValue);
+          });
+          if (compacted) {
+            for (let index = 0; index < 129; index++) {
+              const frame = await document.change((draft) => {
+                draft.push(index);
+              });
+              await document.publicationSent(frame);
+            }
+          }
+          expect(await document.pendingPublications()).toEqual([acceptedFrame]);
+          await document.close();
+          store.loadPublications = async () => [abandoned];
+          const recovered = engine(f, key, store, anchor, true);
+          await expect(recovered.activate()).rejects.toThrow(
+            'accepted journal branch',
+          );
+          expect(() => recovered.document).toThrow();
+          await recovered.close();
+        },
+      ),
+      { seed: compacted ? 2011149 : 2011150, numRuns: 2 },
+    );
+  },
+);

@@ -678,6 +678,24 @@ method mapOperand_domain()
       'return next > previous && headChanged;',
     ],
     [
+      'document-publication-revision-only',
+      'document-journal.ts',
+      'return (1 <= revision && revision <= currentRevision && bindingRevision === revision);',
+      'return 1 <= revision && revision <= currentRevision;',
+    ],
+    [
+      'document-publication-future-binding',
+      'document-journal.ts',
+      'return (1 <= revision && revision <= currentRevision && bindingRevision === revision);',
+      'return 1 <= revision && bindingRevision === revision;',
+    ],
+    [
+      'document-publication-zero-binding',
+      'document-journal.ts',
+      'return (1 <= revision && revision <= currentRevision && bindingRevision === revision);',
+      'return revision <= currentRevision && bindingRevision === revision;',
+    ],
+    [
       'document-journal-uncommitted-promotion',
       'document-journal.ts',
       "if (!markerAuthenticated) return 'reject';",

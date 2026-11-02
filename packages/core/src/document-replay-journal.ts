@@ -1,4 +1,7 @@
-import { classifyDocumentJournalRecovery } from './policy/document-journal.js';
+import {
+  classifyDocumentJournalRecovery,
+  isAcceptedDocumentPublication,
+} from './policy/document-journal.js';
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
@@ -103,7 +106,7 @@ const DOMAIN = Uint8Array.from(
 const MAX_SNAPSHOT = 64 * 1024 * 1024,
   MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024;
 export const DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD = 32;
-export const DOCUMENT_PUBLICATION_OVERHEAD = 40;
+export const DOCUMENT_PUBLICATION_OVERHEAD = 72;
 export const MAX_DOCUMENT_STORED_PUBLICATION_BYTES =
   1024 * 1024 + DOCUMENT_PUBLICATION_OVERHEAD;
 const PUBLICATION_DOMAIN = Uint8Array.from(
@@ -118,7 +121,18 @@ export const MAX_DOCUMENT_JOURNAL_ENTRIES = 128;
 export const MAX_DOCUMENT_JOURNAL_BYTES = 128 * 1024 * 1024;
 const ZERO = new Uint8Array(32);
 
-function encodeItem(item: DocumentJournalItem): Uint8Array {
+interface PublicationBinding {
+  readonly token: Uint8Array;
+  readonly revision: number;
+}
+interface StoredDocumentJournalItem extends DocumentJournalItem {
+  readonly publicationBindings: ReadonlyArray<PublicationBinding>;
+}
+
+function encodeItem(
+  item: DocumentJournalItem,
+  bindings: ReadonlyArray<PublicationBinding> = [],
+): Uint8Array {
   const writer = new DocumentBinaryWriter(MAX_ENTRY);
   writeDocumentContext(writer, item.context);
   writer.fixed(
@@ -173,13 +187,24 @@ function encodeItem(item: DocumentJournalItem): Uint8Array {
       throw new Error('Journal authority history exceeds bounds');
     writer.bytes(record, 1024 * 1024);
   }
+  if (bindings.length > 16) throw new DocumentJournalCapacityError();
+  writer.integer(bindings.length, 1);
+  for (const binding of bindings) {
+    if (!Number.isSafeInteger(binding.revision) || binding.revision < 1)
+      throw new Error('Invalid publication binding');
+    writer
+      .fixed(
+        copyUnsharedUint8Array(binding.token, 32, 32, 'publication binding'),
+      )
+      .integer(binding.revision, 8);
+  }
   return writer.finish();
 }
 
 function decodeItem(
   bytes: Uint8Array,
   checkpoint: boolean,
-): DocumentJournalItem {
+): StoredDocumentJournalItem {
   const reader = new DocumentBinaryReader(bytes, MAX_ENTRY),
     context = readDocumentContext(reader),
     authorityHead = reader.fixed(32),
@@ -210,8 +235,18 @@ function decodeItem(
       throw new Error('Journal authority history exceeds bounds');
     authorityRecords.push(record);
   }
+  const bindingCount = reader.number(1),
+    publicationBindings: PublicationBinding[] = [];
+  if (bindingCount > 16 || (!checkpoint && bindingCount > 1))
+    throw new Error('Invalid publication bindings');
+  for (let index = 0; index < bindingCount; index++)
+    publicationBindings.push({
+      token: reader.fixed(32),
+      revision: reader.number(8),
+    });
   reader.end();
   return {
+    publicationBindings,
     checkpoint,
     context,
     changes,
@@ -314,6 +349,8 @@ export class DocumentReplayJournal {
   private opened = false;
   private active = false;
   private failed = false;
+  private acceptedPublicationBindings = new Map<string, number>();
+  private pendingPublicationBindings = new Map<string, PublicationBinding>();
 
   constructor(
     private readonly documentId: string,
@@ -366,6 +403,7 @@ export class DocumentReplayJournal {
         previousRevision = 0,
         authenticated = true;
       const items: DocumentJournalItem[] = [];
+      const acceptedBindings = new Map<string, number>();
       let last:
         | { revision: number; commitment: Uint8Array; parent: Uint8Array }
         | undefined;
@@ -422,6 +460,19 @@ export class DocumentReplayJournal {
         const item = decodeItem(new Uint8Array(plaintext), marker === 1);
         if (previous && item.checkpoint)
           throw new Error('Noninitial journal checkpoint');
+        for (const binding of item.publicationBindings) {
+          const token = documentBytesId(binding.token);
+          if (
+            binding.revision < 1 ||
+            binding.revision > revision ||
+            (!item.checkpoint && binding.revision !== revision) ||
+            acceptedBindings.has(token)
+          )
+            throw new Error('Invalid accepted publication binding');
+          acceptedBindings.set(token, binding.revision);
+        }
+        if (acceptedBindings.size > MAX_DOCUMENT_JOURNAL_ENTRIES + 16)
+          throw new Error('Publication binding bound exceeded');
         items.push(item);
         previous = await digest(owned);
         previousRevision = revision;
@@ -466,6 +517,12 @@ export class DocumentReplayJournal {
             'journal pending token',
           ),
         );
+      const publications = await this.readPublications(
+        acceptedBindings,
+        stored?.revision ?? 0,
+      );
+      this.acceptedPublicationBindings = acceptedBindings;
+      this.pendingPublicationBindings = publications.bindings;
       this.head = stored;
       this.entryCount = items.length;
       this.retainedBytes = bytes;
@@ -506,7 +563,19 @@ export class DocumentReplayJournal {
       token = crypto.getRandomValues(new Uint8Array(32));
     let done = false;
     try {
-      const plaintext = encodeItem(item);
+      const binding: PublicationBinding | undefined =
+        outboundFrame === undefined
+          ? undefined
+          : { token: crypto.getRandomValues(new Uint8Array(32)), revision };
+      const bindings = checkpoint
+        ? [
+            ...this.pendingPublicationBindings.values(),
+            ...(binding ? [binding] : []),
+          ]
+        : binding
+          ? [binding]
+          : [];
+      const plaintext = encodeItem(item, bindings);
       if (
         !documentJournalAnchorsEqual(
           expected,
@@ -577,6 +646,7 @@ export class DocumentReplayJournal {
                 frame: await this.sealPublication(
                   revision,
                   publication.id,
+                  binding!.token,
                   outboundFrame!,
                 ),
               },
@@ -619,6 +689,17 @@ export class DocumentReplayJournal {
               )
             )
               throw new Error('Document journal anchor was not persisted');
+            if (checkpoint) this.acceptedPublicationBindings.clear();
+            for (const acceptedBinding of bindings)
+              this.acceptedPublicationBindings.set(
+                documentBytesId(acceptedBinding.token),
+                acceptedBinding.revision,
+              );
+            if (publication && binding)
+              this.pendingPublicationBindings.set(
+                documentBytesId(publication.id),
+                binding,
+              );
             this.head = next;
             this.entryCount = checkpoint ? 1 : this.entryCount + 1;
             this.retainedBytes = checkpoint
@@ -655,63 +736,10 @@ export class DocumentReplayJournal {
     if (!this.opened || this.failed || this.active)
       throw new Error('Document journal is unavailable');
     try {
-      const publications = this.store.loadPublications
-        ? await this.store.loadPublications(this.storageKey)
-        : (await this.store.load(this.storageKey)).publications;
-      if (publications === undefined) return [];
-      if (!Array.isArray(publications) || publications.length > 16)
-        throw new Error('Invalid document publication queue');
-      let bytes = 0;
-      const owned = publications.map((value) => {
-        const frame = copyUnsharedUint8Array(
-          value.frame,
-          1,
-          Math.min(
-            MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
-            16 * 1024 * 1024 - bytes,
-          ),
-          'stored document publication',
-        );
-        bytes += frame.length;
-        return {
-          id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
-          frame,
-        };
-      });
-      const result: Uint8Array[] = [];
-      for (const publication of owned) {
-        const reader = new DocumentBinaryReader(
-          publication.frame,
-          MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
-        );
-        const revision = reader.number(8),
-          nonce = reader.fixed(12),
-          ciphertext = reader.bytes(1024 * 1024 + 16);
-        reader.end();
-        if (revision < 1 || revision > this.revision)
-          throw new Error('Unaccepted publication revision');
-        const plaintext = await crypto.subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: nonce as Uint8Array<ArrayBuffer>,
-            additionalData: this.publicationAAD(
-              revision,
-              publication.id,
-            ) as Uint8Array<ArrayBuffer>,
-          },
-          this.key,
-          ciphertext as Uint8Array<ArrayBuffer>,
-        );
-        const frame = copyUnsharedUint8Array(
-          new Uint8Array(plaintext),
-          1,
-          1024 * 1024,
-          'accepted publication',
-        );
-        if (!documentBytesEqual(await digest(frame), publication.id))
-          throw new Error('Publication commitment mismatch');
-        result.push(frame);
-      }
+      const result = await this.readPublications(
+        this.acceptedPublicationBindings,
+        this.revision,
+      );
       if (
         this.failed ||
         this.active ||
@@ -721,26 +749,119 @@ export class DocumentReplayJournal {
         )
       )
         throw new Error('Publication anchor is not current');
-      return result;
+      this.pendingPublicationBindings = result.bindings;
+      return result.frames;
     } catch (error) {
       this.failed = true;
       throw error;
     }
   }
 
-  private publicationAAD(revision: number, id: Uint8Array): Uint8Array {
+  private async readPublications(
+    accepted: ReadonlyMap<string, number>,
+    maximumRevision: number,
+  ): Promise<{
+    frames: Uint8Array[];
+    bindings: Map<string, PublicationBinding>;
+  }> {
+    const publications = this.store.loadPublications
+      ? await this.store.loadPublications(this.storageKey)
+      : (await this.store.load(this.storageKey)).publications;
+    if (publications === undefined)
+      return { frames: [], bindings: new Map<string, PublicationBinding>() };
+    if (!Array.isArray(publications) || publications.length > 16)
+      throw new Error('Invalid document publication queue');
+    let bytes = 0;
+    const owned = publications.map((value) => {
+      const frame = copyUnsharedUint8Array(
+        value.frame,
+        1,
+        Math.min(
+          MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
+          16 * 1024 * 1024 - bytes,
+        ),
+        'stored document publication',
+      );
+      bytes += frame.length;
+      return {
+        id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
+        frame,
+      };
+    });
+    const result: Uint8Array[] = [],
+      bindings = new Map<string, PublicationBinding>();
+    const seenTokens = new Set<string>();
+    for (const publication of owned) {
+      const reader = new DocumentBinaryReader(
+        publication.frame,
+        MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
+      );
+      const revision = reader.number(8),
+        token = reader.fixed(32),
+        nonce = reader.fixed(12),
+        ciphertext = reader.bytes(1024 * 1024 + 16);
+      reader.end();
+      const id = documentBytesId(publication.id),
+        tokenId = documentBytesId(token);
+      if (
+        !isAcceptedDocumentPublication(
+          revision,
+          maximumRevision,
+          accepted.get(tokenId) ?? 0,
+        ) ||
+        bindings.has(id) ||
+        seenTokens.has(tokenId)
+      )
+        throw new Error(
+          'Publication is not bound to the accepted journal branch',
+        );
+      const plaintext = await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce as Uint8Array<ArrayBuffer>,
+          additionalData: this.publicationAAD(
+            revision,
+            publication.id,
+            token,
+          ) as Uint8Array<ArrayBuffer>,
+        },
+        this.key,
+        ciphertext as Uint8Array<ArrayBuffer>,
+      );
+      const frame = copyUnsharedUint8Array(
+        new Uint8Array(plaintext),
+        1,
+        1024 * 1024,
+        'accepted publication',
+      );
+      if (!documentBytesEqual(await digest(frame), publication.id))
+        throw new Error('Publication commitment mismatch');
+      result.push(frame);
+      bindings.set(id, { token, revision });
+      seenTokens.add(tokenId);
+    }
+    return { frames: result, bindings };
+  }
+
+  private publicationAAD(
+    revision: number,
+    id: Uint8Array,
+    token: Uint8Array,
+  ): Uint8Array {
     return new DocumentBinaryWriter()
       .fixed(PUBLICATION_DOMAIN)
       .text(this.documentId)
       .fixed(this.genesis)
       .integer(revision, 8)
       .fixed(id)
+      .fixed(token)
       .finish();
   }
 
   private async sealPublication(
     revision: number,
     id: Uint8Array,
+    token: Uint8Array,
     frame: Uint8Array,
   ): Promise<Uint8Array> {
     const nonce = crypto.getRandomValues(new Uint8Array(12));
@@ -752,6 +873,7 @@ export class DocumentReplayJournal {
           additionalData: this.publicationAAD(
             revision,
             id,
+            token,
           ) as Uint8Array<ArrayBuffer>,
         },
         this.key,
@@ -760,6 +882,7 @@ export class DocumentReplayJournal {
     );
     return new DocumentBinaryWriter(MAX_DOCUMENT_STORED_PUBLICATION_BYTES)
       .integer(revision, 8)
+      .fixed(token)
       .fixed(nonce)
       .bytes(ciphertext, 1024 * 1024 + 16)
       .finish();
@@ -768,7 +891,9 @@ export class DocumentReplayJournal {
   async publicationSent(frame: Uint8Array): Promise<void> {
     if (!this.store.publicationSent)
       throw new Error('Journal store lacks publication support');
-    await this.store.publicationSent(this.storageKey, await digest(frame));
+    const id = await digest(frame);
+    await this.store.publicationSent(this.storageKey, id);
+    this.pendingPublicationBindings.delete(documentBytesId(id));
   }
 
   private acceptanceAAD(revision: number, commitment: Uint8Array): Uint8Array {

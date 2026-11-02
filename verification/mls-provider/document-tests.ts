@@ -403,7 +403,9 @@ export async function runProductionDocumentChecks() {
     );
     const duplicate = makeDocument(0);
     await rejects(() => duplicate.receiveSecurityFrame(first[0].data));
-    await rejects(() => duplicate.applySecurityAuthorityUpdate(new Uint8Array([1])));
+    await rejects(() =>
+      duplicate.applySecurityAuthorityUpdate(new Uint8Array([1])),
+    );
     await rejects(() => duplicate.open());
     const afterDuplicate = await journalStores[0].load(
       hex(f.logs[0].genesisId),
@@ -426,6 +428,50 @@ export async function runProductionDocumentChecks() {
     check(
       read(docs[1]).duplicateSurvives === 5,
       'live mutation remains deliverable',
+    );
+    const originalCommit = journalStores[0].commit.bind(journalStores[0]);
+    let abandoned!: { id: Uint8Array; frame: Uint8Array };
+    journalStores[0].commit = async (...args) => {
+      abandoned = { id: args[5]!.id.slice(), frame: args[5]!.frame.slice() };
+      throw new Error('Injected transaction abort');
+    };
+    await rejects(() => docs[0].change(change('abortedBranch', 6)));
+    check(
+      publications.length === 0,
+      'aborted durable write is never published',
+    );
+    await docs[0].close();
+    journalStores[0].commit = originalCommit;
+    docs[0] = makeDocument(0);
+    await docs[0].open();
+    check(
+      read(docs[0]).abortedBranch === undefined,
+      'aborted native branch is discarded',
+    );
+    await docs[0].change(change('acceptedBranch', 8));
+    const acceptedPublication = publications.splice(0);
+    check(
+      acceptedPublication.length === 1,
+      'replacement branch emits one admitted frame',
+    );
+    await docs[1].receiveSecurityFrame(acceptedPublication[0].data);
+    await docs[0].close();
+    const loadPublications = journalStores[0].loadPublications.bind(
+      journalStores[0],
+    );
+    journalStores[0].loadPublications = async () => [abandoned];
+    const poisoned = makeDocument(0);
+    await rejects(() => poisoned.open());
+    check(
+      publications.length === 0,
+      'a retained aborted publication cannot escape after revision reuse',
+    );
+    journalStores[0].loadPublications = loadPublications;
+    docs[0] = makeDocument(0);
+    await docs[0].open();
+    check(
+      read(docs[0]).acceptedBranch === 8,
+      'accepted native branch survives aborted publication injection',
     );
     const pubsub = swarms[0].heliaNode.libp2p.services.pubsub as any;
     const publish = pubsub.publish;
@@ -470,6 +516,7 @@ export async function runProductionDocumentChecks() {
       durableReplaySuppression: true,
       durablePublicationRetry: true,
       duplicateActivationIsolated: true,
+      abortedPublicationBranchRejected: true,
       roleHistoryCopiedOnlyAtCheckpoints: true,
       indexedDB: typeof indexedDB !== 'undefined',
     };
