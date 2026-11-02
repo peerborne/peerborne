@@ -213,7 +213,13 @@ CRDT adapters, IndexedDB and independent anchor conformance checked separately.
 The content policy proves exact replay, gap, parent and role admission; the
 journal policy proves exact current/single-step/reject recovery and same-group
 strict epoch advancement. Inductive histories reject counter rollback and
-same-revision substitution at every modeled step. Publication authorization requires a positive, nonfuture revision and a token bound to that revision by the authenticated accepted journal. Token generation, accepted-map reconstruction and checkpoint retention remain native property-test boundaries.
+same-revision substitution at every modeled step. Publication authorization
+requires a positive, nonfuture revision and a token bound to that revision by
+the authenticated accepted journal. Ledger contracts prove fresh bounded
+insertion, exact checkpoint retention and adoption only after anchoring. A
+finite-history lemma excludes tokens introduced only by abandoned attempts.
+Token generation, native Map ownership, authenticated decoding and storage
+readback remain property/integration boundaries.
 
 ## Property testing after proofs
 

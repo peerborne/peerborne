@@ -25,64 +25,79 @@ const create = (
   );
 
 describe('coordinated document runtime boundaries', () => {
-  test('authenticates exact prefixes, suppresses replay, and rejects damaged or cross-document ciphertext', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.array(fc.integer({ min: -10000, max: 10000 }), {
-          minLength: 1,
-          maxLength: 18,
-        }),
-        async (values) => {
-          const f = await documentFixture(),
-            a = create(f),
-            b = create(f);
-          await a.activate();
-          await b.activate();
-          const frames: Uint8Array[] = [];
-          for (const value of values)
-            frames.push(
-              await a.change((doc) => {
-                doc.push(value);
-              }),
-            );
-          if (frames.length > 1)
-            await expect(b.receive(frames[1])).rejects.toThrow('prefix');
-          for (let index = 0; index < frames.length; index++) {
-            expect(await b.receive(frames[index])).toBe(true);
-            expect(await b.receive(frames[index])).toBe(false);
-            const bad = frames[index].slice();
-            bad[bad.length - 1] ^= 1;
-            await expect(b.receive(bad)).rejects.toThrow();
-            expect(b.document).toEqual(values.slice(0, index + 1));
-          }
-          const other = {
-            authority: new TestDocumentAuthority(
+  test.each([0, 1, 2, 3, 4])(
+    'authenticates exact prefixes, suppresses replay, and rejects damaged or cross-document ciphertext (batch %i)',
+    async (batch) => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.array(fc.integer({ min: -10000, max: 10000 }), {
+            minLength: 1,
+            maxLength: 18,
+          }),
+          async (values) => {
+            const f = await documentFixture(),
+              a = create(f),
+              b = create(f);
+            await a.activate();
+            await b.activate();
+            const frames: Uint8Array[] = [];
+            for (const value of values)
+              frames.push(
+                await a.change((doc) => {
+                  doc.push(value);
+                }),
+              );
+            if (frames.length > 1)
+              await expect(b.receive(frames[1])).rejects.toThrow('prefix');
+            for (let index = 0; index < frames.length; index++) {
+              expect(await b.receive(frames[index])).toBe(true);
+              expect(await b.receive(frames[index])).toBe(false);
+              const bad = frames[index].slice();
+              bad[bad.length - 1] ^= 1;
+              await expect(b.receive(bad)).rejects.toThrow();
+              expect(b.document).toEqual(values.slice(0, index + 1));
+            }
+            const other = {
+              authority: new TestDocumentAuthority(
+                '/other-document',
+                f.coordinator.documentContext,
+                f.identity,
+              ),
+            };
+            // Deliberately reuse the same exporter and signing material across documents.
+            const c = new CoordinatedDocument(
               '/other-document',
-              f.coordinator.documentContext,
+              [],
+              testCRDT,
+              testChanges,
+              f.auth,
               f.identity,
-            ),
-          };
-          // Deliberately reuse the same exporter and signing material across documents.
-          const c = new CoordinatedDocument(
-            '/other-document',
-            [],
-            testCRDT,
-            testChanges,
-            f.auth,
-            f.identity,
-            f.identity,
-            { coordinator: f.coordinator, authority: other.authority },
-          );
-          await expect(c.receive(frames[0])).rejects.toThrow();
-          expect(c.document).toEqual([]);
-          await a.close();
-          await b.close();
-          await c.close();
+              f.identity,
+              { coordinator: f.coordinator, authority: other.authority },
+            );
+            await expect(c.receive(frames[0])).rejects.toThrow();
+            expect(c.document).toEqual([]);
+            await a.close();
+            await b.close();
+            await c.close();
+          },
+        ),
+        {
+          seed:
+            batch === 0
+              ? 2011131
+              : batch === 1
+                ? 2011132
+                : batch === 2
+                  ? 2011133
+                  : batch === 3
+                    ? 2011134
+                    : 2011135,
+          numRuns: 7,
         },
-      ),
-      { seed: 2011131, numRuns: 35 },
-    );
-  });
+      );
+    },
+  );
 
   test('discards staged changes if authority or the authenticated epoch changes during signing', async () => {
     for (const action of ['role', 'epoch', 'signer-error'] as const) {
