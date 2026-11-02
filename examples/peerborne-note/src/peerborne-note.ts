@@ -505,7 +505,11 @@ export class PeerborneNoteSession {
     const maintain = (): void => {
       if (!this.sharingActive) return;
       this.sharingTask = this.reconnectSharing().finally(() => {
-        if (this.sharingActive) this.sharingTimer = setTimeout(maintain, 5000);
+        if (this.sharingActive)
+          this.sharingTimer = setTimeout(
+            maintain,
+            this.sharingFailed ? 30_000 : 5000,
+          );
       });
     };
     maintain();
@@ -520,14 +524,25 @@ export class PeerborneNoteSession {
     );
     let errorType: ConnectionProgress['errorType'];
     try {
-      await this.peerborne.connect([this.relayMultiaddr!], {
-        signal: controller.signal,
-        maxAttempts: 3,
-        retryDelayMs: 5000,
-        onProgress: (event) => {
-          errorType = event.errorType;
-        },
-      });
+      const relayId = this.relayMultiaddr!.slice(
+        this.relayMultiaddr!.lastIndexOf('/p2p/') + 5,
+      );
+      const connected = this.peerborne.libp2p
+        .getConnections()
+        .some(
+          (connection) =>
+            connection.remotePeer.toString() === relayId &&
+            connection.status === 'open',
+        );
+      if (!connected)
+        await this.peerborne.connect([this.relayMultiaddr!], {
+          signal: controller.signal,
+          maxAttempts: 3,
+          retryDelayMs: 5000,
+          onProgress: (event) => {
+            errorType = event.errorType;
+          },
+        });
       await waitForCircuitAddress(
         this.peerborne,
         this.relayMultiaddr!,

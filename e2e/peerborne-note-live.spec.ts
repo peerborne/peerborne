@@ -12,7 +12,7 @@ test.beforeEach(async () => {
     return;
   if (lastTestFinishedAt === undefined) return;
   // Separate independent sessions to respect the public demo relay's burst cap.
-  const cooldown = Math.max(0, 25_000 - (Date.now() - lastTestFinishedAt));
+  const cooldown = Math.max(0, 60_000 - (Date.now() - lastTestFinishedAt));
   if (cooldown > 0)
     await new Promise((resolve) => setTimeout(resolve, cooldown));
 });
@@ -66,6 +66,10 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
   let recipientContext = await chromium.launchPersistentContext(profile);
   const founder = await founderContext.newPage();
   let recipient = await recipientContext.newPage();
+  let founderSockets = 0;
+  founder.on('websocket', () => {
+    founderSockets++;
+  });
   const founderErrors = failOnRuntimeErrors(founder);
   const recipientErrors = failOnRuntimeErrors(recipient);
 
@@ -99,6 +103,9 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
       founder.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
     await expect(recipientEditor).toHaveValue(founderEdit);
+    const healthySockets = founderSockets;
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+    expect(founderSockets).toBe(healthySockets);
 
     await recipientContext.close();
     const offlineEdit = `While editor was closed ${crypto.randomUUID()}`;
