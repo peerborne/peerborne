@@ -164,6 +164,7 @@ export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
+export * from './document-crdt-session.js';
 export {
   GroupDocumentOperationError,
   type GroupDocumentOperationOptions,
@@ -441,4 +442,7 @@ export type {
 export { MAX_DOCUMENT_CHECKPOINT_BYTES } from './document-checkpoint.js';
 export type { DocumentCheckpoint } from './document-checkpoint.js';
 
-export * from './document-crdt-session.js';
+export * from './coordinated-document.js';
+export * from './document-authority-log.js';
+export * from './document-replay-journal.js';
+export * from './document-journal-store.js';

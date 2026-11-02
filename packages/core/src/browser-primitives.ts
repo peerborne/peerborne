@@ -32,6 +32,7 @@ export * from './group-security-rollback-anchor.js';
 export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
+export * from './document-crdt-session.js';
 export {
   GroupDocumentOperationError,
   type GroupDocumentOperationOptions,
@@ -43,4 +44,7 @@ export * from './webcrypto-group-state-protector.js';
 
 export { canonicalKeychain } from './keychain-canonical.js';
 
-export * from './document-crdt-session.js';
+export * from './coordinated-document.js';
+export * from './document-authority-log.js';
+export * from './document-replay-journal.js';
+export * from './document-journal-store.js';

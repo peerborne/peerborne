@@ -1,3 +1,4 @@
+import type { CoordinatedDocumentOptions } from './coordinated-document.js';
 /**
  * A Swarm is for opening documents
  * and it allows you to store your configuration in a single line when you use it as a library
@@ -1692,6 +1693,7 @@ export class Peerborne<
    */
   doc(
     documentPath: string,
+    options?: { readonly security: CoordinatedDocumentOptions },
   ): PeerborneDocument<
     DocType,
     ChangesType,
@@ -1713,6 +1715,7 @@ export class Peerborne<
       this._changesSerializer,
       this._syncMessageSerializer,
       this._loadMessageSerializer,
+      options,
     );
   }
 

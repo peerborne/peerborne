@@ -150,3 +150,24 @@ transactional durable delivery/ACKs, independent rollback protection,
 partition/rejoin, full resource budgets, and independent security review also
 remain required. This project does not complete #186 or establish Peerborne
 forward-secrecy or production-readiness claims.
+
+
+## Production document path
+
+The suite also runs `document-tests.ts` in Node and Chromium. It creates real
+`Peerborne`/`PeerborneDocument` instances in coordinated mode and uses native
+Automerge and Yjs, MLS exporters, Ed25519 and AES-GCM. Chromium uses the actual
+IndexedDB journal driver; Node uses its memory reference store. Pubsub delivery
+is an explicit deterministic simulation. Neither result is WebRTC/NAT evidence.
+
+The checks cover concurrent author convergence, a composed change transaction,
+mandatory signatures despite the legacy signing toggle, malformed ciphertext,
+legacy load/ACL/sync rejection, more than 128 accepted deltas, checkpoint
+reconstruction, replay floors and failed-publication retry across document
+reconstruction. Production source and built-module hashes are recorded with
+the evidence. The test page allows `wasm-unsafe-eval` for Automerge's native Wasm;
+its CSP still prohibits external scripts and connections.
+
+See [coordinated document security](../../docs/coordinated-document-security.md)
+for setup, formal/runtime boundaries and the remaining content recovery,
+physical storage, crypto and performance qualification work.

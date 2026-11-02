@@ -7,6 +7,8 @@ on:
       - 'verification/mls-candidate/probe.mjs'
       - 'verification/mls-candidate/native-crypto.mjs'
       - 'packages/core/src/**'
+      - 'packages/automerge/src/**'
+      - 'packages/yjs/src/**'
       - 'yarn.lock'
       - '.github/workflows/mls-provider.yml'
   workflow_dispatch:

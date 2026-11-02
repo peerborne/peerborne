@@ -571,9 +571,9 @@ export class GroupSecurityCoordinator {
    * All visible mutation must finish synchronously; finalizers must not schedule
    * later mutation. Arbitrary callback correctness is a trusted boundary.
    *
-   * This seam defines no wire format, role policy, content replay persistence,
-   * or document runtime mode. Callers must bind their document ID, operation
-   * kind, causal parents and signing authority during preparation.
+   * CoordinatedDocument supplies the production content format, role policy
+   * and replay journal. Other consumers must bind document identity, causal
+   * parents and signing authority in their own preparation.
    */
   runDocumentOperation(
     expected: GroupSecurityDocumentContext,

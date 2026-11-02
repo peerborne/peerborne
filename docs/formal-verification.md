@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 94 production functions in 29 proof units. The runtime calls
+LemmaScript checks 100 production functions in 31 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -93,10 +93,12 @@ Node/Chromium MLS checks exercise a
 fixture-only AES-GCM/Ed25519 content envelope, cross-document replay, a reader
 forging a writer message, tampering, rekey retry, credential revocation without
 rekey, and removal during preparation.
-This is a coordinator seam. `PeerborneDocument` does not yet route through it;
-it supplies no document wire format, causal role engine, durable content replay
-log or cryptographic secrecy proof. A trusted preparation callback must verify
-signatures and causal authorization and stage without visible mutation.
+The seam is now consumed by the opt-in [coordinated document runtime](coordinated-document-security.md),
+which supplies a production content format, signed controller/role history and
+device-key encrypted content journal. Native MLS checks also exercise the actual
+Automerge/Yjs document APIs over simulated pubsub. Provider cryptography, native
+CRDT behavior, callback correctness and physical storage remain runtime/trust
+boundaries; this is not a cryptographic secrecy or network-liveness proof.
 
 The capability tables are frozen to preserve the constant-model assumption.
 Numeric contracts bound arithmetic to domains where JavaScript executes the
@@ -193,9 +195,20 @@ root shared-type preservation and staged checkpoint merge/discard. Native update
 bytes do not encode root-type declarations; applications must use the same root
 schema on each replica.
 
+The [coordinator-backed document mode](coordinated-document-security.md) calls the
+proved content-sequence, role, journal-recovery and epoch-advancement policies
+from the production document path. Its new finite-history lemmas establish
+monotone content prefixes and journal anchor recovery, with native crypto,
+CRDT adapters, IndexedDB and independent anchor conformance checked separately.
+
+The content policy proves exact replay, gap, parent and role admission; the
+journal policy proves exact current/single-step/reject recovery and same-group
+strict epoch advancement. Inductive histories reject counter rollback and
+same-revision substitution at every modeled step. Publication authorization requires a positive, nonfuture revision and a token bound to that revision by the authenticated accepted journal. Token generation, accepted-map reconstruction and checkpoint retention remain native property-test boundaries.
+
 ## Property testing after proofs
 
-The inventory audits 38 property-suite files containing 88 explicit
+The inventory audits 42 property-suite files containing 97 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

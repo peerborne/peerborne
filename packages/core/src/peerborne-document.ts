@@ -1,3 +1,4 @@
+import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
@@ -930,8 +931,12 @@ export class PeerborneDocument<
   private _document: DocType;
   get document(): DocType {
     this._assertNoIncompleteBootstrapLoad();
-    return this._document;
+    return this._coordinated?.document ?? this._document;
   }
+
+  private readonly _coordinated?: CoordinatedDocument<
+    DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
+  >;
 
   // Document readers ACL.
   private _readers;
@@ -1071,6 +1076,8 @@ export class PeerborneDocument<
   public async setKemKeyPair(
     keyPair: CryptoKeyPair | undefined,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     // Snapshot synchronously before queueing. A caller-owned CryptoKeyPair is
     // an ordinary mutable record even though its CryptoKey handles are not.
     const snapshot = keyPair && snapshotKemKeyPair(keyPair);
@@ -1123,12 +1130,16 @@ export class PeerborneDocument<
   public async createInvitation(
     options: CreateInvitationOptions,
   ): Promise<InvitationOfferV1> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     this._assertNoIncompleteBootstrapLoad();
     return this.swarm.createInvitationForDocument(this, options);
   }
 
   /** @internal Validate the deliberately narrow initial membership topology. */
   public async assertCanCreateInitialInvitation(): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     this._assertNoIncompleteBootstrapLoad();
     this._assertInitialInvitationCapacityProfile();
     await this._ensureCurrentUserCanWrite();
@@ -1515,6 +1526,7 @@ export class PeerborneDocument<
      * LoadMessageSerializer is responsible for serializing/deserializing CRDTLoadMessages.
      */
     private readonly _loadMessageSerializer: LoadMessageSerializer,
+    options?: { readonly security: CoordinatedDocumentOptions },
   ) {
     this.heliaFs = unixfs(this.swarm.heliaNode);
 
@@ -1530,6 +1542,14 @@ export class PeerborneDocument<
     // open() is called (e.g. when load() triggers a change). open() will
     // recompute this with the configured prefix.
     this._topic = this._computeTopic();
+    if (options) {
+      this._coordinated = new CoordinatedDocument(
+        documentPath, this._document, _crdtProvider, _changesSerializer,
+        _authProvider, _userKey, _userPublicKey,
+        { ...options.security, persistPublications: true },
+      );
+      this._topic = `peerborne/coordinated/v1/${this._coordinated.routingId}`;
+    }
   }
 
   // Helpers ------------------------------------------------------------------
@@ -1638,6 +1658,7 @@ export class PeerborneDocument<
 
   /** Serialize a public state transition and recheck bootstrap integrity. */
   private _runStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this._coordinated) return Promise.reject(new Error('Legacy document operations are unavailable in coordinated mode'));
     return this._mutationQueue.run(() => {
       this._assertNoIncompleteBootstrapLoad();
       return operation();
@@ -3085,6 +3106,8 @@ export class PeerborneDocument<
     stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     return this._handleLoadRequestData(message, stream, 'load-response-v4', admission);
   }
 
@@ -3093,6 +3116,8 @@ export class PeerborneDocument<
     stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     return this._handleLoadRequestData(message, stream, 'invitation-catch-up-v1', admission);
   }
 
@@ -4387,6 +4412,8 @@ export class PeerborneDocument<
     stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     try {
       const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
@@ -4492,6 +4519,8 @@ export class PeerborneDocument<
     stream: ProtocolWriteStream,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     try {
       const bootstrapRevision = this._captureBootstrapResponseRevision();
       if (!isSharedProtocolHandlerActive(admission)) return;
@@ -6064,6 +6093,8 @@ export class PeerborneDocument<
    * left incomplete state. Discard an instance with incomplete application.
    */
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     this._assertNoIncompleteBootstrapLoad();
 
     const shuffledPeers = await this._shuffledPeers();
@@ -6252,7 +6283,7 @@ export class PeerborneDocument<
   public async open(): Promise<boolean> {
     if (this._activationInProgress) throw new Error('Document activation is in progress');
     this._activationInProgress = true;
-    try { return await this._open(); }
+    try { return this._coordinated ? await this._openCoordinated() : await this._open(); }
     finally { this._activationInProgress = false; }
   }
 
@@ -6368,6 +6399,8 @@ export class PeerborneDocument<
   public async restoreCheckpoint(
     checkpoint: DocumentCheckpoint,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     const record = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
       checkpoint,
       'Document checkpoint',
@@ -6548,8 +6581,123 @@ export class PeerborneDocument<
       throw new Error('Cannot create a document with existing local state');
     }
     this._activationInProgress = true;
-    try { return await this._open(undefined, true); }
+    try { return this._coordinated ? await this._openCoordinated() : await this._open(undefined, true); }
     finally { this._activationInProgress = false; }
+  }
+
+  private async _openCoordinated(): Promise<boolean> {
+    if (this._subscribed) throw new Error('Document is already open');
+    const engine = this._coordinated!;
+    if (
+      this.swarm.validateDocumentPath &&
+      (await this.swarm.validateDocumentPath(
+        this.documentPath,
+        this._userPublicKey,
+      )) !== true
+    )
+      throw new Error('Document path is not authorized');
+    const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
+    let registered = false;
+    try {
+      this.swarm.registerDocument(this.documentPath, this);
+      registered = true;
+      await engine.activate();
+      this._pubsubHandler = (event) => {
+        if (event.detail.topic !== this._topic) return;
+        void this.receiveSecurityFrame(event.detail.data).catch(() => {});
+      };
+      pubsub.addEventListener('message', this._pubsubHandler as EventListener);
+      pubsub.subscribe(this._topic);
+      this._subscribed = true;
+      return true;
+    } catch (error) {
+      if (registered) await this.close();
+      else await engine.close();
+      throw error;
+    }
+  }
+
+  /** Accept only the encrypted, signed coordinator document format. */
+  public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
+    if (!this._coordinated)
+      throw new Error('Document does not use coordinated security');
+    if (!this._subscribed) throw new Error('Coordinated document is not open');
+    const applied = await this._coordinated.receive(frame);
+    if (applied) {
+      this._document = this._coordinated.document;
+      const readers = await this.getReaders(),
+        writers = await this.getWriters();
+      this._dispatchRemoteUpdateHandlers({
+        handlers: Object.values(this._remoteHandlers),
+        document: this._document,
+        readers,
+        writers,
+        hashes: [],
+      });
+    }
+    return applied;
+  }
+
+  public async applySecurityAuthorityUpdate(
+    encoded: Uint8Array,
+  ): Promise<void> {
+    if (!this._coordinated)
+      throw new Error('Document does not use coordinated security');
+    if (!this._subscribed) throw new Error('Coordinated document is not open');
+    await this._coordinated.applyAuthorityUpdate(encoded);
+  }
+
+  private _securityPublicationTask?: Promise<void>;
+  private _securityPublicationQueued?: Promise<void>;
+
+
+  /** Retry durable encrypted publications without running local change callbacks again. */
+  public async retrySecurityPublications(): Promise<void> {
+    if (!this._coordinated || !this._subscribed)
+      throw new Error('Coordinated document is not open');
+    if (this._securityPublicationQueued) return this._securityPublicationQueued;
+    const previous = this._securityPublicationTask ?? Promise.resolve();
+    const task: Promise<void> = previous
+      .catch(() => {})
+      .then(async () => {
+        if (this._securityPublicationQueued === task)
+          this._securityPublicationQueued = undefined;
+        for (const frame of await this._coordinated!.pendingPublications()) {
+          await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+            this._topic,
+            frame,
+          );
+          await this._coordinated!.publicationSent(frame);
+        }
+      })
+      .finally(() => {
+        if (this._securityPublicationTask === task)
+          this._securityPublicationTask = undefined;
+        if (this._securityPublicationQueued === task)
+          this._securityPublicationQueued = undefined;
+      });
+    this._securityPublicationTask = task;
+    this._securityPublicationQueued = task;
+    return task;
+  }
+
+  private async _changeCoordinated(
+    change: ChangeFnType,
+    message?: string,
+  ): Promise<void> {
+    if (!this._subscribed) throw new Error('Coordinated document is not open');
+    await this._coordinated!.change(change, message);
+    this._document = this._coordinated!.document;
+    void this._fireLocalUpdateHandlers([]).catch(() =>
+      this._reportLocalUpdateHandlerFailure(),
+    );
+    try {
+      await this.retrySecurityPublications();
+    } catch {
+      throw new Error(
+        'Document change committed; call retrySecurityPublications to retry encrypted delivery',
+      );
+    }
   }
 
   private async _open(
@@ -6820,6 +6968,7 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public async close() {
+    await this._coordinated?.close();
     // Use the cached topic for cleanup; it is initialized in the constructor.
     const topic = this._topic;
 
@@ -7457,6 +7606,27 @@ export class PeerborneDocument<
    * @throws {Error} If any step in the commit pipeline fails.
    */
   public async endChange(message?: string) {
+    if (this._coordinated) {
+      if (!this._inTransaction || this._committing)
+        throw new Error('No available document transaction');
+      const pending = [...this._pendingChangeFns];
+      this._inTransaction = false;
+      this._pendingChangeFns = [];
+      this._committing = true;
+      try {
+        if (pending.length)
+          await this._changeCoordinated(
+            ((doc: unknown) => {
+              for (const change of pending)
+                (change as (doc: unknown) => void)(doc);
+            }) as ChangeFnType,
+            message,
+          );
+      } finally {
+        this._committing = false;
+      }
+      return;
+    }
     return this._runStateMutation(() => this._endChangeUnlocked(message));
   }
 
@@ -7581,6 +7751,11 @@ export class PeerborneDocument<
    * @param message An optional change message/description to include.
    */
   public async change(changeFn: ChangeFnType, message?: string) {
+    if (this._coordinated) {
+      if (this._inTransaction)
+        throw new Error('Cannot change during an active transaction');
+      return this._changeCoordinated(changeFn, message);
+    }
     return this._runStateMutation(() =>
       this._changeUnlocked(changeFn, message),
     );
@@ -7785,6 +7960,7 @@ export class PeerborneDocument<
    * @return List of public keys with write access.
    */
   public async getWriters(): Promise<PublicKey[]> {
+    if (this._coordinated) return this._coordinated.publicKeys(true);
     this._assertNoIncompleteBootstrapLoad();
     const writers = await retryACLConflict(() => this._writers.users());
     this._assertNoIncompleteBootstrapLoad();
@@ -8044,6 +8220,7 @@ export class PeerborneDocument<
    * @return List of public keys with read access.
    */
   public async getReaders(): Promise<PublicKey[]> {
+    if (this._coordinated) return this._coordinated.publicKeys(false);
     this._assertNoIncompleteBootstrapLoad();
     const [readers, writers] = await Promise.all([
       retryACLConflict(() => this._readers.users()),
@@ -8377,6 +8554,8 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
   ): Promise<InvitationBootstrapBundle> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     this._assertNoIncompleteBootstrapLoad();
     const stableReaderKemPublicKey =
       snapshotReaderKemPublicKey(readerKemPublicKey);
@@ -8782,6 +8961,8 @@ export class PeerborneDocument<
     role: 'reader' | 'editor',
     founderAddress: string,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     if (this._bootstrapLoadApplicationState !== 'pristine') {
       throw new Error(
         `Invitation bootstrap for ${this.documentPath} requires a pristine document instance`,
@@ -9318,6 +9499,8 @@ export class PeerborneDocument<
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     return this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
       await this._handleBeeKEMWelcomeRequestDataUnlocked(
@@ -10529,6 +10712,8 @@ export class PeerborneDocument<
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
     return this._runStateMutation(async () => {
       if (!isSharedProtocolHandlerActive(admission)) return;
       await this._handleBeeKEMPathUpdateRequestDataUnlocked(
