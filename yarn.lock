@@ -4780,7 +4780,7 @@ __metadata:
     multiformats: "npm:^14.0.5"
     ts-jest: "npm:^29.4.14"
     ts-node: "npm:^10.1.0"
-    tsx: "npm:4.23.12"
+    tsx: "npm:4.23.15"
     typedoc: "npm:^0.28.20"
     typescript: "npm:^5.9.3"
     uint8arraylist: "npm:^3.0.2"
@@ -4806,7 +4806,7 @@ __metadata:
     react-dom: "npm:^19.3.1"
     ts-jest: "npm:^29.4.14"
     ts-node: "npm:^10.1.0"
-    tsx: "npm:4.23.12"
+    tsx: "npm:4.23.15"
     typescript: "npm:^5.9.3"
   peerDependencies:
     react: ^18.0.0 || ^19.0.0
@@ -4918,7 +4918,7 @@ __metadata:
     react-bootstrap: "npm:^2.10.10"
     react-dom: "npm:^19.3.1"
     react-router-dom: "npm:^7.18.4"
-    tsx: "npm:4.23.12"
+    tsx: "npm:4.23.15"
     typescript: "npm:^5.9.3"
     uuid: "npm:^14.0.2"
     vite: "npm:^8.3.5"
@@ -15318,7 +15318,7 @@ __metadata:
   resolution: "root-workspace-0b6124@workspace:."
   dependencies:
     "@playwright/test": "npm:^1.58.2"
-    tsx: "npm:4.23.12"
+    tsx: "npm:4.23.15"
   languageName: unknown
   linkType: soft
 
@@ -16464,9 +16464,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tsx@npm:4.23.12":
-  version: 4.23.12
-  resolution: "tsx@npm:4.23.12"
+"tsx@npm:4.23.15":
+  version: 4.23.15
+  resolution: "tsx@npm:4.23.15"
   dependencies:
     esbuild: "npm:~0.28.0"
     fsevents: "npm:~2.3.3"
@@ -16475,7 +16475,7 @@ __metadata:
       optional: true
   bin:
     tsx: dist/cli.mjs
-  checksum: 10/167a5571cb211aff257d200cd75a1003b1e0e59d641c1e6ff99f6cdfada46ff6ce311e105722699b4763feb1371b2d8084bcc413c7e54aae3761c852817dc0b0
+  checksum: 10/f531aca9143a8ba08cf3053bd403a8b036d7bfffacc83c611486215d8cd41febad754d89f02c0bf92e55b747518b9ea124bfe76b55262b40be850f3ee938e4ff
   languageName: node
   linkType: hard
 
