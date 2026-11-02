@@ -492,6 +492,7 @@ export class YjsProvider
     let shadow: Doc | undefined;
     let shadowVersion = 0;
     let acceptedShadowVersion = 0;
+    let acceptedShadowRoots = new Map<string, object | null>();
     let revision = 0;
     let closed = false;
     let invalidated = false;
@@ -514,6 +515,7 @@ export class YjsProvider
     };
     document.on('updateV2', onUpdate);
     const assertHealthy = () => {
+      if (document.isDestroyed) invalidated = true;
       if (closed || invalidated)
         throw new Error(
           'Document session is closed or changed outside admission',
@@ -522,7 +524,7 @@ export class YjsProvider
     const discardShadow = () => {
       const previous = shadow;
       shadow = undefined;
-      previous?.destroy();
+      if (previous && !previous.isDestroyed) previous.destroy();
     };
     const complete = (value: Doc) => {
       if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
@@ -542,6 +544,19 @@ export class YjsProvider
         'Coordinated Yjs documents support shared Y.Map, Y.Array and Y.Text values',
       );
     };
+    const captureRoots = (value: Doc) =>
+      new Map(
+        [...value.share].map(([name, type]) => [
+          name,
+          Object.getPrototypeOf(type) as object | null,
+        ]),
+      );
+    const sameRoots = (value: Doc, roots: ReadonlyMap<string, object | null>) =>
+      value.share.size === roots.size &&
+      [...value.share].every(
+        ([name, type]) =>
+          roots.has(name) && roots.get(name) === Object.getPrototypeOf(type),
+      );
     const compatibleRoots = (source: Doc, target: Doc) => {
       for (const [name, value] of source.share) {
         const expected = rootType(value);
@@ -567,7 +582,9 @@ export class YjsProvider
         complete(document);
         if (
           shadow &&
-          (shadowVersion !== acceptedShadowVersion ||
+          (shadow.isDestroyed ||
+            !sameRoots(shadow, acceptedShadowRoots) ||
+            shadowVersion !== acceptedShadowVersion ||
             !idle(shadow) ||
             hasPending(shadow))
         )
@@ -578,6 +595,7 @@ export class YjsProvider
           applyUpdateV2(shadow, this.getSnapshot(document));
           shadowVersion = 0;
           acceptedShadowVersion = 0;
+          acceptedShadowRoots = captureRoots(shadow);
           shadow.on('updateV2', () => {
             if (shadowVersion === Number.MAX_SAFE_INTEGER) invalidated = true;
             else shadowVersion++;
@@ -589,6 +607,8 @@ export class YjsProvider
           copyRootTypes(document, shadow);
           stable = new Uint8Array(prepare(shadow));
           assertHealthy();
+          if (shadow.isDestroyed)
+            throw new Error('Document mirror was destroyed during preparation');
           if (!idle(document) || !idle(shadow))
             throw new Error('Document transaction is still active');
           if (
@@ -603,11 +623,15 @@ export class YjsProvider
           throw error;
         }
         const stagedVersion = shadowVersion;
+        const stagedRoots = captureRoots(shadow);
         const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
           new Uint8Array(stable),
           () =>
             !closed &&
             !invalidated &&
+            !document.isDestroyed &&
+            !shadow!.isDestroyed &&
+            sameRoots(shadow!, stagedRoots) &&
             active === plan &&
             revision === baseRevision &&
             shadowVersion === stagedVersion &&
@@ -622,6 +646,9 @@ export class YjsProvider
               document.transact((transaction) => {
                 commitTransaction = transaction;
                 if (
+                  document.isDestroyed ||
+                  shadow!.isDestroyed ||
+                  !sameRoots(shadow!, stagedRoots) ||
                   hasPending(document) ||
                   hasPending(shadow!) ||
                   !compatibleRoots(document, shadow!) ||
@@ -643,11 +670,18 @@ export class YjsProvider
                 applyUpdateV2(document, stable, commitOrigin);
               }, commitOrigin);
               complete(document);
-              if (closed || invalidated)
+              if (
+                closed ||
+                invalidated ||
+                document.isDestroyed ||
+                shadow!.isDestroyed ||
+                !sameRoots(shadow!, stagedRoots)
+              )
                 throw new Error(
                   'Document changed outside admission while committing',
                 );
               acceptedShadowVersion = stagedVersion;
+              acceptedShadowRoots = stagedRoots;
               active = undefined;
             } catch (error) {
               invalidated = true;
