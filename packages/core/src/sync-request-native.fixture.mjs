@@ -10,6 +10,7 @@ import {
   isSyncRequest,
   isSyncRequestFresh,
   syncRequestSigningPayload,
+  syncSnapshotHint,
   MAX_SYNC_REQUEST_BYTES,
 } from './sync-request.ts';
 
@@ -52,6 +53,7 @@ function harness(identity = writer) {
     _recentTips: [],
     _topic: 'fixture',
     _lastSyncRequestAt: 0,
+    _knownSyncSnapshots: new Set(),
     _lastSyncResponseAt: 0,
     _syncRequestsSeen: new Map(),
     _writers: {
@@ -96,6 +98,7 @@ async function request(identity = reader, overrides = {}) {
     requestId: '12'.repeat(16),
     issuedAtMs: Date.now(),
     knownTips: [otherRoot],
+    knownSnapshots: [],
     ...overrides,
   };
   return {
@@ -169,6 +172,46 @@ test('replays, requests for a known root, and bursts do not amplify responses', 
   assert.equal(published.length, 1);
 });
 
+test('a known root does not suppress a missing snapshot, while known snapshots are omitted', async () => {
+  const { document, published } = harness();
+  document._latestSnapshot = {
+    state: new Uint8Array([5]),
+    signature: new Uint8Array([6]),
+    lastChangeNodeCID: root,
+    compactedCount: 1,
+    timestamp: 1,
+  };
+  await document._handleSyncRequest(
+    await request(reader, { knownTips: [root] }),
+  );
+  assert.equal(published.length, 1);
+  const first = serializer.deserializeSyncMessage(
+    await plaintext(published[0]),
+  );
+  assert.ok(first.snapshot);
+  const hint = await syncSnapshotHint(document._latestSnapshot.signature);
+  document._lastSyncResponseAt = 0;
+  await document._handleSyncRequest(
+    await request(reader, {
+      requestId: '31'.repeat(16),
+      knownTips: [root],
+      knownSnapshots: [hint],
+    }),
+  );
+  assert.equal(published.length, 1);
+  await document._handleSyncRequest(
+    await request(reader, {
+      requestId: '32'.repeat(16),
+      knownSnapshots: [hint],
+    }),
+  );
+  assert.equal(published.length, 2);
+  assert.equal(
+    serializer.deserializeSyncMessage(await plaintext(published[1])).snapshot,
+    undefined,
+  );
+});
+
 test('unknown members, forged signatures, cross-document requests and stale requests are rejected', async () => {
   const { document, published } = harness();
   const valid = await request();
@@ -236,6 +279,8 @@ test('the codec rejects malformed framing and binds every request field to its o
     { issuedAtMs: NaN },
     { issuedAtMs: -1 },
     { signature: 'not base64!' },
+    { knownSnapshots: ['invalid'] },
+    { knownSnapshots: ['ab'.repeat(32), 'ab'.repeat(32)] },
   ])
     assert.throws(() => encodeSyncRequest({ ...valid, ...change }));
   for (const change of [
@@ -244,6 +289,7 @@ test('the codec rejects malformed framing and binds every request field to its o
     { requestId: 'ab'.repeat(16) },
     { issuedAtMs: valid.issuedAtMs + 1 },
     { knownTips: [root] },
+    { knownSnapshots: ['ab'.repeat(32)] },
   ])
     assert.equal(
       await auth.verify(

@@ -4,7 +4,7 @@ import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import {
   decodeSyncRequest, encodeSyncRequest, isSyncRequest, isSyncRequestFresh,
-  syncRequestSigningPayload, SYNC_REQUEST_LIFETIME_MS, type SyncRequest,
+  syncRequestSigningPayload, syncSnapshotHint, SYNC_REQUEST_LIFETIME_MS, type SyncRequest,
 } from './sync-request.js';
 import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
@@ -6296,6 +6296,7 @@ export class PeerborneDocument<
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
   private readonly _syncRequestsSeen = new Map<string, number>();
+  private readonly _knownSyncSnapshots = new Set<string>();
 
   /** Ask current members for missed updates using the existing authenticated local membership. */
   public async requestSync(): Promise<void> {
@@ -6330,6 +6331,10 @@ export class PeerborneDocument<
           (byte) => byte.toString(16).padStart(2, '0'),
         ).join(''),
         issuedAtMs: now,
+        knownSnapshots: [...new Set([
+          ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
+          ...this._knownSyncSnapshots,
+        ])].slice(0, 32),
         knownTips: [
           ...new Set([
             this._lastSyncMessage.changeId,
@@ -6405,10 +6410,13 @@ export class PeerborneDocument<
           this._syncRequestsSeen.keys().next().value!,
         );
       const previous = this._lastSyncMessage;
+      const snapshotKnown = !this._latestSnapshot || request.knownSnapshots.includes(
+        await syncSnapshotHint(this._latestSnapshot.signature),
+      );
       if (
         !previous?.changeId ||
         !previous.changes ||
-        request.knownTips.includes(previous.changeId) ||
+        (request.knownTips.includes(previous.changeId) && snapshotKnown) ||
         now - this._lastSyncResponseAt < 2000
       )
         return;
@@ -6417,7 +6425,7 @@ export class PeerborneDocument<
         signatureContext: 'ordinary-sync-v1',
         changeId: previous.changeId,
         changes: previous.changes,
-        ...(this._latestSnapshot === undefined
+        ...(this._latestSnapshot === undefined || snapshotKnown
           ? {}
           : { snapshot: this._latestSnapshot }),
       };
@@ -7538,12 +7546,22 @@ export class PeerborneDocument<
     }
 
     let appliedSnapshot = false;
+    let receivedSnapshotHint: string | undefined;
     // Apply snapshot if present and more recent than ours.
     // Happens before full change sync so document changes that are already
     // covered by the snapshot don't need to be applied first (CRDTs handle
     // duplicate application correctly, but this avoids unnecessary work).
     if (message.snapshot) {
       const incoming = message.snapshot;
+      if (context === 'ordinary-sync-v1' && signingEnabled) {
+        try {
+          const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
+          const payload = this._buildSnapshotSignPayload(stateBytes, incoming.lastChangeNodeCID, incoming.timestamp, incoming.compactedCount);
+          if (await this._verifySnapshotSignature(payload, incoming.signature)) {
+            receivedSnapshotHint = await syncSnapshotHint(incoming.signature);
+          }
+        } catch {}
+      }
       if (
         !this._latestSnapshot ||
         incoming.compactedCount > this._latestSnapshot.compactedCount ||
@@ -7558,8 +7576,8 @@ export class PeerborneDocument<
         // WARNING: This means any peer can inject arbitrary snapshot state when
         // signing is disabled. Only disable signing in trusted or development
         // environments where all peers are known and authenticated by other means.
-        let snapshotSignatureValid = !signingEnabled;
-        if (signingEnabled) {
+        let snapshotSignatureValid = !signingEnabled || receivedSnapshotHint !== undefined;
+        if (signingEnabled && context !== 'ordinary-sync-v1') {
           try {
             const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
             const signPayload = this._buildSnapshotSignPayload(
@@ -7629,6 +7647,10 @@ export class PeerborneDocument<
       await this._fireOrDeferRemoteUpdateHandlers(
         message.snapshot!.lastChangeNodeCID ? [message.snapshot!.lastChangeNodeCID] : [],
       );
+    }
+    if (receivedSnapshotHint) {
+      this._knownSyncSnapshots.add(receivedSnapshotHint);
+      if (this._knownSyncSnapshots.size > 32) this._knownSyncSnapshots.delete(this._knownSyncSnapshots.values().next().value!);
     }
     return true;
   }

@@ -2,7 +2,7 @@ import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import { syncRequestTimeAllowed } from './policy/sync-request.js';
 
-const domain = '\u0000peerborne/sync-request/1\u0000';
+const domain = '\u0000peerborne/sync-request/2\u0000';
 const prefix = Uint8Array.from(domain, (character) => character.charCodeAt(0));
 export const MAX_SYNC_REQUEST_BYTES = 32 * 1024;
 export const SYNC_REQUEST_LIFETIME_MS = 60_000;
@@ -13,6 +13,7 @@ export interface SyncRequest {
   readonly requestId: string;
   readonly issuedAtMs: number;
   readonly knownTips: readonly string[];
+  readonly knownSnapshots: readonly string[];
   readonly signature: string;
 }
 
@@ -34,6 +35,7 @@ export function syncRequestSigningPayload(
         request.requestId,
         request.issuedAtMs,
         request.knownTips,
+        request.knownSnapshots,
       ]),
   );
   if (bytes.length > MAX_SYNC_REQUEST_BYTES)
@@ -50,6 +52,7 @@ export function encodeSyncRequest(request: SyncRequest): Uint8Array {
         request.requestId,
         request.issuedAtMs,
         request.knownTips,
+        request.knownSnapshots,
         request.signature,
       ]),
   );
@@ -65,9 +68,16 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
         bytes.subarray(prefix.length),
       ),
     );
-    if (!Array.isArray(fields) || fields.length !== 6) return;
-    const [documentId, requester, requestId, issuedAtMs, knownTips, signature] =
-      fields;
+    if (!Array.isArray(fields) || fields.length !== 7) return;
+    const [
+      documentId,
+      requester,
+      requestId,
+      issuedAtMs,
+      knownTips,
+      knownSnapshots,
+      signature,
+    ] = fields;
     if (
       typeof documentId !== 'string' ||
       documentId.length < 1 ||
@@ -83,6 +93,13 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
       knownTips.length < 1 ||
       knownTips.length > 32 ||
       new Set(knownTips).size !== knownTips.length ||
+      !Array.isArray(knownSnapshots) ||
+      knownSnapshots.length > 32 ||
+      new Set(knownSnapshots).size !== knownSnapshots.length ||
+      knownSnapshots.some(
+        (hint: unknown) =>
+          typeof hint !== 'string' || !/^[0-9a-f]{64}$/u.test(hint),
+      ) ||
       typeof signature !== 'string' ||
       signature.length < 1 ||
       signature.length > 8192
@@ -108,11 +125,21 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
       requestId,
       issuedAtMs,
       knownTips: Object.freeze(knownTips),
+      knownSnapshots: Object.freeze(knownSnapshots),
       signature,
     });
   } catch {
     return;
   }
+}
+
+export async function syncSnapshotHint(signature: Uint8Array): Promise<string> {
+  const hash = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new Uint8Array(signature)),
+  );
+  return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  );
 }
 
 export function isSyncRequestFresh(
