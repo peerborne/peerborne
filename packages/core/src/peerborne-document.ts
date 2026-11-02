@@ -6333,6 +6333,7 @@ export class PeerborneDocument<
         knownTips: [
           ...new Set([
             this._lastSyncMessage.changeId,
+            ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
             ...this._recentTips
               .slice()
               .reverse()

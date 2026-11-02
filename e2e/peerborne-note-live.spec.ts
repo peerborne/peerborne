@@ -73,6 +73,25 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
   const founderErrors = failOnRuntimeErrors(founder);
   const recipientErrors = failOnRuntimeErrors(recipient);
 
+  await recipient.addInitScript(() => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      ...args: Parameters<IDBObjectStore['put']>
+    ) {
+      if (
+        this.name === 'documents' &&
+        (window as unknown as { failNoteWrites?: boolean }).failNoteWrites
+      ) {
+        this.transaction.abort();
+        throw new DOMException(
+          'Injected note write failure',
+          'QuotaExceededError',
+        );
+      }
+      return Reflect.apply(original, this, args);
+    };
+  });
+
   try {
     const shared = await createSharedNote(founder, 'Editor');
     expect(new URL(shared.invitationUrl).hash.startsWith('#invite=')).toBe(
@@ -84,11 +103,33 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     await expect(
       recipient.getByText('Can edit', { exact: true }),
     ).toBeVisible();
+    await recipient.evaluate(() => {
+      (window as unknown as { failNoteWrites?: boolean }).failNoteWrites = true;
+    });
     await recipient.getByRole('button', { name: 'Accept invitation' }).click();
     const recipientEditor = recipient.getByRole('textbox', {
       name: 'Note text',
     });
     await expect(recipientEditor).toHaveValue(shared.initial);
+    const retry = recipient.getByRole('button', {
+      name: 'Retry saving',
+      exact: true,
+    });
+    await expect(retry).toBeVisible();
+    await retry.evaluate((button) => {
+      button.addEventListener(
+        'click',
+        () => {
+          (window as unknown as { failNoteWrites?: boolean }).failNoteWrites =
+            false;
+        },
+        { capture: true, once: true },
+      );
+    });
+    await retry.click();
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
 
     const recipientEdit = `Recipient ${crypto.randomUUID()}`;
     await recipientEditor.fill(recipientEdit);

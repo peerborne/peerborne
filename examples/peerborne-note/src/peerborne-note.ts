@@ -403,8 +403,8 @@ export class PeerborneNoteSession {
       this.recipientKemKeyPair,
     );
     this.activateDocument(document, offer.role, false);
-    await this.persistDocument();
     this.startSharing();
+    await this.persistDocument();
     return snapshot(document.document);
   }
 
