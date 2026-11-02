@@ -16,6 +16,7 @@ import {
   circuitRelayServerOptions,
   listenAddresses,
   loadConfig,
+  relayPubsubOptions,
 } from './config.js'
 import { loadOrCreateRelayIdentity } from './identity.js'
 import { IntervalGate } from './interval-gate.js'
@@ -28,7 +29,6 @@ async function main() {
     topicAllowlist,
     maxAutoTopics,
     maxAutoTopicsPerPeer,
-    gossipsubMaxTopicBytesPerPeer,
     extraTopics,
     maxConnections,
     relayLimits,
@@ -58,12 +58,7 @@ async function main() {
         identify: identify(),
         autoNat: autoNAT(),
         relay: circuitRelayServer(circuitRelayServerOptions(config)),
-        pubsub: gossipsub({
-          allowPublishToZeroTopicPeers: true,
-          canRelayMessage: true,
-          floodPublish: true,
-          maxTopicBytesPerPeer: gossipsubMaxTopicBytesPerPeer,
-        }),
+        pubsub: gossipsub(relayPubsubOptions(config)),
         pubsubPeerDiscovery: pubsubPeerDiscovery({
           topics: [peerDiscoveryTopic],
         }),
