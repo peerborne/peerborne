@@ -206,6 +206,13 @@ The root [`render.yaml`](../render.yaml) deploys one Free Docker web service for
 WebSocket gateway in front of loopback-only libp2p listeners. The ordinary Docker
 and Fly entry points retain their existing behavior.
 
+When every libp2p listener is loopback-only, the relay excludes `127.0.0.1` and
+`::1` from GossipSub's IP-colocation penalty. Those addresses identify the local
+gateway, not individual clients. Without this exception, retained scores from
+closed browser sessions eventually suppress subscriptions for new sessions.
+The gateway continues to enforce real client IP limits. Relays with any public
+listener retain GossipSub's default IP scoring.
+
 Render Free has no persistent disk. The Blueprint generates a private
 `RELAY_IDENTITY_SEED` once; the entry point reconstructs the same Ed25519 identity
 after each restart. Preserve this environment variable and never print or commit
