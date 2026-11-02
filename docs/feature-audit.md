@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 100 selected production functions have checked
+current proof scope. The 101 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -90,7 +90,7 @@ system-level statuses below.
 | Password-manager reference app | Partial | Vite production build, authenticated/encrypted checkpoint tests, Chromium reload and persistent-profile relaunch, damaged-storage and failed-write retry checks, and permissions UI tests | Browser-local recovery only: no peer-assisted recovery, backup, password lock, multi-device identity transfer, storage rollback protection, or two-browser synchronization acceptance. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
 | Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only distinct-identity invitation plus live bidirectional mutation pass | This is a test harness rather than a polished demo; restart recovery is not asserted. |
-| Peerborne Note initial-release demo | Partial | Typechecked Vite production build; signing-identity, invitation-link, and encrypted storage tests; Chromium reload, repeated edit/reopen, full process relaunch, damaged-storage, failed-write retry, and single-tab checks | Local recovery is tested. Automatic peer reconnection after restart, missed group-key recovery, revocation UX, delivery acknowledgement, and distributed crash consistency remain unverified. Public WSS collaboration uses the separate deployed-app gate. |
+| Peerborne Note initial-release demo | Partial | Typechecked Vite production build; signing-identity, invitation-link, and encrypted storage tests; Chromium reload, repeated edit/reopen, full process relaunch, damaged-storage, failed-write retry, and single-tab checks | Local relay and deployed-app gates cover editor and reader invitations, full browser-process restart on either side, missed-edit catch-up and fresh bidirectional edits. Missed group-key recovery, revocation UX, delivery acknowledgement and distributed crash consistency remain outside this gate. |
 | Relay server | Verified | TypeScript build, 109 tests, production container build, and a local two-restart identity/readiness smoke | Hosted restart, public WSS reservation, failover, capacity, and upgrade/rollback remain unverified. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |

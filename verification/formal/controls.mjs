@@ -708,6 +708,12 @@ method mapOperand_domain()
     'return retryable && !aborted && attempt < maximum;',
     'return retryable && attempt < maximum;',
   ]);
+  mutations.push([
+    'expired-sync-request-admission',
+    'sync-request.ts',
+    'return issuedAt - now >= -60000 && issuedAt - now <= 30000;',
+    'return issuedAt - now >= -60001 && issuedAt - now <= 30000;',
+  ]);
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);
     const source = file.startsWith('packages/')

@@ -8,9 +8,11 @@ test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 let lastTestFinishedAt: number | undefined;
 
 test.beforeEach(async () => {
+  if (process.env.PEERBORNE_NOTE_LIVE_URL?.startsWith('http://127.0.0.1:'))
+    return;
   if (lastTestFinishedAt === undefined) return;
   // Separate independent sessions to respect the public demo relay's burst cap.
-  const cooldown = Math.max(0, 25_000 - (Date.now() - lastTestFinishedAt));
+  const cooldown = Math.max(0, 60_000 - (Date.now() - lastTestFinishedAt));
   if (cooldown > 0)
     await new Promise((resolve) => setTimeout(resolve, cooldown));
 });
@@ -60,11 +62,35 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
   browser,
 }) => {
   const founderContext = await browser.newContext();
-  const recipientContext = await browser.newContext();
+  const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-editor-'));
+  let recipientContext = await chromium.launchPersistentContext(profile);
   const founder = await founderContext.newPage();
-  const recipient = await recipientContext.newPage();
+  let recipient = await recipientContext.newPage();
+  let founderSockets = 0;
+  founder.on('websocket', () => {
+    founderSockets++;
+  });
   const founderErrors = failOnRuntimeErrors(founder);
   const recipientErrors = failOnRuntimeErrors(recipient);
+
+  await recipient.addInitScript(() => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      ...args: Parameters<IDBObjectStore['put']>
+    ) {
+      if (
+        this.name === 'documents' &&
+        (window as unknown as { failNoteWrites?: boolean }).failNoteWrites
+      ) {
+        this.transaction.abort();
+        throw new DOMException(
+          'Injected note write failure',
+          'QuotaExceededError',
+        );
+      }
+      return Reflect.apply(original, this, args);
+    };
+  });
 
   try {
     const shared = await createSharedNote(founder, 'Editor');
@@ -77,11 +103,33 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     await expect(
       recipient.getByText('Can edit', { exact: true }),
     ).toBeVisible();
+    await recipient.evaluate(() => {
+      (window as unknown as { failNoteWrites?: boolean }).failNoteWrites = true;
+    });
     await recipient.getByRole('button', { name: 'Accept invitation' }).click();
     const recipientEditor = recipient.getByRole('textbox', {
       name: 'Note text',
     });
     await expect(recipientEditor).toHaveValue(shared.initial);
+    const retry = recipient.getByRole('button', {
+      name: 'Retry saving',
+      exact: true,
+    });
+    await expect(retry).toBeVisible();
+    await retry.evaluate((button) => {
+      button.addEventListener(
+        'click',
+        () => {
+          (window as unknown as { failNoteWrites?: boolean }).failNoteWrites =
+            false;
+        },
+        { capture: true, once: true },
+      );
+    });
+    await retry.click();
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
 
     const recipientEdit = `Recipient ${crypto.randomUUID()}`;
     await recipientEditor.fill(recipientEdit);
@@ -96,12 +144,125 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
       founder.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
     await expect(recipientEditor).toHaveValue(founderEdit);
+    const healthySockets = founderSockets;
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+    expect(founderSockets).toBe(healthySockets);
+
+    await recipientContext.close();
+    const offlineEdit = `While editor was closed ${crypto.randomUUID()}`;
+    await shared.editor.fill(offlineEdit);
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    recipientContext = await chromium.launchPersistentContext(profile);
+    recipient = await recipientContext.newPage();
+    failOnRuntimeErrors(recipient, recipientErrors);
+    await recipient.goto(new URL(shared.invitationUrl).origin);
+    await recipient
+      .getByRole('button', { name: 'Open saved note 1', exact: true })
+      .click();
+    const restoredEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
+    await expect(restoredEditor).toHaveValue(offlineEdit);
+    await expect(restoredEditor).toBeEditable();
+    const resumedEdit = `Resumed editor ${crypto.randomUUID()}`;
+    await restoredEditor.fill(resumedEdit);
+    await expect(shared.editor).toHaveValue(resumedEdit);
 
     expect(founderErrors, 'founder runtime errors').toEqual([]);
     expect(recipientErrors, 'recipient runtime errors').toEqual([]);
   } finally {
     await recipientContext.close();
+    await rm(profile, { recursive: true, force: true });
     await founderContext.close();
+  }
+});
+
+test('deployed founding browser resumes invitations and live sharing after full restarts', async ({
+  browser,
+  baseURL,
+}) => {
+  const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-founder-'));
+  let founderContext = await chromium.launchPersistentContext(profile, {
+    baseURL,
+  });
+  const recipientContext = await browser.newContext();
+  let founder = await founderContext.newPage();
+  const recipient = await recipientContext.newPage();
+  const founderErrors = failOnRuntimeErrors(founder);
+  const recipientErrors = failOnRuntimeErrors(recipient);
+  try {
+    await founder.goto('/');
+    await founder
+      .getByRole('button', { name: 'Create a note', exact: true })
+      .click();
+    const initial = `Before founder restart ${crypto.randomUUID()}`;
+    await founder.getByRole('textbox', { name: 'Note text' }).fill(initial);
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    await founderContext.close();
+    founderContext = await chromium.launchPersistentContext(profile, {
+      baseURL,
+    });
+    founder = await founderContext.newPage();
+    failOnRuntimeErrors(founder, founderErrors);
+    await founder.goto('/');
+    await founder
+      .getByRole('button', { name: 'Open saved note 1', exact: true })
+      .click();
+    await expect(
+      founder.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue(initial);
+    await founder
+      .getByRole('button', { name: 'Create 15-minute link', exact: true })
+      .click();
+    const link = founder.getByRole('textbox', { name: 'Invitation link' });
+    await expect(link).toBeVisible();
+    await recipient.goto(await link.inputValue());
+    await recipient
+      .getByRole('button', { name: 'Accept invitation', exact: true })
+      .click();
+    const recipientEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
+    await expect(recipientEditor).toHaveValue(initial);
+    const beforeClose = `Shared before founder closes ${crypto.randomUUID()}`;
+    await founder.getByRole('textbox', { name: 'Note text' }).fill(beforeClose);
+    await expect(recipientEditor).toHaveValue(beforeClose);
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    await founderContext.close();
+    const offlineEdit = `While founder was closed ${crypto.randomUUID()}`;
+    await recipientEditor.fill(offlineEdit);
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    founderContext = await chromium.launchPersistentContext(profile, {
+      baseURL,
+    });
+    founder = await founderContext.newPage();
+    failOnRuntimeErrors(founder, founderErrors);
+    await founder.goto('/');
+    await founder
+      .getByRole('button', { name: 'Open saved note 1', exact: true })
+      .click();
+    const restoredEditor = founder.getByRole('textbox', { name: 'Note text' });
+    await expect(restoredEditor).toHaveValue(offlineEdit);
+    const resumedEdit = `Resumed founder ${crypto.randomUUID()}`;
+    await restoredEditor.fill(resumedEdit);
+    await expect(recipientEditor).toHaveValue(resumedEdit);
+    const returnedEdit = `Still collaborating ${crypto.randomUUID()}`;
+    await recipientEditor.fill(returnedEdit);
+    await expect(restoredEditor).toHaveValue(returnedEdit);
+    expect(founderErrors).toEqual([]);
+    expect(recipientErrors).toEqual([]);
+  } finally {
+    await recipientContext.close();
+    await founderContext.close();
+    await rm(profile, { recursive: true, force: true });
   }
 });
 
@@ -140,6 +301,11 @@ test('deployed reader invitation receives edits and remains read-only after a br
       recipient.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
     await recipientContext.close();
+    const offlineEdit = `While reader was closed ${crypto.randomUUID()}`;
+    await shared.editor.fill(offlineEdit);
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
     recipientContext = await chromium.launchPersistentContext(profile);
     recipient = await recipientContext.newPage();
     failOnRuntimeErrors(recipient, recipientErrors);
@@ -149,7 +315,7 @@ test('deployed reader invitation receives edits and remains read-only after a br
       .click();
     await expect(
       recipient.getByRole('textbox', { name: 'Note text' }),
-    ).toHaveValue(laterEdit);
+    ).toHaveValue(offlineEdit);
     await expect(
       recipient.getByRole('textbox', { name: 'Note text' }),
     ).not.toBeEditable();
@@ -159,6 +325,12 @@ test('deployed reader invitation receives edits and remains read-only after a br
         exact: true,
       }),
     ).toHaveCount(0);
+
+    const resumedEdit = `After reader reopened ${crypto.randomUUID()}`;
+    await shared.editor.fill(resumedEdit);
+    await expect(
+      recipient.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue(resumedEdit);
 
     expect(founderErrors, 'founder runtime errors').toEqual([]);
     expect(recipientErrors, 'recipient runtime errors').toEqual([]);

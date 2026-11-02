@@ -58,7 +58,7 @@ jobs:
       - run: yarn install --immutable
       - run: yarn test:release
       - run: yarn build
-      - run: yarn test
+      - run: yarn test:serial
       - name: Pack and inspect release artifacts
         run: yarn release:prepare "$RUNNER_TEMP/peerborne-release"
       - name: Validate clean external consumer

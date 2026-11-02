@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 100 selected production functions in 31 proof units are compiled from their
+The 101 selected production functions in 32 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 123 controls cover 31 accepted originals, a map-comparison
-calibration, 87 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 125 controls cover 32 accepted originals, a map-comparison
+calibration, 88 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree

@@ -168,6 +168,19 @@ An established transport does not establish a relay reservation or verify an
 invitation. Applications should report those later phases separately.
 The optional `NetworkStats` container still requires explicit `record*()` calls.
 
+## Resume a saved document
+
+An application restoring an authenticated checkpoint should reconnect its
+transport, open the restored document and call `document.requestSync()`.
+The request is signed by a current reader or writer and encrypted with the
+document key. Writers respond with normal signed updates, so the existing
+membership and change validation remains in force. Fresh nonces, timestamp
+bounds, recent-request deduplication and response throttling bound replay and
+amplification. Known roots avoid repeatedly sending an already received update.
+Peerborne Note runs this recovery automatically after opening a saved shared
+note. Catch-up requires an online member with the current key; it does not
+restore a lost identity or recover an unknown group-key epoch.
+
 ## Operational limits
 
 - **Relay identity requires durable storage.** Restart preserves the peer ID only while the configured identity file survives. Losing it requires clients to learn a new peer ID.

@@ -13,9 +13,14 @@ KEM, and storage keys remain non-extractable browser key handles. Wait for
 **Saved in this browser** before closing the tab. A failed write shows a retry
 action, and damaged data is retained without an empty replacement.
 
-This verifies local reopening with the saved reader/editor permissions.
-Invitations still originate in the session that creates a note. Reconnecting to peers after restart, recovering
-missed group-key changes, and backup across devices remain separate work.
+Reopening a shared note reconnects to the relay and requests missed updates
+using the saved reader/editor permissions. The founding identity can also
+reopen an unshared note and create its first invitation. Browser tests close
+and relaunch each side, make edits while it is closed, then verify catch-up and
+fresh collaboration. A restored reader remains read-only.
+
+Recovery still requires another member to be online. Missed group-key changes
+and backup across devices remain separate work.
 
 ## Run locally
 
@@ -37,6 +42,7 @@ pages served over HTTPS require a `/wss/` relay address.
 yarn workspace @peerborne/peerborne-note test
 yarn workspace @peerborne/peerborne-note build
 yarn test:e2e:peerborne-note
+yarn test:e2e:peerborne-note:relay
 ```
 
 The focused tests cover canonical invitation fragments and the versioned
@@ -48,7 +54,8 @@ and bidirectional encrypted convergence; these utility tests do not replace it.
 
 After deployment, the mandatory live gate uses separate browser contexts to
 exercise editor and reader invitations, explicit acceptance, read-only UX, and
-fresh edits through the public WSS relay:
+fresh edits through the public WSS relay, including full browser restarts and
+catch-up of edits made while a collaborator was closed:
 
 ```sh
 PEERBORNE_NOTE_LIVE_URL=https://try.peerborne.io/ \

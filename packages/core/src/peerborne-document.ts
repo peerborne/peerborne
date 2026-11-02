@@ -2,6 +2,10 @@ import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordina
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
+import {
+  decodeSyncRequest, encodeSyncRequest, isSyncRequest, isSyncRequestFresh,
+  syncRequestSigningPayload, syncSnapshotHint, SYNC_REQUEST_LIFETIME_MS, type SyncRequest,
+} from './sync-request.js';
 import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
@@ -1146,7 +1150,7 @@ export class PeerborneDocument<
     if (!this._createdLocally) {
       throw new Error(
         `Invitation creation for ${this.documentPath} is limited to the ` +
-          'founder process that created the document',
+          'founding identity that created or restored the document',
       );
     }
     const [readers, writers] = await Promise.all([
@@ -6289,7 +6293,161 @@ export class PeerborneDocument<
 
   private _activationInProgress = false;
   private _localCheckpointReady = false;
+  private _lastSyncRequestAt = 0;
+  private _lastSyncResponseAt = 0;
+  private readonly _syncRequestsSeen = new Map<string, number>();
+  private readonly _knownSyncSnapshots = new Set<string>();
 
+  /** Ask current members for missed updates using the existing authenticated local membership. */
+  public async requestSync(): Promise<void> {
+    if (this._coordinated)
+      throw new Error(
+        'Legacy document operations are unavailable in coordinated mode',
+      );
+    await this._runStateMutation(async () => {
+      if (
+        !this._subscribed ||
+        !this._lastSyncMessage?.changeId ||
+        !this._isSigningEnabled()
+      ) {
+        throw new Error('Sync requests require an open authenticated document');
+      }
+      if (
+        !(await this._writers.check(this._userPublicKey)) &&
+        !(await this._readers.check(this._userPublicKey))
+      ) {
+        throw new Error('Sync requests require current document membership');
+      }
+      const now = Date.now();
+      if (now - this._lastSyncRequestAt < 2000) return;
+      const request = {
+        documentId: this.documentPath,
+        requester: await requireSerializePublicKey(
+          this._authProvider,
+          'Sync request',
+        )(this._userPublicKey),
+        requestId: Array.from(
+          crypto.getRandomValues(new Uint8Array(16)),
+          (byte) => byte.toString(16).padStart(2, '0'),
+        ).join(''),
+        issuedAtMs: now,
+        knownSnapshots: [...new Set([
+          ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
+          ...this._knownSyncSnapshots,
+        ])].slice(0, 32),
+        knownTips: [
+          ...new Set([
+            this._lastSyncMessage.changeId,
+            ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
+            ...this._recentTips
+              .slice()
+              .reverse()
+              .map((tip) => tip.cid),
+          ]),
+        ].slice(0, 32),
+      };
+      const signature = this._serializeSignature(
+        await this._authProvider.sign(
+          syncRequestSigningPayload(request),
+          this._userKey,
+        ),
+      );
+      await this._publishSyncBytes(
+        encodeSyncRequest({ ...request, signature }),
+      );
+      this._lastSyncRequestAt = now;
+    });
+  }
+
+  private async _verifySyncRequest(request: SyncRequest): Promise<boolean> {
+    if (
+      request.documentId !== this.documentPath ||
+      !isSyncRequestFresh(request, Date.now()) ||
+      !this._isSigningEnabled()
+    )
+      return false;
+    const keys = [
+      ...(await this._writers.users()),
+      ...(await this._readers.users()),
+    ];
+    for (const key of keys) {
+      if (
+        (await requireSerializePublicKey(
+          this._authProvider,
+          'Sync request',
+        )(key)) !== request.requester
+      )
+        continue;
+      return (
+        (await this._authProvider.verify(
+          syncRequestSigningPayload(request),
+          key,
+          this._deserializeSignature(request.signature),
+        )) === true
+      );
+    }
+    return false;
+  }
+
+  private async _handleSyncRequest(request: SyncRequest): Promise<void> {
+    await this._runStateMutation(async () => {
+      if (
+        !this._subscribed ||
+        !(await this._verifySyncRequest(request)) ||
+        !(await this._writers.check(this._userPublicKey))
+      )
+        return;
+      const now = Date.now();
+      for (const [key, issued] of this._syncRequestsSeen) {
+        if (now - issued > SYNC_REQUEST_LIFETIME_MS)
+          this._syncRequestsSeen.delete(key);
+      }
+      const id = JSON.stringify([request.requester, request.requestId]);
+      if (this._syncRequestsSeen.has(id)) return;
+      this._syncRequestsSeen.set(id, request.issuedAtMs);
+      if (this._syncRequestsSeen.size > 128)
+        this._syncRequestsSeen.delete(
+          this._syncRequestsSeen.keys().next().value!,
+        );
+      const previous = this._lastSyncMessage;
+      const snapshotKnown = !this._latestSnapshot || request.knownSnapshots.includes(
+        await syncSnapshotHint(this._latestSnapshot.signature),
+      );
+      if (
+        !previous?.changeId ||
+        !previous.changes ||
+        (request.knownTips.includes(previous.changeId) && snapshotKnown) ||
+        now - this._lastSyncResponseAt < 2000
+      )
+        return;
+      const message: CRDTSyncMessage<ChangesType> = {
+        documentId: this.documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        changeId: previous.changeId,
+        changes: previous.changes,
+        ...(this._latestSnapshot === undefined || snapshotKnown
+          ? {}
+          : { snapshot: this._latestSnapshot }),
+      };
+      message.signature = await this._signAsWriter(message);
+      await this._publishSyncBytes(
+        this._syncMessageSerializer.serializeSyncMessage(message),
+      );
+      this._lastSyncResponseAt = now;
+    });
+  }
+
+  private async _publishSyncBytes(bytes: Uint8Array): Promise<void> {
+    assertSharedProtocolRequestSize(bytes.byteLength, 'Document sync message');
+    const [keyId, key] = await this._keychain.current();
+    if (!key) throw new Error('Document has no encryption key');
+    const { nonce, data } = await this._authProvider.encrypt(bytes, key);
+    if (!nonce) throw new Error('Encrypted sync requires a nonce');
+    await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+      this._topic,
+      concatUint8Arrays(keyId, nonce, data),
+    );
+  }
   /**
    * Capture a bounded, self-signed local checkpoint. The payload contains
    * document keys: applications must encrypt it before storage and must never
@@ -6551,6 +6709,11 @@ export class PeerborneDocument<
         state.invitationEpoch === null
           ? undefined
           : checkpointDecode(state.invitationEpoch);
+      const restoredFounder =
+        state.invitationEpoch === null && beekem === null &&
+        (await writers.users()).length === 1 &&
+        (await readers.users()).length === 0 &&
+        (await writers.check(this._userPublicKey)) === true;
       this._document = document;
       this._readers = readers;
       this._writers = writers;
@@ -6569,6 +6732,7 @@ export class PeerborneDocument<
       this._readerLeafIndices = readerLeaves;
       this._readerKemPublicKeys = readerKemKeys;
       this._beekemWelcomeByLeaf = welcomes;
+      this._createdLocally = restoredFounder;
       this._invalidateWriterKeyCache();
       this._localCheckpointReady = true;
     });
@@ -6785,10 +6949,15 @@ export class PeerborneDocument<
         this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
       );
       void this._decryptBlock(blockKeyID, blockNonce, blockData)
-        .then((rawContent) => {
+        .then(async (rawContent) => {
           if (!rawContent) {
             // Unauthenticated packets must not trigger network load amplification.
             return;
+          }
+
+          if (isSyncRequest(rawContent)) {
+            const request = decodeSyncRequest(rawContent);
+            return request ? this._handleSyncRequest(request) : undefined;
           }
 
           const message = snapshotSyncMessageForContext<ChangesType>(
@@ -6860,6 +7029,14 @@ export class PeerborneDocument<
                   // Unknown-key and forged packets are ignored without a
                   // per-packet log so untrusted peers cannot amplify logging.
                   return TopicValidatorResult.Ignore;
+                }
+
+                if (isSyncRequest(rawContent)) {
+                  const request = decodeSyncRequest(rawContent);
+                  if (!request) return TopicValidatorResult.Reject;
+                  return await this._runStateMutation(async () =>
+                    await this._verifySyncRequest(request) ? TopicValidatorResult.Accept : TopicValidatorResult.Reject,
+                  );
                 }
 
                 let syncMessage: CRDTSyncMessage<ChangesType>;
@@ -7368,12 +7545,23 @@ export class PeerborneDocument<
       }
     }
 
+    let appliedSnapshot = false;
+    let receivedSnapshotHint: string | undefined;
     // Apply snapshot if present and more recent than ours.
     // Happens before full change sync so document changes that are already
     // covered by the snapshot don't need to be applied first (CRDTs handle
     // duplicate application correctly, but this avoids unnecessary work).
     if (message.snapshot) {
       const incoming = message.snapshot;
+      if (context === 'ordinary-sync-v1' && signingEnabled) {
+        try {
+          const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
+          const payload = this._buildSnapshotSignPayload(stateBytes, incoming.lastChangeNodeCID, incoming.timestamp, incoming.compactedCount);
+          if (await this._verifySnapshotSignature(payload, incoming.signature)) {
+            receivedSnapshotHint = await syncSnapshotHint(incoming.signature);
+          }
+        } catch {}
+      }
       if (
         !this._latestSnapshot ||
         incoming.compactedCount > this._latestSnapshot.compactedCount ||
@@ -7388,8 +7576,8 @@ export class PeerborneDocument<
         // WARNING: This means any peer can inject arbitrary snapshot state when
         // signing is disabled. Only disable signing in trusted or development
         // environments where all peers are known and authenticated by other means.
-        let snapshotSignatureValid = !signingEnabled;
-        if (signingEnabled) {
+        let snapshotSignatureValid = !signingEnabled || receivedSnapshotHint !== undefined;
+        if (signingEnabled && context !== 'ordinary-sync-v1') {
           try {
             const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
             const signPayload = this._buildSnapshotSignPayload(
@@ -7419,6 +7607,7 @@ export class PeerborneDocument<
             : this._crdtProvider.remoteChange(this._document, incoming.state);
           this._latestSnapshot = incoming;
           this._latestSnapshotSource = sourceSnapshot;
+          appliedSnapshot = true;
           // Ensure our local document change count is at least as high as
           // the snapshot's compactedCount. This prevents re-triggering
           // compaction below the threshold after applying a remote snapshot.
@@ -7454,6 +7643,15 @@ export class PeerborneDocument<
     }
 
     assertStillActive();
+    if (appliedSnapshot) {
+      await this._fireOrDeferRemoteUpdateHandlers(
+        message.snapshot!.lastChangeNodeCID ? [message.snapshot!.lastChangeNodeCID] : [],
+      );
+    }
+    if (receivedSnapshotHint) {
+      this._knownSyncSnapshots.add(receivedSnapshotHint);
+      if (this._knownSyncSnapshots.size > 32) this._knownSyncSnapshots.delete(this._knownSyncSnapshots.values().next().value!);
+    }
     return true;
   }
 

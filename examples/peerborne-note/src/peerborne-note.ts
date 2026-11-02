@@ -144,6 +144,11 @@ export class PeerborneNoteSession {
   private pendingSaves = 0;
   private pendingChanges = 0;
   private storageFailed = false;
+  private sharingActive = false;
+  private sharingTimer?: ReturnType<typeof setTimeout>;
+  private sharingTask?: Promise<void>;
+  private sharingController?: AbortController;
+  private sharingFailed = false;
 
   private constructor(
     private readonly identity: BrowserIdentity,
@@ -264,7 +269,18 @@ export class PeerborneNoteSession {
         : 'reader';
       await document.open();
       this.revision = saved.revision;
-      this.activateDocument(document, role, false);
+      let founder = false;
+      try {
+        await document.assertCanCreateInitialInvitation();
+        founder = true;
+      } catch {}
+      this.activateDocument(document, role, founder);
+      if (
+        (await document.getReaders()).length > 0 ||
+        writerIds.some((writer) => writer !== this.owner)
+      ) {
+        this.startSharing();
+      }
       return snapshot(document.document);
     } catch (error) {
       await document.close().catch(() => undefined);
@@ -274,7 +290,6 @@ export class PeerborneNoteSession {
       saved.checkpoint.signature.fill(0);
     }
   }
-
   async createNote(): Promise<NoteSnapshot> {
     if (this.document) throw new Error('A note is already open');
     const document = this.peerborne.doc(`/notes/${crypto.randomUUID()}`);
@@ -355,6 +370,7 @@ export class PeerborneNoteSession {
       clearTimeout(timeout);
     }
     assertTrustedRendezvous([rendezvous], this.relayMultiaddr);
+    this.startSharing();
     let offer: InvitationOfferV1;
     try {
       offer = await document.createInvitation({
@@ -387,6 +403,7 @@ export class PeerborneNoteSession {
       this.recipientKemKeyPair,
     );
     this.activateDocument(document, offer.role, false);
+    this.startSharing();
     await this.persistDocument();
     return snapshot(document.document);
   }
@@ -464,6 +481,10 @@ export class PeerborneNoteSession {
   }
 
   async close(): Promise<void> {
+    this.sharingActive = false;
+    clearTimeout(this.sharingTimer);
+    this.sharingController?.abort();
+    await this.sharingTask?.catch(() => undefined);
     this.peerborne.unsubscribeFromPeerConnect(PEER_SUBSCRIBER_ID);
     this.peerborne.unsubscribeFromPeerDisconnect(PEER_SUBSCRIBER_ID);
     if (this.document) {
@@ -478,6 +499,71 @@ export class PeerborneNoteSession {
     await this.peerborne.heliaNode.stop().catch(() => undefined);
   }
 
+  private startSharing(): void {
+    if (this.sharingActive || !this.relayMultiaddr) return;
+    this.sharingActive = true;
+    const maintain = (): void => {
+      if (!this.sharingActive) return;
+      this.sharingTask = this.reconnectSharing().finally(() => {
+        if (this.sharingActive)
+          this.sharingTimer = setTimeout(
+            maintain,
+            this.sharingFailed ? 30_000 : 5000,
+          );
+      });
+    };
+    maintain();
+  }
+
+  private async reconnectSharing(): Promise<void> {
+    const controller = new AbortController();
+    this.sharingController = controller;
+    const timeout = setTimeout(
+      () => controller.abort(),
+      RESERVATION_TIMEOUT_MS,
+    );
+    let errorType: ConnectionProgress['errorType'];
+    try {
+      const relayId = this.relayMultiaddr!.slice(
+        this.relayMultiaddr!.lastIndexOf('/p2p/') + 5,
+      );
+      const connected = this.peerborne.libp2p
+        .getConnections()
+        .some(
+          (connection) =>
+            connection.remotePeer.toString() === relayId &&
+            connection.status === 'open',
+        );
+      if (!connected)
+        await this.peerborne.connect([this.relayMultiaddr!], {
+          signal: controller.signal,
+          maxAttempts: 3,
+          retryDelayMs: 5000,
+          onProgress: (event) => {
+            errorType = event.errorType;
+          },
+        });
+      await waitForCircuitAddress(
+        this.peerborne,
+        this.relayMultiaddr!,
+        controller.signal,
+      );
+      if (!this.sharingActive) return;
+      await this.requireDocument().requestSync();
+      this.sharingFailed = false;
+    } catch {
+      if (this.sharingActive && !this.sharingFailed) {
+        console.warn('Peerborne Note sharing reconnect failed', {
+          errorType: errorType ?? 'OtherError',
+        });
+        this.sharingFailed = true;
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (this.sharingController === controller)
+        this.sharingController = undefined;
+    }
+  }
   private requireDocument(): NoteDocument {
     if (!this.document) throw new Error('No note is open');
     return this.document;
