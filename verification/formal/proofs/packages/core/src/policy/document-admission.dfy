@@ -5,6 +5,55 @@ datatype DocumentOperationPhase = preparing | prepared | committed | cancelled
 
 datatype DocumentOperationEvent = prepare | commit | cancel
 
+datatype PreparedDocumentPhase = prepared | committed | cancelled | applying | failed
+
+datatype PreparedDocumentEvent = cancel | begin | succeed | fail
+
+function advancePreparedDocumentChange(phase: PreparedDocumentPhase, event: PreparedDocumentEvent): PreparedDocumentPhase
+{
+  if ((phase.committed? || phase.cancelled?) || phase.failed?) then
+    phase
+  else
+    if phase.prepared? then
+      if event.begin? then
+        PreparedDocumentPhase.applying
+      else
+        if event.cancel? then
+          PreparedDocumentPhase.cancelled
+        else
+          if phase.applying? then
+            if event.succeed? then
+              PreparedDocumentPhase.committed
+            else
+              if event.fail? then
+                PreparedDocumentPhase.failed
+              else
+                phase
+          else
+            phase
+    else
+      if phase.applying? then
+        if event.succeed? then
+          PreparedDocumentPhase.committed
+        else
+          if event.fail? then
+            PreparedDocumentPhase.failed
+          else
+            phase
+      else
+        phase
+}
+
+lemma advancePreparedDocumentChange_ensures(phase: PreparedDocumentPhase, event: PreparedDocumentEvent)
+  ensures (((phase.committed? || phase.cancelled?) || phase.failed?) ==> (advancePreparedDocumentChange(phase, event) == phase))
+  ensures ((!phase.committed?) ==> (advancePreparedDocumentChange(phase, event).committed? <==> (phase.applying? && event.succeed?)))
+  ensures ((!phase.failed?) ==> (advancePreparedDocumentChange(phase, event).failed? <==> (phase.applying? && event.fail?)))
+  ensures ((!phase.cancelled?) ==> (advancePreparedDocumentChange(phase, event).cancelled? <==> (phase.prepared? && event.cancel?)))
+  ensures ((!phase.applying?) ==> (advancePreparedDocumentChange(phase, event).applying? <==> (phase.prepared? && event.begin?)))
+  ensures (phase.applying? ==> event.cancel? ==> advancePreparedDocumentChange(phase, event).applying?)
+{
+}
+
 function canReserveDocumentOperation(count: int, bytes: int, incomingBytes: int, countLimit: int, byteLimit: int): bool
   requires (0 <= count)
   requires (count <= countLimit)
@@ -150,16 +199,63 @@ function DocumentBudgetHistory(s: DocumentBudgetState, reserves: seq<bool>, amou
 
 method documentAdmission_domain()
 {
+  preparedChange_domain();
   assert canReserveDocumentOperation(0, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(1, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(0, 1, 1, 1, 1);
   assert canReserveDocumentOperation(0, 0, 9007199254740991, 1, 9007199254740991);
   assert releaseDocumentOperationBytes(9007199254740991, 9007199254740991) == 0;
   assert DocumentCommitCount(preparing, [prepare, commit, commit], [true, true, true], [false, true, true]) == 1;
-  assert DocumentCommitCount(preparing, [prepare, cancel, commit], [true, true, true], [false, true, true]) == 0;
+  assert DocumentCommitCount(preparing, [prepare, DocumentOperationEvent.cancel, commit], [true, true, true], [false, true, true]) == 0;
   assert DocumentCommitCount(preparing, [prepare, commit], [true, false], [true, true]) == 0;
   documentAdmission_all_histories(preparing, [prepare, commit], [true, true], [false, true]);
   assert DocumentCommitCount(preparing, [prepare, commit], [true, true], [true, false]) == 0;
   var ledger := DocumentBudgetHistory(DocumentBudgetState(0, 0), [true, true, false], [8, 8, 8], 2, 12);
   assert ledger.count == 0 && ledger.bytes == 0;
+}
+
+function PreparedChangeCompletions(phase: PreparedDocumentPhase, events: seq<PreparedDocumentEvent>): nat
+  ensures PreparedChangeCompletions(phase, events) <= 1
+  ensures phase.committed? || phase.cancelled? || phase.failed? ==> PreparedChangeCompletions(phase, events) == 0
+  decreases |events|
+{
+  if |events| == 0 then 0 else
+    var next := advancePreparedDocumentChange(phase, events[0]);
+    (if !phase.committed? && next.committed? then 1 else 0) + PreparedChangeCompletions(next, events[1..])
+}
+
+predicate PreparedChangeSuccessesMatch(phase: PreparedDocumentPhase, events: seq<PreparedDocumentEvent>)
+  decreases |events|
+{
+  |events| == 0 ||
+    (var next := advancePreparedDocumentChange(phase, events[0]);
+      (!phase.committed? && next.committed? ==> phase.applying? && events[0].succeed?) &&
+      (phase.failed? ==> next.failed?) &&
+      PreparedChangeSuccessesMatch(next, events[1..]))
+}
+
+lemma preparedChange_all_histories(phase: PreparedDocumentPhase, events: seq<PreparedDocumentEvent>)
+  ensures PreparedChangeCompletions(phase, events) <= 1
+  ensures PreparedChangeSuccessesMatch(phase, events)
+  ensures phase.failed? ==> PreparedChangeCompletions(phase, events) == 0
+  decreases |events|
+{
+  if |events| > 0 {
+    advancePreparedDocumentChange_ensures(phase, events[0]);
+    preparedChange_all_histories(advancePreparedDocumentChange(phase, events[0]), events[1..]);
+  }
+}
+
+method preparedChange_domain()
+{
+  var ready := PreparedDocumentPhase.prepared;
+  var begin := PreparedDocumentEvent.begin;
+  var succeed := PreparedDocumentEvent.succeed;
+  var fail := PreparedDocumentEvent.fail;
+  var cancel := PreparedDocumentEvent.cancel;
+  assert PreparedChangeCompletions(ready, [begin, succeed, begin, succeed]) == 1;
+  assert PreparedChangeCompletions(ready, [begin, fail, begin, succeed]) == 0;
+  assert PreparedChangeCompletions(ready, [cancel, begin, succeed]) == 0;
+  assert advancePreparedDocumentChange(PreparedDocumentPhase.applying, cancel).applying?;
+  preparedChange_all_histories(ready, [begin, fail, begin, succeed]);
 }

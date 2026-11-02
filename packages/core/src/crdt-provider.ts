@@ -1,3 +1,5 @@
+import type { CRDTDocumentSession } from './document-crdt-session.js';
+
 /**
  * The crdt provider provides an implementation of a set of methods for interacting with crdts generally
  */
@@ -11,6 +13,11 @@
  * @typeParam MessageType The sync message that gets sent when changes are made to a document
  */
 export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
+  /** Required by coordinator-backed documents; never falls back to live preparation. */
+  createDocumentSession?(
+    document: DocType,
+  ): CRDTDocumentSession<DocType, ChangesType, ChangeFnType>;
+
   /**
    * Create a new empty (contains the equivalent of `{}`) CRDT document.
    */

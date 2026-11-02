@@ -210,6 +210,19 @@
         "packages/core/src/group-security-coordinator.ts",
         "packages/core/src/policy/document-admission.ts"
       ]
+    },
+    {
+      "id": "admitted-crdt-staging",
+      "formalBoundary": "The common stage lifecycle proves successful completion only after application succeeds and failed applications cannot be retried. Runtime callbacks and exact cleanup invocation still require calibration. Automerge immutable cloning, native missing-dependency detection, recursive callbacks, Yjs scalar/shared-type payload restrictions, escaped references, checkpoint merge/discard and constant-actor reuse require native generated execution histories.",
+      "evidence": [
+        "packages/automerge/src/document-session-properties.test.ts",
+        "packages/yjs/src/document-session-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/document-crdt-session.ts",
+        "packages/automerge/src/peerborne-automerge.ts",
+        "packages/yjs/src/peerborne-yjs.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

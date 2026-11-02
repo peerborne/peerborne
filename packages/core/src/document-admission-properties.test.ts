@@ -1,6 +1,10 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
 import {
+  preparedDocumentChange,
+  type PreparedDocumentChange,
+} from './document-crdt-session.js';
+import {
   bootstrap,
   context,
   control,
@@ -34,6 +38,91 @@ function deferred<T = void>() {
 }
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('validity predicates cannot reenter application or apply after cancelling a prepared plan', () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom('commit', 'discard', 'snapshot', 'query'),
+      (action) => {
+        let calls = 0,
+          applied = 0,
+          cleaned = 0;
+        let plan!: PreparedDocumentChange<Uint8Array>;
+        plan = preparedDocumentChange(
+          new Uint8Array(),
+          () => {
+            calls++;
+            if (action === 'commit')
+              expect(() => plan.commit()).toThrow('stale');
+            if (action === 'discard') plan.discard();
+            if (action === 'snapshot')
+              expect(() => plan.snapshot!()).toThrow('Stale');
+            if (action === 'query') expect(plan.isCurrent()).toBe(false);
+            return true;
+          },
+          () => {
+            applied++;
+          },
+          () => {
+            cleaned++;
+          },
+          () => new Uint8Array(),
+        );
+        if (action === 'discard') expect(() => plan.commit()).toThrow('stale');
+        else plan.commit();
+        expect(calls).toBe(1);
+        expect(applied).toBe(action === 'discard' ? 0 : 1);
+        expect(cleaned).toBe(action === 'discard' ? 1 : 0);
+        expect(plan.isCurrent()).toBe(false);
+      },
+    ),
+    { seed: 2011110, numRuns: 24 },
+  );
+});
+
+test('native prepared plans clean up once after failure and reject reentry or successful-looking retries', () => {
+  fc.assert(
+    fc.property(
+      fc.boolean(),
+      fc.boolean(),
+      fc.nat(8),
+      (fails, cleanupFails, retries) => {
+        let applied = 0,
+          cleaned = 0;
+        let plan!: PreparedDocumentChange<Uint8Array>;
+        plan = preparedDocumentChange(
+          new Uint8Array(),
+          () => true,
+          () => {
+            applied++;
+            expect(plan.isCurrent()).toBe(false);
+            expect(() => plan.commit()).toThrow('stale');
+            plan.discard();
+            expect(cleaned).toBe(0);
+            if (fails) throw new Error('Injected native failure');
+          },
+          () => {
+            cleaned++;
+            if (cleanupFails) throw new Error('Injected cleanup failure');
+          },
+          () => new Uint8Array(),
+        );
+        if (fails) expect(() => plan.commit()).toThrow();
+        else plan.commit();
+        for (let index = 0; index <= retries; index++) {
+          if (fails) expect(() => plan.commit()).toThrow('stale');
+          else expect(() => plan.commit()).not.toThrow();
+          plan.discard();
+          expect(() => plan.snapshot!()).toThrow('Stale');
+          expect(plan.isCurrent()).toBe(false);
+        }
+        expect(applied).toBe(1);
+        expect(cleaned).toBe(fails ? 1 : 0);
+      },
+    ),
+    { seed: 2011109, numRuns: 60 },
+  );
+});
 
 describe('anchored document admission boundaries', () => {
   test('preserves captured input and rejects cancellation or rekey while preparation is suspended', async () => {
@@ -766,3 +855,205 @@ describe('anchored document admission boundaries', () => {
     expect(gate.budget.usage).toEqual({ operations: 0, bytes: 0 });
   });
 });
+
+test('holds nested preparation work after cancellation and rejects an escaped preparation scope', async () => {
+  const value = await context(),
+    coordinator = await bootstrap(value);
+  const entered = deferred(),
+    release = deferred(),
+    abort = new AbortController();
+  let scope!: import('./group-security-coordinator.js').GroupSecurityDocumentPreparation;
+  let commits = 0;
+  const pending = coordinator.runDocumentOperation(
+    coordinator.documentContext,
+    new Uint8Array(32),
+    async (_captured, _input, _signal, work) => {
+      scope = work;
+      const wait = work.observe(release.promise);
+      entered.resolve();
+      await wait;
+      return prepared(() => {
+        commits++;
+      });
+    },
+    { signal: abort.signal },
+  );
+  const outcome = pending.then(
+    () => 'accepted',
+    (error: { code: string }) => error.code,
+  );
+  await entered.promise;
+  abort.abort();
+  expect(await outcome).toBe('aborted');
+  expect(coordinator.pendingDocumentOperations).toEqual({
+    operations: 1,
+    bytes: 32,
+  });
+  release.resolve();
+  await turn();
+  await turn();
+  expect(commits).toBe(0);
+  expect(coordinator.pendingDocumentOperations).toEqual({
+    operations: 0,
+    bytes: 0,
+  });
+  await expect(scope.observe(Promise.resolve(1))).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+  await expect(scope.deriveEncryptionMaterial('/late')).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+});
+
+test('scoped native exporter keys bind the document and exact authenticated epoch without accepting repaired Unicode paths', async () => {
+  const value = await context(),
+    coordinator = await bootstrap(value);
+  const labels: string[] = [];
+  value.provider.exportSecret = async (input) => {
+    labels.push(input.label);
+    const bytes = new TextEncoder().encode(input.label);
+    const material = new Uint8Array(bytes.length + input.context.length);
+    material.set(bytes);
+    material.set(input.context, bytes.length);
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+  };
+  const derive = async (path: string) => {
+    let result!: import('./group-security-coordinator.js').GroupDocumentEncryptionMaterial;
+    await coordinator.runDocumentOperation(
+      coordinator.documentContext,
+      new Uint8Array(),
+      async (_context, _input, _signal, scope) => {
+        result = await scope.deriveEncryptionMaterial(path);
+        return prepared();
+      },
+    );
+    return result;
+  };
+  const first = await derive('/a'),
+    other = await derive('/b');
+  expect(labels).toEqual([
+    'peerborne/document-content-encryption/v1',
+    'peerborne/document-epoch-routing/v1',
+    'peerborne/document-content-encryption/v1',
+    'peerborne/document-epoch-routing/v1',
+  ]);
+  expect(first.epochTag).not.toEqual(other.epochTag);
+  const nonce = new Uint8Array(12),
+    data = new Uint8Array([1, 2, 3]);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce },
+    first.key,
+    data,
+  );
+  expect(
+    new Uint8Array(
+      await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: nonce },
+        first.key,
+        ciphertext,
+      ),
+    ),
+  ).toEqual(data);
+  await expect(
+    crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce },
+      other.key,
+      ciphertext,
+    ),
+  ).rejects.toThrow();
+  await expect(derive('/\ud800')).rejects.toMatchObject({
+    code: 'invalid-preparation',
+  });
+  await coordinator.createCommit(
+    { changes: [] },
+    control(2, 'update', value.identities.actorId),
+  );
+  const next = await derive('/a');
+  expect(next.epochTag).not.toEqual(first.epochTag);
+  await expect(
+    crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, next.key, ciphertext),
+  ).rejects.toThrow();
+});
+
+test.each(['anchor', 'first-export', 'second-export', 'key-import'] as const)(
+  'retains the complete unawaited derivation across a closed scope at %s',
+  async (phase) => {
+    const value = await context(),
+      coordinator = await bootstrap(value),
+      entered = deferred(),
+      release = deferred();
+    const originalLoad = value.rollbackAnchor.load.bind(value.rollbackAnchor);
+    let loads = 0,
+      exports = 0,
+      commits = 0;
+    value.rollbackAnchor.load = async (...args) => {
+      loads++;
+      if (phase === 'anchor' && loads === 2) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalLoad(...args);
+    };
+    value.provider.exportSecret = async (input) => {
+      exports++;
+      if (
+        (phase === 'first-export' && exports === 1) ||
+        (phase === 'second-export' && exports === 2)
+      ) {
+        entered.resolve();
+        await release.promise;
+      }
+      return new Uint8Array(input.length).fill(7);
+    };
+    const originalImport = crypto.subtle.importKey.bind(crypto.subtle);
+    const importSpy = jest.spyOn(crypto.subtle, 'importKey');
+    if (phase === 'key-import')
+      importSpy.mockImplementationOnce((...args: any[]) => {
+        const pending = Reflect.apply(originalImport, undefined, args);
+        entered.resolve();
+        return (async () => {
+          await release.promise;
+          return await pending;
+        })();
+      });
+    let derivation!: Promise<unknown>;
+    try {
+      const pending = coordinator.runDocumentOperation(
+        coordinator.documentContext,
+        new Uint8Array(9),
+        async (_context, _input, _signal, scope) => {
+          derivation = scope.deriveEncryptionMaterial('/scope');
+          void derivation.catch(() => {});
+          await entered.promise;
+          return prepared(() => {
+            commits++;
+          });
+        },
+      );
+      await expect(pending).rejects.toMatchObject({
+        code: 'invalid-preparation',
+      });
+      expect(coordinator.pendingDocumentOperations).toEqual({
+        operations: 1,
+        bytes: 9,
+      });
+      expect(commits).toBe(0);
+      release.resolve();
+      await expect(derivation).rejects.toThrow();
+      await turn();
+      await turn();
+      expect(exports).toBe(
+        phase === 'anchor' ? 0 : phase === 'first-export' ? 1 : 2,
+      );
+      if (phase === 'key-import') expect(importSpy).toHaveBeenCalledTimes(1);
+      else expect(importSpy).not.toHaveBeenCalled();
+      expect(coordinator.pendingDocumentOperations).toEqual({
+        operations: 0,
+        bytes: 0,
+      });
+    } finally {
+      release.resolve();
+      importSpy.mockRestore();
+    }
+  },
+);

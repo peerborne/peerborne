@@ -7,6 +7,9 @@ import {
   PreparedACLChange,
   CRDTChangeNodeWire,
   CRDTProvider,
+  CRDTDocumentSession,
+  PreparedDocumentChange,
+  preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
   validateInitialLoadSignerAuthority,
@@ -36,6 +39,8 @@ import {
 import {
   AbstractType,
   Map as YMap,
+  Array as YArray,
+  Text as YText,
   applyUpdateV2,
   ContentAny,
   ContentDeleted,
@@ -46,6 +51,9 @@ import {
   getState,
   ID,
   Item,
+  ContentType,
+  ContentFormat,
+  type Transaction,
 } from 'yjs';
 import { Base64 } from 'js-base64';
 
@@ -441,9 +449,293 @@ export type YjsDocumentChangeHandler = PeerborneDocumentChangeHandler<
   CryptoKey
 >;
 
+function assertStagedYjsValues(structs: Iterable<unknown>): void {
+  const mutable = (value: unknown) =>
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function');
+  for (const struct of structs) {
+    if (!(struct instanceof Item)) continue;
+    const content = struct.content;
+    if (content instanceof ContentType) {
+      const prototype = Object.getPrototypeOf(content.type);
+      if (
+        prototype === YMap.prototype ||
+        prototype === YArray.prototype ||
+        prototype === YText.prototype
+      )
+        continue;
+      throw new TypeError(
+        'Coordinated Yjs documents support shared Y.Map, Y.Array and Y.Text values',
+      );
+    }
+    if (
+      (content instanceof ContentFormat && mutable(content.value)) ||
+      content.getContent().some(mutable)
+    )
+      throw new TypeError(
+        'Coordinated Yjs documents require shared Yjs types for structured or binary values',
+      );
+  }
+}
+
 export class YjsProvider
   implements CRDTProvider<Doc, Uint8Array, (doc: Doc) => void>
 {
+  /** Staging accepts scalars and shared Map/Array/Text values, not opaque mutable payloads. */
+  createDocumentSession(
+    document: Doc,
+  ): CRDTDocumentSession<Doc, Uint8Array, (doc: Doc) => void> {
+    for (const structs of document.store.clients.values())
+      assertStagedYjsValues(structs);
+    let preparing = false;
+    let active: PreparedDocumentChange<Uint8Array> | undefined;
+    let shadow: Doc | undefined;
+    let shadowVersion = 0;
+    let acceptedShadowVersion = 0;
+    let acceptedShadowRoots = new Map<string, object | null>();
+    let revision = 0;
+    let closed = false;
+    let invalidated = false;
+    const commitOrigin = {};
+    let commitTransaction: Transaction | undefined;
+    const onUpdate = (
+      _update: Uint8Array,
+      origin: unknown,
+      _document: Doc,
+      transaction: Transaction,
+    ) => {
+      if (revision === Number.MAX_SAFE_INTEGER) invalidated = true;
+      else revision++;
+      if (
+        commitTransaction === undefined ||
+        transaction !== commitTransaction ||
+        origin !== commitOrigin
+      )
+        invalidated = true;
+    };
+    document.on('updateV2', onUpdate);
+    const assertHealthy = () => {
+      if (document.isDestroyed) invalidated = true;
+      if (closed || invalidated)
+        throw new Error(
+          'Document session is closed or changed outside admission',
+        );
+    };
+    const discardShadow = () => {
+      const previous = shadow;
+      shadow = undefined;
+      if (previous && !previous.isDestroyed) previous.destroy();
+    };
+    const complete = (value: Doc) => {
+      if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
+        throw new Error('Document change has missing causal dependencies');
+    };
+    const idle = (value: Doc) =>
+      value._transaction === null && value._transactionCleanups.length === 0;
+    const hasPending = (value: Doc) =>
+      value.store.pendingStructs !== null || value.store.pendingDs !== null;
+    const rootType = (value: AbstractType<any>) => {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype === AbstractType.prototype) return undefined;
+      if (prototype === YMap.prototype) return YMap;
+      if (prototype === YArray.prototype) return YArray;
+      if (prototype === YText.prototype) return YText;
+      throw new TypeError(
+        'Coordinated Yjs documents support shared Y.Map, Y.Array and Y.Text values',
+      );
+    };
+    const captureRoots = (value: Doc) =>
+      new Map(
+        [...value.share].map(([name, type]) => [
+          name,
+          Object.getPrototypeOf(type) as object | null,
+        ]),
+      );
+    const sameRoots = (value: Doc, roots: ReadonlyMap<string, object | null>) =>
+      value.share.size === roots.size &&
+      [...value.share].every(
+        ([name, type]) =>
+          roots.has(name) && roots.get(name) === Object.getPrototypeOf(type),
+      );
+    const compatibleRoots = (source: Doc, target: Doc) => {
+      for (const [name, value] of source.share) {
+        const expected = rootType(value);
+        const existing = target.share.get(name);
+        const actual = existing && rootType(existing);
+        if (expected && actual && expected !== actual) return false;
+      }
+      return true;
+    };
+    const copyRootTypes = (source: Doc, target: Doc) => {
+      for (const [name, value] of source.share) {
+        const constructor = rootType(value);
+        if (constructor) target.get(name, constructor);
+      }
+    };
+    const stage = (prepare: (value: Doc) => Uint8Array) => {
+      assertHealthy();
+      if (active || preparing) throw new Error('Document session is busy');
+      preparing = true;
+      try {
+        if (!idle(document))
+          throw new Error('Document transaction is still active');
+        complete(document);
+        if (
+          shadow &&
+          (shadow.isDestroyed ||
+            !sameRoots(shadow, acceptedShadowRoots) ||
+            shadowVersion !== acceptedShadowVersion ||
+            !idle(shadow) ||
+            hasPending(shadow))
+        )
+          discardShadow();
+        if (!shadow) {
+          shadow = new Doc({ gc: document.gc });
+          copyRootTypes(document, shadow);
+          applyUpdateV2(shadow, this.getSnapshot(document));
+          shadowVersion = 0;
+          acceptedShadowVersion = 0;
+          acceptedShadowRoots = captureRoots(shadow);
+          shadow.on('updateV2', () => {
+            if (shadowVersion === Number.MAX_SAFE_INTEGER) invalidated = true;
+            else shadowVersion++;
+          });
+        }
+        const baseRevision = revision;
+        let stable: Uint8Array;
+        try {
+          copyRootTypes(document, shadow);
+          stable = new Uint8Array(prepare(shadow));
+          assertHealthy();
+          if (shadow.isDestroyed)
+            throw new Error('Document mirror was destroyed during preparation');
+          if (!idle(document) || !idle(shadow))
+            throw new Error('Document transaction is still active');
+          if (
+            !compatibleRoots(document, shadow) ||
+            !compatibleRoots(shadow, document)
+          )
+            throw new Error('Document root type changed during preparation');
+          assertStagedYjsValues(decodeUpdateV2(stable).structs);
+          complete(shadow);
+        } catch (error) {
+          discardShadow();
+          throw error;
+        }
+        const stagedVersion = shadowVersion;
+        const stagedRoots = captureRoots(shadow);
+        const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
+          new Uint8Array(stable),
+          () =>
+            !closed &&
+            !invalidated &&
+            !document.isDestroyed &&
+            !shadow!.isDestroyed &&
+            sameRoots(shadow!, stagedRoots) &&
+            active === plan &&
+            revision === baseRevision &&
+            shadowVersion === stagedVersion &&
+            idle(document) &&
+            idle(shadow!) &&
+            !hasPending(document) &&
+            !hasPending(shadow!) &&
+            compatibleRoots(document, shadow!) &&
+            compatibleRoots(shadow!, document),
+          () => {
+            try {
+              document.transact((transaction) => {
+                commitTransaction = transaction;
+                if (
+                  document.isDestroyed ||
+                  shadow!.isDestroyed ||
+                  !sameRoots(shadow!, stagedRoots) ||
+                  hasPending(document) ||
+                  hasPending(shadow!) ||
+                  !compatibleRoots(document, shadow!) ||
+                  !compatibleRoots(shadow!, document) ||
+                  transaction.deleteSet.clients.size !== 0 ||
+                  transaction.beforeState.size !==
+                    document.store.clients.size ||
+                  [...transaction.beforeState].some(
+                    ([client, clock]) =>
+                      getState(document.store, client) !== clock,
+                  )
+                ) {
+                  invalidated = true;
+                  throw new Error(
+                    'Document changed before admitted transaction application',
+                  );
+                }
+                copyRootTypes(shadow!, document);
+                applyUpdateV2(document, stable, commitOrigin);
+              }, commitOrigin);
+              complete(document);
+              if (
+                closed ||
+                invalidated ||
+                document.isDestroyed ||
+                shadow!.isDestroyed ||
+                !sameRoots(shadow!, stagedRoots)
+              )
+                throw new Error(
+                  'Document changed outside admission while committing',
+                );
+              acceptedShadowVersion = stagedVersion;
+              acceptedShadowRoots = stagedRoots;
+              active = undefined;
+            } catch (error) {
+              invalidated = true;
+              throw error;
+            } finally {
+              commitTransaction = undefined;
+            }
+          },
+          () => {
+            discardShadow();
+            active = undefined;
+          },
+          () => this.getSnapshot(shadow!),
+        );
+        active = plan;
+        return plan;
+      } finally {
+        preparing = false;
+      }
+    };
+    return {
+      get document() {
+        assertHealthy();
+        return document;
+      },
+      prepareLocal: (_message, change) =>
+        stage((value) => {
+          const before = encodeStateVector(value);
+          change(value);
+          return encodeStateAsUpdateV2(value, before);
+        }),
+      prepareRemote: (changes) => {
+        const owned = new Uint8Array(changes);
+        return stage((value) => {
+          applyUpdateV2(value, owned);
+          return owned;
+        });
+      },
+      prepareSnapshot: (changes) => {
+        const owned = new Uint8Array(changes);
+        return stage((value) => {
+          applyUpdateV2(value, owned);
+          return owned;
+        });
+      },
+      close: () => {
+        closed = true;
+        active?.discard();
+        document.off('updateV2', onUpdate);
+        discardShadow();
+      },
+    };
+  }
+
   newDocument(): Doc {
     return new Doc();
   }

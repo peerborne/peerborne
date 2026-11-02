@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 93 selected production functions in 29 proof units are compiled from their
+The 94 selected production functions in 29 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 104 controls cover 29 accepted originals, a map-comparison
-calibration, 70 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 108 controls cover 29 accepted originals, a map-comparison
+calibration, 74 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree
@@ -74,8 +74,8 @@ reproving unchanged arithmetic helpers for each deliberately broken program.
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 36 property-suite files and
-80 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 38 property-suite files and
+88 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 

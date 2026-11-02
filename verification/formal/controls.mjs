@@ -558,6 +558,30 @@ method mapOperand_domain()
       '//@ verify\n  //@ requires false',
     ],
     [
+      'prepared-change-early-success',
+      'document-admission.ts',
+      "if (event === 'begin') return 'applying';",
+      "if (event === 'begin') return 'committed';",
+    ],
+    [
+      'prepared-change-failed-retry',
+      'document-admission.ts',
+      "if (event === 'fail') return 'failed';",
+      "if (event === 'fail') return 'prepared';",
+    ],
+    [
+      'prepared-change-failure-success',
+      'document-admission.ts',
+      "if (event === 'fail') return 'failed';",
+      "if (event === 'fail') return 'committed';",
+    ],
+    [
+      'prepared-change-cancel-application',
+      'document-admission.ts',
+      "if (event === 'succeed') return 'committed';",
+      "if (event === 'cancel') return 'cancelled'; if (event === 'succeed') return 'committed';",
+    ],
+    [
       'document-operation-count-overflow',
       'document-admission.ts',
       'return count < countLimit &&',
@@ -578,8 +602,8 @@ method mapOperand_domain()
     [
       'document-operation-cancel-resurrection',
       'document-admission.ts',
-      "if (event === 'cancel') return 'cancelled';",
-      "if (event === 'cancel') return 'prepared';",
+      "if (phase === 'committed' || phase === 'cancelled') return phase; if (event === 'cancel') return 'cancelled';",
+      "if (phase === 'committed' || phase === 'cancelled') return phase; if (event === 'cancel') return 'prepared';",
     ],
     [
       'document-operation-stale-commit',
