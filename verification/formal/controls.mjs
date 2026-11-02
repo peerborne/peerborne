@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import {
   projectRoot,
   manifest,
@@ -184,6 +185,46 @@ method mapOperand_domain()
     'positive/map-operand-calibration',
     calibrated,
   );
+  const aliasRoot = copyProject('map-alias-calibration');
+  const aliasSource = 'packages/core/src/policy/document-journal.ts';
+  const aliasPath = join(aliasRoot, aliasSource);
+  const aliasOriginal = readFileSync(aliasPath, 'utf8');
+  const aliasNeedle = 'const result = new Map(ledger);';
+  if (aliasOriginal.split(aliasNeedle).length !== 2)
+    throw new Error('Map alias calibration target drifted');
+  const aliasText = aliasOriginal.replace(
+    aliasNeedle,
+    'const result = ledger;',
+  );
+  writeFileSync(aliasPath, aliasText);
+  const aliasVerified = verify(aliasRoot, aliasSource, true);
+  const aliasJavaScript = ts.transpileModule(aliasText, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText;
+  const aliasRuntime = join(aliasRoot, 'map-alias.runtime.cjs');
+  writeFileSync(aliasRuntime, aliasJavaScript);
+  const nativeModule = (await import(pathToFileURL(aliasRuntime).href)).default;
+  const nativeParent = new Map();
+  const nativeCandidate = nativeModule.recordDocumentPublicationBinding(
+    nativeParent,
+    'candidate',
+    1,
+    144,
+  );
+  requireResult(
+    aliasVerified.status === 0 &&
+      aliasVerified.record?.stage === 'ok' &&
+      !aliasVerified.record.partial &&
+      nativeCandidate === nativeParent &&
+      nativeParent.has('candidate'),
+    'model-calibration/native-map-alias',
+    aliasVerified,
+  );
+  results.at(-1).verificationScope = 'model-calibration';
+  results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
       'authority-role-range',
@@ -742,6 +783,66 @@ method mapOperand_domain()
       'document-journal.ts',
       'return next > previous && sameGroup && headChanged;',
       'return next > previous && headChanged;',
+    ],
+    [
+      'publication-ledger-rebind',
+      'document-journal.ts',
+      '!ledger.has(token) && ledger.size < limit',
+      'ledger.size < limit',
+    ],
+    [
+      'publication-ledger-overflow',
+      'document-journal.ts',
+      'ledger.size < limit &&',
+      'ledger.size <= limit &&',
+    ],
+    [
+      'publication-ledger-old-delta-revision',
+      'document-journal.ts',
+      'checkpoint || bindingRevision === entryRevision',
+      'checkpoint || bindingRevision <= entryRevision',
+    ],
+    [
+      'publication-ledger-revision-rewrite',
+      'document-journal.ts',
+      'result.set(token, revision);',
+      'result.set(token, revision + 1);',
+    ],
+    [
+      'publication-ledger-history-loss',
+      'document-journal.ts',
+      'const result = new Map(ledger);',
+      'const result = new Map<string, number>();',
+    ],
+    [
+      'publication-ledger-compaction-resurrection',
+      'document-journal.ts',
+      'const result = new Map<string, number>();',
+      'const result = new Map(ledger);',
+    ],
+    [
+      'publication-ledger-dangling-retention',
+      'document-journal.ts',
+      'if (!ledger.has(pending[index]) || seen.has(pending[index])) return false;',
+      'if (seen.has(pending[index])) return false;',
+    ],
+    [
+      'publication-ledger-duplicate-retention',
+      'document-journal.ts',
+      'if (!ledger.has(pending[index]) || seen.has(pending[index])) return false;',
+      'if (!ledger.has(pending[index])) return false;',
+    ],
+    [
+      'publication-ledger-aborted-install',
+      'document-journal.ts',
+      'return anchored ? candidate : before;',
+      'return candidate;',
+    ],
+    [
+      'publication-ledger-wrong-token-revision',
+      'document-journal.ts',
+      'isAcceptedDocumentPublication(revision, currentRevision, ledger.get(token)!)',
+      'isAcceptedDocumentPublication(revision, currentRevision, revision)',
     ],
     [
       'document-publication-revision-only',

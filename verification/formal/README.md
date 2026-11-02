@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 106 selected production functions in 33 proof units are compiled from their
+The 112 selected production functions in 33 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 137 controls cover 33 accepted originals, a map-comparison
-calibration, 99 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 148 controls cover 33 accepted originals, map-comparison and native-map-alias
+calibrations, 109 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree
@@ -70,12 +70,17 @@ fail an obligation; the report labels these counterexample checks explicitly.
 The checked production program is always verified in full. This avoids
 reproving unchanged arithmetic helpers for each deliberately broken program.
 
+The native-map-alias calibration intentionally verifies a candidate that aliases
+its parent, then confirms that the JavaScript parent is mutated. Dafny maps model
+values, so the separate native ownership properties are necessary to check the
+production copies; this calibration is not an additional verified security claim.
+
 `verify:formal:inventory` audits all library selections against the manifest.
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 44 property-suite files and
-102 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 45 property-suite files and
+105 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 

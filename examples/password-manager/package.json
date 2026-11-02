@@ -10,9 +10,9 @@
     "@types/uuid": "^11.0.0",
     "bootstrap": "^5.3.8",
     "quill-delta": "^5.1.0",
-    "react": "^19.3.0",
+    "react": "^19.3.1",
     "react-bootstrap": "^2.10.10",
-    "react-dom": "^19.3.0",
+    "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4",
     "typescript": "^5.9.3",
     "uuid": "^14.0.2",
@@ -27,7 +27,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "blockstore-core": "^7.0.1",
     "fake-indexeddb": "^6.2.5",
-    "tsx": "4.23.12",
+    "tsx": "4.23.15",
     "vite": "^8.3.5"
   },
   "scripts": {

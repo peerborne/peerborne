@@ -226,12 +226,13 @@
     },
     {
       "id": "coordinated-document-security",
-      "formalBoundary": "Sequence, role, epoch advancement and journal recovery decisions and finite-history laws are proved. Native AES-GCM, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, crash cuts, checkpoint reconstruction and rollback anchor conformance require generated runtime histories. These tests do not prove cryptographic primitives, network liveness or secure hardware storage.",
+      "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection and finite-history provenance are proved. The Map model uses immutable values, so native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance require native properties. These checks do not prove cryptographic primitives, network liveness or secure hardware storage.",
       "evidence": [
         "packages/core/src/coordinated-document-properties.test.ts",
         "packages/core/src/document-journal-properties.test.ts",
         "packages/core/src/document-authority-properties.test.ts",
-        "packages/core/src/document-wire-properties.test.ts"
+        "packages/core/src/document-wire-properties.test.ts",
+        "packages/core/src/document-publication-ledger-properties.test.ts"
       ],
       "sources": [
         "packages/core/src/coordinated-document.ts",

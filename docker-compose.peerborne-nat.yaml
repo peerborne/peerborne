@@ -32,14 +32,14 @@ services:
     networks: [nat-b]
 
   browser-a: &browser
-    image: mcr.microsoft.com/playwright:v1.58.2-noble
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
     networks: [nat-a]
     ports: ["3101:3000"]
     environment:
       TARGET_HOST: app-a
     volumes: ["./e2e/localhost-proxy.mjs:/localhost-proxy.mjs:ro"]
     depends_on: [app-a]
-    command: ["bash", "-lc", "node /localhost-proxy.mjs & exec npx --yes playwright@1.58.2 run-server --port 3000 --host 0.0.0.0"]
+    command: ["bash", "-lc", "node /localhost-proxy.mjs & exec npx --yes playwright@1.64.1 run-server --port 3000 --host 0.0.0.0"]
 
   browser-b:
     <<: *browser

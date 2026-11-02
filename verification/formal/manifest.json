@@ -512,7 +512,13 @@
       "functions": [
         "classifyDocumentJournalRecovery",
         "canAdvanceDocumentAuthority",
-        "isAcceptedDocumentPublication"
+        "isAcceptedDocumentPublication",
+        "canRecordDocumentPublicationBinding",
+        "recordDocumentPublicationBinding",
+        "canRetainDocumentPublicationBindings",
+        "retainDocumentPublicationBindings",
+        "selectDocumentPublicationBindings",
+        "isAcceptedDocumentPublicationToken"
       ],
       "witness": "documentJournal_domain",
       "consumers": [
@@ -523,7 +529,15 @@
         "classifyDocumentJournalRecovery_ensures",
         "canAdvanceDocumentAuthority_ensures",
         "journalRecovery_all_histories",
-        "isAcceptedDocumentPublication_ensures"
+        "isAcceptedDocumentPublication_ensures",
+        "canRecordDocumentPublicationBinding_ensures",
+        "recordDocumentPublicationBinding",
+        "canRetainDocumentPublicationBindings",
+        "retainDocumentPublicationBindings",
+        "selectDocumentPublicationBindings_ensures",
+        "isAcceptedDocumentPublicationToken_ensures",
+        "publicationLedger_all_histories",
+        "publicationLedger_domain"
       ]
     },
     {

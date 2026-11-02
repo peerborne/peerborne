@@ -26,8 +26,8 @@
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "tsx": "4.23.12"
+    "@playwright/test": "^1.64.1",
+    "tsx": "4.23.15"
   },
   "engines": {
     "node": ">=22.19.0"

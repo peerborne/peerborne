@@ -162,19 +162,32 @@ publication is authenticated independently of retained history, including after
 checkpoint pruning. Storage can suppress or replay previously accepted outbox
 records; it cannot turn a rejected preparation into a publishable frame.
 
+The journal builds a detached candidate for publication-token changes and installs
+it only after verifying the durable anchor. A failed attempt retains the prior
+ledger; checkpoint projection keeps exactly the pending tokens and their original
+revisions. Recovery rejects duplicate, future, stale-delta and over-budget binding
+records. The retained ledger is bounded to 144 tokens and a checkpoint retains at
+most 16 pending tokens, independent of total historical writes.
+
 ## Evidence and remaining boundaries
 
 The [formal manifest](../verification/formal/manifest.json) proves admission
 phases/budgets, exact sequence/replay/parent/role decisions, epoch advancement,
 and journal recovery decisions. Inductive finite-history lemmas establish
-monotone accepted prefixes and anchor recovery. Hash equality, signature
+monotone accepted prefixes, anchor recovery and publication-token provenance over
+arbitrary finite histories. Actual token-map insertion, checkpoint projection and
+candidate selection are production functions compiled into these proofs. Native
+Map aliasing remains outside the immutable-map model and has explicit property
+calibration. Hash equality, signature
 verification and context equality are validated runtime inputs to those
 policies; the proofs do not establish cryptographic unforgeability or secrecy.
 
 Seeded properties exercise staging, escaped references, wire boundaries,
 role/controller histories, queue saturation, native crypto, restart histories,
 checkpoint receipts, transaction faults, forged acceptance markers, rollback,
-eviction and outbox recovery.
+eviction and outbox recovery. Mixed storage-fault histories combine accepted,
+aborted and ambiguous writes, acknowledgments, restarts and hostile retained
+publications against both the memory and IndexedDB stores.
 The IndexedDB cost check places a 2 MiB checkpoint, commits ten small deltas,
 and requires zero checkpoint reads and less than 32 KiB of new entry writes.
 This is an I/O cost assertion, not a browser latency guarantee.
