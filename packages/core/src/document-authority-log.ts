@@ -1,3 +1,8 @@
+import {
+  isDocumentAuthorityRosterValid,
+  canBindDocumentController,
+  bindDocumentController,
+} from './policy/document-authority.js';
 import type { MembershipControlAuthorizer } from './membership-control-record.js';
 import type { GroupSecurityProtocol } from './group-security-provider.js';
 import { canAdvanceDocumentAuthority } from './policy/document-journal.js';
@@ -82,30 +87,25 @@ function decode(bytes: Uint8Array): AuthorityRecord {
   )
     throw new Error('Invalid authority record');
   const members: DocumentMemberAuthority[] = [];
-  let previous = '',
-    controllers = 0;
-  const keys = new Set<string>();
+  let previous = '';
+  const ids: string[] = [],
+    keys: string[] = [],
+    roles: number[] = [];
   for (let index = 0; index < count; index++) {
     const memberId = reader.fixed(32),
       publicKey = reader.text(4096),
       role = reader.number(1),
       id = documentBytesId(memberId);
-    if (
-      id <= previous ||
-      !publicKey ||
-      keys.has(publicKey) ||
-      role < 1 ||
-      role > 3
-    )
-      throw new Error('Invalid authority roster');
+    if (id <= previous) throw new Error('Invalid authority roster');
     previous = id;
-    keys.add(publicKey);
-    if (role === 3) controllers++;
+    ids.push(id);
+    keys.push(publicKey);
+    roles.push(role);
     members.push({ memberId, publicKey, role: role as 1 | 2 | 3 });
   }
   reader.end();
-  if (controllers !== 1)
-    throw new Error('Authority roster must have exactly one controller');
+  if (!isDocumentAuthorityRosterValid(ids, keys, roles))
+    throw new Error('Invalid authority roster or controller');
   return { documentId, sequence, parent, context, members };
 }
 
@@ -150,7 +150,7 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
   private head: Uint8Array;
   private root: Uint8Array;
   private current: AuthorityRecord;
-  private readonly controllers = new Map<string, Uint8Array>();
+  private controllers = new Map<string, Uint8Array>();
   private readonly verifiedHeads = new Set<string>();
   private controlAuthority?: DocumentGroupControlAuthority;
 
@@ -166,9 +166,11 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
     this.current = record;
     this.records.push(encoded.slice());
     this.historyBytes = encoded.length;
-    this.controllers.set(
+    this.controllers = bindDocumentController(
+      this.controllers,
       documentBytesId(record.context.controlHead),
       record.members.find((member) => member.role === 3)!.memberId.slice(),
+      MAX_RECORDS,
     );
   }
 
@@ -403,6 +405,14 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
       throw new Error(
         'Role transitions require a fresh authenticated group epoch',
       );
+    if (
+      !canBindDocumentController(
+        this.controllers,
+        documentBytesId(next.context.controlHead),
+        MAX_RECORDS,
+      )
+    )
+      throw new Error('Authority control head is already bound');
   }
 
   private async verify(
@@ -440,16 +450,19 @@ export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
   ): void {
     if (this.historyBytes + encoded.length > MAX_HISTORY_BYTES)
       throw new Error('Authority history byte bound exceeded');
+    const controllers = bindDocumentController(
+      this.controllers,
+      documentBytesId(next.context.controlHead),
+      next.members.find((member) => member.role === 3)!.memberId.slice(),
+      MAX_RECORDS,
+    );
     this.records.push(encoded.slice());
     this.historyBytes += encoded.length;
     this.revision = next.sequence;
     this.current = next;
     this.head = hash.slice();
     this.verifiedHeads.add(documentBytesId(this.head));
-    this.controllers.set(
-      documentBytesId(next.context.controlHead),
-      next.members.find((member) => member.role === 3)!.memberId.slice(),
-    );
+    this.controllers = controllers;
   }
 }
 

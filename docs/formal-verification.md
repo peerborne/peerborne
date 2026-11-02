@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 107 production functions in 32 proof units. The runtime calls
+LemmaScript checks 112 production functions in 33 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -47,7 +47,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
 | [UTF-16 scanner](../packages/core/src/internal/canonical-encoding.ts)       |         4 | A string is accepted iff every surrogate code unit has its matching adjacent partner.                                                                                                                     |
 | [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                                                  |
-| [React cache key](../packages/react/src/hooks-cache.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                                                 |
+| [React cache key](../packages/react/src/document-cache-key.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                                                 |
 | [Package partition](../packages/core/src/policy/package-partition.ts)       |         4 | Exact pending insertion/removal, irreversible consumption-marker growth, disjoint consume transfer with conserved membership/count, and stable operation-to-record bindings.                              |
 | [Store budget and baseline](../packages/core/src/policy/store-budget.ts)    |         3 | Exact framed-byte reservation/release within 128 MiB, safe revision increment, stale-baseline rejection and nondecreasing committed epochs; composition over delta/commit sequences.                      |
 | [Commit lifecycle](../packages/core/src/policy/commit-lifecycle.ts)         |         4 | Claims require a current prepared base without active hydration; finalization is absorbing/idempotent, and coordinator admission/recovery preserve fork/poison/error priority.                            |
@@ -69,6 +69,23 @@ has native JavaScript properties: a missing copy can pass the value-model proof
 while mutating the active map. A dedicated control verifies an intentionally
 aliased variant and confirms that native counterexample. The healthy production
 implementation must pass the separate ownership and generated-history properties.
+
+The [document-authority policy](../packages/core/src/policy/document-authority.ts)
+adds five verified production functions, with a shared bounded field validator
+checked in the same unit. A valid detached roster has 1–256
+members, distinct member IDs and public keys, valid roles and exactly one
+controller. Controller bindings accept only fresh heads within the 1,024-record
+history bound. A checked finite-history method preserves every old head/controller
+binding, excludes heads introduced only by unsigned attempts, and retains an
+admitted first transition through subsequent hostile attempts.
+
+The history proof takes correct current-controller authentication as an input;
+it does not prove signatures or group membership. Map values do not model native
+object identity, byte ownership, parsing or asynchronous preparation. Generated
+properties check these boundaries, including races between signed updates and
+signed restoration attempts that reuse an older control head. The latter was
+accepted by the previous implementation and could replace its historical
+controller binding; restoration and live validation now reject it.
 
 The coordinator uses these admission policies for bounded document preparation
 and incoming membership deliveries. Document preparation runs outside the
@@ -223,7 +240,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 43 property-suite files containing 100 explicit
+The inventory audits 45 property-suite files containing 105 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

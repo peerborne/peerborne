@@ -30,6 +30,14 @@ authorized at each previous control head, including historical controllers after
 a transfer. The document rejects a built-in role log paired with a coordinator
 using a different group-control authorizer.
 
+Each control head has one immutable controller binding. A later role record must
+name a fresh control head, even when it advances the epoch; reusing an older head
+is rejected during live application and restoration. The verified roster and
+binding policies preserve old controllers and cap the history at 1,024 records.
+Rosters are bounded at 256 members and malformed rosters are rejected before
+signature verification. Parsing, native cryptography, copied bytes and racing
+updates remain covered by generated runtime properties.
+
 The new content format uses 32-byte member IDs. A roster has at most 256 unique
 member IDs and canonical public keys, and exactly one controller. Controllers
 can write and sign role transitions; writers can change document content;

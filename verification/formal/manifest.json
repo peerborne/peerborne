@@ -237,10 +237,10 @@
       "verifiedTargets": ["hasBootstrapPeers_ensures"]
     },
     {
-      "path": "packages/react/src/hooks-cache.ts",
+      "path": "packages/react/src/document-cache-key.ts",
       "functions": ["getPeerborneDocumentCacheKey"],
       "witness": "hooksCache_domain",
-      "consumers": ["packages/react/src/hooks.ts"],
+      "consumers": ["packages/react/src/hooks-cache.ts"],
       "verifiedTargets": [
         "getPeerborneDocumentCacheKey_ensures",
         "documentCacheKey_injective"
@@ -546,6 +546,27 @@
       "witness": "syncRequestTime_domain",
       "consumers": ["packages/core/src/sync-request.ts"],
       "verifiedTargets": ["syncRequestTimeAllowed_ensures"]
+    },
+    {
+      "path": "packages/core/src/policy/document-authority.ts",
+      "functions": [
+        "documentAuthorityControllerIndex",
+        "validDocumentAuthorityFields",
+        "isDocumentAuthorityRosterValid",
+        "canBindDocumentController",
+        "bindDocumentController"
+      ],
+      "witness": "documentAuthority_domain",
+      "consumers": ["packages/core/src/document-authority-log.ts"],
+      "verifiedTargets": [
+        "documentAuthorityControllerIndex",
+        "validDocumentAuthorityFields",
+        "isDocumentAuthorityRosterValid",
+        "canBindDocumentController_ensures",
+        "bindDocumentController",
+        "controllerBindings_all_histories",
+        "unsignedAuthorityHeads_excluded"
+      ]
     }
   ]
 }

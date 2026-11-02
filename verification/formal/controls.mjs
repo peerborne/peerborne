@@ -227,6 +227,72 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'authority-role-range',
+      'document-authority.ts',
+      'if (role !== 1 && role !== 2 && role !== 3) return -1;',
+      'if (false) return -1;',
+    ],
+    [
+      'authority-two-controllers',
+      'document-authority.ts',
+      'if (controller !== -1) return -1;',
+      'if (false) return -1;',
+    ],
+    [
+      'authority-missing-controller',
+      'document-authority.ts',
+      'return controller;',
+      'return controller === -1 ? 0 : controller;',
+    ],
+    [
+      'authority-duplicate-member',
+      'document-authority.ts',
+      'if (!validDocumentAuthorityFields(memberIds, 64, 64)) return false;',
+      'if (false) return false;',
+    ],
+    [
+      'authority-duplicate-key',
+      'document-authority.ts',
+      'if (!validDocumentAuthorityFields(publicKeys, 1, 4096)) return false;',
+      'if (false) return false;',
+    ],
+    [
+      'authority-roster-bound',
+      'document-authority.ts',
+      'roles.length > 256',
+      'roles.length > 257',
+    ],
+    [
+      'authority-empty-key',
+      'document-authority.ts',
+      'validDocumentAuthorityFields(publicKeys, 1, 4096)',
+      'validDocumentAuthorityFields(publicKeys, 0, 4096)',
+    ],
+    [
+      'authority-controller-capacity',
+      'document-authority.ts',
+      'return controllers.size < limit && !controllers.has(head);',
+      'return controllers.size <= limit && !controllers.has(head);',
+    ],
+    [
+      'authority-controller-rebinding',
+      'document-authority.ts',
+      'return controllers.size < limit && !controllers.has(head);',
+      'return controllers.size < limit;',
+    ],
+    [
+      'authority-controller-history-loss',
+      'document-authority.ts',
+      'const result = new Map(controllers);',
+      'const result = new Map<string, Controller>();',
+    ],
+    [
+      'authority-wrong-control-head',
+      'document-authority.ts',
+      'result.set(head, controller);',
+      'result.set("unexpected", controller);',
+    ],
+    [
       'unpaired-surrogate',
       'packages/core/src/internal/canonical-encoding.ts',
       'if (!isPairedUtf16Unit(value, index)) return false;',
@@ -240,7 +306,7 @@ method mapOperand_domain()
     ],
     [
       'document-cache-collision',
-      'packages/react/src/hooks-cache.ts',
+      'packages/react/src/document-cache-key.ts',
       'return `${caches.contextKeyPrefix}${documentPath}`;',
       'return `${caches.contextKeyPrefix}`;',
     ],
