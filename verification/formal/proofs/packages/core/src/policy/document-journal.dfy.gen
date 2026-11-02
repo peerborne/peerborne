@@ -3,6 +3,64 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+function canRecordDocumentPublicationBinding(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int): bool
+  requires (|ledger| <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  requires (0 <= entryRevision)
+  requires (entryRevision <= 9007199254740991)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+{
+  ((((!((token in ledger)) && (|ledger| < limit)) && (1 <= bindingRevision)) && (bindingRevision <= entryRevision)) && (checkpoint || (bindingRevision == entryRevision)))
+}
+
+lemma canRecordDocumentPublicationBinding_ensures(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int)
+  requires (|ledger| <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  requires (0 <= entryRevision)
+  requires (entryRevision <= 9007199254740991)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+  ensures (canRecordDocumentPublicationBinding(ledger, token, bindingRevision, entryRevision, checkpoint, limit) <==> ((((!((token in ledger)) && (|ledger| < limit)) && (1 <= bindingRevision)) && (bindingRevision <= entryRevision)) && (checkpoint || (bindingRevision == entryRevision))))
+{
+}
+
+function selectDocumentPublicationBindings(before: map<string, int>, candidate: map<string, int>, anchored: bool): map<string, int>
+{
+  if anchored then
+    candidate
+  else
+    before
+}
+
+lemma selectDocumentPublicationBindings_ensures(before: map<string, int>, candidate: map<string, int>, anchored: bool)
+  ensures (anchored ==> (selectDocumentPublicationBindings(before, candidate, anchored) == candidate))
+  ensures (!(anchored) ==> (selectDocumentPublicationBindings(before, candidate, anchored) == before))
+{
+}
+
+function isAcceptedDocumentPublicationToken(ledger: map<string, int>, token: string, revision: int, currentRevision: int): bool
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+{
+  ((token in ledger) && isAcceptedDocumentPublication(revision, currentRevision, ledger[token]))
+}
+
+lemma isAcceptedDocumentPublicationToken_ensures(ledger: map<string, int>, token: string, revision: int, currentRevision: int)
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures (isAcceptedDocumentPublicationToken(ledger, token, revision, currentRevision) <==> ((((token in ledger) && (1 <= revision)) && (revision <= currentRevision)) && (ledger[token] == revision)))
+{
+}
+
 function isAcceptedDocumentPublication(revision: int, currentRevision: int, bindingRevision: int): bool
   requires (0 <= revision)
   requires (revision <= 9007199254740991)
@@ -70,4 +128,82 @@ lemma canAdvanceDocumentAuthority_ensures(previous: int, next: int, sameGroup: b
   requires (next <= 18446744073709551615)
   ensures (canAdvanceDocumentAuthority(previous, next, sameGroup, headChanged) <==> (((next > previous) && sameGroup) && headChanged))
 {
+}
+
+method recordDocumentPublicationBinding(ledger: map<string, int>, token: string, revision: int, limit: int) returns (res: map<string, int>)
+  requires !((token in ledger))
+  requires (|ledger| < limit)
+  requires (limit <= 9007199254740991)
+  requires (1 <= revision)
+  requires (revision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures (token in res)
+  ensures (res[token] == revision)
+  ensures forall key :: ((key in res) <==> ((key in ledger) || (key == token)))
+  ensures forall key :: ((key in ledger) ==> (res[key] == ledger[key]))
+  ensures forall key :: ((key in res) ==> ((1 <= res[key]) && (res[key] <= 9007199254740991)))
+  ensures (|res| == (|ledger| + 1))
+  ensures (|res| <= limit)
+{
+  var result := ledger;
+  result := result[token := revision];
+  return result;
+}
+
+method canRetainDocumentPublicationBindings(ledger: map<string, int>, pending: seq<string>, limit: int) returns (res: bool)
+  requires (|pending| <= 4294967295)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+  ensures (res <==> (((|pending| <= limit) && forall i: int :: ((0 <= i) ==> (i < |pending|) ==> (pending[i] in ledger))) && forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |pending|) ==> (pending[i] != pending[j]))))
+{
+  if (|pending| > limit) {
+    return false;
+  }
+  var seen: set<string> := {};
+  var index := 0;
+  while (index < |pending|)
+    invariant (0 <= index)
+    invariant (index <= |pending|)
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((pending[i] in ledger) && (pending[i] in seen)))
+    invariant forall key :: ((key in seen) ==> exists i: int :: (((0 <= i) && (i < index)) && (pending[i] == key)))
+    invariant forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < index) ==> (pending[i] != pending[j]))
+    decreases (|pending| - index)
+  {
+    if (!((pending[index] in ledger)) || (pending[index] in seen)) {
+      return false;
+    }
+    seen := (seen + {pending[index]});
+    index := (index + 1);
+  }
+  return true;
+}
+
+method retainDocumentPublicationBindings(ledger: map<string, int>, pending: seq<string>, limit: int) returns (res: map<string, int>)
+  requires (|pending| <= 4294967295)
+  requires (|pending| <= limit)
+  requires (limit <= 9007199254740991)
+  requires forall i: int :: ((0 <= i) ==> (i < |pending|) ==> (pending[i] in ledger))
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |pending|) ==> (pending[i] != pending[j]))
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures forall key :: ((key in res) <==> (key in pending))
+  ensures forall key :: ((key in res) ==> ((key in ledger) && (res[key] == ledger[key])))
+  ensures forall key :: ((key in res) ==> ((1 <= res[key]) && (res[key] <= 9007199254740991)))
+  ensures (|res| == |pending|)
+  ensures (|res| <= limit)
+{
+  var result: map<string, int> := map[];
+  var index := 0;
+  while (index < |pending|)
+    invariant (0 <= index)
+    invariant (index <= |pending|)
+    invariant (|result| == index)
+    invariant forall key :: ((key in result) <==> exists i: int :: (((0 <= i) && (i < index)) && (pending[i] == key)))
+    invariant forall key :: ((key in result) ==> ((key in ledger) && (result[key] == ledger[key])))
+    invariant forall key :: ((key in result) ==> ((1 <= result[key]) && (result[key] <= 9007199254740991)))
+    decreases (|pending| - index)
+  {
+    result := result[pending[index] := ledger[pending[index]]];
+    index := (index + 1);
+  }
+  return result;
 }

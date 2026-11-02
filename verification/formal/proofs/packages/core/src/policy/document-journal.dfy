@@ -3,6 +3,64 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+function canRecordDocumentPublicationBinding(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int): bool
+  requires (|ledger| <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  requires (0 <= entryRevision)
+  requires (entryRevision <= 9007199254740991)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+{
+  ((((!((token in ledger)) && (|ledger| < limit)) && (1 <= bindingRevision)) && (bindingRevision <= entryRevision)) && (checkpoint || (bindingRevision == entryRevision)))
+}
+
+lemma canRecordDocumentPublicationBinding_ensures(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int)
+  requires (|ledger| <= 9007199254740991)
+  requires (0 <= bindingRevision)
+  requires (bindingRevision <= 9007199254740991)
+  requires (0 <= entryRevision)
+  requires (entryRevision <= 9007199254740991)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+  ensures (canRecordDocumentPublicationBinding(ledger, token, bindingRevision, entryRevision, checkpoint, limit) <==> ((((!((token in ledger)) && (|ledger| < limit)) && (1 <= bindingRevision)) && (bindingRevision <= entryRevision)) && (checkpoint || (bindingRevision == entryRevision))))
+{
+}
+
+function selectDocumentPublicationBindings(before: map<string, int>, candidate: map<string, int>, anchored: bool): map<string, int>
+{
+  if anchored then
+    candidate
+  else
+    before
+}
+
+lemma selectDocumentPublicationBindings_ensures(before: map<string, int>, candidate: map<string, int>, anchored: bool)
+  ensures (anchored ==> (selectDocumentPublicationBindings(before, candidate, anchored) == candidate))
+  ensures (!(anchored) ==> (selectDocumentPublicationBindings(before, candidate, anchored) == before))
+{
+}
+
+function isAcceptedDocumentPublicationToken(ledger: map<string, int>, token: string, revision: int, currentRevision: int): bool
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+{
+  ((token in ledger) && isAcceptedDocumentPublication(revision, currentRevision, ledger[token]))
+}
+
+lemma isAcceptedDocumentPublicationToken_ensures(ledger: map<string, int>, token: string, revision: int, currentRevision: int)
+  requires (0 <= revision)
+  requires (revision <= 9007199254740991)
+  requires (0 <= currentRevision)
+  requires (currentRevision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures (isAcceptedDocumentPublicationToken(ledger, token, revision, currentRevision) <==> ((((token in ledger) && (1 <= revision)) && (revision <= currentRevision)) && (ledger[token] == revision)))
+{
+}
+
 function isAcceptedDocumentPublication(revision: int, currentRevision: int, bindingRevision: int): bool
   requires (0 <= revision)
   requires (revision <= 9007199254740991)
@@ -72,6 +130,84 @@ lemma canAdvanceDocumentAuthority_ensures(previous: int, next: int, sameGroup: b
 {
 }
 
+method recordDocumentPublicationBinding(ledger: map<string, int>, token: string, revision: int, limit: int) returns (res: map<string, int>)
+  requires !((token in ledger))
+  requires (|ledger| < limit)
+  requires (limit <= 9007199254740991)
+  requires (1 <= revision)
+  requires (revision <= 9007199254740991)
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures (token in res)
+  ensures (res[token] == revision)
+  ensures forall key :: ((key in res) <==> ((key in ledger) || (key == token)))
+  ensures forall key :: ((key in ledger) ==> (res[key] == ledger[key]))
+  ensures forall key :: ((key in res) ==> ((1 <= res[key]) && (res[key] <= 9007199254740991)))
+  ensures (|res| == (|ledger| + 1))
+  ensures (|res| <= limit)
+{
+  var result := ledger;
+  result := result[token := revision];
+  return result;
+}
+
+method canRetainDocumentPublicationBindings(ledger: map<string, int>, pending: seq<string>, limit: int) returns (res: bool)
+  requires (|pending| <= 4294967295)
+  requires (0 <= limit)
+  requires (limit <= 9007199254740991)
+  ensures (res <==> (((|pending| <= limit) && forall i: int :: ((0 <= i) ==> (i < |pending|) ==> (pending[i] in ledger))) && forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |pending|) ==> (pending[i] != pending[j]))))
+{
+  if (|pending| > limit) {
+    return false;
+  }
+  var seen: set<string> := {};
+  var index := 0;
+  while (index < |pending|)
+    invariant (0 <= index)
+    invariant (index <= |pending|)
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((pending[i] in ledger) && (pending[i] in seen)))
+    invariant forall key :: ((key in seen) ==> exists i: int :: (((0 <= i) && (i < index)) && (pending[i] == key)))
+    invariant forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < index) ==> (pending[i] != pending[j]))
+    decreases (|pending| - index)
+  {
+    if (!((pending[index] in ledger)) || (pending[index] in seen)) {
+      return false;
+    }
+    seen := (seen + {pending[index]});
+    index := (index + 1);
+  }
+  return true;
+}
+
+method retainDocumentPublicationBindings(ledger: map<string, int>, pending: seq<string>, limit: int) returns (res: map<string, int>)
+  requires (|pending| <= 4294967295)
+  requires (|pending| <= limit)
+  requires (limit <= 9007199254740991)
+  requires forall i: int :: ((0 <= i) ==> (i < |pending|) ==> (pending[i] in ledger))
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |pending|) ==> (pending[i] != pending[j]))
+  requires forall key :: ((key in ledger) ==> ((1 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures forall key :: ((key in res) <==> (key in pending))
+  ensures forall key :: ((key in res) ==> ((key in ledger) && (res[key] == ledger[key])))
+  ensures forall key :: ((key in res) ==> ((1 <= res[key]) && (res[key] <= 9007199254740991)))
+  ensures (|res| == |pending|)
+  ensures (|res| <= limit)
+{
+  var result: map<string, int> := map[];
+  var index := 0;
+  while (index < |pending|)
+    invariant (0 <= index)
+    invariant (index <= |pending|)
+    invariant (|result| == index)
+    invariant forall key :: ((key in result) <==> exists i: int :: (((0 <= i) && (i < index)) && (pending[i] == key)))
+    invariant forall key :: ((key in result) ==> ((key in ledger) && (result[key] == ledger[key])))
+    invariant forall key :: ((key in result) ==> ((1 <= result[key]) && (result[key] <= 9007199254740991)))
+    decreases (|pending| - index)
+  {
+    result := result[pending[index] := ledger[pending[index]]];
+    index := (index + 1);
+  }
+  return result;
+}
+
 function JournalRecoveryHistory(anchor: int, stores: seq<int>, commitments: seq<bool>, parents: seq<bool>, authenticated: seq<bool>): int
   requires 0 <= anchor <= 9007199254740991
   requires |stores| == |commitments| && |stores| == |parents| && |stores| == |authenticated|
@@ -117,6 +253,7 @@ lemma journalRecovery_all_histories(anchor: int, stores: seq<int>, commitments: 
 
 method documentJournal_domain()
 {
+  publicationLedger_domain();
   assert isAcceptedDocumentPublication(1, 1, 1);
   assert !isAcceptedDocumentPublication(1, 1, 0);
   assert !isAcceptedDocumentPublication(2, 1, 2);
@@ -137,4 +274,98 @@ method documentJournal_domain()
   assert !canAdvanceDocumentAuthority(18446744073709551615, 0, true, true);
   journalRecovery_all_histories(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]);
   assert JournalRecoveryHistory(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]) == 2;
+}
+
+
+datatype PublicationAttempt = PublicationAttempt(token: string, revision: int, anchored: bool, checkpoint: bool, publishes: bool, pending: seq<string>)
+
+function AnchoredPublicationTokens(attempts: seq<PublicationAttempt>): set<string>
+  decreases |attempts|
+{
+  if |attempts| == 0 then {} else
+    (if attempts[0].anchored && attempts[0].publishes then {attempts[0].token} else {}) + AnchoredPublicationTokens(attempts[1..])
+}
+
+predicate ValidPublicationLedger(ledger: map<string, int>, limit: int)
+{
+  |ledger| <= limit <= 9007199254740991 &&
+    forall token :: token in ledger ==> 1 <= ledger[token] <= 9007199254740991
+}
+
+method publicationLedger_all_histories(ledger: map<string, int>, attempts: seq<PublicationAttempt>, limit: int, pendingLimit: int)
+  returns (result: map<string, int>)
+  requires ValidPublicationLedger(ledger, limit)
+  requires 0 <= pendingLimit <= limit
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].revision <= 9007199254740991 && |attempts[i].pending| <= 4294967295
+  ensures ValidPublicationLedger(result, limit)
+  ensures result.Keys <= ledger.Keys + AnchoredPublicationTokens(attempts)
+  ensures forall token :: token !in ledger && token !in AnchoredPublicationTokens(attempts) ==> token !in result
+  decreases |attempts|
+{
+  if |attempts| == 0 {
+    result := ledger;
+  } else {
+    var attempt := attempts[0];
+    var candidate := ledger;
+    var valid := true;
+    if attempt.checkpoint {
+      valid := canRetainDocumentPublicationBindings(ledger, attempt.pending, pendingLimit);
+      if valid {
+        candidate := retainDocumentPublicationBindings(ledger, attempt.pending, pendingLimit);
+      }
+    }
+    if valid && attempt.publishes {
+      valid := canRecordDocumentPublicationBinding(candidate, attempt.token, attempt.revision, attempt.revision, false, limit);
+      if valid {
+        candidate := recordDocumentPublicationBinding(candidate, attempt.token, attempt.revision, limit);
+      }
+    }
+    var selected := selectDocumentPublicationBindings(ledger, candidate, attempt.anchored && valid);
+    assert ValidPublicationLedger(selected, limit);
+    assert selected.Keys <= ledger.Keys + (if attempt.anchored && attempt.publishes then {attempt.token} else {});
+    result := publicationLedger_all_histories(selected, attempts[1..], limit, pendingLimit);
+  }
+}
+
+method publicationLedger_domain()
+{
+  var empty: map<string, int> := map[];
+  assert canRecordDocumentPublicationBinding(empty, "first", 1, 1, false, 144);
+  assert !canRecordDocumentPublicationBinding(empty, "zero", 0, 1, false, 144);
+  assert !canRecordDocumentPublicationBinding(empty, "future", 2, 1, true, 144);
+  assert !canRecordDocumentPublicationBinding(empty, "stale", 1, 2, false, 144);
+  assert !canRecordDocumentPublicationBinding(empty, "full", 1, 1, false, 0);
+  var first := recordDocumentPublicationBinding(empty, "first", 1, 144);
+  var second := recordDocumentPublicationBinding(first, "second", 2, 144);
+  assert first == map["first" := 1];
+  assert !canRecordDocumentPublicationBinding(first, "first", 2, 2, false, 144);
+  var valid := canRetainDocumentPublicationBindings(second, ["first"], 16);
+  assert valid;
+  var repeated := ["first", "first"];
+  var duplicate := canRetainDocumentPublicationBindings(second, repeated, 16);
+  if duplicate {
+    assert repeated[0] != repeated[1];
+  }
+  assert !duplicate;
+  var absent := ["absent"];
+  assert absent[0] !in second;
+  var missing := canRetainDocumentPublicationBindings(second, absent, 16);
+  if missing {
+    assert absent[0] in second;
+  }
+  assert !missing;
+  var kept := retainDocumentPublicationBindings(second, ["first"], 16);
+  assert kept == first;
+  var cancelled := selectDocumentPublicationBindings(first, second, false);
+  assert !isAcceptedDocumentPublicationToken(cancelled, "second", 2, 2);
+  var committed := selectDocumentPublicationBindings(first, second, true);
+  assert isAcceptedDocumentPublicationToken(committed, "second", 2, 2);
+  var history := publicationLedger_all_histories(empty, [
+    PublicationAttempt("first", 1, true, false, true, []),
+    PublicationAttempt("abandoned", 2, false, false, true, []),
+    PublicationAttempt("second", 2, true, false, true, []),
+    PublicationAttempt("third", 3, true, true, true, ["first"]),
+    PublicationAttempt("", 4, true, true, false, ["third"])
+  ], 144, 16);
+  assert "abandoned" !in history;
 }

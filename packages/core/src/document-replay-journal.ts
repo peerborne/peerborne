@@ -1,6 +1,11 @@
 import {
   classifyDocumentJournalRecovery,
-  isAcceptedDocumentPublication,
+  canRecordDocumentPublicationBinding,
+  recordDocumentPublicationBinding,
+  canRetainDocumentPublicationBindings,
+  retainDocumentPublicationBindings,
+  selectDocumentPublicationBindings,
+  isAcceptedDocumentPublicationToken,
 } from './policy/document-journal.js';
 import {
   DocumentBinaryReader,
@@ -403,7 +408,7 @@ export class DocumentReplayJournal {
         previousRevision = 0,
         authenticated = true;
       const items: DocumentJournalItem[] = [];
-      const acceptedBindings = new Map<string, number>();
+      let acceptedBindings = new Map<string, number>();
       let last:
         | { revision: number; commitment: Uint8Array; parent: Uint8Array }
         | undefined;
@@ -463,16 +468,23 @@ export class DocumentReplayJournal {
         for (const binding of item.publicationBindings) {
           const token = documentBytesId(binding.token);
           if (
-            binding.revision < 1 ||
-            binding.revision > revision ||
-            (!item.checkpoint && binding.revision !== revision) ||
-            acceptedBindings.has(token)
+            !canRecordDocumentPublicationBinding(
+              acceptedBindings,
+              token,
+              binding.revision,
+              revision,
+              item.checkpoint,
+              MAX_DOCUMENT_JOURNAL_ENTRIES + 16,
+            )
           )
             throw new Error('Invalid accepted publication binding');
-          acceptedBindings.set(token, binding.revision);
+          acceptedBindings = recordDocumentPublicationBinding(
+            acceptedBindings,
+            token,
+            binding.revision,
+            MAX_DOCUMENT_JOURNAL_ENTRIES + 16,
+          );
         }
-        if (acceptedBindings.size > MAX_DOCUMENT_JOURNAL_ENTRIES + 16)
-          throw new Error('Publication binding bound exceeded');
         items.push(item);
         previous = await digest(owned);
         previousRevision = revision;
@@ -561,6 +573,8 @@ export class DocumentReplayJournal {
     const expected = copyAnchor(this.head),
       revision = this.revision + 1,
       token = crypto.getRandomValues(new Uint8Array(32));
+    const beforeBindings = this.acceptedPublicationBindings;
+    let candidateBindings = beforeBindings;
     let done = false;
     try {
       const binding: PublicationBinding | undefined =
@@ -575,6 +589,39 @@ export class DocumentReplayJournal {
         : binding
           ? [binding]
           : [];
+      if (checkpoint) {
+        const pending = [...this.pendingPublicationBindings.values()].map(
+          (value) => documentBytesId(value.token),
+        );
+        if (!canRetainDocumentPublicationBindings(beforeBindings, pending, 16))
+          throw new Error('Invalid pending publication bindings');
+        candidateBindings = retainDocumentPublicationBindings(
+          beforeBindings,
+          pending,
+          16,
+        );
+      }
+      if (binding) {
+        const bindingId = documentBytesId(binding.token);
+        if (
+          beforeBindings.has(bindingId) ||
+          !canRecordDocumentPublicationBinding(
+            candidateBindings,
+            bindingId,
+            revision,
+            revision,
+            false,
+            MAX_DOCUMENT_JOURNAL_ENTRIES + 16,
+          )
+        )
+          throw new Error('Invalid new publication binding');
+        candidateBindings = recordDocumentPublicationBinding(
+          candidateBindings,
+          bindingId,
+          revision,
+          MAX_DOCUMENT_JOURNAL_ENTRIES + 16,
+        );
+      }
       const plaintext = encodeItem(item, bindings);
       if (
         !documentJournalAnchorsEqual(
@@ -689,11 +736,11 @@ export class DocumentReplayJournal {
               )
             )
               throw new Error('Document journal anchor was not persisted');
-            if (checkpoint) this.acceptedPublicationBindings.clear();
-            for (const acceptedBinding of bindings)
-              this.acceptedPublicationBindings.set(
-                documentBytesId(acceptedBinding.token),
-                acceptedBinding.revision,
+            this.acceptedPublicationBindings =
+              selectDocumentPublicationBindings(
+                beforeBindings,
+                candidateBindings,
+                true,
               );
             if (publication && binding)
               this.pendingPublicationBindings.set(
@@ -706,6 +753,12 @@ export class DocumentReplayJournal {
               ? accepted.length
               : this.retainedBytes + accepted.length;
           } catch (error) {
+            this.acceptedPublicationBindings =
+              selectDocumentPublicationBindings(
+                beforeBindings,
+                candidateBindings,
+                false,
+              );
             this.failed = true;
             throw error;
           } finally {
@@ -717,6 +770,12 @@ export class DocumentReplayJournal {
           done = true;
           try {
             await this.store.discard(this.storageKey, token.slice());
+            this.acceptedPublicationBindings =
+              selectDocumentPublicationBindings(
+                beforeBindings,
+                candidateBindings,
+                false,
+              );
           } catch (error) {
             this.failed = true;
             throw error;
@@ -726,6 +785,11 @@ export class DocumentReplayJournal {
         },
       };
     } catch (error) {
+      this.acceptedPublicationBindings = selectDocumentPublicationBindings(
+        beforeBindings,
+        candidateBindings,
+        false,
+      );
       if (!(error instanceof DocumentJournalCapacityError)) this.failed = true;
       this.active = false;
       throw error;
@@ -758,7 +822,7 @@ export class DocumentReplayJournal {
   }
 
   private async readPublications(
-    accepted: ReadonlyMap<string, number>,
+    accepted: Map<string, number>,
     maximumRevision: number,
   ): Promise<{
     frames: Uint8Array[];
@@ -804,10 +868,11 @@ export class DocumentReplayJournal {
       const id = documentBytesId(publication.id),
         tokenId = documentBytesId(token);
       if (
-        !isAcceptedDocumentPublication(
+        !isAcceptedDocumentPublicationToken(
+          accepted,
+          tokenId,
           revision,
           maximumRevision,
-          accepted.get(tokenId) ?? 0,
         ) ||
         bindings.has(id) ||
         seenTokens.has(tokenId)

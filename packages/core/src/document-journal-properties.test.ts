@@ -45,6 +45,169 @@ const deviceKey = () =>
     'encrypt',
     'decrypt',
   ]);
+
+test.each([0, 1, 2, 3])(
+  'preserves authenticated publication state across mixed storage faults (batch %s)',
+  async (batch) => {
+    const action = fc.record({
+      cut: fc.constantFrom(
+        'accepted',
+        'before-stage',
+        'after-stage',
+        'before-commit',
+        'after-commit',
+        'after-anchor',
+        'ack',
+      ),
+      value: fc.integer(),
+      restart: fc.boolean(),
+      drain: fc.boolean(),
+    });
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(action, { minLength: 1, maxLength: 9 }),
+        async (actions) => {
+          const f = await documentFixture(),
+            key = await deviceKey(),
+            anchor = new InMemoryDocumentJournalRollbackAnchor(),
+            store =
+              batch < 2
+                ? new InMemoryDocumentJournalStore()
+                : new IndexedDBDocumentJournalStore(
+                    `fault-history-${batch}`,
+                    new FakeIDBFactory(),
+                  );
+          let document = engine(f, key, store, anchor, true),
+            pending = 0;
+          const expected: number[] = [],
+            abandoned: Array<{ id: Uint8Array; frame: Uint8Array }> = [];
+          await document.activate();
+          try {
+            for (const action of actions) {
+              if (action.cut === 'ack') {
+                const frames = await document.pendingPublications();
+                for (const frame of action.drain
+                  ? frames
+                  : frames.slice(0, 1)) {
+                  await document.publicationSent(frame);
+                  pending--;
+                }
+              } else {
+                const stage = store.stage.bind(store),
+                  commit = store.commit.bind(store),
+                  compare = anchor.compareAndSwap.bind(anchor);
+                store.stage = async (...args) => {
+                  if (action.cut === 'before-stage')
+                    throw new Error('Injected before-stage failure');
+                  await stage(...args);
+                  if (action.cut === 'after-stage')
+                    throw new Error('Injected after-stage failure');
+                };
+                store.commit = async (...args) => {
+                  if (action.cut === 'before-commit') {
+                    abandoned.push({
+                      id: args[5]!.id.slice(),
+                      frame: args[5]!.frame.slice(),
+                    });
+                    throw new Error('Injected before-commit failure');
+                  }
+                  await commit(...args);
+                  if (action.cut === 'after-commit')
+                    throw new Error('Injected after-commit failure');
+                };
+                anchor.compareAndSwap = async (...args) => {
+                  const result = await compare(...args);
+                  if (action.cut === 'after-anchor')
+                    throw new Error('Injected after-anchor failure');
+                  return result;
+                };
+                try {
+                  const changing = document.change((draft) => {
+                    draft.push(action.value);
+                  });
+                  if (action.cut === 'accepted') await changing;
+                  else await expect(changing).rejects.toThrow('Injected');
+                } finally {
+                  store.stage = stage;
+                  store.commit = commit;
+                  anchor.compareAndSwap = compare;
+                }
+                if (
+                  ['accepted', 'after-commit', 'after-anchor'].includes(
+                    action.cut,
+                  )
+                ) {
+                  expected.push(action.value);
+                  pending++;
+                }
+              }
+              if (
+                (action.cut !== 'accepted' && action.cut !== 'ack') ||
+                action.restart
+              ) {
+                await document.close();
+                document = engine(f, key, store, anchor, true);
+                await document.activate();
+              }
+              expect(document.document).toEqual(expected);
+              expect(await document.pendingPublications()).toHaveLength(
+                pending,
+              );
+              if (abandoned.length) {
+                await document.close();
+                const hostile: DocumentJournalStore = {
+                  load: store.load.bind(store),
+                  stage: store.stage.bind(store),
+                  commit: store.commit.bind(store),
+                  discard: store.discard.bind(store),
+                  loadPublications: async () => [
+                    abandoned[abandoned.length - 1],
+                  ],
+                  publicationSent: store.publicationSent.bind(store),
+                };
+                const rejected = engine(f, key, hostile, anchor, true);
+                await expect(rejected.activate()).rejects.toThrow(
+                  'accepted journal branch',
+                );
+                expect(() => rejected.document).toThrow();
+                await rejected.close();
+                document = engine(f, key, store, anchor, true);
+                await document.activate();
+                expect(document.document).toEqual(expected);
+              }
+            }
+          } finally {
+            await document.close();
+            if (store instanceof IndexedDBDocumentJournalStore)
+              await store.close();
+          }
+        },
+      ),
+      {
+        seed:
+          batch === 0
+            ? 2011203
+            : batch === 1
+              ? 2011204
+              : batch === 2
+                ? 2011205
+                : 2011206,
+        numRuns: 2,
+        examples: [
+          [
+            [
+              { cut: 'before-commit', value: 1, restart: true, drain: false },
+              { cut: 'accepted', value: 2, restart: true, drain: false },
+              { cut: 'after-commit', value: 3, restart: true, drain: false },
+              { cut: 'after-anchor', value: 4, restart: true, drain: false },
+              { cut: 'ack', value: 0, restart: true, drain: true },
+            ],
+          ],
+        ],
+      },
+    );
+  },
+);
 type Fixture = Awaited<ReturnType<typeof documentFixture>>;
 function engine(
   f: Fixture,
