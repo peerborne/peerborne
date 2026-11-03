@@ -36,7 +36,7 @@
     "@libp2p/identify": "^4.1.14",
     "@libp2p/interface": "^3.4.0",
     "@libp2p/tcp": "^11.0.27",
-    "@libp2p/websockets": "^10.1.21",
+    "@libp2p/websockets": "^10.1.25",
     "@vitejs/plugin-react": "^6.1.2",
     "libp2p": "^3.3.11",
     "uint8arraylist": "^3.0.2",
