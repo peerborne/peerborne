@@ -542,10 +542,37 @@
     },
     {
       "path": "packages/core/src/policy/sync-request.ts",
-      "functions": ["syncRequestTimeAllowed"],
-      "witness": "syncRequestTime_domain",
-      "consumers": ["packages/core/src/sync-request.ts"],
-      "verifiedTargets": ["syncRequestTimeAllowed_ensures"]
+      "functions": [
+        "syncRequestTimeAllowed",
+        "advanceSyncRequestClock",
+        "syncRequestReplayExpired",
+        "pruneSyncRequestReplays",
+        "classifySyncRequestReplay",
+        "rememberSyncRequest",
+        "syncResponseAllowed"
+      ],
+      "witness": "syncReplay_domain",
+      "consumers": [
+        "packages/core/src/sync-request.ts",
+        "packages/core/src/peerborne-document.ts"
+      ],
+      "verifiedTargets": [
+        "syncRequestTimeAllowed_ensures",
+        "advanceSyncRequestClock_ensures",
+        "syncRequestReplayExpired_ensures",
+        "pruneSyncRequestReplays",
+        "classifySyncRequestReplay_ensures",
+        "rememberSyncRequest",
+        "syncResponseAllowed_ensures",
+        "syncRequestTime_domain",
+        "syncResponseHistory_step",
+        "syncResponseHistory_all_histories",
+        "syncResponseWindow_bound",
+        "syncLiveResponse_index",
+        "syncLiveResponses_properties",
+        "syncReplayState_remember",
+        "syncResponseSubsetCard"
+      ]
     },
     {
       "path": "packages/core/src/policy/document-authority.ts",

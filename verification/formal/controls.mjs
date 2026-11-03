@@ -227,6 +227,90 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'sync-clock-rollback',
+      'sync-request.ts',
+      'return previous > observed ? previous : observed;',
+      'return observed;',
+    ],
+    [
+      'sync-live-nonce-retirement',
+      'sync-request.ts',
+      'return now - issuedAt > 60000;',
+      'return now - issuedAt >= 60000;',
+    ],
+    [
+      'sync-prune-live-retention',
+      'sync-request.ts',
+      'if (!syncRequestReplayExpired(ledger.get(key)!, now))',
+      'if (false)',
+    ],
+    [
+      'sync-prune-inverted-lifetime',
+      'sync-request.ts',
+      'if (!syncRequestReplayExpired(ledger.get(key)!, now))',
+      'if (syncRequestReplayExpired(ledger.get(key)!, now))',
+    ],
+    [
+      'sync-prune-wrong-identity',
+      'sync-request.ts',
+      'result.set(key, ledger.get(key)!);',
+      'result.set("different", ledger.get(key)!);',
+    ],
+    [
+      'sync-replay-bypass',
+      'sync-request.ts',
+      "if (known) return 'replay';",
+      "if (false) return 'replay';",
+    ],
+    [
+      'sync-stale-admission',
+      'sync-request.ts',
+      "if (!syncRequestTimeAllowed(issuedAt, now)) return 'stale';",
+      "if (false) return 'stale';",
+    ],
+    [
+      'sync-replay-capacity-overflow',
+      'sync-request.ts',
+      "return size < capacity ? 'fresh' : 'capacity';",
+      "return size <= capacity ? 'fresh' : 'capacity';",
+    ],
+    [
+      'sync-replay-history-loss',
+      'sync-request.ts',
+      'const result = new Map(ledger);',
+      'const result = new Map<string, number>();',
+    ],
+    [
+      'sync-replay-timestamp-rewrite',
+      'sync-request.ts',
+      'result.set(key, issuedAt);',
+      'result.set(key, issuedAt + 1);',
+    ],
+    [
+      'sync-response-cooldown',
+      'sync-request.ts',
+      'now - lastResponse >= 2000',
+      'now - lastResponse >= 1999',
+    ],
+    [
+      'sync-response-known-state',
+      'sync-request.ts',
+      '(!changeKnown || (hasSnapshot && !snapshotKnown))',
+      'true',
+    ],
+    [
+      'sync-response-known-snapshot',
+      'sync-request.ts',
+      'hasSnapshot && !snapshotKnown',
+      'hasSnapshot && snapshotKnown',
+    ],
+    [
+      'sync-response-without-change',
+      'sync-request.ts',
+      '    hasChange &&',
+      '    true &&',
+    ],
+    [
       'authority-role-range',
       'document-authority.ts',
       'if (role !== 1 && role !== 2 && role !== 3) return -1;',

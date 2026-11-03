@@ -255,6 +255,19 @@
         "packages/core/src/policy/document-authority.ts",
         "packages/core/src/document-authority-log.ts"
       ]
+    },
+    {
+      "id": "authenticated-sync-response-admission",
+      "formalBoundary": "Timestamp-window classification, monotone clock observation, exact replay retirement, immutable bounded replay admission and response eligibility are proved. A finite-history model preserves live nonces and establishes 46 retained response attempts from empty state under the 60-second lifetime, 30-second future skew and 2-second spacing. Native Map identity, signed JSON/CID framing, crypto callbacks, clock validity, post-authentication and dispatch freshness, publication failures and callback authorization require runtime properties. This does not prove provider correctness, UI latency, arbitrary callback liveness or durable replay protection across process restarts.",
+      "evidence": [
+        "packages/core/src/sync-response-properties.test.ts",
+        "packages/core/src/sync-request-native.fixture.mjs"
+      ],
+      "sources": [
+        "packages/core/src/policy/sync-request.ts",
+        "packages/core/src/sync-request.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
     }
   ],
   "integrationBoundaries": [

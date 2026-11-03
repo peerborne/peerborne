@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 112 selected production functions have checked
+current proof scope. The 118 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -34,6 +34,7 @@ system-level statuses below.
 | Content-addressed Helia/IPFS persistence | Partial | Core document tests and implementations | Loss/recovery across browser restart and remote pinning are not default acceptance tests. |
 | IndexedDB-backed browser storage | Partial | IDB index storage tests; real browser initialization opens document datastore/blockstore successfully | Restart/recovery from persisted document blocks still needs an acceptance test. |
 | Bounded caches and block garbage collection | Verified | LRU and blockstore-GC suites | Memory/block growth is benchmarked but has no regression threshold. |
+| Default-mode authenticated sync responses | Partial | Verified freshness, monotone clock, expiry-only replay pruning and response admission; checked histories derive a 46-entry replay bound; signed native properties cover no-op floods, delayed expiry, clock rollback and failed preparation | Replay protection is per instance. Preparation still holds the document mutation queue; no durable replay, UI-latency or delivery guarantee is proved. |
 
 ## Networking and availability
 

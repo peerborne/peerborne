@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 112 selected production functions in 33 proof units are compiled from their
+The 118 selected production functions in 33 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 148 controls cover 33 accepted originals, map-comparison and native-map-alias
-calibrations, 109 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 162 controls cover 33 accepted originals, map-comparison and native-map-alias
+calibrations, 123 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four expensive tree
@@ -79,8 +79,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 45 property-suite files and
-105 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 47 property-suite files and
+113 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -112,6 +112,11 @@ Authentication work reservation, membership-control epoch/parent admission
 and binary field/copy bounds also have checked history or composition laws.
 Signature verification, authorizers, queue scheduling, fork latching and
 native byte APIs remain explicit property-test boundaries.
+Sync-response histories additionally preserve live replay bindings under
+nondecreasing effective time and derive a 46-entry ledger bound from freshness
+and response spacing. Native properties exercise expiry during asynchronous
+preparation, failed preparation, clock rollback and strict authorization. These
+are per-instance logical bounds, not durable replay or UI-latency guarantees.
 Quorum verification now also covers exact digest counts, first-eligible peer
 selection, stable cohort projection and failure precedence. A checked
 occurrence-count lemma rules out two distinct strict-majority winners. Native
