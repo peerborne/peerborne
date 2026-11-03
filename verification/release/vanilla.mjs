@@ -6,6 +6,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium, firefox, webkit, expect } from '@playwright/test';
 import { auditConsumer } from './audit.mjs';
+import { isFrameworkModule } from './frameworks.mjs';
+import { assertInstalledFileContents } from './consumer.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 if (process.argv.length !== 4)
@@ -76,16 +78,19 @@ try {
   const lock = JSON.parse(
     await readFile(join(consumer, 'package-lock.json'), 'utf8'),
   );
-  const frameworkModule =
-    /(?:^|\/)node_modules\/(?:react|react-dom|react-native|vue|svelte|next)(?:\/|$)/u;
   const transitiveFrameworkPackages = Object.keys(lock.packages).filter(
-    (name) => frameworkModule.test(name),
+    isFrameworkModule,
   );
-  for (const artifact of artifacts)
+  for (const artifact of artifacts) {
     assert.equal(
       lock.packages[`node_modules/${artifact.name}`]?.integrity,
       artifact.integrity,
     );
+    await assertInstalledFileContents(
+      join(consumer, 'node_modules', artifact.name),
+      artifact,
+    );
+  }
   await cp(join(root, 'verification/release/vanilla'), consumer, {
     recursive: true,
   });
@@ -120,7 +125,7 @@ try {
           for (const output of Object.values(bundle)) {
             if (output.type === 'chunk')
               assert.deepEqual(
-                output.moduleIds.filter((name) => frameworkModule.test(name)),
+                output.moduleIds.filter(isFrameworkModule),
                 [],
                 'Framework-free application bundled a frontend framework',
               );
@@ -171,6 +176,11 @@ try {
     }
   }
   await mkdir(reportDirectory, { recursive: true });
+  for (const artifact of artifacts)
+    await assertInstalledFileContents(
+      join(consumer, 'node_modules', artifact.name),
+      artifact,
+    );
   await writeFile(
     join(reportDirectory, 'framework-free.json'),
     `${JSON.stringify({ status: 'passed', frameworksBundled: false, transitiveFrameworkPackages, artifacts: artifacts.map(({ name, version, integrity }) => ({ name, version, integrity })), cases }, null, 2)}\n`,

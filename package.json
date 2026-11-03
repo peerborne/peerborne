@@ -56,7 +56,7 @@
     "verify:technical": "yarn build && node --expose-gc verification/run.mjs",
     "verify:technical:browser": "yarn build && playwright test --config=verification/playwright.config.ts",
     "verify:technical:nat": "playwright test --config=verification/playwright.nat.config.ts",
-    "test:release": "node --test scripts/release-packages.test.mjs scripts/publish-release.tests.mjs verification/release/consumer.test.mjs verification/release/reporter.test.mjs",
+    "test:release": "node --test scripts/release-packages.test.mjs scripts/publish-release.tests.mjs verification/release/consumer.test.mjs verification/release/reporter.test.mjs verification/release/frameworks.test.mjs",
     "version:set": "node scripts/set-version.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:validate-consumer": "node scripts/validate-release-consumer.mjs",

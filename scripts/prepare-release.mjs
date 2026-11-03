@@ -64,6 +64,14 @@ for (const entry of packages) {
 
   const bytes = await readFile(path);
   const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+  const fileIntegrities = Object.create(null);
+  for (const file of files) {
+    if (file.startsWith('/') || file.includes('\\') || file.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error(`${filename} contains an unsafe path`);
+    const extractedFile = spawnSync('tar', ['-xOzf', path, `package/${file}`], { maxBuffer: 64 * 1024 * 1024 });
+    if (extractedFile.error) throw extractedFile.error;
+    if (extractedFile.status !== 0) throw new Error(`Cannot hash a release artifact file`);
+    fileIntegrities[file] = `sha512-${createHash('sha512').update(extractedFile.stdout).digest('base64')}`;
+  }
   const dryRun = spawnSync(
     'npm',
     ['publish', path, '--access', 'public', '--dry-run', '--json'],
@@ -90,6 +98,7 @@ for (const entry of packages) {
     version,
     filename: basename(path),
     integrity,
+    fileIntegrities,
     files,
   });
 }

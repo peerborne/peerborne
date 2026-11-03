@@ -92,6 +92,7 @@ try {
     { cwd: root, env, stdio: 'inherit' },
   );
   const [code] = await once(child, 'exit');
+  await assertInstalledArtifacts(consumer, artifacts);
   await writeFile(
     join(reportDirectory, 'run.json'),
     `${JSON.stringify(

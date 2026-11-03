@@ -9,6 +9,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { packages, strictSemver } from '../../scripts/release-packages.mjs';
 import { auditConsumer } from './audit.mjs';
 
@@ -26,6 +27,11 @@ const testDependencies = new Set([
   'fake-indexeddb',
 ]);
 
+function outside(parent, child) {
+  const path = relative(parent, child);
+  return path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
+}
+
 export async function assertInstalledArtifacts(consumer, artifacts) {
   if (
     !Array.isArray(artifacts) ||
@@ -37,12 +43,37 @@ export async function assertInstalledArtifacts(consumer, artifacts) {
     );
   if (
     artifacts.some(
-      (artifact) =>
+      (artifact, index) =>
         typeof artifact.version !== 'string' ||
         !strictSemver.test(artifact.version) ||
         artifact.version !== artifacts[0].version ||
         typeof artifact.integrity !== 'string' ||
-        !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(artifact.integrity),
+        !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(artifact.integrity) ||
+        !Array.isArray(artifact.files) ||
+        [
+          'package.json',
+          'README.md',
+          'LICENSE',
+          ...packages[index].entries,
+          ...packages[index].bins,
+        ].some((file) => !artifact.files.includes(file)) ||
+        artifact.files.some(
+          (file) =>
+            typeof file !== 'string' ||
+            file.startsWith('/') ||
+            file.includes('\\') ||
+            file
+              .split('/')
+              .some((part) => !part || part === '.' || part === '..'),
+        ) ||
+        !artifact.fileIntegrities ||
+        JSON.stringify(Object.keys(artifact.fileIntegrities).sort()) !==
+          JSON.stringify([...artifact.files].sort()) ||
+        Object.values(artifact.fileIntegrities).some(
+          (integrity) =>
+            typeof integrity !== 'string' ||
+            !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(integrity),
+        ),
     )
   )
     throw new Error('Invalid release artifact identity or integrity metadata');
@@ -63,7 +94,7 @@ export async function assertInstalledArtifacts(consumer, artifacts) {
     const directory = join(consumer, 'node_modules', artifact.name);
     if (
       (await lstat(directory)).isSymbolicLink() ||
-      relative(consumer, await realpath(directory)).startsWith('..')
+      outside(consumer, await realpath(directory))
     )
       throw new Error(
         'Release acceptance requires installed packages outside the repository',
@@ -84,6 +115,28 @@ export async function assertInstalledArtifacts(consumer, artifacts) {
     )
       throw new Error(
         'Installed release package identity differs from the validated artifact',
+      );
+    await assertInstalledFileContents(directory, artifact);
+  }
+}
+
+export async function assertInstalledFileContents(directory, artifact) {
+  directory = await realpath(directory);
+  for (const file of artifact.files) {
+    const path = join(directory, file);
+    if (
+      !(await lstat(path)).isFile() ||
+      outside(directory, await realpath(path))
+    )
+      throw new Error(
+        'Installed release content must be a regular package file',
+      );
+    const integrity = `sha512-${createHash('sha512')
+      .update(await readFile(path))
+      .digest('base64')}`;
+    if (integrity !== artifact.fileIntegrities[file])
+      throw new Error(
+        'Installed release file differs from the validated tarball',
       );
   }
 }

@@ -1,7 +1,8 @@
 # Installed release acceptance
 
 This gate installs the eleven exact release tarballs in a fresh npm project
-outside the checkout. It checks their package identities and lockfile integrity,
+outside the checkout. It checks their package identities, lockfile integrity,
+and every packed file's SHA-512 digest before and after browser acceptance,
 rejects workspace symlinks, and audits production dependencies before adding any
 application tooling. The browser applications have a separate dependency audit;
 both audits fail on high or critical findings and fail closed if npm cannot

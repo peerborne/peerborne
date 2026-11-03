@@ -3,14 +3,29 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { packages } from '../../scripts/release-packages.mjs';
-import { assertInstalledArtifacts } from './consumer.mjs';
+import {
+  assertInstalledArtifacts,
+  assertInstalledFileContents,
+} from './consumer.mjs';
 
-const artifacts = packages.map(({ name }) => ({
+const contents = (name, file) =>
+  file === 'package.json'
+    ? JSON.stringify({ name, version: '0.1.0' })
+    : `release fixture ${name} ${file}\n`;
+const digest = (value) =>
+  `sha512-${createHash('sha512').update(value).digest('base64')}`;
+const artifacts = packages.map(({ name, entries, bins }) => ({
   name,
   version: '0.1.0',
   integrity: `sha512-${createHash('sha512').update(name).digest('base64')}`,
+  files: ['package.json', 'README.md', 'LICENSE', ...entries, ...bins],
+  fileIntegrities: Object.fromEntries(
+    ['package.json', 'README.md', 'LICENSE', ...entries, ...bins].map(
+      (file) => [file, digest(contents(name, file))],
+    ),
+  ),
 }));
 
 test('release acceptance cannot pass with an empty or partial artifact manifest', async () => {
@@ -33,6 +48,11 @@ test('release acceptance rejects missing integrity and inconsistent artifact ver
     { integrity: undefined },
     { integrity: 'sha512-invalid' },
     { version: '0.0.0' },
+    { fileIntegrities: undefined },
+    {
+      files: ['package.json'],
+      fileIntegrities: { 'package.json': digest('fixture') },
+    },
   ])
     await assert.rejects(
       assertInstalledArtifacts(
@@ -54,20 +74,53 @@ test('release acceptance rejects substituted packages and workspace symlinks des
     for (const artifact of artifacts) {
       const target = join(directory, 'node_modules', artifact.name);
       await mkdir(target, { recursive: true });
-      await writeFile(
-        join(target, 'package.json'),
-        JSON.stringify({ name: artifact.name, version: artifact.version }),
-      );
+      for (const file of artifact.files) {
+        await mkdir(dirname(join(target, file)), { recursive: true });
+        await writeFile(join(target, file), contents(artifact.name, file));
+      }
       lock.packages[`node_modules/${artifact.name}`] = {
         integrity: artifact.integrity,
       };
     }
     await writeFile(join(directory, 'package-lock.json'), JSON.stringify(lock));
     await assertInstalledArtifacts(directory, artifacts);
+    const entry = join(
+      directory,
+      'node_modules/@peerborne/core/dist/esm/src/index.js',
+    );
+    await writeFile(entry, 'modified installed code');
+    await assert.rejects(
+      assertInstalledArtifacts(directory, artifacts),
+      /file differs/u,
+    );
+    await writeFile(
+      entry,
+      contents('@peerborne/core', 'dist/esm/src/index.js'),
+    );
+    const outside = join(directory, 'outside-index.js');
+    await writeFile(
+      outside,
+      contents('@peerborne/core', 'dist/esm/src/index.js'),
+    );
+    await rm(entry);
+    await symlink(outside, entry);
+    await assert.rejects(
+      assertInstalledArtifacts(directory, artifacts),
+      /regular package file/u,
+    );
+    await rm(entry);
+    await writeFile(
+      entry,
+      contents('@peerborne/core', 'dist/esm/src/index.js'),
+    );
     const alias = `${directory}-alias`;
     try {
       await symlink(directory, alias, 'dir');
       await assertInstalledArtifacts(alias, artifacts);
+      await assertInstalledFileContents(
+        join(alias, 'node_modules', artifacts[0].name),
+        artifacts[0],
+      );
     } finally {
       await rm(alias, { force: true });
     }
