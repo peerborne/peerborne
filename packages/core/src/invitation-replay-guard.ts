@@ -1,6 +1,15 @@
 import {
   decideJoinReplay,
   decideAcceptanceReplay,
+  advanceInvitationReplayClock,
+  nextInvitationReplayExpiry,
+  shouldSweepInvitationReplays,
+  collectExpiredInvitationClaims,
+  recordInvitationReplayJoin,
+  recordInvitationReplayAcceptance,
+  retireInvitationReplayClaim,
+  type InvitationReplayClaim,
+  type InvitationReplayEnvelope,
 } from './policy/replay-admission.js';
 import {
   InvitationAcceptanceV1,
@@ -45,21 +54,6 @@ export class InvitationReplayError extends Error {
   }
 }
 
-interface JoinClaim {
-  readonly invitationId: string;
-  readonly offerDigest: string;
-  readonly expiresAtMs: number;
-  readonly requestId: string;
-  readonly requestDigest: string;
-  acceptanceId?: string;
-  acceptanceDigest?: string;
-}
-
-interface IdentifierRecord {
-  readonly offerDigest: string;
-  readonly envelopeDigest: string;
-}
-
 /**
  * Bounded, fail-closed replay memory for one-time public invitations.
  *
@@ -80,12 +74,21 @@ interface IdentifierRecord {
  * Live entries are never silently evicted because eviction would make an old
  * invitation replayable. Records are retired only after the signed offer's
  * hard expiry, when the envelope can no longer be accepted.
+ *
+ * Omit the optional time argument to sample wall time again after hashing.
+ * An explicit timestamp supplies a trusted, fixed clock observation. Effective
+ * time never moves backwards within this guard instance.
  */
 export class InMemoryInvitationReplayGuard {
-  private readonly _claimsByOffer = new Map<string, JoinClaim>();
+  private readonly _claimsByOffer = new Map<string, InvitationReplayClaim>();
   private readonly _offersById = new Map<string, string>();
-  private readonly _requestsById = new Map<string, IdentifierRecord>();
-  private readonly _acceptancesById = new Map<string, IdentifierRecord>();
+  private readonly _requestsById = new Map<string, InvitationReplayEnvelope>();
+  private readonly _acceptancesById = new Map<
+    string,
+    InvitationReplayEnvelope
+  >();
+  private _observedAtMs = 0;
+  private _nextExpiryAtMs = Number.MAX_SAFE_INTEGER;
 
   constructor(
     public readonly maxEntries = DEFAULT_INVITATION_REPLAY_GUARD_ENTRIES,
@@ -100,6 +103,12 @@ export class InMemoryInvitationReplayGuard {
         `maxEntries must be an integer from 1 to ${MAX_INVITATION_REPLAY_GUARD_ENTRIES}`,
       );
     }
+    Object.defineProperty(this, 'maxEntries', {
+      value: maxEntries,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
   }
 
   /** Number of distinct one-time offers currently remembered. */
@@ -117,19 +126,21 @@ export class InMemoryInvitationReplayGuard {
   async observeJoin(
     offer: InvitationOfferV1,
     request: InvitationJoinRequestV1,
-    nowMs = Date.now(),
+    nowMs?: number,
   ): Promise<InvitationReplayDecision> {
     const offerSnapshot = decodeInvitationOffer(encodeInvitationOffer(offer));
     const requestSnapshot = decodeInvitationJoinRequest(
       encodeInvitationJoinRequest(request),
     );
-    assertInvitationOfferUsable(offerSnapshot, nowMs);
+    assertInvitationOfferUsable(offerSnapshot, this._observeTime(nowMs));
     await assertInvitationJoinMatchesOffer(requestSnapshot, offerSnapshot);
     const [offerDigest, requestDigest] = await Promise.all([
       digestInvitationOffer(offerSnapshot),
       digestInvitationJoinRequest(requestSnapshot),
     ]);
-    this._pruneExpired(nowMs);
+    const committedAt = this._observeTime(nowMs);
+    assertInvitationOfferUsable(offerSnapshot, committedAt);
+    this._pruneExpired(committedAt);
     return this._recordJoin(
       toHex(offerSnapshot.invitationId),
       toHex(offerDigest),
@@ -151,7 +162,7 @@ export class InMemoryInvitationReplayGuard {
     offer: InvitationOfferV1,
     request: InvitationJoinRequestV1,
     acceptance: InvitationAcceptanceV1,
-    nowMs = Date.now(),
+    nowMs?: number,
   ): Promise<InvitationReplayDecision> {
     const offerSnapshot = decodeInvitationOffer(encodeInvitationOffer(offer));
     const requestSnapshot = decodeInvitationJoinRequest(
@@ -160,8 +171,9 @@ export class InMemoryInvitationReplayGuard {
     const acceptanceSnapshot = decodeInvitationAcceptance(
       encodeInvitationAcceptance(acceptance),
     );
-    assertInvitationOfferUsable(offerSnapshot, nowMs);
-    assertInvitationAcceptanceUsable(acceptanceSnapshot, nowMs);
+    const startedAt = this._observeTime(nowMs);
+    assertInvitationOfferUsable(offerSnapshot, startedAt);
+    assertInvitationAcceptanceUsable(acceptanceSnapshot, startedAt);
     await assertInvitationAcceptanceMatches(
       acceptanceSnapshot,
       offerSnapshot,
@@ -181,7 +193,10 @@ export class InMemoryInvitationReplayGuard {
     const acceptanceId = toHex(acceptanceSnapshot.acceptanceId);
     const acceptanceDigest = toHex(acceptanceDigestBytes);
 
-    this._pruneExpired(nowMs);
+    const committedAt = this._observeTime(nowMs);
+    assertInvitationOfferUsable(offerSnapshot, committedAt);
+    assertInvitationAcceptanceUsable(acceptanceSnapshot, committedAt);
+    this._pruneExpired(committedAt);
     const joinDecision = this._checkJoin(
       invitationId,
       offerDigest,
@@ -199,7 +214,7 @@ export class InMemoryInvitationReplayGuard {
       },
       offerDigest,
       acceptanceDigest,
-      existingClaim?.acceptanceDigest !== undefined,
+      existingClaim?.accepted === true,
       existingClaim?.acceptanceId === acceptanceId &&
         existingClaim?.acceptanceDigest === acceptanceDigest,
     );
@@ -224,13 +239,15 @@ export class InMemoryInvitationReplayGuard {
         requestDigest,
       );
     }
-    const claim = this._claimsByOffer.get(offerDigest)!;
-    claim.acceptanceId = acceptanceId;
-    claim.acceptanceDigest = acceptanceDigest;
-    this._acceptancesById.set(acceptanceId, {
+    recordInvitationReplayAcceptance(
+      this._claimsByOffer,
+      this._offersById,
+      this._requestsById,
+      this._acceptancesById,
       offerDigest,
-      envelopeDigest: acceptanceDigest,
-    });
+      acceptanceId,
+      acceptanceDigest,
+    );
     return 'accepted';
   }
 
@@ -306,40 +323,53 @@ export class InMemoryInvitationReplayGuard {
     requestId: string,
     requestDigest: string,
   ): void {
-    this._claimsByOffer.set(offerDigest, {
+    recordInvitationReplayJoin(
+      this._claimsByOffer,
+      this._offersById,
+      this._requestsById,
+      this._acceptancesById,
       invitationId,
       offerDigest,
       expiresAtMs,
       requestId,
       requestDigest,
-    });
-    this._offersById.set(invitationId, offerDigest);
-    this._requestsById.set(requestId, {
-      offerDigest,
-      envelopeDigest: requestDigest,
-    });
+    );
+    this._nextExpiryAtMs = nextInvitationReplayExpiry(
+      this._nextExpiryAtMs,
+      expiresAtMs,
+    );
   }
 
   private _pruneExpired(nowMs: number): void {
-    for (const [offerDigest, claim] of this._claimsByOffer) {
-      if (claim.expiresAtMs > nowMs) continue;
-      this._claimsByOffer.delete(offerDigest);
-      if (this._offersById.get(claim.invitationId) === offerDigest) {
-        this._offersById.delete(claim.invitationId);
-      }
-      if (
-        this._requestsById.get(claim.requestId)?.offerDigest === offerDigest
-      ) {
-        this._requestsById.delete(claim.requestId);
-      }
-      if (
-        claim.acceptanceId !== undefined &&
-        this._acceptancesById.get(claim.acceptanceId)?.offerDigest ===
-          offerDigest
-      ) {
-        this._acceptancesById.delete(claim.acceptanceId);
-      }
+    if (!shouldSweepInvitationReplays(this._nextExpiryAtMs, nowMs)) return;
+    const plan = collectExpiredInvitationClaims(
+      [...this._claimsByOffer.keys()],
+      this._claimsByOffer,
+      nowMs,
+    );
+    for (const offerDigest of plan.expired) {
+      retireInvitationReplayClaim(
+        this._claimsByOffer,
+        this._offersById,
+        this._requestsById,
+        this._acceptancesById,
+        offerDigest,
+      );
     }
+    this._nextExpiryAtMs = plan.nextExpiry;
+  }
+
+  private _observeTime(nowMs?: number): number {
+    const observed = nowMs === undefined ? Date.now() : nowMs;
+    if (!Number.isSafeInteger(observed) || observed < 0)
+      throw new TypeError(
+        'Invitation replay clock must be a non-negative safe integer',
+      );
+    this._observedAtMs = advanceInvitationReplayClock(
+      this._observedAtMs,
+      observed,
+    );
+    return this._observedAtMs;
   }
 }
 

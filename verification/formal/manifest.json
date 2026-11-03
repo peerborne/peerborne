@@ -138,13 +138,37 @@
     },
     {
       "path": "packages/core/src/policy/replay-admission.ts",
-      "functions": ["decideJoinReplay", "decideAcceptanceReplay"],
+      "functions": [
+        "decideJoinReplay",
+        "decideAcceptanceReplay",
+        "advanceInvitationReplayClock",
+        "nextInvitationReplayExpiry",
+        "shouldSweepInvitationReplays",
+        "collectExpiredInvitationClaims",
+        "recordInvitationReplayJoin",
+        "recordInvitationReplayAcceptance",
+        "retireInvitationReplayClaim"
+      ],
       "witness": "replayAdmission_domain",
       "consumers": ["packages/core/src/invitation-replay-guard.ts"],
       "verifiedTargets": [
         "decideJoinReplay_ensures",
-        "decideAcceptanceReplay_ensures"
-      ]
+        "decideAcceptanceReplay_ensures",
+        "advanceInvitationReplayClock_ensures",
+        "nextInvitationReplayExpiry_ensures",
+        "shouldSweepInvitationReplays_ensures",
+        "collectExpiredInvitationClaims",
+        "recordInvitationReplayJoin",
+        "recordInvitationReplayAcceptance",
+        "retireInvitationReplayClaim",
+        "invitationReplayIndexBounds",
+        "invitationReplayPrepare",
+        "invitationReplayLive_skips_sweep",
+        "invitationReplayHistory_step",
+        "invitationReplayHistory_all_histories",
+        "invitationReplayLedger_domain"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/invitation-time.ts",
