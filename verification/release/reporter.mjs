@@ -2,9 +2,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 function redact(message) {
-  return message.replace(/https?:\/\/[^\s<>"']+/gu, (url) =>
-    url.replace(/#.*/u, '#[redacted]'),
-  );
+  return message
+    .replace(/#invite=[A-Za-z0-9_-]+/gu, '#invite=[redacted]')
+    .replace(/https?:\/\/[^\s<>"']+/gu, (url) =>
+      url.replace(/#.*/u, '#[redacted]'),
+    );
 }
 
 export default class ReleaseReporter {
