@@ -18,3 +18,154 @@ lemma syncRequestTimeAllowed_ensures(issuedAt: int, now: int)
   ensures (syncRequestTimeAllowed(issuedAt, now) <==> (((now - issuedAt) <= 60000) && ((issuedAt - now) <= 30000)))
 {
 }
+
+function advanceSyncRequestClock(previous: int, observed: int): int
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= observed)
+  requires (observed <= 9007199254740991)
+{
+  if (previous > observed) then
+    previous
+  else
+    observed
+}
+
+lemma advanceSyncRequestClock_ensures(previous: int, observed: int)
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= observed)
+  requires (observed <= 9007199254740991)
+  ensures (advanceSyncRequestClock(previous, observed) == (if (previous > observed) then previous else observed))
+  ensures (previous <= advanceSyncRequestClock(previous, observed))
+  ensures (observed <= advanceSyncRequestClock(previous, observed))
+  ensures (advanceSyncRequestClock(previous, observed) <= 9007199254740991)
+{
+}
+
+function syncRequestReplayExpired(issuedAt: int, now: int): bool
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+{
+  ((now - issuedAt) > 60000)
+}
+
+lemma syncRequestReplayExpired_ensures(issuedAt: int, now: int)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  ensures (syncRequestReplayExpired(issuedAt, now) <==> ((now - issuedAt) > 60000))
+  ensures (syncRequestReplayExpired(issuedAt, now) ==> !(syncRequestTimeAllowed(issuedAt, now)))
+{
+}
+
+function classifySyncRequestReplay(issuedAt: int, now: int, known: bool, size: int, capacity: int): string
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= size)
+  requires (size <= capacity)
+  requires (capacity <= 9007199254740991)
+{
+  if !(syncRequestTimeAllowed(issuedAt, now)) then
+    "stale"
+  else
+    if known then
+      "replay"
+    else
+      if (size < capacity) then
+        "fresh"
+      else
+        "capacity"
+}
+
+lemma classifySyncRequestReplay_ensures(issuedAt: int, now: int, known: bool, size: int, capacity: int)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= size)
+  requires (size <= capacity)
+  requires (capacity <= 9007199254740991)
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "stale") <==> !(syncRequestTimeAllowed(issuedAt, now)))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "replay") <==> (syncRequestTimeAllowed(issuedAt, now) && known))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "capacity") <==> ((syncRequestTimeAllowed(issuedAt, now) && !(known)) && (size == capacity)))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "fresh") <==> ((syncRequestTimeAllowed(issuedAt, now) && !(known)) && (size < capacity)))
+{
+}
+
+function syncResponseAllowed(now: int, lastResponse: int, hasChange: bool, changeKnown: bool, hasSnapshot: bool, snapshotKnown: bool): bool
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= lastResponse)
+  requires (lastResponse <= 9007199254740991)
+{
+  ((((now - lastResponse) >= 2000) && hasChange) && (!(changeKnown) || (hasSnapshot && !(snapshotKnown))))
+}
+
+lemma syncResponseAllowed_ensures(now: int, lastResponse: int, hasChange: bool, changeKnown: bool, hasSnapshot: bool, snapshotKnown: bool)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= lastResponse)
+  requires (lastResponse <= 9007199254740991)
+  ensures (syncResponseAllowed(now, lastResponse, hasChange, changeKnown, hasSnapshot, snapshotKnown) <==> ((((now - lastResponse) >= 2000) && hasChange) && (!(changeKnown) || (hasSnapshot && !(snapshotKnown)))))
+{
+}
+
+method pruneSyncRequestReplays(keys: seq<string>, ledger: map<string, int>, now: int) returns (res: map<string, int>)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (|keys| == |ledger|)
+  requires (|ledger| <= 128)
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |keys|) ==> (keys[i] != keys[j]))
+  requires forall key :: ((key in ledger) <==> (key in keys))
+  requires forall key :: ((key in ledger) ==> ((0 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures forall key :: ((key in res) <==> ((key in ledger) && !(syncRequestReplayExpired(ledger[key], now))))
+  ensures forall key :: ((key in res) ==> (res[key] == ledger[key]))
+  ensures (|res| <= |ledger|)
+{
+  var result: map<string, int> := map[];
+  var index := 0;
+  while (index < |keys|)
+    invariant (0 <= index)
+    invariant (index <= |keys|)
+    invariant (|result| <= index)
+    invariant forall key :: ((key in result) <==> (((key in ledger) && !(syncRequestReplayExpired(ledger[key], now))) && exists i: int :: (((0 <= i) && (i < index)) && (keys[i] == key))))
+    invariant forall key :: ((key in result) ==> (result[key] == ledger[key]))
+    decreases (|keys| - index)
+  {
+    var key := keys[index];
+    assert !((key in result));
+    var i_t0 := syncRequestReplayExpired(ledger[key], now);
+    if !(i_t0) {
+      result := result[key := ledger[key]];
+      assert (key in result);
+      assert (result[key] == ledger[key]);
+    }
+    index := (index + 1);
+  }
+  return result;
+}
+
+method rememberSyncRequest(ledger: map<string, int>, key: string, issuedAt: int, capacity: int) returns (res: map<string, int>)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= capacity)
+  requires (capacity <= 9007199254740991)
+  requires (|ledger| < capacity)
+  requires !((key in ledger))
+  ensures (|res| == (|ledger| + 1))
+  ensures (|res| <= capacity)
+  ensures (key in res)
+  ensures (res[key] == issuedAt)
+  ensures forall id :: ((id in res) <==> ((id in ledger) || (id == key)))
+  ensures forall id :: ((id in ledger) ==> (res[id] == ledger[id]))
+{
+  var result := ledger;
+  result := result[key := issuedAt];
+  return result;
+}

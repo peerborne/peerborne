@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fc from 'fast-check';
+import { TopicValidatorResult } from '@libp2p/gossipsub';
 import { Base64 } from 'js-base64';
 import { PeerborneDocument } from './peerborne-document.ts';
 import { SubtleCrypto } from './auth-subtlecrypto.ts';
@@ -35,6 +37,20 @@ const otherRoot = 'bafkqaaa';
 
 function harness(identity = writer) {
   const published = [];
+  const work = { signatures: 0, verifications: 0, encryptions: 0 };
+  const provider = Object.create(auth);
+  provider.sign = (...args) => {
+    work.signatures++;
+    return auth.sign(...args);
+  };
+  provider.verify = (...args) => {
+    work.verifications++;
+    return auth.verify(...args);
+  };
+  provider.encrypt = (...args) => {
+    work.encryptions++;
+    return auth.encrypt(...args);
+  };
   const message = {
     documentId: '/resume',
     signatureContext: 'ordinary-sync-v1',
@@ -45,7 +61,7 @@ function harness(identity = writer) {
     documentPath: '/resume',
     _userKey: identity.privateKey,
     _userPublicKey: identity.publicKey,
-    _authProvider: auth,
+    _authProvider: provider,
     _syncMessageSerializer: serializer,
     _runStateMutation: async (operation) => operation(),
     _subscribed: true,
@@ -56,6 +72,7 @@ function harness(identity = writer) {
     _knownSyncSnapshots: new Set(),
     _lastSyncResponseAt: 0,
     _syncRequestsSeen: new Map(),
+    _syncRequestClock: 0,
     _writers: {
       users: async () => [writer.publicKey],
       check: async (key) => key === writer.publicKey,
@@ -80,7 +97,7 @@ function harness(identity = writer) {
       },
     },
   });
-  return { document, published, message };
+  return { document, published, message, work };
 }
 
 async function plaintext(bytes) {
@@ -107,6 +124,51 @@ async function request(identity = reader, overrides = {}) {
       await auth.sign(syncRequestSigningPayload(unsigned), identity.privateKey),
     ),
   };
+}
+
+async function registeredValidator(document) {
+  const pubsub = document.swarm.heliaNode.libp2p.services.pubsub;
+  const validators = new Map();
+  Object.assign(pubsub, {
+    addEventListener() {},
+    subscribe() {},
+    topicValidators: validators,
+  });
+  Object.assign(document, {
+    _subscribed: false,
+    _localCheckpointReady: true,
+    _hashes: new Set([root]),
+    _computeTopic: () => 'fixture',
+    _keychainProvider: { keyIDLength: keyId.length },
+  });
+  document._keychain.getKey = (id) =>
+    id.length === keyId.length &&
+    id.every((byte, index) => byte === keyId[index])
+      ? encryptionKey
+      : undefined;
+  document.swarm.registerDocument = () => {};
+  document.swarm.config.enableTopicValidators = true;
+  await document.open();
+  const validate = validators.get('fixture');
+  assert.equal(typeof validate, 'function');
+  return validate;
+}
+
+let requestFrameSequence = 0;
+async function encryptedRequest(signed) {
+  const nonce = new Uint8Array(auth.nonceBytes);
+  new DataView(nonce.buffer).setUint32(
+    nonce.length - 4,
+    ++requestFrameSequence,
+  );
+  const data = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce },
+      encryptionKey,
+      encodeSyncRequest(signed),
+    ),
+  );
+  return Uint8Array.from([...keyId, ...nonce, ...data]);
 }
 
 test('a current reader requests updates using a signed, encrypted, detached frame', async () => {
@@ -249,20 +311,6 @@ test('reader-only replicas never issue writer responses, and closed or unsigned 
   }
 });
 
-test('request replay memory remains bounded under authenticated input', async () => {
-  const { document, published } = harness();
-  for (let i = 0; i < 140; i++) {
-    await document._handleSyncRequest(
-      await request(reader, {
-        requestId: i.toString(16).padStart(32, '0'),
-        knownTips: [root],
-      }),
-    );
-  }
-  assert.equal(document._syncRequestsSeen.size, 128);
-  assert.equal(published.length, 0);
-});
-
 test('the codec rejects malformed framing and binds every request field to its own domain', async () => {
   const valid = await request();
   const wire = encodeSyncRequest(valid);
@@ -303,4 +351,401 @@ test('the codec rejects malformed framing and binds every request field to its o
   assert.equal(isSyncRequestFresh(valid, valid.issuedAtMs + 60_001), false);
   assert.equal(isSyncRequestFresh(valid, valid.issuedAtMs - 30_000), true);
   assert.equal(isSyncRequestFresh(valid, valid.issuedAtMs - 30_001), false);
+});
+
+async function withClock(operation) {
+  let now = 1_700_000_000_000;
+  const original = Date.now;
+  Date.now = () => now;
+  try {
+    await operation({
+      get now() {
+        return now;
+      },
+      set(value) {
+        now = value;
+      },
+      advance(delta) {
+        now += delta;
+      },
+    });
+  } finally {
+    Date.now = original;
+  }
+}
+
+function pauseMethod(target, method) {
+  const original = target[method];
+  let entered, release;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  target[method] = async function (...args) {
+    entered();
+    await gate;
+    return original.apply(this, args);
+  };
+  return {
+    started,
+    release,
+    restore() {
+      target[method] = original;
+    },
+  };
+}
+
+test('generated response delays expire at verification, signing and ciphertext dispatch boundaries', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom('verify', 'sign', 'encrypt'),
+      fc.integer({ min: 0, max: 60001 }),
+      async (stage, delay) => {
+        await withClock(async (clock) => {
+          const { document, published, work } = harness();
+          const signed = await request();
+          const paused = pauseMethod(document._authProvider, stage);
+          const response = document._handleSyncRequest(signed);
+          await Promise.race([
+            paused.started,
+            response.then(() => {
+              throw new Error('Expected cryptographic stage was not reached');
+            }),
+          ]);
+          try {
+            clock.advance(delay);
+            paused.release();
+            await response;
+          } finally {
+            paused.release();
+            paused.restore();
+          }
+          assert.equal(published.length, delay <= 60000 ? 1 : 0);
+          if (stage === 'verify' && delay > 60000)
+            assert.equal(work.signatures, 0);
+          assert.ok(document._syncRequestsSeen.size <= 128);
+        });
+      },
+    ),
+    {
+      seed: 2011223,
+      numRuns: 24,
+      examples: [
+        ['verify', 60001],
+        ['sign', 60001],
+        ['encrypt', 60001],
+        ['encrypt', 60000],
+      ],
+    },
+  );
+});
+
+test('authenticated no-op floods cannot displace a live replay record or spend response work', async () => {
+  await fc.assert(
+    fc.asyncProperty(fc.integer({ min: 129, max: 150 }), async (count) => {
+      await withClock(async (clock) => {
+        const { document, published, work } = harness();
+        const first = await request();
+        await document._handleSyncRequest(first);
+        const firstWork = { ...work };
+        clock.advance(2000);
+        for (let index = 0; index < count; index++) {
+          const noop = await request(reader, {
+            requestId: index.toString(16).padStart(32, '0'),
+            knownTips: [root],
+          });
+          await document._handleSyncRequest(noop);
+        }
+        assert.equal(document._syncRequestsSeen.size, 1);
+        assert.deepEqual(work, firstWork);
+        clock.advance(2000);
+        await document._handleSyncRequest(first);
+        assert.equal(published.length, 1);
+        assert.deepEqual(work, firstWork);
+      });
+    }),
+    { seed: 2011224, numRuns: 3 },
+  );
+});
+
+test('replay expiry remains terminal across wall-clock rollback and cache capacity fails closed', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.integer({ min: 60001, max: 90000 }),
+      fc.constantFrom(NaN, Infinity, -1, 'invalid'),
+      async (jump, invalidClock) => {
+        await withClock(async (clock) => {
+          const { document, published, work } = harness();
+          const validate = await registeredValidator(document);
+          const start = clock.now;
+          const first = await request();
+          clock.set(invalidClock);
+          await document._handleSyncRequest(first);
+          assert.equal(published.length, 0);
+          assert.equal(work.verifications, 0);
+          clock.set(start);
+          await document._handleSyncRequest(first);
+          clock.advance(jump);
+          const probe = await request(reader, {
+            requestId: 'ff'.repeat(16),
+            knownTips: [root],
+          });
+          assert.equal(
+            await validate({}, { data: await encryptedRequest(probe) }),
+            TopicValidatorResult.Accept,
+          );
+          await document._handleSyncRequest(probe);
+          assert.equal(published.length, 1);
+          clock.set(start + 2000);
+          await document._handleSyncRequest(first);
+          assert.equal(published.length, 1);
+          assert.equal(document._syncRequestClock, start + jump);
+          clock.set(start + jump + 2000);
+          const issued = clock.now;
+          document._syncRequestsSeen = new Map(
+            Array.from({ length: 128 }, (_, index) => [
+              `seed-${index}`,
+              issued,
+            ]),
+          );
+          const before = [...document._syncRequestsSeen],
+            spent = { ...work };
+          await document._handleSyncRequest(
+            await request(reader, { requestId: 'fe'.repeat(16) }),
+          );
+          assert.deepEqual([...document._syncRequestsSeen], before);
+          assert.deepEqual(work, spent);
+          assert.equal(published.length, 1);
+        });
+      },
+    ),
+    { seed: 2011225, numRuns: 6 },
+  );
+});
+
+test('settled response preparation delays and failures reserve the cooldown', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom('success', 'sign', 'encrypt', 'publish'),
+      fc.integer({ min: 2001, max: 10000 }),
+      async (stage, delay) => {
+        await withClock(async (clock) => {
+          const { document, published, work } = harness();
+          const pubsub = document.swarm.heliaNode.libp2p.services.pubsub;
+          const target =
+            stage === 'sign' || stage === 'encrypt'
+              ? document._authProvider
+              : pubsub;
+          const method = stage === 'success' ? 'publish' : stage;
+          const original = target[method];
+          target[method] = async function (...args) {
+            clock.advance(delay);
+            if (stage !== 'success')
+              throw new Error('Injected preparation failure');
+            return original.apply(this, args);
+          };
+          const first = document._handleSyncRequest(await request());
+          try {
+            if (stage === 'success') await first;
+            else await assert.rejects(first, /Injected preparation failure/);
+          } finally {
+            target[method] = original;
+          }
+          const settled = clock.now,
+            spent = { ...work };
+          await document._handleSyncRequest(
+            await request(reader, { requestId: 'cc'.repeat(16) }),
+          );
+          assert.deepEqual(work, spent);
+          assert.equal(document._lastSyncResponseAt, settled);
+          clock.advance(2000);
+          await document._handleSyncRequest(
+            await request(reader, { requestId: 'dd'.repeat(16) }),
+          );
+          assert.equal(published.length, stage === 'success' ? 2 : 1);
+        });
+      },
+    ),
+    {
+      seed: 2011226,
+      numRuns: 12,
+      examples: [
+        ['sign', 2001],
+        ['encrypt', 2001],
+        ['publish', 2001],
+        ['success', 2001],
+      ],
+    },
+  );
+});
+
+test('dense future-dated signed response histories retain at most 46 live attempts', async () => {
+  await fc.assert(
+    fc.asyncProperty(fc.integer({ min: 46, max: 64 }), async (count) => {
+      await withClock(async (clock) => {
+        const { document, published, work } = harness();
+        for (let index = 0; index < count; index++) {
+          const signed = await request(reader, {
+            requestId: index.toString(16).padStart(32, '0'),
+            issuedAtMs: clock.now + 30000,
+          });
+          await document._handleSyncRequest(signed);
+          assert.equal(
+            document._syncRequestsSeen.size,
+            Math.min(index + 1, 46),
+          );
+          clock.advance(2000);
+        }
+        assert.equal(published.length, count);
+        assert.equal(work.signatures, count);
+        assert.equal(work.verifications, count);
+      });
+    }),
+    { seed: 2011227, numRuns: 2, examples: [[46], [64]] },
+  );
+});
+
+test('sync admission rejects nonboolean membership authorization results', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom(
+        false,
+        0,
+        undefined,
+        'true',
+        'false',
+        {},
+        new Boolean(false),
+        new Boolean(true),
+      ),
+      async (authorization) => {
+        await withClock(async () => {
+          const { document, published, work } = harness();
+          document._writers.check = async () => authorization;
+          await document._handleSyncRequest(await request());
+          assert.equal(published.length, 0);
+          assert.equal(document._syncRequestsSeen.size, 0);
+          assert.equal(work.signatures, 0);
+          const requester = harness(reader);
+          requester.document._writers.check = async () => authorization;
+          requester.document._readers.check = async () => authorization;
+          await assert.rejects(requester.document.requestSync());
+          assert.equal(requester.published.length, 0);
+          assert.equal(requester.work.signatures, 0);
+        });
+      },
+    ),
+    { seed: 2011228, numRuns: 30 },
+  );
+});
+
+test('registered GossipSub validation accepts authenticated re-encryptions independently of local response history', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom('fresh', 'replay', 'capacity', 'cooldown'),
+      fc.integer({ min: -60001, max: 30001 }),
+      fc.constantFrom('valid', 'forged', 'stranger', 'other-document'),
+      async (history, offset, authentication) => {
+        await withClock(async (clock) => {
+          const { document, published } = harness();
+          const validate = await registeredValidator(document);
+          let signed = await request(
+            authentication === 'stranger' ? stranger : reader,
+            {
+              issuedAtMs: clock.now + offset,
+              ...(authentication === 'other-document'
+                ? { documentId: '/other' }
+                : {}),
+            },
+          );
+          if (authentication === 'forged')
+            signed = {
+              ...signed,
+              signature: Base64.fromUint8Array(new Uint8Array(96)),
+            };
+          const id = JSON.stringify([signed.requester, signed.requestId]);
+          if (history === 'replay')
+            document._syncRequestsSeen.set(id, clock.now);
+          if (history === 'capacity')
+            document._syncRequestsSeen = new Map(
+              Array.from({ length: 128 }, (_, index) => [
+                `seed-${index}`,
+                clock.now,
+              ]),
+            );
+          if (history === 'cooldown') document._lastSyncResponseAt = clock.now;
+          const retained = [...document._syncRequestsSeen];
+          const first = await encryptedRequest(signed);
+          const second = await encryptedRequest(signed);
+          assert.notDeepEqual(first, second);
+          const fresh = offset >= -60000 && offset <= 30000;
+          const expected = !fresh
+            ? TopicValidatorResult.Ignore
+            : authentication === 'valid'
+              ? TopicValidatorResult.Accept
+              : TopicValidatorResult.Reject;
+          assert.equal(await validate({}, { data: first }), expected);
+          assert.equal(await validate({}, { data: second }), expected);
+          assert.deepEqual([...document._syncRequestsSeen], retained);
+          await document._handleSyncRequest(signed);
+          const responds =
+            fresh && authentication === 'valid' && history === 'fresh';
+          assert.equal(published.length, responds ? 1 : 0);
+          assert.equal(await validate({}, { data: second }), expected);
+          const after = [...document._syncRequestsSeen];
+          const start = clock.now;
+          clock.advance(90002);
+          assert.equal(
+            await validate({}, { data: first }),
+            TopicValidatorResult.Ignore,
+          );
+          clock.set(start);
+          assert.equal(
+            await validate({}, { data: second }),
+            TopicValidatorResult.Ignore,
+          );
+          assert.deepEqual([...document._syncRequestsSeen], after);
+          if (history === 'fresh' && authentication === 'valid' && fresh) {
+            clock.set(start + 90002);
+            const delayed = await encryptedRequest(await request());
+            const paused = pauseMethod(document._authProvider, 'verify');
+            const validation = validate({}, { data: delayed });
+            await Promise.race([
+              paused.started,
+              validation.then(() => {
+                throw new Error('Expected request authentication');
+              }),
+            ]);
+            try {
+              clock.advance(60001);
+              paused.release();
+              assert.equal(await validation, TopicValidatorResult.Ignore);
+            } finally {
+              paused.release();
+              paused.restore();
+            }
+            assert.deepEqual([...document._syncRequestsSeen], after);
+          }
+        });
+      },
+    ),
+    {
+      seed: 2011229,
+      numRuns: 40,
+      examples: [
+        ['replay', 0, 'valid'],
+        ['capacity', 0, 'valid'],
+        ['cooldown', 0, 'valid'],
+        ['fresh', -60001, 'valid'],
+        ['fresh', 30001, 'valid'],
+        ['fresh', -60000, 'valid'],
+        ['fresh', 30000, 'valid'],
+        ['replay', 0, 'forged'],
+        ['capacity', 0, 'stranger'],
+        ['cooldown', 0, 'other-document'],
+      ],
+    },
+  );
 });

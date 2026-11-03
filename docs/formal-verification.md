@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 112 production functions in 33 proof units. The runtime calls
+LemmaScript checks 118 production functions in 33 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -60,7 +60,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
-| [Sync request time](../packages/core/src/policy/sync-request.ts) | 1 | Exact acceptance within 60 seconds in the past and 30 seconds in the future, across the safe-integer timestamp domain. |
+| [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
 | [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 9 | Authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 
@@ -69,6 +69,38 @@ has native JavaScript properties: a missing copy can pass the value-model proof
 while mutating the active map. A dedicated control verifies an intentionally
 aliased variant and confirms that native counterexample. The healthy production
 implementation must pass the separate ownership and generated-history properties.
+
+The default document runtime uses the sync-response policies before retaining
+a request or preparing a response. Freshness allows 60 seconds of past time
+and 30 seconds of future skew; retained admissions are separated by at least
+two seconds. The checked history model calls the production policies and
+derives at most 46 retained entries, even across clock rollback and delayed
+settlement. Pruning visits at most 128 entries and preserves each live binding;
+the hard capacity guard rejects new entries rather than evicting live ones.
+Only response attempts consume replay capacity, so known-state requests and
+requests arriving during cooldown cannot flush the replay ledger.
+The no-op work check concerns response preparation; pubsub request authentication
+still has its own cost and is outside this response-admission bound.
+Replay pruning and history insertion use separate checked assertion batches.
+CI verifies the complete sync unit under four fixed solver seeds as well as its normal audit
+and counterexample controls, without increasing the existing time limits.
+
+The history model assumes truthful authentication and detached inputs. Native
+properties exercise real signatures and encryption, Map ownership, malformed
+local clocks, strict boolean authorization, future-dated dense request streams,
+and controlled delays/failures in verification, signing, encryption and
+publication. The registered GossipSub validator authenticates re-encrypted
+requests independently of local replay capacity and response history. Local
+expiry returns `Ignore`; malformed or unauthenticated requests can return
+`Reject`. Response admission remains in the handler, so answering a request
+does not turn an honest forwarder's valid copy into a penalizable message.
+The runtime rechecks freshness after verification and immediately
+before handing ciphertext to pubsub, and starts the next cooldown at preparation
+settlement, including failures. Replay protection is per document instance;
+the proof does not establish durable replay protection across restarts. The
+response still holds the document mutation queue while preparing and publishing,
+so this is a logical work/storage bound, not a main-thread latency, cryptographic
+secrecy or eventual-delivery proof.
 
 The [document-authority policy](../packages/core/src/policy/document-authority.ts)
 adds five verified production functions, with a shared bounded field validator
@@ -240,7 +272,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 45 property-suite files containing 105 explicit
+The inventory audits 47 property-suite files containing 114 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

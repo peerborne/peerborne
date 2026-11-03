@@ -4,8 +4,15 @@ import { shouldCompact } from './policy/maintenance.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import {
   decodeSyncRequest, encodeSyncRequest, isSyncRequest, isSyncRequestFresh,
-  syncRequestSigningPayload, syncSnapshotHint, SYNC_REQUEST_LIFETIME_MS, type SyncRequest,
+  syncRequestSigningPayload, syncSnapshotHint, type SyncRequest,
 } from './sync-request.js';
+import {
+  advanceSyncRequestClock,
+  pruneSyncRequestReplays,
+  classifySyncRequestReplay,
+  rememberSyncRequest,
+  syncResponseAllowed,
+} from './policy/sync-request.js';
 import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
@@ -6295,7 +6302,8 @@ export class PeerborneDocument<
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
-  private readonly _syncRequestsSeen = new Map<string, number>();
+  private _syncRequestsSeen = new Map<string, number>();
+  private _syncRequestClock = 0;
   private readonly _knownSyncSnapshots = new Set<string>();
 
   /** Ask current members for missed updates using the existing authenticated local membership. */
@@ -6313,8 +6321,8 @@ export class PeerborneDocument<
         throw new Error('Sync requests require an open authenticated document');
       }
       if (
-        !(await this._writers.check(this._userPublicKey)) &&
-        !(await this._readers.check(this._userPublicKey))
+        (await this._writers.check(this._userPublicKey)) !== true &&
+        (await this._readers.check(this._userPublicKey)) !== true
       ) {
         throw new Error('Sync requests require current document membership');
       }
@@ -6359,10 +6367,42 @@ export class PeerborneDocument<
     });
   }
 
+  private _observeSyncRequestClock(): number | undefined {
+    const now = Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) return;
+    this._syncRequestClock = advanceSyncRequestClock(
+      this._syncRequestClock,
+      now,
+    );
+    return this._syncRequestClock;
+  }
+
+  private _syncRequestCanBeAdmitted(
+    request: SyncRequest,
+    now: number,
+  ): boolean {
+    if (!Number.isSafeInteger(request.issuedAtMs) || request.issuedAtMs < 0)
+      return false;
+    this._syncRequestsSeen = pruneSyncRequestReplays(
+      [...this._syncRequestsSeen.keys()],
+      this._syncRequestsSeen,
+      now,
+    );
+    const id = JSON.stringify([request.requester, request.requestId]);
+    return (
+      classifySyncRequestReplay(
+        request.issuedAtMs,
+        now,
+        this._syncRequestsSeen.has(id),
+        this._syncRequestsSeen.size,
+        128,
+      ) === 'fresh'
+    );
+  }
+
   private async _verifySyncRequest(request: SyncRequest): Promise<boolean> {
     if (
       request.documentId !== this.documentPath ||
-      !isSyncRequestFresh(request, Date.now()) ||
       !this._isSigningEnabled()
     )
       return false;
@@ -6391,62 +6431,106 @@ export class PeerborneDocument<
 
   private async _handleSyncRequest(request: SyncRequest): Promise<void> {
     await this._runStateMutation(async () => {
+      if (!this._subscribed) return;
+      let now = this._observeSyncRequestClock();
+      const previous = this._lastSyncMessage,
+        snapshot = this._latestSnapshot;
+      const hasChange = !!previous?.changeId && !!previous.changes;
+      const changeKnown =
+        previous?.changeId !== undefined &&
+        request.knownTips.includes(previous.changeId);
       if (
-        !this._subscribed ||
+        now === undefined ||
+        !syncResponseAllowed(
+          now,
+          this._lastSyncResponseAt,
+          hasChange,
+          changeKnown,
+          snapshot !== undefined,
+          false,
+        ) ||
+        !this._syncRequestCanBeAdmitted(request, now)
+      )
+        return;
+      if (
         !(await this._verifySyncRequest(request)) ||
-        !(await this._writers.check(this._userPublicKey))
+        (await this._writers.check(this._userPublicKey)) !== true
       )
         return;
-      const now = Date.now();
-      for (const [key, issued] of this._syncRequestsSeen) {
-        if (now - issued > SYNC_REQUEST_LIFETIME_MS)
-          this._syncRequestsSeen.delete(key);
-      }
-      const id = JSON.stringify([request.requester, request.requestId]);
-      if (this._syncRequestsSeen.has(id)) return;
-      this._syncRequestsSeen.set(id, request.issuedAtMs);
-      if (this._syncRequestsSeen.size > 128)
-        this._syncRequestsSeen.delete(
-          this._syncRequestsSeen.keys().next().value!,
+      const snapshotKnown =
+        !snapshot ||
+        request.knownSnapshots.includes(
+          await syncSnapshotHint(snapshot.signature),
         );
-      const previous = this._lastSyncMessage;
-      const snapshotKnown = !this._latestSnapshot || request.knownSnapshots.includes(
-        await syncSnapshotHint(this._latestSnapshot.signature),
-      );
+      now = this._observeSyncRequestClock();
       if (
-        !previous?.changeId ||
-        !previous.changes ||
-        (request.knownTips.includes(previous.changeId) && snapshotKnown) ||
-        now - this._lastSyncResponseAt < 2000
+        now === undefined ||
+        !this._syncRequestCanBeAdmitted(request, now) ||
+        !syncResponseAllowed(
+          now,
+          this._lastSyncResponseAt,
+          hasChange,
+          changeKnown,
+          snapshot !== undefined,
+          snapshotKnown,
+        )
       )
         return;
-      const message: CRDTSyncMessage<ChangesType> = {
-        documentId: this.documentPath,
-        signatureContext: 'ordinary-sync-v1',
-        changeId: previous.changeId,
-        changes: previous.changes,
-        ...(this._latestSnapshot === undefined || snapshotKnown
-          ? {}
-          : { snapshot: this._latestSnapshot }),
-      };
-      message.signature = await this._signAsWriter(message);
-      await this._publishSyncBytes(
-        this._syncMessageSerializer.serializeSyncMessage(message),
+      const id = JSON.stringify([request.requester, request.requestId]);
+      this._syncRequestsSeen = rememberSyncRequest(
+        this._syncRequestsSeen,
+        id,
+        request.issuedAtMs,
+        128,
       );
       this._lastSyncResponseAt = now;
+      try {
+        const message: CRDTSyncMessage<ChangesType> = {
+          documentId: this.documentPath,
+          signatureContext: 'ordinary-sync-v1',
+          changeId: previous!.changeId,
+          changes: previous!.changes,
+          ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
+        };
+        message.signature = await this._signAsWriter(message);
+        await this._publishSyncBytes(
+          this._syncMessageSerializer.serializeSyncMessage(message),
+          () => {
+            const dispatch = this._observeSyncRequestClock();
+            return (
+              this._subscribed &&
+              dispatch !== undefined &&
+              isSyncRequestFresh(request, dispatch)
+            );
+          },
+        );
+      } finally {
+        const settled = this._observeSyncRequestClock();
+        if (settled !== undefined) this._lastSyncResponseAt = settled;
+      }
     });
   }
 
-  private async _publishSyncBytes(bytes: Uint8Array): Promise<void> {
-    assertSharedProtocolRequestSize(bytes.byteLength, 'Document sync message');
+  private async _publishSyncBytes(
+    bytes: Uint8Array,
+    isCurrent?: () => boolean,
+  ): Promise<boolean> {
+    assertSharedProtocolRequestSize(
+      bytes.byteLength,
+      'Document sync message',
+    );
+    if (isCurrent && !isCurrent()) return false;
     const [keyId, key] = await this._keychain.current();
     if (!key) throw new Error('Document has no encryption key');
     const { nonce, data } = await this._authProvider.encrypt(bytes, key);
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
+    const frame = concatUint8Arrays(keyId, nonce, data);
+    if (isCurrent && !isCurrent()) return false;
     await this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
-      concatUint8Arrays(keyId, nonce, data),
+      frame,
     );
+    return true;
   }
   /**
    * Capture a bounded, self-signed local checkpoint. The payload contains
@@ -7034,9 +7118,21 @@ export class PeerborneDocument<
                 if (isSyncRequest(rawContent)) {
                   const request = decodeSyncRequest(rawContent);
                   if (!request) return TopicValidatorResult.Reject;
-                  return await this._runStateMutation(async () =>
-                    await this._verifySyncRequest(request) ? TopicValidatorResult.Accept : TopicValidatorResult.Reject,
-                  );
+                  return await this._runStateMutation(async () => {
+                    const now = this._observeSyncRequestClock();
+                    if (
+                      now === undefined ||
+                      !isSyncRequestFresh(request, now)
+                    )
+                      return TopicValidatorResult.Ignore;
+                    if (!(await this._verifySyncRequest(request)))
+                      return TopicValidatorResult.Reject;
+                    const verified = this._observeSyncRequestClock();
+                    return verified !== undefined &&
+                      isSyncRequestFresh(request, verified)
+                      ? TopicValidatorResult.Accept
+                      : TopicValidatorResult.Ignore;
+                  });
                 }
 
                 let syncMessage: CRDTSyncMessage<ChangesType>;

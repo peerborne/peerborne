@@ -19,6 +19,158 @@ lemma syncRequestTimeAllowed_ensures(issuedAt: int, now: int)
 {
 }
 
+function advanceSyncRequestClock(previous: int, observed: int): int
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= observed)
+  requires (observed <= 9007199254740991)
+{
+  if (previous > observed) then
+    previous
+  else
+    observed
+}
+
+lemma advanceSyncRequestClock_ensures(previous: int, observed: int)
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= observed)
+  requires (observed <= 9007199254740991)
+  ensures (advanceSyncRequestClock(previous, observed) == (if (previous > observed) then previous else observed))
+  ensures (previous <= advanceSyncRequestClock(previous, observed))
+  ensures (observed <= advanceSyncRequestClock(previous, observed))
+  ensures (advanceSyncRequestClock(previous, observed) <= 9007199254740991)
+{
+}
+
+function syncRequestReplayExpired(issuedAt: int, now: int): bool
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+{
+  ((now - issuedAt) > 60000)
+}
+
+lemma syncRequestReplayExpired_ensures(issuedAt: int, now: int)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  ensures (syncRequestReplayExpired(issuedAt, now) <==> ((now - issuedAt) > 60000))
+  ensures (syncRequestReplayExpired(issuedAt, now) ==> !(syncRequestTimeAllowed(issuedAt, now)))
+{
+}
+
+function classifySyncRequestReplay(issuedAt: int, now: int, known: bool, size: int, capacity: int): string
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= size)
+  requires (size <= capacity)
+  requires (capacity <= 9007199254740991)
+{
+  if !(syncRequestTimeAllowed(issuedAt, now)) then
+    "stale"
+  else
+    if known then
+      "replay"
+    else
+      if (size < capacity) then
+        "fresh"
+      else
+        "capacity"
+}
+
+lemma classifySyncRequestReplay_ensures(issuedAt: int, now: int, known: bool, size: int, capacity: int)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= size)
+  requires (size <= capacity)
+  requires (capacity <= 9007199254740991)
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "stale") <==> !(syncRequestTimeAllowed(issuedAt, now)))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "replay") <==> (syncRequestTimeAllowed(issuedAt, now) && known))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "capacity") <==> ((syncRequestTimeAllowed(issuedAt, now) && !(known)) && (size == capacity)))
+  ensures ((classifySyncRequestReplay(issuedAt, now, known, size, capacity) == "fresh") <==> ((syncRequestTimeAllowed(issuedAt, now) && !(known)) && (size < capacity)))
+{
+}
+
+function syncResponseAllowed(now: int, lastResponse: int, hasChange: bool, changeKnown: bool, hasSnapshot: bool, snapshotKnown: bool): bool
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= lastResponse)
+  requires (lastResponse <= 9007199254740991)
+{
+  ((((now - lastResponse) >= 2000) && hasChange) && (!(changeKnown) || (hasSnapshot && !(snapshotKnown))))
+}
+
+lemma syncResponseAllowed_ensures(now: int, lastResponse: int, hasChange: bool, changeKnown: bool, hasSnapshot: bool, snapshotKnown: bool)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= lastResponse)
+  requires (lastResponse <= 9007199254740991)
+  ensures (syncResponseAllowed(now, lastResponse, hasChange, changeKnown, hasSnapshot, snapshotKnown) <==> ((((now - lastResponse) >= 2000) && hasChange) && (!(changeKnown) || (hasSnapshot && !(snapshotKnown)))))
+{
+}
+
+@IsolateAssertions
+method pruneSyncRequestReplays(keys: seq<string>, ledger: map<string, int>, now: int) returns (res: map<string, int>)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (|keys| == |ledger|)
+  requires (|ledger| <= 128)
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |keys|) ==> (keys[i] != keys[j]))
+  requires forall key :: ((key in ledger) <==> (key in keys))
+  requires forall key :: ((key in ledger) ==> ((0 <= ledger[key]) && (ledger[key] <= 9007199254740991)))
+  ensures forall key :: ((key in res) <==> ((key in ledger) && !(syncRequestReplayExpired(ledger[key], now))))
+  ensures forall key :: ((key in res) ==> (res[key] == ledger[key]))
+  ensures (|res| <= |ledger|)
+{
+  var result: map<string, int> := map[];
+  var index := 0;
+  while (index < |keys|)
+    invariant (0 <= index)
+    invariant (index <= |keys|)
+    invariant (|result| <= index)
+    invariant forall key :: ((key in result) <==> (((key in ledger) && !(syncRequestReplayExpired(ledger[key], now))) && exists i: int :: (((0 <= i) && (i < index)) && (keys[i] == key))))
+    invariant forall key :: ((key in result) ==> (result[key] == ledger[key]))
+    decreases (|keys| - index)
+  {
+    var key := keys[index];
+    assert !((key in result));
+    var i_t0 := syncRequestReplayExpired(ledger[key], now);
+    if !(i_t0) {
+      result := result[key := ledger[key]];
+      assert (key in result);
+      assert (result[key] == ledger[key]);
+    }
+    index := (index + 1);
+  }
+  return result;
+}
+
+method rememberSyncRequest(ledger: map<string, int>, key: string, issuedAt: int, capacity: int) returns (res: map<string, int>)
+  requires (0 <= issuedAt)
+  requires (issuedAt <= 9007199254740991)
+  requires (0 <= capacity)
+  requires (capacity <= 9007199254740991)
+  requires (|ledger| < capacity)
+  requires !((key in ledger))
+  ensures (|res| == (|ledger| + 1))
+  ensures (|res| <= capacity)
+  ensures (key in res)
+  ensures (res[key] == issuedAt)
+  ensures forall id :: ((id in res) <==> ((id in ledger) || (id == key)))
+  ensures forall id :: ((id in ledger) ==> (res[id] == ledger[id]))
+{
+  var result := ledger;
+  result := result[key := issuedAt];
+  return result;
+}
+
 method syncRequestTime_domain()
 {
   assert syncRequestTimeAllowed(0, 60000);
@@ -26,4 +178,336 @@ method syncRequestTime_domain()
   assert syncRequestTimeAllowed(30000, 0);
   assert !syncRequestTimeAllowed(30001, 0);
   assert syncRequestTimeAllowed(9007199254740991, 9007199254740991);
+}
+
+
+datatype SyncResponseAdmission = SyncResponseAdmission(key: string, issuedAt: int, admittedAt: int)
+datatype SyncResponseAttempt = SyncResponseAttempt(key: string, issuedAt: int, observed: int, settled: int, authorized: bool, maintainReplay: bool, hasChange: bool, changeKnown: bool, hasSnapshot: bool, snapshotKnown: bool)
+
+predicate SyncTraceValid(trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int)
+{
+  0 <= lastResponse <= clock <= 9007199254740991 &&
+  (forall i :: 0 <= i < |trace| ==> 0 <= trace[i].issuedAt <= 9007199254740991 && 0 <= trace[i].admittedAt <= lastResponse && syncRequestTimeAllowed(trace[i].issuedAt, trace[i].admittedAt)) &&
+  (forall i, j :: 0 <= i < j < |trace| ==> trace[j].admittedAt - trace[i].admittedAt >= 2000 * (j - i))
+}
+
+function SyncResponseKeys(trace: seq<SyncResponseAdmission>): set<string>
+{
+  set i: int | 0 <= i < |trace| :: trace[i].key
+}
+
+lemma syncResponseKeys_count(trace: seq<SyncResponseAdmission>)
+  ensures |SyncResponseKeys(trace)| <= |trace|
+  decreases |trace|
+{
+  if |trace| > 0 {
+    syncResponseKeys_count(trace[1..]);
+    assert SyncResponseKeys(trace) == {trace[0].key} + SyncResponseKeys(trace[1..]);
+  }
+}
+
+function LiveSyncResponses(trace: seq<SyncResponseAdmission>, now: int): seq<SyncResponseAdmission>
+  requires 0 <= now <= 9007199254740991
+  requires forall i :: 0 <= i < |trace| ==> 0 <= trace[i].issuedAt <= 9007199254740991
+  decreases |trace|
+{
+  if |trace| == 0 then [] else
+    (if syncRequestReplayExpired(trace[0].issuedAt, now) then [] else [trace[0]]) + LiveSyncResponses(trace[1..], now)
+}
+
+lemma syncLiveResponse_index(trace: seq<SyncResponseAdmission>, now: int, index: int) returns (source: int)
+  requires 0 <= now <= 9007199254740991
+  requires forall i :: 0 <= i < |trace| ==> 0 <= trace[i].issuedAt <= 9007199254740991
+  requires 0 <= index < |LiveSyncResponses(trace, now)|
+  ensures index <= source < |trace| && LiveSyncResponses(trace, now)[index] == trace[source]
+  decreases |trace|
+{
+  assert |trace| > 0;
+  if !syncRequestReplayExpired(trace[0].issuedAt, now) {
+    if index == 0 {
+      source := 0;
+    } else {
+      var later := syncLiveResponse_index(trace[1..], now, index - 1);
+      source := later + 1;
+    }
+  } else {
+    var later := syncLiveResponse_index(trace[1..], now, index);
+    source := later + 1;
+  }
+}
+
+lemma syncLiveResponses_properties(trace: seq<SyncResponseAdmission>, now: int, lastResponse: int)
+  requires SyncTraceValid(trace, now, lastResponse)
+  ensures forall item :: item in LiveSyncResponses(trace, now) <==> item in trace && !syncRequestReplayExpired(item.issuedAt, now)
+  ensures SyncTraceValid(LiveSyncResponses(trace, now), now, lastResponse)
+  decreases |trace|
+{
+  if |trace| > 0 {
+    var tail := trace[1..];
+    syncLiveResponses_properties(tail, now, lastResponse);
+    var later := LiveSyncResponses(tail, now);
+    var live := LiveSyncResponses(trace, now);
+    if !syncRequestReplayExpired(trace[0].issuedAt, now) {
+      forall i, j | 0 <= i < j < |live|
+        ensures live[j].admittedAt - live[i].admittedAt >= 2000 * (j - i)
+      {
+        if i == 0 {
+          var k := syncLiveResponse_index(tail, now, j - 1);
+          assert live[j] == trace[k + 1];
+          assert trace[k + 1].admittedAt - trace[0].admittedAt >= 2000 * (k + 1);
+        }
+      }
+    }
+  }
+}
+
+lemma syncResponseWindow_bound(trace: seq<SyncResponseAdmission>, now: int, lastResponse: int)
+  requires SyncTraceValid(trace, now, lastResponse)
+  ensures |LiveSyncResponses(trace, now)| <= 46
+{
+  syncLiveResponses_properties(trace, now, lastResponse);
+  var live := LiveSyncResponses(trace, now);
+  if |live| > 1 {
+    var first := live[0];
+    var last := live[|live| - 1];
+    assert first in live;
+    assert !syncRequestReplayExpired(first.issuedAt, now);
+    assert first.issuedAt - first.admittedAt <= 30000;
+    assert now - first.admittedAt <= 90000;
+    assert last.admittedAt - first.admittedAt >= 2000 * (|live| - 1);
+    assert last.admittedAt <= now;
+  }
+}
+
+method syncReplayKeys(keys: set<string>) returns (result: seq<string>)
+  ensures |result| == |keys|
+  ensures forall key :: key in result <==> key in keys
+  ensures forall i, j :: 0 <= i < j < |result| ==> result[i] != result[j]
+  decreases |keys|
+{
+  if keys == {} {
+    result := [];
+  } else {
+    var head :| head in keys;
+    var tail := syncReplayKeys(keys - {head});
+    result := [head] + tail;
+  }
+}
+
+predicate SyncReplayState(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int)
+{
+  SyncTraceValid(trace, clock, lastResponse) && |ledger| <= 46 &&
+  (forall key :: key in ledger ==> 0 <= ledger[key] <= 9007199254740991 && exists i :: 0 <= i < |trace| && trace[i].key == key && trace[i].issuedAt == ledger[key]) &&
+  (forall i :: 0 <= i < |trace| && !syncRequestReplayExpired(trace[i].issuedAt, clock) ==> trace[i].key in ledger && ledger[trace[i].key] == trace[i].issuedAt) &&
+  (forall i, j :: 0 <= i < j < |trace| && trace[i].key == trace[j].key ==> syncRequestReplayExpired(trace[i].issuedAt, trace[j].admittedAt))
+}
+
+lemma syncTrace_append(trace: seq<SyncResponseAdmission>, item: SyncResponseAdmission, now: int, lastResponse: int)
+  requires SyncTraceValid(trace, now, lastResponse)
+  requires item.admittedAt == now && 0 <= item.issuedAt <= 9007199254740991
+  requires syncRequestTimeAllowed(item.issuedAt, now)
+  requires now - lastResponse >= 2000
+  ensures SyncTraceValid(trace + [item], now, now)
+{
+  var result := trace + [item];
+  forall i, j | 0 <= i < j < |result|
+    ensures result[j].admittedAt - result[i].admittedAt >= 2000 * (j - i)
+  {
+    if j == |trace| {
+      assert |trace| > 0;
+      var final := |trace| - 1;
+      if i < final {
+        assert trace[final].admittedAt - trace[i].admittedAt >= 2000 * (final - i);
+      } else {
+        assert i == final;
+      }
+      assert trace[final].admittedAt - trace[i].admittedAt >= 2000 * (final - i);
+      assert now - trace[final].admittedAt >= 2000;
+    }
+  }
+}
+
+predicate SyncAttemptReady(ledger: map<string, int>, clock: int, lastResponse: int, attempt: SyncResponseAttempt)
+  requires 0 <= lastResponse <= clock <= 9007199254740991
+  requires 0 <= attempt.observed <= 9007199254740991 && 0 <= attempt.issuedAt <= 9007199254740991
+{
+  var now := advanceSyncRequestClock(clock, attempt.observed);
+  attempt.authorized && attempt.key !in ledger && |ledger| < 128 &&
+  syncRequestTimeAllowed(attempt.issuedAt, now) &&
+  syncResponseAllowed(now, lastResponse, attempt.hasChange, attempt.changeKnown, attempt.hasSnapshot, attempt.snapshotKnown)
+}
+
+function SyncAttemptCeiling(attempts: seq<SyncResponseAttempt>): int
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].observed <= 9007199254740991 && 0 <= attempts[i].settled <= 9007199254740991
+  ensures 0 <= SyncAttemptCeiling(attempts) <= 9007199254740991
+  decreases |attempts|
+{
+  if |attempts| == 0 then 0 else
+    advanceSyncRequestClock(advanceSyncRequestClock(attempts[0].observed, attempts[0].settled), SyncAttemptCeiling(attempts[1..]))
+}
+
+lemma syncReplayState_advance(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, nextClock: int, nextResponse: int)
+  requires SyncReplayState(ledger, trace, clock, lastResponse)
+  requires clock <= nextClock <= 9007199254740991 && lastResponse <= nextResponse <= nextClock
+  ensures SyncReplayState(ledger, trace, nextClock, nextResponse)
+{
+}
+
+method syncReplayState_prune(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int)
+  returns (result: map<string, int>)
+  requires SyncReplayState(ledger, trace, clock, lastResponse)
+  ensures SyncReplayState(result, trace, clock, lastResponse)
+  ensures forall key :: key in result <==> key in ledger && !syncRequestReplayExpired(ledger[key], clock)
+  ensures forall key :: key in result ==> result[key] == ledger[key]
+{
+  var keys := syncReplayKeys(ledger.Keys);
+  result := pruneSyncRequestReplays(keys, ledger, clock);
+}
+
+lemma syncResponseSubsetCard(left: set<string>, right: set<string>)
+  requires left <= right
+  ensures |left| <= |right|
+  decreases |right|
+{
+  if right != {} {
+    var key :| key in right;
+    var smaller := right - {key};
+    assert right == smaller + {key} && key !in smaller;
+    if key in left {
+      assert left == (left - {key}) + {key};
+      syncResponseSubsetCard(left - {key}, smaller);
+    } else {
+      syncResponseSubsetCard(left, smaller);
+    }
+  }
+}
+
+method {:isolate_assertions} syncReplayState_remember(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, key: string, issuedAt: int)
+  returns (result: map<string, int>, nextTrace: seq<SyncResponseAdmission>)
+  requires SyncReplayState(ledger, trace, clock, lastResponse)
+  requires forall token :: token in ledger ==> !syncRequestReplayExpired(ledger[token], clock)
+  requires 0 <= issuedAt <= 9007199254740991 && syncRequestTimeAllowed(issuedAt, clock)
+  requires key !in ledger && clock - lastResponse >= 2000
+  ensures SyncReplayState(result, nextTrace, clock, clock)
+  ensures nextTrace == trace + [SyncResponseAdmission(key, issuedAt, clock)]
+  ensures forall token :: token in result <==> token in ledger || token == key
+  ensures result[key] == issuedAt
+  ensures forall token :: token in ledger ==> result[token] == ledger[token]
+{
+  forall i | 0 <= i < |trace| && trace[i].key == key
+    ensures syncRequestReplayExpired(trace[i].issuedAt, clock)
+  {
+    if !syncRequestReplayExpired(trace[i].issuedAt, clock) {
+      assert key in ledger;
+    }
+  }
+  result := rememberSyncRequest(ledger, key, issuedAt, 128);
+  var item := SyncResponseAdmission(key, issuedAt, clock);
+  syncTrace_append(trace, item, clock, lastResponse);
+  nextTrace := trace + [item];
+  syncLiveResponses_properties(nextTrace, clock, clock);
+  var live := LiveSyncResponses(nextTrace, clock);
+  forall token | token in result
+    ensures token in SyncResponseKeys(live)
+  {
+    if token == key {
+      assert item in live;
+    } else {
+      var i :| 0 <= i < |trace| && trace[i].key == token && trace[i].issuedAt == ledger[token];
+      assert trace[i] in live;
+    }
+  }
+  assert result.Keys <= SyncResponseKeys(live);
+  syncResponseKeys_count(live);
+  syncResponseWindow_bound(nextTrace, clock, clock);
+  syncResponseSubsetCard(result.Keys, SyncResponseKeys(live));
+  assert |result| == |result.Keys|;
+  assert |result| <= 46;
+}
+
+method syncResponseHistory_step(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, attempt: SyncResponseAttempt)
+  returns (candidate: map<string, int>, nextTrace: seq<SyncResponseAdmission>, nextClock: int, nextResponse: int)
+  requires SyncReplayState(ledger, trace, clock, lastResponse)
+  requires 0 <= attempt.issuedAt <= 9007199254740991 && 0 <= attempt.observed <= 9007199254740991 && 0 <= attempt.settled <= 9007199254740991
+  ensures SyncReplayState(candidate, nextTrace, nextClock, nextResponse)
+  ensures clock <= nextClock <= advanceSyncRequestClock(advanceSyncRequestClock(clock, attempt.observed), attempt.settled)
+  ensures lastResponse <= nextResponse
+  ensures |trace| <= |nextTrace| <= |trace| + 1 && nextTrace[..|trace|] == trace
+  ensures SyncAttemptReady(ledger, clock, lastResponse, attempt) ==> nextTrace == trace + [SyncResponseAdmission(attempt.key, attempt.issuedAt, advanceSyncRequestClock(clock, attempt.observed))]
+  ensures forall key :: key in ledger && !syncRequestReplayExpired(ledger[key], nextClock) ==> key in candidate && candidate[key] == ledger[key]
+{
+  var now := advanceSyncRequestClock(clock, attempt.observed);
+  nextClock, nextResponse, candidate, nextTrace := now, lastResponse, ledger, trace;
+  syncReplayState_advance(ledger, trace, clock, lastResponse, now, lastResponse);
+  var eligible := attempt.authorized && syncResponseAllowed(now, lastResponse, attempt.hasChange, attempt.changeKnown, attempt.hasSnapshot, attempt.snapshotKnown);
+  if attempt.maintainReplay || eligible {
+    candidate := syncReplayState_prune(ledger, trace, now, lastResponse);
+  }
+  if eligible && classifySyncRequestReplay(attempt.issuedAt, now, attempt.key in candidate, |candidate|, 128) == "fresh" {
+    candidate, nextTrace := syncReplayState_remember(candidate, trace, now, lastResponse, attempt.key, attempt.issuedAt);
+    nextClock := advanceSyncRequestClock(now, attempt.settled);
+    nextResponse := nextClock;
+    syncReplayState_advance(candidate, nextTrace, now, now, nextClock, nextResponse);
+  }
+}
+
+method syncResponseHistory_all_histories(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, attempts: seq<SyncResponseAttempt>)
+  returns (result: map<string, int>, admitted: seq<SyncResponseAdmission>, finalClock: int, finalResponse: int)
+  requires SyncReplayState(ledger, trace, clock, lastResponse)
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].issuedAt <= 9007199254740991 && 0 <= attempts[i].observed <= 9007199254740991 && 0 <= attempts[i].settled <= 9007199254740991
+  ensures SyncReplayState(result, admitted, finalClock, finalResponse)
+  ensures clock <= finalClock <= advanceSyncRequestClock(clock, SyncAttemptCeiling(attempts))
+  ensures lastResponse <= finalResponse
+  ensures |trace| <= |admitted| <= |trace| + |attempts| && admitted[..|trace|] == trace
+  ensures |attempts| > 0 && SyncAttemptReady(ledger, clock, lastResponse, attempts[0]) ==> |admitted| > |trace| && admitted[|trace|] == SyncResponseAdmission(attempts[0].key, attempts[0].issuedAt, advanceSyncRequestClock(clock, attempts[0].observed))
+  ensures |attempts| > 0 && SyncAttemptReady(ledger, clock, lastResponse, attempts[0]) && !syncRequestReplayExpired(attempts[0].issuedAt, finalClock) ==> attempts[0].key in result && result[attempts[0].key] == attempts[0].issuedAt
+  ensures forall key :: key in ledger && !syncRequestReplayExpired(ledger[key], finalClock) ==> key in result && result[key] == ledger[key]
+  decreases |attempts|
+{
+  if |attempts| == 0 {
+    result, admitted, finalClock, finalResponse := ledger, trace, clock, lastResponse;
+  } else {
+    var candidate, nextTrace, nextClock, nextResponse := syncResponseHistory_step(ledger, trace, clock, lastResponse, attempts[0]);
+    result, admitted, finalClock, finalResponse := syncResponseHistory_all_histories(candidate, nextTrace, nextClock, nextResponse, attempts[1..]);
+  }
+}
+
+lemma syncAttemptCeiling_bounded(attempts: seq<SyncResponseAttempt>, maximum: int)
+  requires 0 <= maximum <= 9007199254740991
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].observed <= maximum && 0 <= attempts[i].settled <= maximum
+  ensures SyncAttemptCeiling(attempts) <= maximum
+  decreases |attempts|
+{
+  if |attempts| > 0 {
+    syncAttemptCeiling_bounded(attempts[1..], maximum);
+  }
+}
+
+method syncReplay_domain()
+{
+  var empty: map<string, int> := map[];
+  assert SyncReplayState(empty, [], 0, 0);
+  var kept := pruneSyncRequestReplays(["live", "expired"], map["live" := 1, "expired" := 0], 60001);
+  assert kept == map["live" := 1];
+  assert classifySyncRequestReplay(1, 60001, true, 1, 128) == "replay";
+  assert classifySyncRequestReplay(0, 60001, false, 128, 128) == "stale";
+  assert classifySyncRequestReplay(60001, 60001, false, 128, 128) == "capacity";
+  assert advanceSyncRequestClock(60001, 2000) == 60001;
+  assert syncResponseAllowed(2000, 0, true, false, false, false);
+  assert !syncResponseAllowed(1999, 0, true, false, false, false);
+  assert !syncResponseAllowed(2000, 0, true, true, false, false);
+  assert syncResponseAllowed(2000, 0, true, true, true, false);
+  var remembered := rememberSyncRequest(empty, "first", 2000, 128);
+  assert remembered == map["first" := 2000];
+  var attempts := [
+    SyncResponseAttempt("first", 2000, 2000, 2000, true, false, true, false, false, false),
+    SyncResponseAttempt("first", 2000, 4000, 4000, true, true, true, false, false, false),
+    SyncResponseAttempt("unsigned", 4000, 4000, 4000, false, true, true, false, false, false)
+  ];
+  assert SyncAttemptReady(empty, 0, 0, attempts[0]);
+  syncAttemptCeiling_bounded(attempts, 4000);
+  var result, trace, clock, response := syncResponseHistory_all_histories(empty, [], 0, 0, attempts);
+  assert |result| <= 46 && 1 <= |trace| <= 3;
+  assert clock <= 4000;
+  assert result["first"] == 2000;
 }
