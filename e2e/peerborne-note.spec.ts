@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,9 +72,15 @@ test('preserves note text and the signing identity across reloads', async ({
   const response = await page.goto('/');
   expect(response).not.toBeNull();
   const headers = response!.headers();
-  expect(headers['content-security-policy']).toContain(
-    "connect-src 'self' wss://relay.peerborne.io",
-  );
+  const relayOrigin =
+    process.env.PEERBORNE_NOTE_RELAY_CONNECT_SOURCE ??
+    'wss://relay.peerborne.io';
+  expect(
+    headers['content-security-policy']
+      .split(';')
+      .map((value) => value.trim())
+      .find((value) => value.startsWith('connect-src ')),
+  ).toBe(`connect-src 'self' ${relayOrigin}`);
   expect(headers['referrer-policy']).toBe('no-referrer');
   expect(headers['x-content-type-options']).toBe('nosniff');
   await expect(page).toHaveTitle('Peerborne Note');
@@ -132,11 +138,14 @@ test('preserves note text and the signing identity across reloads', async ({
   expect(errors, 'application runtime errors').toEqual([]);
 });
 
-test('restores note text after Chromium closes and relaunches with the same profile', async ({
+test('restores note text after the browser closes and relaunches with the same profile', async ({
   baseURL,
+  browser,
 }) => {
   const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-restart-'));
-  let context = await chromium.launchPersistentContext(profile, { baseURL });
+  let context = await browser
+    .browserType()
+    .launchPersistentContext(profile, { baseURL });
   try {
     let page = await context.newPage();
     await page.goto('/');
@@ -151,7 +160,9 @@ test('restores note text after Chromium closes and relaunches with the same prof
     ).toBeVisible();
     const originalIdentity = await storedIdentityProfile(page);
     await context.close();
-    context = await chromium.launchPersistentContext(profile, { baseURL });
+    context = await browser
+      .browserType()
+      .launchPersistentContext(profile, { baseURL });
     page = await context.newPage();
     await page.goto('/');
     await page

@@ -4,8 +4,11 @@ description: Scope and acceptance boundaries for frontend and CRDT integrations.
 ---
 
 Peerborne remains alpha software. The new integrations are source workspaces;
-they are not published to npm. Local mutation tests and isolated provider tests
-do not establish end-to-end peer convergence, durable recovery, or production readiness.
+they are not published to npm. Release acceptance also installs exact tarballs
+in a clean npm project and runs the framework-free, framework, editor and SSR
+examples against those packages. This establishes their named local browser
+flows. Note has a separate bounded multi-peer/recovery gate; its results do not
+establish those behaviors for every integration or production readiness.
 
 | Integration | Current scope | Remaining acceptance |
 | --- | --- | --- |
