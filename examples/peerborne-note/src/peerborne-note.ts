@@ -543,11 +543,6 @@ export class PeerborneNoteSession {
             errorType = event.errorType;
           },
         });
-      await waitForCircuitAddress(
-        this.peerborne,
-        this.relayMultiaddr!,
-        controller.signal,
-      );
       if (!this.sharingActive) return;
       await this.requireDocument().requestSync();
       this.sharingFailed = false;

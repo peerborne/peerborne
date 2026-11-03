@@ -183,3 +183,62 @@ test('installed packages preserve an acknowledged local checkpoint after a Chrom
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test('saved notes catch up when the relay has no reservation slot for the returning peer', async ({
+  browser,
+  request,
+  baseURL,
+}) => {
+  test.skip(
+    Boolean(process.env.PEERBORNE_RELEASE_RELAY_MULTIADDR),
+    'Reservation limits require the owned local relay',
+  );
+  const { ports } = JSON.parse(
+    await readFile(process.env.PEERBORNE_RELEASE_CONFIGURATION!, 'utf8'),
+  );
+  const control = `http://127.0.0.1:${ports.control}`;
+  const profile = await mkdtemp(
+    join(tmpdir(), 'peerborne-reservation-recovery-'),
+  );
+  const founderContext = await browser.newContext({ baseURL });
+  let recipientContext: BrowserContext | undefined;
+  try {
+    expect((await request.post(`${control}/relay/reservations/one`)).ok()).toBe(
+      true,
+    );
+    recipientContext = await browser
+      .browserType()
+      .launchPersistentContext(profile, { baseURL });
+    const founder = await founderContext.newPage();
+    let recipient = await recipientContext.newPage();
+    await sharedEditors(founder, recipient);
+    await savedEdit(recipient, 'Bidirectional sharing with one reservation\n');
+    await expect(
+      founder.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue('Bidirectional sharing with one reservation\n');
+    await recipientContext.close();
+    await savedEdit(founder, 'Missed while the recipient was closed\n');
+    recipientContext = await browser
+      .browserType()
+      .launchPersistentContext(profile, { baseURL });
+    recipient = await recipientContext.newPage();
+    await openSaved(recipient);
+    await expect(
+      recipient.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue('Missed while the recipient was closed\n');
+    await savedEdit(
+      recipient,
+      'Fresh edit after recovery without a reservation\n',
+    );
+    await expect(
+      founder.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue('Fresh edit after recovery without a reservation\n');
+  } finally {
+    await recipientContext?.close().catch(() => undefined);
+    await founderContext.close();
+    await rm(profile, { recursive: true, force: true });
+    expect(
+      (await request.post(`${control}/relay/reservations/reset`)).ok(),
+    ).toBe(true);
+  }
+});
