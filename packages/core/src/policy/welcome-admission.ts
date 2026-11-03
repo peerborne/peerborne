@@ -319,3 +319,78 @@ export function trimPendingWelcomes(
   }
   return { kept, evictedKeys, retainedBytes: remainingBytes };
 }
+
+export function advancePendingWelcomeClock(
+  previous: number,
+  now: number,
+): number {
+  //@ verify
+  //@ requires 0 <= previous && previous <= 9007199254740991
+  //@ requires 0 <= now && now <= 9007199254740991
+  //@ ensures \result === (previous >= now ? previous : now)
+  //@ ensures previous <= \result && now <= \result && \result <= 9007199254740991
+  return previous >= now ? previous : now;
+}
+
+export function isPendingWelcomeExpired(
+  bufferedAtMs: number,
+  now: number,
+  ttl: number,
+): boolean {
+  //@ verify
+  //@ requires 0 <= bufferedAtMs && bufferedAtMs <= 9007199254740991
+  //@ requires 0 <= now && now <= 9007199254740991
+  //@ requires 0 <= ttl && ttl <= 9007199254740991
+  //@ ensures \result <==> now - bufferedAtMs > ttl
+  //@ ensures \result ==> bufferedAtMs < now
+  return now - bufferedAtMs > ttl;
+}
+
+export interface PendingWelcomeExpiry {
+  readonly kept: readonly PendingWelcomeMetadata[];
+  readonly expiredKeys: readonly string[];
+  readonly retainedBytes: number;
+}
+
+export function planPendingWelcomeExpiry(
+  entries: readonly PendingWelcomeMetadata[],
+  bufferedAtMs: readonly number[],
+  now: number,
+  ttl: number,
+): PendingWelcomeExpiry {
+  //@ verify
+  //@ requires entries.length <= 16 && bufferedAtMs.length === entries.length
+  //@ requires forall(i: int, 0 <= i && i < entries.length ==> 1 <= entries[i].bytes && entries[i].bytes <= 10485760 && 0 <= bufferedAtMs[i] && bufferedAtMs[i] <= 9007199254740991)
+  //@ requires forall(i: int, forall(j: int, 0 <= i && i < j && j < entries.length ==> entries[i].key !== entries[j].key))
+  //@ requires 0 <= now && now <= 9007199254740991
+  //@ requires 0 <= ttl && ttl <= 9007199254740991
+  //@ ensures \result.kept.length + \result.expiredKeys.length === entries.length
+  //@ ensures 0 <= \result.retainedBytes && \result.retainedBytes <= \result.kept.length * 10485760
+  //@ ensures forall(i: int, 0 <= i && i < \result.kept.length ==> entries.includes(\result.kept[i]))
+  //@ ensures forall(i: int, 0 <= i && i < entries.length ==> (\result.kept.includes(entries[i]) <==> !isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+  //@ ensures forall(i: int, 0 <= i && i < entries.length ==> (\result.expiredKeys.includes(entries[i].key) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+  //@ ensures forall(key: string, \result.expiredKeys.includes(key) ==> exists(j: int, 0 <= j && j < entries.length && entries[j].key === key && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+  //@ ensures forall(i: int, forall(j: int, 0 <= i && i < j && j < \result.kept.length ==> \result.kept[i].key !== \result.kept[j].key))
+  const kept: PendingWelcomeMetadata[] = [];
+  const expiredKeys: string[] = [];
+  let retainedBytes = 0;
+  for (let index = 0; index < entries.length; index++) {
+    //@ invariant 0 <= index && index <= entries.length
+    //@ invariant kept.length + expiredKeys.length === index
+    //@ invariant 0 <= retainedBytes && retainedBytes <= kept.length * 10485760
+    //@ invariant forall(i: int, 0 <= i && i < kept.length ==> exists(j: int, 0 <= j && j < index && entries[j] === kept[i]))
+    //@ invariant forall(i: int, 0 <= i && i < index ==> (kept.includes(entries[i]) <==> !isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+    //@ invariant forall(i: int, 0 <= i && i < index ==> (expiredKeys.includes(entries[i].key) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+    //@ invariant forall(key: string, expiredKeys.includes(key) ==> exists(j: int, 0 <= j && j < index && entries[j].key === key && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+    //@ invariant forall(i: int, forall(j: int, 0 <= i && i < j && j < kept.length ==> kept[i].key !== kept[j].key))
+    //@ decreases entries.length - index
+    const entry = entries[index];
+    if (isPendingWelcomeExpired(bufferedAtMs[index], now, ttl)) {
+      expiredKeys.push(entry.key);
+    } else {
+      kept.push(entry);
+      retainedBytes += entry.bytes;
+    }
+  }
+  return { kept, expiredKeys, retainedBytes };
+}

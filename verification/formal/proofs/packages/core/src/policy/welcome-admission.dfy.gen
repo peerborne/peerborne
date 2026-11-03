@@ -11,6 +11,8 @@ datatype PendingWelcomeRemoval = PendingWelcomeRemoval(kept: seq<PendingWelcomeM
 
 datatype PendingWelcomePressure = PendingWelcomePressure(kept: seq<PendingWelcomeMetadata>, evictedKeys: seq<string>, retainedBytes: int)
 
+datatype PendingWelcomeExpiry = PendingWelcomeExpiry(kept: seq<PendingWelcomeMetadata>, expiredKeys: seq<string>, retainedBytes: int)
+
 function canAdmitPendingWelcome(existing: bool, authenticated: bool, protectedCount: int, protectedBytes: int, incomingBytes: int, maximumEntries: int, maximumBytes: int): bool
   requires (0 <= protectedCount)
   requires (protectedCount <= 16)
@@ -38,6 +40,53 @@ lemma canAdmitPendingWelcome_ensures(existing: bool, authenticated: bool, protec
   requires (incomingBytes <= maximumBytes)
   requires (maximumBytes <= 20971520)
   ensures (canAdmitPendingWelcome(existing, authenticated, protectedCount, protectedBytes, incomingBytes, maximumEntries, maximumBytes) <==> ((!(existing) || authenticated) && (authenticated || ((protectedCount < maximumEntries) && (protectedBytes <= (maximumBytes - incomingBytes))))))
+{
+}
+
+function advancePendingWelcomeClock(previous: int, now: int): int
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+{
+  if (previous >= now) then
+    previous
+  else
+    now
+}
+
+lemma advancePendingWelcomeClock_ensures(previous: int, now: int)
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  ensures (advancePendingWelcomeClock(previous, now) == (if (previous >= now) then previous else now))
+  ensures (previous <= advancePendingWelcomeClock(previous, now))
+  ensures (now <= advancePendingWelcomeClock(previous, now))
+  ensures (advancePendingWelcomeClock(previous, now) <= 9007199254740991)
+{
+}
+
+function isPendingWelcomeExpired(bufferedAtMs: int, now: int, ttl: int): bool
+  requires (0 <= bufferedAtMs)
+  requires (bufferedAtMs <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+{
+  ((now - bufferedAtMs) > ttl)
+}
+
+lemma isPendingWelcomeExpired_ensures(bufferedAtMs: int, now: int, ttl: int)
+  requires (0 <= bufferedAtMs)
+  requires (bufferedAtMs <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+  ensures (isPendingWelcomeExpired(bufferedAtMs, now, ttl) <==> ((now - bufferedAtMs) > ttl))
+  ensures (isPendingWelcomeExpired(bufferedAtMs, now, ttl) ==> (bufferedAtMs < now))
 {
 }
 
@@ -263,4 +312,52 @@ method trimPendingWelcomes(entries: seq<PendingWelcomeMetadata>, incomingBytes: 
     index := (index + 1);
   }
   return PendingWelcomePressure(kept, evictedKeys, remainingBytes);
+}
+
+method planPendingWelcomeExpiry(entries: seq<PendingWelcomeMetadata>, bufferedAtMs: seq<int>, now: int, ttl: int) returns (res: PendingWelcomeExpiry)
+  requires (|entries| <= 16)
+  requires (|bufferedAtMs| == |entries|)
+  requires forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((((1 <= entries[i].bytes) && (entries[i].bytes <= 10485760)) && (0 <= bufferedAtMs[i])) && (bufferedAtMs[i] <= 9007199254740991)))
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |entries|) ==> (entries[i].key != entries[j].key))
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+  ensures ((|res.kept| + |res.expiredKeys|) == |entries|)
+  ensures (0 <= res.retainedBytes)
+  ensures (res.retainedBytes <= (|res.kept| * 10485760))
+  ensures forall i: int :: ((0 <= i) ==> (i < |res.kept|) ==> (res.kept[i] in entries))
+  ensures forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((entries[i] in res.kept) <==> !(isPendingWelcomeExpired(bufferedAtMs[i], now, ttl))))
+  ensures forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((entries[i].key in res.expiredKeys) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+  ensures forall key :: ((key in res.expiredKeys) ==> exists j: int :: ((((0 <= j) && (j < |entries|)) && (entries[j].key == key)) && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+  ensures forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |res.kept|) ==> (res.kept[i].key != res.kept[j].key))
+{
+  var kept: seq<PendingWelcomeMetadata> := [];
+  var expiredKeys: seq<string> := [];
+  var retainedBytes := 0;
+  var index := 0;
+  while (index < |entries|)
+    invariant (0 <= index)
+    invariant (index <= |entries|)
+    invariant ((|kept| + |expiredKeys|) == index)
+    invariant (0 <= retainedBytes)
+    invariant (retainedBytes <= (|kept| * 10485760))
+    invariant forall i: int :: ((0 <= i) ==> (i < |kept|) ==> exists j: int :: (((0 <= j) && (j < index)) && (entries[j] == kept[i])))
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((entries[i] in kept) <==> !(isPendingWelcomeExpired(bufferedAtMs[i], now, ttl))))
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((entries[i].key in expiredKeys) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+    invariant forall key :: ((key in expiredKeys) ==> exists j: int :: ((((0 <= j) && (j < index)) && (entries[j].key == key)) && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+    invariant forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |kept|) ==> (kept[i].key != kept[j].key))
+    decreases (|entries| - index)
+  {
+    var entry := entries[index];
+    var i_t6 := isPendingWelcomeExpired(bufferedAtMs[index], now, ttl);
+    if i_t6 {
+      expiredKeys := (expiredKeys + [entry.key]);
+    } else {
+      kept := (kept + [entry]);
+      retainedBytes := (retainedBytes + entry.bytes);
+    }
+    index := (index + 1);
+  }
+  return PendingWelcomeExpiry(kept, expiredKeys, retainedBytes);
 }

@@ -11,6 +11,8 @@ datatype PendingWelcomeRemoval = PendingWelcomeRemoval(kept: seq<PendingWelcomeM
 
 datatype PendingWelcomePressure = PendingWelcomePressure(kept: seq<PendingWelcomeMetadata>, evictedKeys: seq<string>, retainedBytes: int)
 
+datatype PendingWelcomeExpiry = PendingWelcomeExpiry(kept: seq<PendingWelcomeMetadata>, expiredKeys: seq<string>, retainedBytes: int)
+
 function canAdmitPendingWelcome(existing: bool, authenticated: bool, protectedCount: int, protectedBytes: int, incomingBytes: int, maximumEntries: int, maximumBytes: int): bool
   requires (0 <= protectedCount)
   requires (protectedCount <= 16)
@@ -38,6 +40,53 @@ lemma canAdmitPendingWelcome_ensures(existing: bool, authenticated: bool, protec
   requires (incomingBytes <= maximumBytes)
   requires (maximumBytes <= 20971520)
   ensures (canAdmitPendingWelcome(existing, authenticated, protectedCount, protectedBytes, incomingBytes, maximumEntries, maximumBytes) <==> ((!(existing) || authenticated) && (authenticated || ((protectedCount < maximumEntries) && (protectedBytes <= (maximumBytes - incomingBytes))))))
+{
+}
+
+function advancePendingWelcomeClock(previous: int, now: int): int
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+{
+  if (previous >= now) then
+    previous
+  else
+    now
+}
+
+lemma advancePendingWelcomeClock_ensures(previous: int, now: int)
+  requires (0 <= previous)
+  requires (previous <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  ensures (advancePendingWelcomeClock(previous, now) == (if (previous >= now) then previous else now))
+  ensures (previous <= advancePendingWelcomeClock(previous, now))
+  ensures (now <= advancePendingWelcomeClock(previous, now))
+  ensures (advancePendingWelcomeClock(previous, now) <= 9007199254740991)
+{
+}
+
+function isPendingWelcomeExpired(bufferedAtMs: int, now: int, ttl: int): bool
+  requires (0 <= bufferedAtMs)
+  requires (bufferedAtMs <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+{
+  ((now - bufferedAtMs) > ttl)
+}
+
+lemma isPendingWelcomeExpired_ensures(bufferedAtMs: int, now: int, ttl: int)
+  requires (0 <= bufferedAtMs)
+  requires (bufferedAtMs <= 9007199254740991)
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+  ensures (isPendingWelcomeExpired(bufferedAtMs, now, ttl) <==> ((now - bufferedAtMs) > ttl))
+  ensures (isPendingWelcomeExpired(bufferedAtMs, now, ttl) ==> (bufferedAtMs < now))
 {
 }
 
@@ -189,6 +238,7 @@ method planPendingWelcomeRemoval(entries: seq<PendingWelcomeMetadata>, key: stri
   var retainedBytes := 0;
   var removed := false;
   var index := 0;
+  assert entries[..0] == [] && WelcomeWithout(entries[..0], key) == [];
   while (index < |entries|)
     invariant (0 <= index)
     invariant (index <= |entries|)
@@ -211,6 +261,9 @@ method planPendingWelcomeRemoval(entries: seq<PendingWelcomeMetadata>, key: stri
     welcomeKey_prefix(entries, key, index);
     welcomeWithout_append(entries[..index], entries[index], key);
     welcomeMeasures_concat(kept, [entries[index]]);
+    ghost var previousKept := kept;
+    ghost var nextKept := WelcomeWithout(entries[..index+1], key);
+    assert nextKept == (if entries[index].key == key then previousKept else previousKept + [entries[index]]);
     var entry := entries[index];
     if (entry.key == key) {
       removed := true;
@@ -221,6 +274,7 @@ method planPendingWelcomeRemoval(entries: seq<PendingWelcomeMetadata>, key: stri
       kept := (kept + [entry]);
       retainedBytes := (retainedBytes + entry.bytes);
     }
+    assert kept == nextKept;
     assert kept == WelcomeWithout(entries[..index+1], key);
     assert retainedBytes == WelcomeTotal(kept);
     index := (index + 1);
@@ -361,6 +415,95 @@ method trimPendingWelcomes(entries: seq<PendingWelcomeMetadata>, incomingBytes: 
   return PendingWelcomePressure(kept, evictedKeys, remainingBytes);
 }
 
+@IsolateAssertions
+method planPendingWelcomeExpiry(entries: seq<PendingWelcomeMetadata>, bufferedAtMs: seq<int>, now: int, ttl: int) returns (res: PendingWelcomeExpiry)
+  requires (|entries| <= 16)
+  requires (|bufferedAtMs| == |entries|)
+  requires forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((((1 <= entries[i].bytes) && (entries[i].bytes <= 10485760)) && (0 <= bufferedAtMs[i])) && (bufferedAtMs[i] <= 9007199254740991)))
+  requires forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |entries|) ==> (entries[i].key != entries[j].key))
+  requires (0 <= now)
+  requires (now <= 9007199254740991)
+  requires (0 <= ttl)
+  requires (ttl <= 9007199254740991)
+  ensures ((|res.kept| + |res.expiredKeys|) == |entries|)
+  ensures (0 <= res.retainedBytes)
+  ensures (res.retainedBytes <= (|res.kept| * 10485760))
+  ensures forall i: int :: ((0 <= i) ==> (i < |res.kept|) ==> (res.kept[i] in entries))
+  ensures forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((entries[i] in res.kept) <==> !(isPendingWelcomeExpired(bufferedAtMs[i], now, ttl))))
+  ensures forall i: int :: ((0 <= i) ==> (i < |entries|) ==> ((entries[i].key in res.expiredKeys) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+  ensures forall key :: ((key in res.expiredKeys) ==> exists j: int :: ((((0 <= j) && (j < |entries|)) && (entries[j].key == key)) && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+  ensures forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |res.kept|) ==> (res.kept[i].key != res.kept[j].key))
+  ensures WelcomeShape(res.kept)
+  ensures res.retainedBytes == WelcomeTotal(res.kept)
+  ensures res.retainedBytes <= WelcomeTotal(entries)
+{
+  var kept: seq<PendingWelcomeMetadata> := [];
+  var expiredKeys: seq<string> := [];
+  var retainedBytes := 0;
+  var index := 0;
+  assert WelcomeShape(entries);
+  while (index < |entries|)
+    invariant (0 <= index)
+    invariant (index <= |entries|)
+    invariant ((|kept| + |expiredKeys|) == index)
+    invariant (0 <= retainedBytes)
+    invariant (retainedBytes <= (|kept| * 10485760))
+    invariant forall i: int :: ((0 <= i) ==> (i < |kept|) ==> exists j: int :: (((0 <= j) && (j < index)) && (entries[j] == kept[i])))
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((entries[i] in kept) <==> !(isPendingWelcomeExpired(bufferedAtMs[i], now, ttl))))
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> ((entries[i].key in expiredKeys) <==> isPendingWelcomeExpired(bufferedAtMs[i], now, ttl)))
+    invariant forall key :: ((key in expiredKeys) ==> exists j: int :: ((((0 <= j) && (j < index)) && (entries[j].key == key)) && isPendingWelcomeExpired(bufferedAtMs[j], now, ttl)))
+    invariant forall i: int, j: int :: ((0 <= i) ==> (i < j) ==> (j < |kept|) ==> (kept[i].key != kept[j].key))
+    invariant WelcomeShape(kept)
+    invariant retainedBytes == WelcomeTotal(kept)
+    invariant retainedBytes <= WelcomeTotal(entries[..index])
+    decreases (|entries| - index)
+  {
+    welcomeShape_slice(entries, 0, index);
+    welcomeFreshKey(entries, index);
+    welcomePrefix_append(entries, index);
+    welcomeMeasures_concat(kept, [entries[index]]);
+    welcomeMeasures_concat(entries[..index], [entries[index]]);
+    ghost var previousExpired := expiredKeys;
+    var entry := entries[index];
+    var i_t6 := isPendingWelcomeExpired(bufferedAtMs[index], now, ttl);
+    if i_t6 {
+      expiredKeys := (expiredKeys + [entry.key]);
+      assert isPendingWelcomeExpired(bufferedAtMs[index], now, ttl);
+    } else {
+      assert !isPendingWelcomeExpired(bufferedAtMs[index], now, ttl);
+      assert forall prior :: prior in kept ==> prior.key != entry.key;
+      welcomeShape_append(kept, entry);
+      kept := (kept + [entry]);
+      retainedBytes := (retainedBytes + entry.bytes);
+    }
+    forall key | key in expiredKeys
+      ensures exists prior :: 0 <= prior < index + 1 && entries[prior].key == key && isPendingWelcomeExpired(bufferedAtMs[prior], now, ttl)
+    {
+      if key in previousExpired {
+        var prior :| 0 <= prior < index && entries[prior].key == key && isPendingWelcomeExpired(bufferedAtMs[prior], now, ttl);
+        assert prior < index + 1;
+      } else {
+        assert key == entry.key;
+        assert isPendingWelcomeExpired(bufferedAtMs[index], now, ttl);
+      }
+    }
+    assert retainedBytes == WelcomeTotal(kept);
+    assert retainedBytes <= WelcomeTotal(entries[..index+1]);
+    index := (index + 1);
+  }
+  assert index == |entries| && entries[..index] == entries;
+  ghost var expected := PendingWelcomeExpiry(kept, expiredKeys, retainedBytes);
+  assert expected.expiredKeys == expiredKeys;
+  forall key | key in expected.expiredKeys
+    ensures exists prior :: 0 <= prior < |entries| && entries[prior].key == key && isPendingWelcomeExpired(bufferedAtMs[prior], now, ttl)
+  {
+    assert key in expiredKeys;
+    var prior :| 0 <= prior < index && entries[prior].key == key && isPendingWelcomeExpired(bufferedAtMs[prior], now, ttl);
+    assert 0 <= prior < |entries|;
+  }
+  return PendingWelcomeExpiry(kept, expiredKeys, retainedBytes);
+}
+
 function WelcomeTotal(entries: seq<PendingWelcomeMetadata>): int
   decreases |entries|
 {
@@ -484,9 +627,9 @@ lemma welcomeWithout_facts(entries: seq<PendingWelcomeMetadata>, key: string)
   if |entries| > 0 {
     var prefix := entries[..|entries|-1];
     var last := entries[|entries|-1];
+    assert entries == prefix + [last];
     welcomeShape_slice(entries, 0, |entries|-1);
     welcomeWithout_facts(prefix, key);
-    assert entries == prefix + [last];
     if last.key == key {
       assert forall entry :: entry in prefix ==> entry.key != key;
       assert WelcomePreviousBytes(prefix, key) == 0;
@@ -608,6 +751,9 @@ method welcomeState_step<Value(==)>(ledger: WelcomeLedger<Value>, action: Welcom
   ensures action.prepared && !action.store ==> (forall key :: key in result.values ==> result.values[key] == ledger.values[key])
   ensures forall entry :: entry in ledger.entries && entry.authenticated && WelcomePreserves(action, entry.key) ==> entry in result.entries && entry.key in result.values && result.values[entry.key] == ledger.values[entry.key]
   ensures forall entry :: entry in result.entries && entry.authenticated ==> WelcomeTrustedOrigin(ledger, [action], entry, result.values[entry.key])
+  ensures forall entry :: entry in result.entries ==> entry in ledger.entries || (stored && entry.key == action.key)
+  ensures forall key :: key in result.values && (!stored || key != action.key) ==> key in ledger.values && result.values[key] == ledger.values[key]
+
 {
   result, stored := ledger, false;
   if action.prepared {
@@ -708,6 +854,7 @@ lemma welcomeHeader_monotone(existing: bool, protectedCount: int, protectedBytes
 @IsolateAssertions
 method welcomeAdmission_domain()
 {
+  welcomeTimed_domain();
   welcomeFresh_domain();
   welcomeRetention_domain();
   welcomeProtected_domain();
@@ -760,4 +907,150 @@ method welcomeRemoval_domain()
   assert WelcomeState(initial, 2, 4);
   var removed, removedStored := welcomeState_step(initial, WelcomeAction(false, "trusted", 0, false, true, 0), 2, 4);
   assert !removedStored && "trusted" !in removed.values && removed.values["fresh"] == 30;
+}
+
+datatype WelcomeTimedLedger<Value> = WelcomeTimedLedger(base: WelcomeLedger<Value>, times: map<string, int>, clock: int)
+datatype WelcomeTimedAction<Value> = WelcomeTimedAction(expire: bool, now: int, change: WelcomeAction<Value>)
+
+predicate WelcomeTimedState<Value>(ledger: WelcomeTimedLedger<Value>, maximumEntries: int, maximumBytes: int)
+{
+  WelcomeState(ledger.base, maximumEntries, maximumBytes) &&
+  0 <= ledger.clock <= 9007199254740991 &&
+  ledger.times.Keys == ledger.base.values.Keys &&
+  (forall key :: key in ledger.times ==> 0 <= ledger.times[key] <= ledger.clock)
+}
+
+predicate WelcomeTimedActionValid<Value>(action: WelcomeTimedAction<Value>, maximumBytes: int)
+{
+  0 <= action.now <= 9007199254740991 &&
+  (action.expire || WelcomeActionValid(action.change, maximumBytes))
+}
+
+function WelcomeTimes(entries: seq<PendingWelcomeMetadata>, times: map<string, int>): seq<int>
+  requires forall entry :: entry in entries ==> entry.key in times
+  ensures |WelcomeTimes(entries, times)| == |entries|
+  ensures forall index :: 0 <= index < |entries| ==> WelcomeTimes(entries, times)[index] == times[entries[index].key]
+{
+  seq(|entries|, index requires 0 <= index < |entries| => times[entries[index].key])
+}
+
+@IsolateAssertions
+method welcomeTimed_step<Value(==)>(ledger: WelcomeTimedLedger<Value>, action: WelcomeTimedAction<Value>, maximumEntries: int, maximumBytes: int)
+  returns (result: WelcomeTimedLedger<Value>, stored: bool)
+  requires WelcomeTimedState(ledger, maximumEntries, maximumBytes)
+  requires WelcomeTimedActionValid(action, maximumBytes)
+  ensures WelcomeTimedState(result, maximumEntries, maximumBytes)
+  ensures ledger.clock <= result.clock
+  ensures result.clock == ledger.clock || (action.change.prepared && (action.expire || action.change.store) && result.clock == action.now)
+  ensures !action.change.prepared ==> result == ledger && !stored
+  ensures !action.expire && action.change.store && !stored ==> result == ledger
+  ensures action.expire ==> !stored
+  ensures stored <==> !action.expire && action.change.prepared && action.change.store && (WelcomePreviousBytes(ledger.base.entries, action.change.key) == 0 || action.change.authenticated) && (action.change.authenticated || (WelcomeProtectedCount(ledger.base.entries) < maximumEntries && WelcomeProtectedBytes(ledger.base.entries) <= maximumBytes - action.change.bytes))
+  ensures stored ==> action.change.key in result.times && result.times[action.change.key] == result.clock && action.now <= result.clock
+  ensures action.expire && action.change.prepared ==> action.now <= result.clock
+  ensures action.expire && action.change.prepared ==> (forall key :: key in result.times <==> key in ledger.times && result.clock - ledger.times[key] <= 300000)
+  ensures forall key :: key in result.times && (!stored || key != action.change.key) ==> key in ledger.times && result.times[key] == ledger.times[key] && result.base.values[key] == ledger.base.values[key]
+  ensures forall entry :: entry in result.base.entries ==> entry in ledger.base.entries || (stored && entry.key == action.change.key)
+{
+  result, stored := ledger, false;
+  if action.change.prepared {
+    if action.expire {
+      var observed := advancePendingWelcomeClock(ledger.clock, action.now);
+      var times := WelcomeTimes(ledger.base.entries, ledger.times);
+      var plan := planPendingWelcomeExpiry(ledger.base.entries, times, observed, 300000);
+      var retained := retainPendingWelcomeValues(ledger.base.values, plan.kept);
+      var ages := retainPendingWelcomeValues(ledger.times, plan.kept);
+      var base := WelcomeLedger(plan.kept, retained, plan.retainedBytes);
+      result := WelcomeTimedLedger(base, ages, observed);
+      forall key | key in ages
+        ensures key in ledger.times && ages[key] == ledger.times[key] && retained[key] == ledger.base.values[key]
+      {
+      }
+      forall key
+        ensures key in ages <==> key in ledger.times && observed - ledger.times[key] <= 300000
+      {
+        if key in ages {
+          var index :| 0 <= index < |plan.kept| && plan.kept[index].key == key;
+          var source :| 0 <= source < |ledger.base.entries| && ledger.base.entries[source] == plan.kept[index];
+          assert ledger.base.entries[source] in plan.kept;
+        } else if key in ledger.times && observed - ledger.times[key] <= 300000 {
+          var source :| 0 <= source < |ledger.base.entries| && ledger.base.entries[source].key == key;
+          assert !isPendingWelcomeExpired(times[source], observed, 300000);
+          assert ledger.base.entries[source] in plan.kept;
+        }
+      }
+      assert ages.Keys == retained.Keys;
+      assert WelcomeState(base, maximumEntries, maximumBytes);
+      assert WelcomeTimedState(result, maximumEntries, maximumBytes);
+    } else {
+      var base, accepted := welcomeState_step(ledger.base, action.change, maximumEntries, maximumBytes);
+      stored := accepted;
+      if stored {
+        var observed := advancePendingWelcomeClock(ledger.clock, action.now);
+        var without := planPendingWelcomeRemoval(base.entries, action.change.key);
+        assert forall entry :: entry in without.kept ==> entry in ledger.base.entries && entry.key in ledger.times;
+        var ages := retainPendingWelcomeValues(ledger.times, without.kept);
+        var installed := insertPendingWelcomeValue(ages, action.change.key, observed);
+        result := WelcomeTimedLedger(base, installed, observed);
+        assert installed.Keys == base.values.Keys;
+        forall key | key in installed && key != action.change.key
+          ensures key in ledger.times && installed[key] == ledger.times[key] && base.values[key] == ledger.base.values[key]
+        {
+          assert key in ages && key in ledger.base.values;
+        }
+        assert WelcomeTimedState(result, maximumEntries, maximumBytes);
+      } else if action.change.store {
+        assert base == ledger.base;
+      } else {
+        var ages := retainPendingWelcomeValues(ledger.times, base.entries);
+        result := WelcomeTimedLedger(base, ages, ledger.clock);
+        assert ages.Keys == base.values.Keys;
+        assert WelcomeTimedState(result, maximumEntries, maximumBytes);
+      }
+    }
+  }
+}
+
+@IsolateAssertions
+method welcomeTimed_all_histories<Value(==)>(ledger: WelcomeTimedLedger<Value>, actions: seq<WelcomeTimedAction<Value>>, maximumEntries: int, maximumBytes: int)
+  returns (result: WelcomeTimedLedger<Value>)
+  requires WelcomeTimedState(ledger, maximumEntries, maximumBytes)
+  requires forall index :: 0 <= index < |actions| ==> WelcomeTimedActionValid(actions[index], maximumBytes)
+  ensures WelcomeTimedState(result, maximumEntries, maximumBytes)
+  ensures ledger.clock <= result.clock
+  ensures result.clock == ledger.clock || (exists index :: 0 <= index < |actions| && actions[index].change.prepared && (actions[index].expire || actions[index].change.store) && result.clock == actions[index].now)
+  ensures (forall index :: 0 <= index < |actions| ==> !actions[index].change.prepared) ==> result == ledger
+  decreases |actions|
+{
+  if |actions| == 0 {
+    result := ledger;
+  } else {
+    var next, stored := welcomeTimed_step(ledger, actions[0], maximumEntries, maximumBytes);
+    result := welcomeTimed_all_histories(next, actions[1..], maximumEntries, maximumBytes);
+  }
+}
+
+@IsolateAssertions
+method welcomeTimed_domain()
+{
+  var empty: WelcomeTimedLedger<int> := WelcomeTimedLedger(WelcomeLedger([], map[], 0), map[], 0);
+  assert WelcomeTimedState(empty, 2, 4);
+  var first, firstStored := welcomeTimed_step(empty, WelcomeTimedAction(false, 100, WelcomeAction(true, "old", 1, true, true, 10)), 2, 4);
+  assert firstStored && first.times["old"] == 100;
+  var boundary, boundaryStored := welcomeTimed_step(first, WelcomeTimedAction(true, 300100, WelcomeAction(false, "", 0, false, true, 0)), 2, 4);
+  assert !boundaryStored && "old" in boundary.times && boundary.clock == 300100;
+  var backward, backwardStored := welcomeTimed_step(boundary, WelcomeTimedAction(false, 0, WelcomeAction(true, "fresh", 1, true, true, 20)), 2, 4);
+  assert backwardStored && backward.times["fresh"] == 300100;
+  var expired, expiredStored := welcomeTimed_step(backward, WelcomeTimedAction(true, 300101, WelcomeAction(false, "", 0, false, true, 0)), 2, 4);
+  assert !expiredStored && "old" !in expired.times && "fresh" in expired.times;
+  var failed, failedStored := welcomeTimed_step(expired, WelcomeTimedAction(true, 9007199254740991, WelcomeAction(false, "", 0, false, false, 0)), 2, 4);
+  assert !failedStored && failed == expired;
+  var actions := [
+    WelcomeTimedAction(false, 100, WelcomeAction(true, "old", 1, true, true, 10)),
+    WelcomeTimedAction(true, 300101, WelcomeAction(false, "", 0, false, true, 0))
+  ];
+  var history := welcomeTimed_all_histories(empty, actions, 2, 4);
+  assert WelcomeTimedState(history, 2, 4);
+  assert !isPendingWelcomeExpired(9007199254440991, 9007199254740991, 300000);
+  assert isPendingWelcomeExpired(9007199254440990, 9007199254740991, 300000);
 }

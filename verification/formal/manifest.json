@@ -145,7 +145,10 @@
         "planPendingWelcomeRemoval",
         "retainPendingWelcomeValues",
         "insertPendingWelcomeValue",
-        "trimPendingWelcomes"
+        "trimPendingWelcomes",
+        "advancePendingWelcomeClock",
+        "isPendingWelcomeExpired",
+        "planPendingWelcomeExpiry"
       ],
       "witness": "welcomeAdmission_domain",
       "consumers": ["packages/core/src/pending-welcome-buffer.ts"],
@@ -160,7 +163,13 @@
         "welcomeState_step",
         "welcomeState_all_histories",
         "welcomeProtected_all_histories",
-        "welcomeHeader_monotone"
+        "welcomeHeader_monotone",
+        "advancePendingWelcomeClock_ensures",
+        "isPendingWelcomeExpired_ensures",
+        "planPendingWelcomeExpiry",
+        "welcomeTimed_step",
+        "welcomeTimed_all_histories",
+        "welcomeTimed_domain"
       ],
       "solverSeeds": [1, 2, 7, 19]
     },

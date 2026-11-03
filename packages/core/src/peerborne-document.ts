@@ -103,7 +103,6 @@ import {
   PendingWelcomeBuffer,
   PendingWelcomeBodyLimitError,
   PENDING_WELCOME_MAX_BODY_BYTES,
-  PENDING_WELCOMES_TTL_MS,
 } from './pending-welcome-buffer.js';
 import {
   snapshotKemKeyPair,
@@ -1020,15 +1019,9 @@ export class PeerborneDocument<
   //    retains at most 20 MiB total, so that ceiling cannot be multiplied
   //    by the entry count;
   //  - `PENDING_WELCOMES_MAX_ENTRIES` (16) separately bounds bookkeeping;
-  //    the oldest unauthenticated entry, then the oldest entry, is evicted
-  //    when either bound is reached;
-  //  - `PENDING_WELCOMES_TTL_MS` (5 min): caps how long any Welcome
-  //    sits unresolved. Entries past their TTL are discarded on the
-  //    next drain attempt. Five minutes is well above the worst-case
-  //    GossipSub mesh propagation we observe in `e2e/integration/`
-  //    (~10s through a relay) while remaining short enough that stale
-  //    Welcomes don't linger indefinitely after a legitimate
-  //    re-invite.
+  //    only authenticated arrivals may evict authenticated entries;
+  //  - `PENDING_WELCOMES_TTL_MS` (5 min): the next drain prunes entries
+  //    whose observed age exceeds this limit before copying their bodies.
   //
   // The key is the lower-case hex encoding of `welcomeEpochId` (a
   // `Uint8Array`), chosen so the buffer's identity matches the
@@ -10226,9 +10219,8 @@ export class PeerborneDocument<
    * Replay buffered BeeKEM Welcomes whose recipient is now in the
    * readers ACL. Called after every readers-ACL `merge` so a Welcome
    * that arrived ahead of the ACL update on this node is unblocked as
-   * soon as the ACL catches up. Also discards entries past their TTL
-   * (`PENDING_WELCOMES_TTL_MS`) so the buffer cannot retain stale
-   * Welcomes indefinitely.
+   * soon as the ACL catches up. Each drain prunes entries whose observed
+   * age exceeds `PENDING_WELCOMES_TTL_MS` before copying their bodies.
    *
    * Each accepted Welcome is removed from the buffer; entries that
    * still return `not-in-readers-acl` (e.g. the ACL merge didn't
@@ -10242,24 +10234,19 @@ export class PeerborneDocument<
     signal?: AbortSignal,
   ): Promise<void> {
     if (this._pendingWelcomes.size === 0) return;
-    const now = this._now();
-    // Iterate over a key snapshot because replay deletes accepted/expired
-    // entries. `get` returns one detached body at a time, keeping retained
-    // storage immutable without duplicating the whole aggregate budget.
+    throwIfLoadAborted(signal);
+    const expired = this._pendingWelcomes.pruneExpired(this._now());
+    if (expired.length !== 0) {
+      console.warn('Discarding stale buffered BeeKEM Welcomes', {
+        count: expired.length,
+      });
+    }
+    // Prune expired entries before copying one detached replay body at a time.
     const keys = this._pendingWelcomes.keysSnapshot();
     for (const key of keys) {
       throwIfLoadAborted(signal);
       const entry = this._pendingWelcomes.get(key);
       if (entry === undefined) continue;
-      if (now - entry.bufferedAtMs > PENDING_WELCOMES_TTL_MS) {
-        this._pendingWelcomes.delete(key);
-        console.warn(
-          `Discarding stale buffered BeeKEM Welcome for ${this.documentPath} ` +
-            `(age=${now - entry.bufferedAtMs}ms ` +
-            `exceeds TTL=${PENDING_WELCOMES_TTL_MS}ms)`,
-        );
-        continue;
-      }
       let message: CRDTSyncMessage<ChangesType>;
       try {
         message = this._syncMessageSerializer.deserializeSyncMessage(
