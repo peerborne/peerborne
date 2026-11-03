@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 118 selected production functions have checked
+current proof scope. The 125 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -24,7 +24,7 @@ system-level statuses below.
 ## Core document and storage features
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| --- | --- | --- | --- |
+| ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Create, open, change, close, and synchronize documents | Verified | Core and adapter suites plus the relay-backed distinct-identity browser acceptance job | Restart recovery and partition/rejoin are separate unverified durability paths. |
 | Strong eventual consistency under concurrent edits | Partial | Automerge/Yjs adapter tests and convergence benchmark source | The benchmark is not an assertion-based CI gate; partition/rejoin convergence needs a deterministic acceptance test. |
 | Automerge adapter | Verified | Adapter/serializer tests, typechecked production builds, Chromium smoke tests, and the cross-NAT bidirectional document job | Partition/rejoin and restart recovery remain system-level gaps. |
@@ -34,12 +34,13 @@ system-level statuses below.
 | Content-addressed Helia/IPFS persistence | Partial | Core document tests and implementations | Loss/recovery across browser restart and remote pinning are not default acceptance tests. |
 | IndexedDB-backed browser storage | Partial | IDB index storage tests; real browser initialization opens document datastore/blockstore successfully | Restart/recovery from persisted document blocks still needs an acceptance test. |
 | Bounded caches and block garbage collection | Verified | LRU and blockstore-GC suites | Memory/block growth is benchmarked but has no regression threshold. |
+| One-time invitation replay guard                       | Partial  | Checked join/acceptance/index transitions and arbitrary finite histories preserve bindings, prevent expired offer revival and bound all four indexes; native properties cover signed envelopes, delayed hashing, clock rollback, immutable capacity and scan counts | Callers must verify signatures. Replay memory is per instance; digest binding, native map ownership and clock sampling remain runtime boundaries. Due expiry sweeps are linear in capacity; no durable replay or UI-latency guarantee. |
 | Default-mode authenticated sync responses | Partial | Verified freshness, monotone clock, expiry-only replay pruning and response admission; checked histories derive a 46-entry replay bound; signed native properties cover no-op floods, delayed expiry, clock rollback and failed preparation | Replay protection is per instance. Preparation still holds the document mutation queue; no durable replay, UI-latency or delivery guarantee is proved. |
 
 ## Networking and availability
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| --- | --- | --- | --- |
+| ------------------------------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | libp2p peer lifecycle and discovery | Partial | Core tests, peer-discovery integration spec | Requires Docker/integration services and is excluded from `yarn test`. |
 | Gossipsub document updates | Verified | The dedicated cross-NAT job asserts fresh document mutations in both directions after two replicas are open | Partition/rejoin, automatic reconnect, and dropped-message recovery remain unverified. |
 | WebRTC browser transport | Partial | Browser configuration tests and NAT Playwright specs | NAT suite is an opt-in Docker environment. |
@@ -55,7 +56,7 @@ system-level statuses below.
 ## Security and membership
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| --- | --- | --- | --- |
+| ------------------------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Public-key user identity and signatures | Verified | SubtleCrypto, ECIES, ACL, and serialization tests plus Peerborne Note's non-extractable P-384 IndexedDB identity tests | Account recovery, cross-device identity transfer, backup, and authenticated collaborator discovery are not implemented. |
 | AES-GCM document/change confidentiality | Verified | Encryption and tamper-failure tests | Metadata leakage and traffic analysis are not addressed by the product claim. |
 | Reader/writer ACLs | Partial | ACL, document-boundary, and both CRDT adapter ACL suites | The current-replica writer check is exercised, but stale-writer re-grants and removal across a real partition are not prevented by a wired causal authorization chain. |
@@ -72,7 +73,7 @@ system-level statuses below.
 ## Query and framework integration
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| --- | --- | --- | --- |
+| ------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | React hooks and lifecycle management | Verified | Hook/cache/lifecycle and import-safety suites | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
 | Field extraction and local indexes | Verified | Index manager and extractor suites plus planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
@@ -85,7 +86,7 @@ system-level statuses below.
 ## Applications, packaging, and operations
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| --- | --- | --- | --- |
+| -------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Buildable ESM workspace packages | Verified | Topological TypeScript build and full unit suite; exact packed tarballs are inspected and installed in a clean Node 22.19.0 consumer for ESM and native CommonJS imports, shared export identity, strict NodeNext typechecking for both module styles, and a Vite build | Packages are not yet published; registry installation, browser runtime execution, and packaged daemon execution are not tested. |
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
 | Password-manager reference app | Partial | Vite production build, authenticated/encrypted checkpoint tests, Chromium reload and persistent-profile relaunch, damaged-storage and failed-write retry checks, and permissions UI tests | Browser-local recovery only: no peer-assisted recovery, backup, password lock, multi-device identity transfer, storage rollback protection, or two-browser synchronization acceptance. |
@@ -128,7 +129,6 @@ system-level statuses below.
    the offer without a prior founder connection, onboards through a
    recipient-bound encrypted bootstrap, and exchanges actual Automerge
    mutations through the relay in both directions.
-
 
 The Automerge adapter accepts the append-only keychain encoding produced by
 `@automerge/automerge` **3.4.1**, pinned as both its dependency and peer dependency.

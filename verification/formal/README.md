@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 118 selected production functions in 33 proof units are compiled from their
+The 125 selected production functions in 33 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -30,7 +30,7 @@ each unit; unrelated imports elsewhere in the file do not become proof evidence.
 
 The runner rejects missing proof files, generated-file drift, unverified
 declarations, partial verification, proof escape annotations, a missing domain
-witness, and incorrect number/string/slicing configuration. The tree and
+witness, and incorrect number/string/slicing configuration. The tree, invitation-replay and
 sync-response units also run complete verification under fixed solver seeds 1, 2, 7 and 19 with a
 10-second per-obligation limit; this changes solver search, not the contracts. Dafny's assumption
 audit must report zero findings, including no body-less declarations or
@@ -60,15 +60,15 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 162 controls cover 33 accepted originals, map-comparison and native-map-alias
-calibrations, 123 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 175 controls cover 33 accepted originals, map-comparison and native-map-alias
+calibrations, 136 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
-All accepted originals receive full-unit verification. Four expensive tree
+All accepted originals receive full-unit verification. Four tree and fourteen invitation-replay
 mutations check only the changed function and require that exact function to
 fail an obligation; the report labels these counterexample checks explicitly.
 The checked production program is always verified in full. This avoids
-reproving unchanged arithmetic helpers for each deliberately broken program.
+reproving unchanged arithmetic and history helpers for each deliberately broken program.
 
 The native-map-alias calibration intentionally verifies a candidate that aliases
 its parent, then confirms that the JavaScript parent is mutated. Dafny maps model
@@ -79,8 +79,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 47 property-suite files and
-114 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 49 property-suite files and
+123 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -112,6 +112,16 @@ Authentication work reservation, membership-control epoch/parent admission
 and binary field/copy bounds also have checked history or composition laws.
 Signature verification, authorizers, queue scheduling, fork latching and
 native byte APIs remain explicit property-test boundaries.
+Invitation-replay histories preserve one signed join binding and at most one
+acceptance per offer, including after expiry retirement and clock rollback.
+All four indexes remain coherent and individually bounded by capacity.
+A checked expiry frontier skips enumeration while every claim is live; due
+sweeps still visit up to the configured capacity (at most 65,536 entries).
+Native properties check in-place map ownership, real signature/wire bindings,
+immutable capacity, malformed clocks and expiry during asynchronous hashing.
+The fixed offer catalog models digest binding; signature verification remains
+the caller's responsibility. These are per-instance replay guarantees, with
+no claim of durable replay protection or browser latency.
 Sync-response histories additionally preserve live replay bindings under
 nondecreasing effective time and derive a 46-entry ledger bound from freshness
 and response spacing. Native properties exercise expiry during asynchronous
@@ -135,7 +145,9 @@ secrecy, arbitrary callback correctness or document-engine integration.
 
 Inputs are detached records, arrays and native string sets/maps; property getters,
 proxies and concurrent alias mutation are outside the model. Constant capability
-tables are frozen. Local collections do not escape through input mutation.
+tables are frozen. Owned invitation indexes intentionally mutate in place; their native map identity
+and distinct ownership are checked separately. Candidate collections elsewhere
+must preserve their stated copy/ownership contracts.
 Runtime parsing, callback authentication, scheduling, I/O, cryptographic
 primitives, side channels and browser resource limits are outside these proofs.
 The generated inventory is a scope inventory, not a security coverage
