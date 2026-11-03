@@ -86,7 +86,12 @@ The history model assumes truthful authentication and detached inputs. Native
 properties exercise real signatures and encryption, Map ownership, malformed
 local clocks, strict boolean authorization, future-dated dense request streams,
 and controlled delays/failures in verification, signing, encryption and
-publication. The runtime rechecks freshness after verification and immediately
+publication. The registered GossipSub validator authenticates re-encrypted
+requests independently of local replay capacity and response history. Local
+expiry returns `Ignore`; malformed or unauthenticated requests can return
+`Reject`. Response admission remains in the handler, so answering a request
+does not turn an honest forwarder's valid copy into a penalizable message.
+The runtime rechecks freshness after verification and immediately
 before handing ciphertext to pubsub, and starts the next cooldown at preparation
 settlement, including failures. Replay protection is per document instance;
 the proof does not establish durable replay protection across restarts. The
@@ -264,7 +269,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 47 property-suite files containing 113 explicit
+The inventory audits 47 property-suite files containing 114 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

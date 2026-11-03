@@ -80,7 +80,7 @@ It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
 [fallback catalog](../strategy.json). It reports 47 property-suite files and
-113 assertion declarations; parameterized suites can execute declarations more
+114 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -117,6 +117,8 @@ nondecreasing effective time and derive a 46-entry ledger bound from freshness
 and response spacing. Native properties exercise expiry during asynchronous
 preparation, failed preparation, clock rollback and strict authorization. These
 are per-instance logical bounds, not durable replay or UI-latency guarantees.
+Registered GossipSub validation also has a native property separating local
+response history and expiry from cryptographic rejection and peer penalties.
 Quorum verification now also covers exact digest counts, first-eligible peer
 selection, stable cohort projection and failure precedence. A checked
 occurrence-count lemma rules out two distinct strict-majority winners. Native

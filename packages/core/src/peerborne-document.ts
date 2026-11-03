@@ -6401,11 +6401,8 @@ export class PeerborneDocument<
   }
 
   private async _verifySyncRequest(request: SyncRequest): Promise<boolean> {
-    const now = this._observeSyncRequestClock();
     if (
       request.documentId !== this.documentPath ||
-      now === undefined ||
-      !this._syncRequestCanBeAdmitted(request, now) ||
       !this._isSigningEnabled()
     )
       return false;
@@ -6451,7 +6448,8 @@ export class PeerborneDocument<
           changeKnown,
           snapshot !== undefined,
           false,
-        )
+        ) ||
+        !this._syncRequestCanBeAdmitted(request, now)
       )
         return;
       if (
@@ -7120,9 +7118,21 @@ export class PeerborneDocument<
                 if (isSyncRequest(rawContent)) {
                   const request = decodeSyncRequest(rawContent);
                   if (!request) return TopicValidatorResult.Reject;
-                  return await this._runStateMutation(async () =>
-                    await this._verifySyncRequest(request) ? TopicValidatorResult.Accept : TopicValidatorResult.Reject,
-                  );
+                  return await this._runStateMutation(async () => {
+                    const now = this._observeSyncRequestClock();
+                    if (
+                      now === undefined ||
+                      !isSyncRequestFresh(request, now)
+                    )
+                      return TopicValidatorResult.Ignore;
+                    if (!(await this._verifySyncRequest(request)))
+                      return TopicValidatorResult.Reject;
+                    const verified = this._observeSyncRequestClock();
+                    return verified !== undefined &&
+                      isSyncRequestFresh(request, verified)
+                      ? TopicValidatorResult.Accept
+                      : TopicValidatorResult.Ignore;
+                  });
                 }
 
                 let syncMessage: CRDTSyncMessage<ChangesType>;

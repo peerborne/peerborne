@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fc from 'fast-check';
+import { TopicValidatorResult } from '@libp2p/gossipsub';
 import { Base64 } from 'js-base64';
 import { PeerborneDocument } from './peerborne-document.ts';
 import { SubtleCrypto } from './auth-subtlecrypto.ts';
@@ -123,6 +124,51 @@ async function request(identity = reader, overrides = {}) {
       await auth.sign(syncRequestSigningPayload(unsigned), identity.privateKey),
     ),
   };
+}
+
+async function registeredValidator(document) {
+  const pubsub = document.swarm.heliaNode.libp2p.services.pubsub;
+  const validators = new Map();
+  Object.assign(pubsub, {
+    addEventListener() {},
+    subscribe() {},
+    topicValidators: validators,
+  });
+  Object.assign(document, {
+    _subscribed: false,
+    _localCheckpointReady: true,
+    _hashes: new Set([root]),
+    _computeTopic: () => 'fixture',
+    _keychainProvider: { keyIDLength: keyId.length },
+  });
+  document._keychain.getKey = (id) =>
+    id.length === keyId.length &&
+    id.every((byte, index) => byte === keyId[index])
+      ? encryptionKey
+      : undefined;
+  document.swarm.registerDocument = () => {};
+  document.swarm.config.enableTopicValidators = true;
+  await document.open();
+  const validate = validators.get('fixture');
+  assert.equal(typeof validate, 'function');
+  return validate;
+}
+
+let requestFrameSequence = 0;
+async function encryptedRequest(signed) {
+  const nonce = new Uint8Array(auth.nonceBytes);
+  new DataView(nonce.buffer).setUint32(
+    nonce.length - 4,
+    ++requestFrameSequence,
+  );
+  const data = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce },
+      encryptionKey,
+      encodeSyncRequest(signed),
+    ),
+  );
+  return Uint8Array.from([...keyId, ...nonce, ...data]);
 }
 
 test('a current reader requests updates using a signed, encrypted, detached frame', async () => {
@@ -432,6 +478,7 @@ test('replay expiry remains terminal across wall-clock rollback and cache capaci
       async (jump, invalidClock) => {
         await withClock(async (clock) => {
           const { document, published, work } = harness();
+          const validate = await registeredValidator(document);
           const start = clock.now;
           const first = await request();
           clock.set(invalidClock);
@@ -445,7 +492,10 @@ test('replay expiry remains terminal across wall-clock rollback and cache capaci
             requestId: 'ff'.repeat(16),
             knownTips: [root],
           });
-          assert.equal(await document._verifySyncRequest(probe), true);
+          assert.equal(
+            await validate({}, { data: await encryptedRequest(probe) }),
+            TopicValidatorResult.Accept,
+          );
           await document._handleSyncRequest(probe);
           assert.equal(published.length, 1);
           clock.set(start + 2000);
@@ -588,5 +638,114 @@ test('sync admission rejects nonboolean membership authorization results', async
       },
     ),
     { seed: 2011228, numRuns: 30 },
+  );
+});
+
+test('registered GossipSub validation accepts authenticated re-encryptions independently of local response history', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom('fresh', 'replay', 'capacity', 'cooldown'),
+      fc.integer({ min: -60001, max: 30001 }),
+      fc.constantFrom('valid', 'forged', 'stranger', 'other-document'),
+      async (history, offset, authentication) => {
+        await withClock(async (clock) => {
+          const { document, published } = harness();
+          const validate = await registeredValidator(document);
+          let signed = await request(
+            authentication === 'stranger' ? stranger : reader,
+            {
+              issuedAtMs: clock.now + offset,
+              ...(authentication === 'other-document'
+                ? { documentId: '/other' }
+                : {}),
+            },
+          );
+          if (authentication === 'forged')
+            signed = {
+              ...signed,
+              signature: Base64.fromUint8Array(new Uint8Array(96)),
+            };
+          const id = JSON.stringify([signed.requester, signed.requestId]);
+          if (history === 'replay')
+            document._syncRequestsSeen.set(id, clock.now);
+          if (history === 'capacity')
+            document._syncRequestsSeen = new Map(
+              Array.from({ length: 128 }, (_, index) => [
+                `seed-${index}`,
+                clock.now,
+              ]),
+            );
+          if (history === 'cooldown') document._lastSyncResponseAt = clock.now;
+          const retained = [...document._syncRequestsSeen];
+          const first = await encryptedRequest(signed);
+          const second = await encryptedRequest(signed);
+          assert.notDeepEqual(first, second);
+          const fresh = offset >= -60000 && offset <= 30000;
+          const expected = !fresh
+            ? TopicValidatorResult.Ignore
+            : authentication === 'valid'
+              ? TopicValidatorResult.Accept
+              : TopicValidatorResult.Reject;
+          assert.equal(await validate({}, { data: first }), expected);
+          assert.equal(await validate({}, { data: second }), expected);
+          assert.deepEqual([...document._syncRequestsSeen], retained);
+          await document._handleSyncRequest(signed);
+          const responds =
+            fresh && authentication === 'valid' && history === 'fresh';
+          assert.equal(published.length, responds ? 1 : 0);
+          assert.equal(await validate({}, { data: second }), expected);
+          const after = [...document._syncRequestsSeen];
+          const start = clock.now;
+          clock.advance(90002);
+          assert.equal(
+            await validate({}, { data: first }),
+            TopicValidatorResult.Ignore,
+          );
+          clock.set(start);
+          assert.equal(
+            await validate({}, { data: second }),
+            TopicValidatorResult.Ignore,
+          );
+          assert.deepEqual([...document._syncRequestsSeen], after);
+          if (history === 'fresh' && authentication === 'valid' && fresh) {
+            clock.set(start + 90002);
+            const delayed = await encryptedRequest(await request());
+            const paused = pauseMethod(document._authProvider, 'verify');
+            const validation = validate({}, { data: delayed });
+            await Promise.race([
+              paused.started,
+              validation.then(() => {
+                throw new Error('Expected request authentication');
+              }),
+            ]);
+            try {
+              clock.advance(60001);
+              paused.release();
+              assert.equal(await validation, TopicValidatorResult.Ignore);
+            } finally {
+              paused.release();
+              paused.restore();
+            }
+            assert.deepEqual([...document._syncRequestsSeen], after);
+          }
+        });
+      },
+    ),
+    {
+      seed: 2011229,
+      numRuns: 40,
+      examples: [
+        ['replay', 0, 'valid'],
+        ['capacity', 0, 'valid'],
+        ['cooldown', 0, 'valid'],
+        ['fresh', -60001, 'valid'],
+        ['fresh', 30001, 'valid'],
+        ['fresh', -60000, 'valid'],
+        ['fresh', 30000, 'valid'],
+        ['replay', 0, 'forged'],
+        ['capacity', 0, 'stranger'],
+        ['cooldown', 0, 'other-document'],
+      ],
+    },
   );
 });
