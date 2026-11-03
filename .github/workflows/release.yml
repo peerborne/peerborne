@@ -68,6 +68,11 @@ jobs:
       - run: corepack enable
       - run: npm install --global npm@11.21.1
       - run: yarn install --immutable
+      - name: Audit workspace and separately locked project dependencies
+        run: |
+          yarn npm audit --all --recursive --severity high --severity critical
+          yarn --cwd relay-server npm audit --recursive --severity high --severity critical
+          yarn --cwd e2e/test-app npm audit --recursive --severity high --severity critical
       - run: yarn test:release
       - run: yarn build
       - run: yarn test:serial

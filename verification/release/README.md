@@ -7,6 +7,9 @@ application tooling. The browser applications have a separate dependency audit;
 both audits fail on high or critical findings and fail closed if npm cannot
 complete its audit.
 
+Release CI also checks the workspace, relay and network-test lockfiles for high
+and critical advisories, including development dependencies.
+
 The consumer checks ESM and native CommonJS imports, shared export identity,
 strict NodeNext declarations and a Vite build. It then copies the public examples
 into that external project, installs their application dependencies, and builds
