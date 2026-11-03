@@ -4,9 +4,10 @@ This gate installs the eleven exact release tarballs in a fresh npm project
 outside the checkout. It checks their package identities, lockfile integrity,
 and every packed file's SHA-512 digest before and after browser acceptance,
 rejects workspace symlinks, and audits production dependencies before adding any
-application tooling. The browser applications have a separate dependency audit;
-both audits fail on high or critical findings and fail closed if npm cannot
-complete its audit.
+application tooling. The browser applications have a separate dependency audit.
+The application and plain-app graphs are audited after acceptance as well.
+Audits fail on high or critical findings and fail closed if npm cannot complete
+its audit.
 
 Release CI also checks the workspace, relay and network-test lockfiles for high
 and critical advisories, including development dependencies.

@@ -181,6 +181,7 @@ try {
       join(consumer, 'node_modules', artifact.name),
       artifact,
     );
+  await auditConsumer(consumer, 'framework-free-final-audit', false);
   await writeFile(
     join(reportDirectory, 'framework-free.json'),
     `${JSON.stringify({ status: 'passed', frameworksBundled: false, transitiveFrameworkPackages, artifacts: artifacts.map(({ name, version, integrity }) => ({ name, version, integrity })), cases }, null, 2)}\n`,

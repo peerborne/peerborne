@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertInstalledArtifacts } from './consumer.mjs';
+import { auditConsumer } from './audit.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const consumer = resolve(process.argv[2] ?? '');
@@ -93,6 +94,7 @@ try {
   );
   const [code] = await once(child, 'exit');
   await assertInstalledArtifacts(consumer, artifacts);
+  await auditConsumer(consumer, 'final-application-audit', false);
   await writeFile(
     join(reportDirectory, 'run.json'),
     `${JSON.stringify(
