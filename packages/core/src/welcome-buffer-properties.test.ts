@@ -28,7 +28,17 @@ describe('Welcome buffer generated retention histories', () => {
       fc.property(fc.array(mutation, { maxLength: 100 }), (program) => {
         const buffer = new PendingWelcomeBuffer();
         let model: ModelEntry[] = [];
-        program.forEach((step, at) => {
+        const prelude = Array.from(
+          { length: PENDING_WELCOMES_MAX_ENTRIES },
+          (_, index) => ({
+            key: `protected-${index}`,
+            size: 1,
+            authenticated: true,
+            byte: index,
+            remove: false,
+          }),
+        );
+        [...prelude, ...program].forEach((step, at) => {
           const previous = model.find((entry) => entry.key === step.key);
           if (step.remove) {
             expect(buffer.delete(step.key)).toBe(previous !== undefined);
@@ -37,7 +47,17 @@ describe('Welcome buffer generated retention histories', () => {
             const body = new Uint8Array(step.size).fill(step.byte);
             const result = buffer.store(step.key, body, at, step.authenticated);
             body[0] ^= 0xff;
-            if (previous && !step.authenticated)
+            const protectedEntries = model.filter(
+              (entry) => entry.authenticated,
+            );
+            if (
+              !step.authenticated &&
+              (previous !== undefined ||
+                protectedEntries.length >= PENDING_WELCOMES_MAX_ENTRIES ||
+                protectedEntries.reduce((sum, entry) => sum + entry.size, 0) +
+                  step.size >
+                  PENDING_WELCOMES_MAX_RETAINED_BYTES)
+            )
               expect(result).toEqual({
                 stored: false,
                 replaced: false,

@@ -6,6 +6,7 @@ packages/core/src/capabilities.ts
 packages/core/src/policy/string-collections.ts
 packages/core/src/policy/keychain-order.ts
 packages/core/src/policy/maintenance.ts
+packages/core/src/policy/welcome-admission.ts
 packages/core/src/policy/replay-admission.ts
 packages/core/src/policy/invitation-time.ts
 packages/core/src/policy/anchor-advance.ts

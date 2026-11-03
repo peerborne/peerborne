@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 125 production functions in 33 proof units. The runtime calls
+LemmaScript checks 132 production functions in 34 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -39,6 +39,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
 | [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                                                |
 | [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
+| [Welcome admission](../packages/core/src/policy/welcome-admission.ts) | 7 | Exact total/protected byte accounting, bounded admission and trimming, precise removal and value-map projection/insertion. Checked finite histories retain authenticated bindings under unverified traffic and preserve count/byte limits and trusted-binding provenance. |
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)                       |         9 | Exact conflict classification, coherent bounded join/acceptance indexes, monotone time, expiry-only retirement and sweep frontier. Checked arbitrary finite histories preserve join and consumed acceptance bindings and prevent expired offer revival.                                                  |
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
 | [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
@@ -69,6 +70,38 @@ has native JavaScript properties: a missing copy can pass the value-model proof
 while mutating the active map. A dedicated control verifies an intentionally
 aliased variant and confirms that native counterexample. The healthy production
 implementation must pass the separate ownership and generated-history properties.
+
+The pending BeeKEM Welcome buffer now uses a complete admission plan before
+copying a body or changing retained state. An unverified arrival may replace
+neither an existing key nor an authenticated victim. It is rejected if protected
+entries alone leave insufficient count or byte capacity; partial evictions are
+not committed. Authenticated arrivals can evict unverified entries first and
+then the oldest remaining entries. Every retained value is projected from the
+original owned map, and every insertion receives one owned body.
+
+The checked helpers and finite histories establish exact byte accounting,
+16-entry/20 MiB production limits, authenticated-binding preservation across
+unverified admissions, and provenance of every newly authenticated binding.
+Explicit deletion or authenticated replacement/eviction remains allowed.
+Minimal-body header eligibility is monotone in body size, so its early check
+cannot discard an otherwise admissible body. Pressure passes terminate within
+the bounded metadata array; a no-pressure path avoids them.
+
+Native properties exposed loss of authenticated Welcomes under unverified
+count/byte floods, truthy nonboolean flags accepted by the raw buffer API,
+and unnecessary copying or serialization of already rejected arrivals. The
+buffer now validates its native key/flag inputs and prepares its new map before
+installing it. Properties also exercise copying/projection/insertion failures,
+serializer reentrancy,
+detached payloads and native order against an independent ranked-victim BigInt
+oracle. The existing receive-path signature checks already enforce strict
+verification results; raw-buffer hardening is not a signature-bypass finding.
+
+This proof assumes truthful authentication and detached bounded metadata.
+Native byte lengths, object/Map identity and alias ownership retain property
+checks. TTL/draining, durable storage, arbitrary scheduler liveness and browser
+heap/latency limits remain outside the proof. A passing retention model does
+not establish document secrecy or delivery across hostile networks.
 
 The invitation guard calls seven additional verified helpers for its four
 indexes, effective clock and expiry frontier. Checked arbitrary finite histories
@@ -300,7 +333,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 49 property-suite files containing 123 explicit
+The inventory audits 51 property-suite files containing 131 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -310,6 +343,7 @@ properties can invoke the same assertion more than once.
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
+| Welcome admission | Native keys/flags and byte lengths, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, array/Map ownership and independent ranked-victim BigInt oracles. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
 | Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback, one-time package consumption, stable operation bindings, hydration/claim/finalize schedules and outbox ownership. |
 | Invitation replay                       | Delayed hashing, expiry retirement/clock rollback, actual signed recipient conflicts, independent tuple-ledger histories, malformed clocks, immutable capacity, native map ownership and live-traffic enumeration counts.                   |
@@ -351,12 +385,13 @@ findings, not evidence of a remote exploit or a complete loader proof.
 
 ## Cost and remaining work
 
-The full proof check took 286 seconds on the development host, including
-all tree, invitation-replay and sync-response solver-seed checks. The generated
-report records each run's duration,
-source/proof hashes and tool versions.
-Controls run separately. First-time setup downloads the compiler dependencies
-and a roughly 55–65 MB Dafny distribution. Specification review, proof authoring
+The generated report records each full proof run's duration, configured
+solver-seed checks, source/proof hashes and tool versions.
+CI runs proofs and controls in parallel, with the original gate requiring both
+to succeed. This preserves all healthy-program and counterexample checks
+without increasing solver limits. Controls can also run separately locally.
+First-time setup downloads the compiler dependencies and a roughly 55–65 MB
+Dafny distribution. Specification review, proof authoring
 and JavaScript/model correspondence dominate cost; repeated checks are cheap.
 Host timing is an observation, not a cross-machine performance guarantee.
 

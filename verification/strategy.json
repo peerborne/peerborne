@@ -54,6 +54,18 @@
       ]
     },
     {
+      "id": "welcome-admission-boundaries",
+      "formalBoundary": "Checked production budget, pressure, projection and insertion helpers compose into bounded finite histories. Unverified admission preserves authenticated metadata and value bindings, exact byte accounting and immutable rejected states. Header admission is monotone in body size. The model assumes correct authentication flags, bounded detached metadata and owned input maps; native strict flags/keys, byte lengths and buffer ownership, serializer reentrancy, injected preparation failures, BigInt arithmetic and native Map/array identity require properties. This is a per-buffer resource and retention proof, not a signature, durable-delivery or UI-latency guarantee.",
+      "evidence": [
+        "packages/core/src/welcome-admission-properties.test.ts",
+        "packages/core/src/welcome-policy-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/welcome-admission.ts",
+        "packages/core/src/pending-welcome-buffer.ts"
+      ]
+    },
+    {
       "id": "asynchronous-lifecycle",
       "formalBoundary": "Sequential partition, revision, epoch, byte-budget and claim laws are proved. Promise scheduling, failures, callback side effects, rollback and native encrypted-envelope ownership require generated execution histories.",
       "evidence": [
