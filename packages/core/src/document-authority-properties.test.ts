@@ -162,7 +162,21 @@ describe('causal document controller authority', () => {
             ).rejects.toThrow('genesis');
           },
         ),
-        { seed: 2011151 + batch * 1000, numRuns: 4 },
+        {
+          seed:
+            batch === 0
+              ? 2011151
+              : batch === 1
+                ? 2012151
+                : batch === 2
+                  ? 2013151
+                  : batch === 3
+                    ? 2014151
+                    : batch === 4
+                      ? 2015151
+                      : 2016151,
+          numRuns: 4,
+        },
       );
     },
   );

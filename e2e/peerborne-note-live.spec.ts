@@ -47,6 +47,48 @@ function failOnRuntimeErrors(page: Page, errors: string[] = []): string[] {
   return errors;
 }
 
+async function recoveryDiagnostics(page: Page) {
+  const transport = { sockets: 0, sent: 0, received: 0, closed: 0 };
+  page.on('websocket', (socket) => {
+    transport.sockets++;
+    socket.on('framesent', () => transport.sent++);
+    socket.on('framereceived', () => transport.received++);
+    socket.on('close', () => transport.closed++);
+  });
+  await page.addInitScript(() => {
+    const operations = Object.fromEntries(
+      ['sign', 'verify', 'encrypt', 'decrypt'].map((name) => [
+        name,
+        { calls: 0, failures: 0 },
+      ]),
+    );
+    Reflect.set(window, 'peerborneRecoveryDiagnostics', operations);
+    for (const name of ['sign', 'verify', 'encrypt', 'decrypt'] as const) {
+      const native = crypto.subtle[name];
+      Object.defineProperty(crypto.subtle, name, {
+        configurable: true,
+        value: async (...args: unknown[]) => {
+          operations[name].calls++;
+          try {
+            return await Reflect.apply(native, crypto.subtle, args);
+          } catch (error) {
+            operations[name].failures++;
+            throw error;
+          }
+        },
+      });
+    }
+  });
+  return async () => ({
+    transport,
+    browser: await page.evaluate(() => ({
+      crypto: Reflect.get(window, 'peerborneRecoveryDiagnostics'),
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+    })),
+  });
+}
+
 async function createSharedNote(page: Page, role: 'Editor' | 'Reader') {
   await page.goto('/');
   await expect(
@@ -177,6 +219,7 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
       .launchPersistentContext(profile);
     recipient = await recipientContext.newPage();
     failOnRuntimeErrors(recipient, recipientErrors);
+    const diagnostics = await recoveryDiagnostics(recipient);
     await recipient.goto(new URL(shared.invitationUrl).origin);
     await recipient
       .getByRole('button', { name: 'Open saved note 1', exact: true })
@@ -184,7 +227,12 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     const restoredEditor = recipient.getByRole('textbox', {
       name: 'Note text',
     });
-    await expect(restoredEditor).toHaveValue(offlineEdit);
+    try {
+      await expect(restoredEditor).toHaveValue(offlineEdit);
+    } catch (error) {
+      console.info('Note recovery counters', await diagnostics());
+      throw error;
+    }
     await expect(restoredEditor).toBeEditable();
     const resumedEdit = `Resumed editor ${crypto.randomUUID()}`;
     await restoredEditor.fill(resumedEdit);
