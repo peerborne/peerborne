@@ -23,6 +23,20 @@ permissions:
 jobs:
   formal-verification:
     name: Formal policy verification
+    needs: [formal-proofs, formal-controls]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require complete proofs and counterexample controls
+        env:
+          PROOF_RESULT: ${{ needs.formal-proofs.result }}
+          CONTROL_RESULT: ${{ needs.formal-controls.result }}
+        run: |
+          test "$PROOF_RESULT" = success
+          test "$CONTROL_RESULT" = success
+
+  formal-proofs:
+    name: Formal production proofs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -38,8 +52,6 @@ jobs:
         run: node verification/formal/setup.mjs
       - name: Verify production policies and audit proof assumptions
         run: node verification/formal/run.mjs
-      - name: Check counterexamples and proof escape controls
-        run: node verification/formal/controls.mjs
       - name: Inventory first-party verification scope
         run: node verification/formal/inventory.mjs
       - name: Upload formal verification evidence
@@ -47,6 +59,31 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: formal-verification
+          path: verification/results/formal/
+          retention-days: 30
+
+  formal-controls:
+    name: Formal counterexample controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: nodeversion
+        run: echo "version=$(grep nodejs .tool-versions | sed -e 's/[^[:space:]]*[[:space:]]*//')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.nodeversion.outputs.version }}
+      - name: Install pinned proof tools
+        run: node verification/formal/setup.mjs
+      - name: Check counterexamples and proof escape controls
+        run: node verification/formal/controls.mjs
+      - name: Upload formal control evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: formal-controls
           path: verification/results/formal/
           retention-days: 30
 

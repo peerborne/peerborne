@@ -10171,8 +10171,9 @@ export class PeerborneDocument<
    * `hex(welcomeEpochId)` so duplicate Welcomes for the same epoch
    * coalesce automatically. The canonical serialized body is capped at
    * `PENDING_WELCOME_MAX_BODY_BYTES`; retained bodies are bounded by both
-   * entry count and `PENDING_WELCOMES_MAX_RETAINED_BYTES`, evicting the
-   * oldest unauthenticated entry before the oldest authenticated one.
+   * entry count and `PENDING_WELCOMES_MAX_RETAINED_BYTES`. Unverified
+   * arrivals can evict only unverified entries; authenticated arrivals
+   * evict those first before the oldest authenticated entry.
    * Buffered bytes are replayed by `_drainPendingWelcomesUnlocked()` after
    * the next readers-ACL merge.
    *

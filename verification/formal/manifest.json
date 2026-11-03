@@ -137,6 +137,34 @@
       ]
     },
     {
+      "path": "packages/core/src/policy/welcome-admission.ts",
+      "functions": [
+        "pendingWelcomeBudget",
+        "canAdmitPendingWelcome",
+        "planPendingWelcomeAdmission",
+        "planPendingWelcomeRemoval",
+        "retainPendingWelcomeValues",
+        "insertPendingWelcomeValue",
+        "trimPendingWelcomes"
+      ],
+      "witness": "welcomeAdmission_domain",
+      "consumers": ["packages/core/src/pending-welcome-buffer.ts"],
+      "verifiedTargets": [
+        "pendingWelcomeBudget",
+        "canAdmitPendingWelcome_ensures",
+        "planPendingWelcomeAdmission",
+        "planPendingWelcomeRemoval",
+        "retainPendingWelcomeValues",
+        "insertPendingWelcomeValue",
+        "trimPendingWelcomes",
+        "welcomeState_step",
+        "welcomeState_all_histories",
+        "welcomeProtected_all_histories",
+        "welcomeHeader_monotone"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
+    },
+    {
       "path": "packages/core/src/policy/replay-admission.ts",
       "functions": [
         "decideJoinReplay",

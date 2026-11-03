@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 125 selected production functions in 33 proof units are compiled from their
+The 132 selected production functions in 34 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -30,7 +30,7 @@ each unit; unrelated imports elsewhere in the file do not become proof evidence.
 
 The runner rejects missing proof files, generated-file drift, unverified
 declarations, partial verification, proof escape annotations, a missing domain
-witness, and incorrect number/string/slicing configuration. The tree, invitation-replay and
+witness, and incorrect number/string/slicing configuration. The tree, Welcome-admission, invitation-replay and
 sync-response units also run complete verification under fixed solver seeds 1, 2, 7 and 19 with a
 10-second per-obligation limit; this changes solver search, not the contracts. Dafny's assumption
 audit must report zero findings, including no body-less declarations or
@@ -60,11 +60,11 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 175 controls cover 33 accepted originals, map-comparison and native-map-alias
-calibrations, 136 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 187 controls cover 34 accepted originals, map-comparison and native-map-alias
+calibrations, 147 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
-All accepted originals receive full-unit verification. Four tree and fourteen invitation-replay
+All accepted originals receive full-unit verification. Four tree, fourteen invitation-replay and eleven Welcome-admission
 mutations check only the changed function and require that exact function to
 fail an obligation; the report labels these counterexample checks explicitly.
 The checked production program is always verified in full. This avoids
@@ -79,8 +79,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 49 property-suite files and
-123 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 51 property-suite files and
+131 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -90,7 +90,11 @@ suite so the actual ESM Uint8ArrayList dependency is exercised on Node 22.
 
 Reports, source/proof digests, tool versions, per-member verification results,
 assumption audits, fixed solver-seed checks and control results go under `verification/results/formal/`.
-The `Formal policy verification` CI job uploads them. These reports contain
+CI runs complete proof/audit/inventory checks and complete counterexample controls
+in parallel jobs with separate `formal-verification` and `formal-controls`
+evidence artifacts. The existing `Formal policy verification` gate requires both
+jobs to succeed, including after a failure or cancellation. Solver limits and
+the full verification scope are unchanged. These reports contain
 source metadata and synthetic proof cases, never live keys or document data.
 
 ## Proof domain
@@ -112,6 +116,18 @@ Authentication work reservation, membership-control epoch/parent admission
 and binary field/copy bounds also have checked history or composition laws.
 Signature verification, authorizers, queue scheduling, fork latching and
 native byte APIs remain explicit property-test boundaries.
+
+Welcome admission additionally proves exact byte totals and protected budgets,
+pressure trimming, removal and value-map projection/insertion. Checked
+finite histories preserve authenticated bindings under unverified traffic,
+bound count/bytes and exclude newly authenticated bindings introduced only by
+unverified or failed preparations. Minimal-body header checks cannot reject an
+otherwise admissible body. The runtime validates strict keys/flags, rejects
+before copying or avoidable serialization, replans after serializer callbacks,
+and installs prepared state only after owned-body copying succeeds. Native
+properties inject preparation failures and calibrate byte/map ownership and
+ranked eviction order. Authentication, TTL/draining, native heap usage and
+delivery are outside this retention proof.
 
 Invitation-replay histories preserve one signed join binding and at most one
 acceptance per offer, including after expiry retirement and clock rollback.

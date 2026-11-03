@@ -7,8 +7,18 @@ import type { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
 import {
   copyUnsharedUint8Array,
+  unsharedUint8ArrayByteLength,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
 } from './utils.js';
+import {
+  canAdmitPendingWelcome,
+  insertPendingWelcomeValue,
+  pendingWelcomeBudget,
+  planPendingWelcomeAdmission,
+  planPendingWelcomeRemoval,
+  retainPendingWelcomeValues,
+  type PendingWelcomeMetadata,
+} from './policy/welcome-admission.js';
 
 /**
  * A pending Welcome may be as large as any Welcome the live receive path
@@ -60,7 +70,7 @@ export interface PendingWelcomeStoreResult {
 
 /** Byte-bounded storage for Welcomes awaiting an ACL update. */
 export class PendingWelcomeBuffer {
-  private readonly _entries = new Map<string, PendingWelcomeEntry>();
+  private _entries = new Map<string, PendingWelcomeEntry>();
   private _retainedBytes = 0;
 
   public get size(): number {
@@ -104,8 +114,33 @@ export class PendingWelcomeBuffer {
     bufferedAtMs: number,
     authenticated: boolean,
   ): PendingWelcomeStoreResult {
+    validateAdmissionInput(key, bufferedAtMs, authenticated);
     if (!canReplacePendingWelcome(this._entries.has(key), authenticated)) {
       return { stored: false, replaced: false, evictedKeys: [] };
+    }
+    if (!authenticated) {
+      if (
+        this._entries.size >= PENDING_WELCOMES_MAX_ENTRIES &&
+        firstUnauthenticatedEntry(
+          [...this._entries.values()].map((entry) => entry.authenticated),
+        ) === -1
+      ) {
+        return { stored: false, replaced: false, evictedKeys: [] };
+      }
+      const budget = pendingWelcomeBudget(this._metadata(), key);
+      if (
+        !canAdmitPendingWelcome(
+          false,
+          false,
+          budget.protectedCount,
+          budget.protectedBytes,
+          1,
+          PENDING_WELCOMES_MAX_ENTRIES,
+          PENDING_WELCOMES_MAX_RETAINED_BYTES,
+        )
+      ) {
+        return { stored: false, replaced: false, evictedKeys: [] };
+      }
     }
     const detached = snapshotSyncMessageForContext<ChangesType>(
       message,
@@ -123,11 +158,12 @@ export class PendingWelcomeBuffer {
    * Store an owned copy of a non-empty Uint8Array, refreshing duplicate
    * recency and evicting entries until both count and aggregate-byte limits
    * admit the new body. Eviction takes the oldest unauthenticated entry
-   * first, then the oldest entry. An unauthenticated Welcome never replaces
+   * first. Only authenticated arrivals may then evict authenticated entries.
+   * An unauthenticated Welcome never replaces
    * a buffered one for the same key: it may be a forged copy of a genuine
    * Welcome that could not be verified yet either. Validation and copying
-   * happen before replacement, so a rejected duplicate cannot erase a
-   * previously retained Welcome.
+   * happen before replacement. Rejected admissions do not copy body bytes
+   * or change any retained entry.
    */
   public store(
     key: string,
@@ -135,12 +171,7 @@ export class PendingWelcomeBuffer {
     bufferedAtMs: number,
     authenticated: boolean,
   ): PendingWelcomeStoreResult {
-    if (key.length === 0) {
-      throw new TypeError('Pending BeeKEM Welcome key must not be empty');
-    }
-    if (!Number.isSafeInteger(bufferedAtMs) || bufferedAtMs < 0) {
-      throw new TypeError('Pending BeeKEM Welcome timestamp is invalid');
-    }
+    validateAdmissionInput(key, bufferedAtMs, authenticated);
     let bodyLength: number;
     try {
       bodyLength = Reflect.apply(getByteLength, body, []);
@@ -150,7 +181,7 @@ export class PendingWelcomeBuffer {
     if (bodyLength > PENDING_WELCOME_MAX_BODY_BYTES) {
       throw new PendingWelcomeBodyLimitError();
     }
-    const stableBody = copyUnsharedUint8Array(
+    unsharedUint8ArrayByteLength(
       body,
       1,
       PENDING_WELCOME_MAX_BODY_BYTES,
@@ -161,43 +192,71 @@ export class PendingWelcomeBuffer {
       return { stored: false, replaced: false, evictedKeys: [] };
     }
 
-    const replaced = this.delete(key);
-    const evictedKeys: string[] = [];
-    while (
-      this._entries.size >= PENDING_WELCOMES_MAX_ENTRIES ||
-      this._retainedBytes + stableBody.byteLength >
-        PENDING_WELCOMES_MAX_RETAINED_BYTES
-    ) {
-      const evictKey = this._evictionCandidate();
-      if (evictKey === undefined) {
-        throw new Error('Pending BeeKEM Welcome limits are inconsistent');
-      }
-      this.delete(evictKey);
-      evictedKeys.push(evictKey);
+    const plan = planPendingWelcomeAdmission(
+      this._metadata(),
+      key,
+      bodyLength,
+      authenticated,
+      PENDING_WELCOMES_MAX_ENTRIES,
+      PENDING_WELCOMES_MAX_RETAINED_BYTES,
+    );
+    if (!plan.admitted) {
+      return { stored: false, replaced: false, evictedKeys: [] };
     }
-
-    this._entries.set(key, { body: stableBody, authenticated, bufferedAtMs });
-    this._retainedBytes += stableBody.byteLength;
-    return { stored: true, replaced, evictedKeys };
+    const stableBody = copyUnsharedUint8Array(
+      body,
+      1,
+      PENDING_WELCOME_MAX_BODY_BYTES,
+      'Pending BeeKEM Welcome body',
+    );
+    const retained = retainPendingWelcomeValues(this._entries, plan.kept);
+    this._entries = insertPendingWelcomeValue(retained, key, {
+      body: stableBody,
+      authenticated,
+      bufferedAtMs,
+    });
+    this._retainedBytes = plan.retainedBytes;
+    return {
+      stored: true,
+      replaced: plan.replaced,
+      evictedKeys: plan.evictedKeys,
+    };
   }
 
-  private _evictionCandidate(): string | undefined {
-    const entries = [...this._entries];
-    const index = firstUnauthenticatedEntry(
-      entries.map(([, entry]) => entry.authenticated),
-    );
-    return entries[index === -1 ? 0 : index]?.[0];
+  private _metadata(): PendingWelcomeMetadata[] {
+    return [...this._entries].map(([key, entry]) => ({
+      key,
+      bytes: entry.body.byteLength,
+      authenticated: entry.authenticated,
+    }));
   }
 
   /** Delete exactly one entry and subtract exactly the bytes it owned. */
   public delete(key: string): boolean {
-    const entry = this._entries.get(key);
-    if (entry === undefined) return false;
-    if (!this._entries.delete(key)) return false;
-    this._retainedBytes -= entry.body.byteLength;
-    if (this._retainedBytes < 0) {
-      throw new Error('Pending BeeKEM Welcome byte accounting underflowed');
-    }
-    return true;
+    if (!this._entries.has(key)) return false;
+    const plan = planPendingWelcomeRemoval(this._metadata(), key);
+    this._entries = retainPendingWelcomeValues(this._entries, plan.kept);
+    this._retainedBytes = plan.retainedBytes;
+    return plan.removed;
+  }
+}
+
+function validateAdmissionInput(
+  key: string,
+  bufferedAtMs: number,
+  authenticated: boolean,
+): void {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new TypeError(
+      'Pending BeeKEM Welcome key must be a non-empty string',
+    );
+  }
+  if (!Number.isSafeInteger(bufferedAtMs) || bufferedAtMs < 0) {
+    throw new TypeError('Pending BeeKEM Welcome timestamp is invalid');
+  }
+  if (typeof authenticated !== 'boolean') {
+    throw new TypeError(
+      'Pending BeeKEM Welcome authentication flag must be a boolean',
+    );
   }
 }
