@@ -24,7 +24,10 @@
   "resolutions": {
     "@peculiar/asn1-schema": "^2.6.0",
     "dompurify": "3.4.17",
+    "glob": "14.0.3",
+    "minimatch": "11.0.4",
     "node-gyp": "12.4.0",
+    "typedoc": "patch:typedoc@npm%3A0.28.20#~/.yarn/patches/typedoc-npm-0.28.20-92d0a89709.patch",
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
