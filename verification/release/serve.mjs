@@ -14,6 +14,8 @@ let relay;
 let stopping = false;
 let ready = false;
 let commands = Promise.resolve();
+const defaultReservationLimit = process.env.RELAY_MAX_RESERVATIONS ?? '128';
+let reservationLimit = defaultReservationLimit;
 function start(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: consumer,
@@ -68,6 +70,7 @@ async function startRelay() {
       TCP_LISTEN: `/ip4/127.0.0.1/tcp/${ports.relayTcp}`,
       READINESS_PORT: String(ports.relayReadiness),
       RELAY_IDENTITY_KEY_PATH: join(temporary, 'relay-identity.key'),
+      RELAY_MAX_RESERVATIONS: reservationLimit,
     },
   });
   const deadline = Date.now() + 30_000;
@@ -185,14 +188,29 @@ try {
       return;
     }
     const action = request.method === 'POST' && request.url;
-    if (!['/relay/stop', '/relay/start'].includes(action)) {
+    if (
+      ![
+        '/relay/stop',
+        '/relay/start',
+        '/relay/reservations/one',
+        '/relay/reservations/reset',
+      ].includes(action)
+    ) {
       response.writeHead(404).end();
       return;
     }
     commands = commands.then(async () => {
       try {
         if (action === '/relay/stop') await stopChild(relay);
-        else await startRelay();
+        else if (action === '/relay/start') await startRelay();
+        else {
+          reservationLimit =
+            action === '/relay/reservations/one'
+              ? '1'
+              : defaultReservationLimit;
+          await stopChild(relay);
+          await startRelay();
+        }
         response.writeHead(200).end();
       } catch {
         response.writeHead(500).end();

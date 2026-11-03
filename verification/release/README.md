@@ -35,6 +35,8 @@ The browser gate exercises:
   convergence without duplicated additions and a fresh post-recovery edit.
 - First-WebSocket timeout and retry without treating an open connection as a
   delivery receipt.
+- Saved-note catch-up and a fresh bidirectional edit after browser relaunch
+  while the owned relay's only inbound circuit reservation is occupied.
 - An acknowledged checkpoint surviving forced termination of the exact owned
   Chromium process. The other engines skip this Chromium-CDP-specific case.
 
@@ -99,6 +101,14 @@ Local browser processes share a host and use loopback unless the external relay
 is explicitly configured. Playwright WebKit coverage is not a claim about every
 Safari/device combination. The gate covers one note, one founder and one
 collaborator, retained browser identities and the same group-key epoch.
+
+A Linux/WebKit readiness run previously timed out during missed-edit catch-up.
+Investigation reproduced that symptom with exhausted circuit reservations:
+Note waited for its own inbound reservation before requesting history over an
+already usable pubsub connection. Recovery now requests history without that
+reservation; creating an invitation still waits for its circuit rendezvous.
+The capacity regression checks this failure mode in every selected engine. The
+earlier timeout did not retain enough diagnostics to establish the same cause.
 
 It does not establish multi-document/many-peer recovery, key-loss recovery,
 revocation across a partition, relay failover, storage rollback resistance,

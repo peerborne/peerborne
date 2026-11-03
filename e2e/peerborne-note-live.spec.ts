@@ -230,7 +230,10 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     try {
       await expect(restoredEditor).toHaveValue(offlineEdit);
     } catch (error) {
-      console.info('Note recovery counters', await diagnostics());
+      console.info(
+        'Note recovery counters',
+        JSON.stringify(await diagnostics()),
+      );
       throw error;
     }
     await expect(restoredEditor).toBeEditable();
