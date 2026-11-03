@@ -11,11 +11,19 @@ function redact(message) {
 
 export default class ReleaseReporter {
   results = [];
+  pending = { stdout: '', stderr: '' };
+  writeDiagnostic(stream, chunk) {
+    this.pending[stream] += String(chunk);
+    const end = this.pending[stream].lastIndexOf('\n') + 1;
+    if (end === 0) return;
+    process[stream].write(redact(this.pending[stream].slice(0, end)));
+    this.pending[stream] = this.pending[stream].slice(end);
+  }
   onStdOut(chunk) {
-    process.stdout.write(redact(String(chunk)));
+    this.writeDiagnostic('stdout', chunk);
   }
   onStdErr(chunk) {
-    process.stderr.write(redact(String(chunk)));
+    this.writeDiagnostic('stderr', chunk);
   }
   onTestEnd(test, result) {
     const name = test.titlePath().filter(Boolean).join(' / ');
@@ -38,6 +46,11 @@ export default class ReleaseReporter {
     );
   }
   onEnd(result) {
+    for (const stream of ['stdout', 'stderr']) {
+      if (this.pending[stream])
+        process[stream].write(redact(this.pending[stream]));
+      this.pending[stream] = '';
+    }
     const path = resolve(
       process.env.PEERBORNE_RELEASE_REPORT_DIRECTORY,
       'browser.json',

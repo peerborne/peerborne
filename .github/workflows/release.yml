@@ -70,9 +70,9 @@ jobs:
       - run: yarn install --immutable
       - name: Audit workspace and separately locked project dependencies
         run: |
-          yarn npm audit --all --recursive --severity high --severity critical
-          yarn --cwd relay-server npm audit --recursive --severity high --severity critical
-          yarn --cwd e2e/test-app npm audit --recursive --severity high --severity critical
+          yarn npm audit --all --recursive --severity high
+          yarn --cwd relay-server npm audit --recursive --severity high
+          yarn --cwd e2e/test-app npm audit --recursive --severity high
       - run: yarn test:release
       - run: yarn build
       - run: yarn test:serial
