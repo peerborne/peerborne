@@ -116,6 +116,7 @@ lemma syncResponseAllowed_ensures(now: int, lastResponse: int, hasChange: bool, 
 {
 }
 
+@IsolateAssertions
 method pruneSyncRequestReplays(keys: seq<string>, ledger: map<string, int>, now: int) returns (res: map<string, int>)
   requires (0 <= now)
   requires (now <= 9007199254740991)
@@ -139,9 +140,12 @@ method pruneSyncRequestReplays(keys: seq<string>, ledger: map<string, int>, now:
     decreases (|keys| - index)
   {
     var key := keys[index];
+    assert !((key in result));
     var i_t0 := syncRequestReplayExpired(ledger[key], now);
     if !(i_t0) {
       result := result[key := ledger[key]];
+      assert (key in result);
+      assert (result[key] == ledger[key]);
     }
     index := (index + 1);
   }

@@ -52,8 +52,12 @@ export function pruneSyncRequestReplays(
     //@ invariant forall(key: string, result.has(key) ==> result.get(key) === ledger.get(key))
     //@ decreases keys.length - index
     const key = keys[index];
-    if (!syncRequestReplayExpired(ledger.get(key)!, now))
+    //@ assert !result.has(key)
+    if (!syncRequestReplayExpired(ledger.get(key)!, now)) {
       result.set(key, ledger.get(key)!);
+      //@ assert result.has(key)
+      //@ assert result.get(key) === ledger.get(key)
+    }
   }
   return result;
 }

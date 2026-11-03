@@ -81,8 +81,8 @@ Only response attempts consume replay capacity, so known-state requests and
 requests arriving during cooldown cannot flush the replay ledger.
 The no-op work check concerns response preparation; pubsub request authentication
 still has its own cost and is outside this response-admission bound.
-History insertion uses separate checked assertion batches. CI verifies the
-complete sync unit under four fixed solver seeds as well as its normal audit
+Replay pruning and history insertion use separate checked assertion batches.
+CI verifies the complete sync unit under four fixed solver seeds as well as its normal audit
 and counterexample controls, without increasing the existing time limits.
 
 The history model assumes truthful authentication and detached inputs. Native
