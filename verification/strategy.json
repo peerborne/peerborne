@@ -66,6 +66,16 @@
       ]
     },
     {
+      "id": "welcome-expiry-boundaries",
+      "formalBoundary": "Checked expiry membership, exact retained bytes and a nondecreasing sampled clock compose with admission, removal and opaque value projection into finite histories. Failed preparations and rejected stores preserve the clock; retained receipt times are bounded by it, and successful pruning removes exactly entries whose observed age exceeds the TTL. Native safe-integer arithmetic, array/Map ownership, injected preparation failures, malformed clocks and the actual replay drain require properties. Authentication and scheduling remain assumptions; this does not prove a wall-clock deadline, periodic pruning, arbitrary-schedule replay safety or UI latency.",
+      "evidence": ["packages/core/src/welcome-expiry-properties.test.ts"],
+      "sources": [
+        "packages/core/src/policy/welcome-admission.ts",
+        "packages/core/src/pending-welcome-buffer.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "asynchronous-lifecycle",
       "formalBoundary": "Sequential partition, revision, epoch, byte-budget and claim laws are proved. Promise scheduling, failures, callback side effects, rollback and native encrypted-envelope ownership require generated execution histories.",
       "evidence": [

@@ -11,10 +11,12 @@ import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
 } from './utils.js';
 import {
+  advancePendingWelcomeClock,
   canAdmitPendingWelcome,
   insertPendingWelcomeValue,
   pendingWelcomeBudget,
   planPendingWelcomeAdmission,
+  planPendingWelcomeExpiry,
   planPendingWelcomeRemoval,
   retainPendingWelcomeValues,
   type PendingWelcomeMetadata,
@@ -72,6 +74,7 @@ export interface PendingWelcomeStoreResult {
 export class PendingWelcomeBuffer {
   private _entries = new Map<string, PendingWelcomeEntry>();
   private _retainedBytes = 0;
+  private _observedAtMs = 0;
 
   public get size(): number {
     return this._entries.size;
@@ -163,7 +166,8 @@ export class PendingWelcomeBuffer {
    * a buffered one for the same key: it may be a forged copy of a genuine
    * Welcome that could not be verified yet either. Validation and copying
    * happen before replacement. Rejected admissions do not copy body bytes
-   * or change any retained entry.
+   * or change any retained entry. Receipt times use a nondecreasing observed
+   * clock so backward samples cannot backdate a new Welcome.
    */
   public store(
     key: string,
@@ -209,18 +213,48 @@ export class PendingWelcomeBuffer {
       PENDING_WELCOME_MAX_BODY_BYTES,
       'Pending BeeKEM Welcome body',
     );
+    const observedAtMs = advancePendingWelcomeClock(
+      this._observedAtMs,
+      bufferedAtMs,
+    );
     const retained = retainPendingWelcomeValues(this._entries, plan.kept);
     this._entries = insertPendingWelcomeValue(retained, key, {
       body: stableBody,
       authenticated,
-      bufferedAtMs,
+      bufferedAtMs: observedAtMs,
     });
     this._retainedBytes = plan.retainedBytes;
+    this._observedAtMs = observedAtMs;
     return {
       stored: true,
       replaced: plan.replaced,
       evictedKeys: plan.evictedKeys,
     };
+  }
+
+  /** Remove expired metadata before a replay path copies any retained body. */
+  public pruneExpired(now: number): readonly string[] {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      throw new TypeError('Pending BeeKEM Welcome clock is invalid');
+    }
+    const observedAtMs = advancePendingWelcomeClock(this._observedAtMs, now);
+    if (this._entries.size === 0) {
+      this._observedAtMs = observedAtMs;
+      return [];
+    }
+    const plan = planPendingWelcomeExpiry(
+      this._metadata(),
+      [...this._entries.values()].map((entry) => entry.bufferedAtMs),
+      observedAtMs,
+      PENDING_WELCOMES_TTL_MS,
+    );
+    if (plan.expiredKeys.length !== 0) {
+      const retained = retainPendingWelcomeValues(this._entries, plan.kept);
+      this._entries = retained;
+      this._retainedBytes = plan.retainedBytes;
+    }
+    this._observedAtMs = observedAtMs;
+    return plan.expiredKeys;
   }
 
   private _metadata(): PendingWelcomeMetadata[] {

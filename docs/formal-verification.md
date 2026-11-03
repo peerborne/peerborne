@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 132 production functions in 34 proof units. The runtime calls
+LemmaScript checks 135 production functions in 34 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -39,7 +39,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
 | [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                                                |
 | [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
-| [Welcome admission](../packages/core/src/policy/welcome-admission.ts) | 7 | Exact total/protected byte accounting, bounded admission and trimming, precise removal and value-map projection/insertion. Checked finite histories retain authenticated bindings under unverified traffic and preserve count/byte limits and trusted-binding provenance. |
+| [Welcome admission](../packages/core/src/policy/welcome-admission.ts) | 10 | Exact byte accounting, bounded admission and trimming, expiry selection, a monotone observed clock, precise removal and value-map projection/insertion. Checked finite histories preserve retained bindings, count/byte limits, timestamp coherence and trusted-binding provenance. |
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)                       |         9 | Exact conflict classification, coherent bounded join/acceptance indexes, monotone time, expiry-only retirement and sweep frontier. Checked arbitrary finite histories preserve join and consumed acceptance bindings and prevent expired offer revival.                                                  |
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
 | [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
@@ -97,9 +97,25 @@ detached payloads and native order against an independent ranked-victim BigInt
 oracle. The existing receive-path signature checks already enforce strict
 verification results; raw-buffer hardening is not a signature-bypass finding.
 
+Expiry pruning now runs on metadata before the replay drain requests a detached
+body. The checked plan removes exactly entries whose observed age exceeds the
+five-minute TTL, preserving entries at the exact boundary and accounting for
+every retained byte. A nondecreasing sampled clock stamps successful arrivals
+and pruning passes; rejected stores, malformed clocks and failed preparations
+cannot advance it. Checked finite histories compose admission, deletion and
+pruning while preserving clock bounds, timestamp/value-map coherence, count
+and byte limits, and untouched payload bindings.
+
+Native properties reproduced a replay-body copy for an already expired Welcome.
+The production drain now prunes first and checks cancellation before sampling
+the clock. Generated histories use an independent BigInt time oracle, including
+safe-integer boundaries, backward samples, expiry failures and rejected floods.
+Pruning requires an explicit call; clock progress, periodic maintenance and
+arbitrary asynchronous replay schedules remain runtime assumptions.
+
 This proof assumes truthful authentication and detached bounded metadata.
 Native byte lengths, object/Map identity and alias ownership retain property
-checks. TTL/draining, durable storage, arbitrary scheduler liveness and browser
+checks. Asynchronous replay/draining, durable storage, scheduler liveness and browser
 heap/latency limits remain outside the proof. A passing retention model does
 not establish document secrecy or delivery across hostile networks.
 
@@ -333,7 +349,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 51 property-suite files containing 131 explicit
+The inventory audits 52 property-suite files containing 137 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -343,7 +359,7 @@ properties can invoke the same assertion more than once.
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
-| Welcome admission | Native keys/flags and byte lengths, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, array/Map ownership and independent ranked-victim BigInt oracles. |
+| Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
 | Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback, one-time package consumption, stable operation bindings, hydration/claim/finalize schedules and outbox ownership. |
 | Invitation replay                       | Delayed hashing, expiry retirement/clock rollback, actual signed recipient conflicts, independent tuple-ledger histories, malformed clocks, immutable capacity, native map ownership and live-traffic enumeration counts.                   |
