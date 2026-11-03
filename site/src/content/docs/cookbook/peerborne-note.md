@@ -59,10 +59,14 @@ from operating the identity concurrently where that browser API is available.
 
 This is a local browser identity, not an account. Peerborne Note has no login,
 key backup, cross-device identity transfer, or collaborator identity directory.
-Clearing site data loses the identity. The P-256 invitation KEM keys and
-outstanding invitation state remain in memory, and complete note recovery after
-a refresh or browser restart is not verified. Persisting the signing key alone
-does not preserve the document or its decryption state.
+Clearing site data loses the identity and its local recovery material. The
+application retains non-extractable signing, P-256 KEM and AES-GCM storage keys
+in IndexedDB alongside encrypted checkpoints. Opening a saved note restores
+its document and decryption state; the release gate exercises reload, process
+relaunch, an acknowledged checkpoint after forced Chromium termination, and
+same-epoch two-writer recovery after an owned relay outage. Outstanding
+invitation and retry state remains in memory and is lost on founder restart.
+There is no account/key backup or recovery after all local state is lost.
 
 ## Relay and privacy boundary
 
@@ -70,17 +74,21 @@ The two browsers normally depend on the configured Circuit Relay. Document
 changes are signed and encrypted before publication, so the relay does not
 receive note plaintext. It still sees connection and traffic metadata and can
 delay, drop, censor, or partition traffic. The initial deployment is a
-single-relay design; failover, automatic reconnect, delivery acknowledgments,
-durable outbox, capacity, and production availability are not established.
+single-relay design. After a saved note is reopened, the application resumes
+relay reservations and periodic history requests. The owned-relay release gate
+verifies a bounded outage and repair with retained identities. Failover,
+delivery acknowledgments, a general durable outbox, capacity and public-service
+availability are not established.
 
 ## Run the source workspace
 
-The six `@peerborne/*` libraries remain unpublished, so use the repository
+The eleven `@peerborne/*` libraries remain unpublished, so use the repository
 workspace with Node.js 22.19.0 and Yarn 4.5.0:
 
 ```sh
 corepack enable
 yarn install --immutable
+yarn build
 yarn workspace @peerborne/peerborne-note test
 yarn workspace @peerborne/peerborne-note build
 yarn test:e2e:peerborne-note
