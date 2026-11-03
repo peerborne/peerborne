@@ -4911,7 +4911,7 @@ __metadata:
     react: "npm:^19.3.1"
     react-bootstrap: "npm:^2.10.10"
     react-dom: "npm:^19.3.1"
-    react-router-dom: "npm:^7.18.4"
+    react-router-dom: "npm:^7.18.5"
     tsx: "npm:4.23.15"
     typescript: "npm:^5.9.3"
     uuid: "npm:^14.0.2"
@@ -5110,7 +5110,7 @@ __metadata:
     react-bootstrap-icons: "npm:^1.11.6"
     react-dom: "npm:^19.3.1"
     react-redux: "npm:^9.3.0"
-    react-router-dom: "npm:^7.18.4"
+    react-router-dom: "npm:^7.18.5"
     redux: "npm:^5.0.1"
     redux-thunk: "npm:^3.1.0"
     slate: "npm:^0.126.2"
@@ -14356,21 +14356,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-router-dom@npm:^7.18.4":
-  version: 7.18.4
-  resolution: "react-router-dom@npm:7.18.4"
+"react-router-dom@npm:^7.18.5":
+  version: 7.18.5
+  resolution: "react-router-dom@npm:7.18.5"
   dependencies:
-    react-router: "npm:7.18.4"
+    react-router: "npm:7.18.5"
   peerDependencies:
     react: ">=18"
     react-dom: ">=18"
-  checksum: 10/d1f9ccaacbd19704312b954ac731648f590cced3a310ce46a14b987a712758b4357f779e3c31331e8d3d9f8cead994aa32c2ca762a130c4e37648f3f764205fd
+  checksum: 10/7800b87dc15fa468ec3a57b9fb9fc69b3f93ee4ffaaee00230224c862c642a2208dfc779b9f37073b2698d1eff1f0cafef6f5d71e6d361d0c0ff8df1ae10a5e4
   languageName: node
   linkType: hard
 
-"react-router@npm:7.18.4":
-  version: 7.18.4
-  resolution: "react-router@npm:7.18.4"
+"react-router@npm:7.18.5":
+  version: 7.18.5
+  resolution: "react-router@npm:7.18.5"
   dependencies:
     cookie: "npm:^1.0.1"
     set-cookie-parser: "npm:^2.6.0"
@@ -14380,7 +14380,7 @@ __metadata:
   peerDependenciesMeta:
     react-dom:
       optional: true
-  checksum: 10/2c4c6e23a38fe5994b126d55590f6dbfe810d47939b765cd7af97b4b26a16c3dab20c1b048811e05dc74bc93787a3d0c3fc5f29df19fd0732059cccc6bf7180a
+  checksum: 10/e95a532085bfcf6820cc85255343c7fbba75682ac50d3c8e1e4bc1254f30b1e6e1216b61254cc44d78361a9d87cf1d745f833db88a8aae39d4809c954bb85d5a
   languageName: node
   linkType: hard
 
