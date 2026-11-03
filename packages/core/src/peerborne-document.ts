@@ -6526,10 +6526,11 @@ export class PeerborneDocument<
     if (!key) throw new Error('Document has no encryption key');
     const { nonce, data } = await this._authProvider.encrypt(bytes, key);
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
+    const frame = concatUint8Arrays(keyId, nonce, data);
     if (isCurrent && !isCurrent()) return false;
     await this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
-      concatUint8Arrays(keyId, nonce, data),
+      frame,
     );
     return true;
   }
