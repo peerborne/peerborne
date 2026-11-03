@@ -378,7 +378,7 @@ lemma syncResponseSubsetCard(left: set<string>, right: set<string>)
   }
 }
 
-method syncReplayState_remember(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, key: string, issuedAt: int)
+method {:isolate_assertions} syncReplayState_remember(ledger: map<string, int>, trace: seq<SyncResponseAdmission>, clock: int, lastResponse: int, key: string, issuedAt: int)
   returns (result: map<string, int>, nextTrace: seq<SyncResponseAdmission>)
   requires SyncReplayState(ledger, trace, clock, lastResponse)
   requires forall token :: token in ledger ==> !syncRequestReplayExpired(ledger[token], clock)

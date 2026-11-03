@@ -572,7 +572,8 @@
         "syncLiveResponses_properties",
         "syncReplayState_remember",
         "syncResponseSubsetCard"
-      ]
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/document-authority.ts",

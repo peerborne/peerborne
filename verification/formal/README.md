@@ -30,8 +30,8 @@ each unit; unrelated imports elsewhere in the file do not become proof evidence.
 
 The runner rejects missing proof files, generated-file drift, unverified
 declarations, partial verification, proof escape annotations, a missing domain
-witness, and incorrect number/string/slicing configuration. The tree unit also
-runs complete verification under fixed solver seeds 1, 2, 7 and 19 with a
+witness, and incorrect number/string/slicing configuration. The tree and
+sync-response units also run complete verification under fixed solver seeds 1, 2, 7 and 19 with a
 10-second per-obligation limit; this changes solver search, not the contracts. Dafny's assumption
 audit must report zero findings, including no body-less declarations or
 unproved imported contracts.
