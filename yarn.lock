@@ -4712,7 +4712,7 @@ __metadata:
     "@types/react": "npm:^19.3.0"
     "@types/react-dom": "npm:^19.3.0"
     "@types/react-redux": "npm:^7.1.34"
-    "@vitejs/plugin-react": "npm:^6.1.1"
+    "@vitejs/plugin-react": "npm:^6.1.2"
     jsondiffpatch: "npm:^0.7.6"
     jsoneditor: "npm:^10"
     jsoneditor-react: "npm:^3.1.2"
@@ -4903,7 +4903,7 @@ __metadata:
     "@types/react-bootstrap": "npm:^1.1.0"
     "@types/react-dom": "npm:^19.3.0"
     "@types/uuid": "npm:^11.0.0"
-    "@vitejs/plugin-react": "npm:^6.1.1"
+    "@vitejs/plugin-react": "npm:^6.1.2"
     blockstore-core: "npm:^7.0.1"
     bootstrap: "npm:^5.3.8"
     fake-indexeddb: "npm:^6.2.5"
@@ -4932,7 +4932,7 @@ __metadata:
     "@types/node": "npm:^26.6.2"
     "@types/react": "npm:^19.3.0"
     "@types/react-dom": "npm:^19.3.0"
-    "@vitejs/plugin-react": "npm:^6.1.1"
+    "@vitejs/plugin-react": "npm:^6.1.2"
     fake-indexeddb: "npm:^6.2.5"
     jest: "npm:^30.5.2"
     react: "npm:^19.3.1"
@@ -5102,7 +5102,7 @@ __metadata:
     "@types/react-dom": "npm:^19.3.0"
     "@types/react-redux": "npm:^7.1.34"
     "@types/slate": "npm:^0.47.16"
-    "@vitejs/plugin-react": "npm:^6.1.1"
+    "@vitejs/plugin-react": "npm:^6.1.2"
     bootstrap: "npm:^5.3.8"
     dayjs: "npm:^1.11.23"
     react: "npm:^19.3.1"
@@ -6868,27 +6868,6 @@ __metadata:
   version: 1.12.2
   resolution: "@unrs/resolver-binding-win32-x64-msvc@npm:1.12.2"
   conditions: os=win32 & cpu=x64
-  languageName: node
-  linkType: hard
-
-"@vitejs/plugin-react@npm:^6.1.1":
-  version: 6.1.1
-  resolution: "@vitejs/plugin-react@npm:6.1.1"
-  dependencies:
-    "@rolldown/pluginutils": "npm:^1.0.1"
-  peerDependencies:
-    "@rolldown/plugin-babel": ^0.1.7 || ^0.2.0
-    babel-plugin-react-compiler: ^1.0.0
-    oxc-transform-react: ^0.145.0
-    vite: ^8.0.0
-  peerDependenciesMeta:
-    "@rolldown/plugin-babel":
-      optional: true
-    babel-plugin-react-compiler:
-      optional: true
-    oxc-transform-react:
-      optional: true
-  checksum: 10/c9d08a062c60d57cc2b59d3dba3c26475f1aba97da1f62d1191a1363980e7b19ce915e1f6c039f753afc8443e5a71c517d613d78c52b26a02c1afc1821e88b74
   languageName: node
   linkType: hard
 
