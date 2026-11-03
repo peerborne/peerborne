@@ -74,6 +74,10 @@ export class InvitationReplayError extends Error {
  * Live entries are never silently evicted because eviction would make an old
  * invitation replayable. Records are retired only after the signed offer's
  * hard expiry, when the envelope can no longer be accepted.
+ *
+ * Omit the optional time argument to sample wall time again after hashing.
+ * An explicit timestamp supplies a trusted, fixed clock observation. Effective
+ * time never moves backwards within this guard instance.
  */
 export class InMemoryInvitationReplayGuard {
   private readonly _claimsByOffer = new Map<string, InvitationReplayClaim>();

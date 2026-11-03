@@ -112,6 +112,7 @@ Authentication work reservation, membership-control epoch/parent admission
 and binary field/copy bounds also have checked history or composition laws.
 Signature verification, authorizers, queue scheduling, fork latching and
 native byte APIs remain explicit property-test boundaries.
+
 Invitation-replay histories preserve one signed join binding and at most one
 acceptance per offer, including after expiry retirement and clock rollback.
 All four indexes remain coherent and individually bounded by capacity.
@@ -122,6 +123,7 @@ immutable capacity, malformed clocks and expiry during asynchronous hashing.
 The fixed offer catalog models digest binding; signature verification remains
 the caller's responsibility. These are per-instance replay guarantees, with
 no claim of durable replay protection or browser latency.
+
 Sync-response histories additionally preserve live replay bindings under
 nondecreasing effective time and derive a 46-entry ledger bound from freshness
 and response spacing. Native properties exercise expiry during asynchronous

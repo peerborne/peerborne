@@ -230,20 +230,28 @@ test('live invitation bursts and exact replays avoid full index sweeps', async (
       let visited = 0;
       const entries = Map.prototype.entries;
       const keys = Map.prototype.keys;
-      Object.defineProperty(claims, Symbol.iterator, {
-        value: function* () {
-          for (const entry of entries.call(claims)) {
-            visited++;
-            yield entry;
-          }
-        },
-      });
-      Object.defineProperty(claims, 'keys', {
-        value: function* () {
-          for (const key of keys.call(claims)) {
-            visited++;
-            yield key;
-          }
+      const valuesIterator = Map.prototype.values;
+      function* counted<T>(iterator: Iterable<T>) {
+        for (const entry of iterator) {
+          visited++;
+          yield entry;
+        }
+      }
+      Object.defineProperties(claims, {
+        [Symbol.iterator]: { value: () => counted(entries.call(claims)) },
+        entries: { value: () => counted(entries.call(claims)) },
+        keys: { value: () => counted(keys.call(claims)) },
+        values: { value: () => counted(valuesIterator.call(claims)) },
+        forEach: {
+          value: (
+            callback: (value: unknown, key: string, map: typeof claims) => void,
+            thisArg?: unknown,
+          ) => {
+            for (const [key, value] of entries.call(claims)) {
+              visited++;
+              callback.call(thisArg, value, key, claims);
+            }
+          },
         },
       });
       for (const value of values)
@@ -694,7 +702,7 @@ test('signature-verified invitations cannot bind a second recipient after expiry
           1,
           first.offer,
         );
-        const guard = new InMemoryInvitationReplayGuard(1);
+        const guard = new InMemoryInvitationReplayGuard(2);
         await expect(observe(guard, first, kind, NOW)).resolves.toBe(
           'accepted',
         );

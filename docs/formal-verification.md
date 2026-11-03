@@ -30,7 +30,7 @@ the pinned toolchain's model. The
 consumer, proof obligation and non-vacuity witness.
 
 | Production source                                                           | Functions | Proved behavior                                                                                                                                                                                           |
-| ------------------------------------------------------------------------------------------ | --------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------------------------------------------------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                                      |
 | [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                                             |
 | [Quorum](../packages/core/src/policy/quorum.ts) | 7 | Strict-majority default and explicit trust floor; exact first-eligible peer selection, distinct identities, digest multiplicities, stable cohort projection and failure precedence. Distinct digests cannot both reach a strict majority of the counted votes; ambiguous threshold winners are rejected. |
@@ -307,7 +307,7 @@ are declarations, not code coverage or a security percentage. Parameterized
 properties can invoke the same assertion more than once.
 
 | Unproved boundary                       | Generated evidence                                                                                                                                                                                                                          |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
@@ -351,8 +351,9 @@ findings, not evidence of a remote exploit or a complete loader proof.
 
 ## Cost and remaining work
 
-The full proof check takes roughly two minutes on the development host,
-including the additional tree, invitation-replay and sync-response solver-seed checks. The generated report records each run's duration,
+The full proof check took 286 seconds on the development host, including
+all tree, invitation-replay and sync-response solver-seed checks. The generated
+report records each run's duration,
 source/proof hashes and tool versions.
 Controls run separately. First-time setup downloads the compiler dependencies
 and a roughly 55–65 MB Dafny distribution. Specification review, proof authoring

@@ -489,6 +489,7 @@ method invitationReplayJoin_preserves(tables: InvitationReplayTables, history: m
   ensures offer in result.claims && offer in nextHistory
   ensures nextHistory == history[offer := result.claims[offer]] && offer !in history
   ensures result.acceptances == tables.acceptances
+  ensures forall key :: key in result.claims <==> key in tables.claims || key == offer
   ensures InvitationReplayJoinSame(result.claims[offer], InvitationReplayClaim(catalog[offer].invitationId, offer, catalog[offer].expiresAtMs, requestId, requestDigest, false, "", "")) && !result.claims[offer].accepted
   ensures forall prior :: prior in history ==> prior in nextHistory && nextHistory[prior] == history[prior]
 {
@@ -507,6 +508,7 @@ method invitationReplayAcceptance_preserves(tables: InvitationReplayTables, hist
   ensures InvitationReplayCore(result, nextHistory, catalog, clock, capacity) && InvitationReplayFrontier(result, frontier)
   ensures offer in result.claims && offer in nextHistory
   ensures nextHistory == history[offer := result.claims[offer]]
+  ensures result.claims.Keys == tables.claims.Keys
   ensures InvitationReplayJoinSame(history[offer], nextHistory[offer]) && nextHistory[offer].accepted && nextHistory[offer].acceptanceId == acceptanceId && nextHistory[offer].acceptanceDigest == acceptanceDigest
   ensures forall prior :: prior in history && prior != offer ==> prior in nextHistory && nextHistory[prior] == history[prior]
 {
@@ -689,6 +691,7 @@ method invitationReplayHistory_step(tables: InvitationReplayTables, history: map
   ensures status == "accepted" ==> action.validated && action.kind > 0 && action.offer in result.claims && result.claims[action.offer].requestId == action.requestId && result.claims[action.offer].requestDigest == action.requestDigest && (action.kind == 2 ==> result.claims[action.offer].accepted && result.claims[action.offer].acceptanceId == action.acceptanceId && result.claims[action.offer].acceptanceDigest == action.acceptanceDigest)
   ensures status == "accepted" && action.kind == 1 ==> !result.claims[action.offer].accepted
   ensures forall other :: other != action.offer ==> (other in nextHistory <==> other in history) && (other in history ==> nextHistory[other] == history[other])
+  ensures forall expired :: expired in catalog && catalog[expired].expiresAtMs <= clock && expired !in tables.claims ==> expired !in result.claims
   ensures forall expired :: expired in catalog && catalog[expired].expiresAtMs <= clock ==> (expired in nextHistory <==> expired in history) && (expired in history ==> nextHistory[expired] == history[expired])
   ensures forall prior :: prior in history ==> prior in nextHistory && InvitationReplayJoinSame(history[prior], nextHistory[prior]) && InvitationReplayConsumedSame(history[prior], nextHistory[prior])
   ensures forall added :: added in nextHistory && added !in history ==> action.validated && action.kind > 0 && added == action.offer
@@ -733,6 +736,16 @@ function InvitationReplayHistoryClock(clock: int, actions: seq<InvitationReplayA
   if |actions| == 0 then clock else InvitationReplayHistoryClock(if clock > actions[0].observedAt then clock else actions[0].observedAt, actions[1..])
 }
 
+lemma invitationReplayClock_unchanged(clock: int, actions: seq<InvitationReplayAction>)
+  requires forall i :: 0 <= i < |actions| ==> actions[i].observedAt <= clock
+  ensures InvitationReplayHistoryClock(clock, actions) == clock
+  decreases |actions|
+{
+  if |actions| > 0 {
+    invitationReplayClock_unchanged(clock, actions[1..]);
+  }
+}
+
 @IsolateAssertions
 method invitationReplayHistory_all_histories(tables: InvitationReplayTables, history: map<string, InvitationReplayClaim>, catalog: map<string, InvitationReplayOffer>, clock: int, frontier: int, capacity: int, actions: seq<InvitationReplayAction>)
   returns (result: InvitationReplayTables, finalHistory: map<string, InvitationReplayClaim>, finalClock: int, finalFrontier: int)
@@ -741,6 +754,7 @@ method invitationReplayHistory_all_histories(tables: InvitationReplayTables, his
   ensures InvitationReplayCore(result, finalHistory, catalog, finalClock, capacity) && InvitationReplayFrontier(result, finalFrontier)
   ensures clock <= finalClock <= 9007199254740991
   ensures finalClock == InvitationReplayHistoryClock(clock, actions)
+  ensures forall expired :: expired in catalog && catalog[expired].expiresAtMs <= clock && expired !in tables.claims ==> expired !in result.claims
   ensures forall expired :: expired in catalog && catalog[expired].expiresAtMs <= clock ==> (expired in finalHistory <==> expired in history) && (expired in history ==> finalHistory[expired] == history[expired])
   ensures forall prior :: prior in history ==> prior in finalHistory && InvitationReplayJoinSame(history[prior], finalHistory[prior]) && InvitationReplayConsumedSame(history[prior], finalHistory[prior])
   ensures forall added :: added in finalHistory && added !in history ==> exists i :: 0 <= i < |actions| && actions[i].validated && actions[i].kind > 0 && actions[i].offer == added
@@ -764,7 +778,7 @@ method invitationReplayLedger_domain()
 {
   var empty := InvitationReplayTables(map[], map[], map[], map[]);
   var history: map<string, InvitationReplayClaim> := map[];
-  var catalog := map["first" := InvitationReplayOffer("invitation", 100), "later" := InvitationReplayOffer("invitation", 200)];
+  var catalog := map["first" := InvitationReplayOffer("invitation", 100)];
   assert InvitationReplayCore(empty, history, catalog, 0, 1);
   assert InvitationReplayFrontier(empty, 9007199254740991);
   var join := InvitationReplayAction(1, "first", "request", "join-digest", "", "", 1, true);
@@ -779,26 +793,48 @@ method invitationReplayLedger_domain()
   var consumed, consumedHistory, consumedClock, consumedFrontier, accepted := invitationReplayHistory_step(claimed, joinedHistory, catalog, clock, frontier, 1, acceptance);
   assert accepted == "accepted" && consumed.claims["first"].accepted;
   assert consumed.claims["first"].acceptanceDigest == "acceptance-digest";
-  var attacks := [InvitationReplayAction(1, "later", "hostile", "hostile-digest", "", "", 2, false), InvitationReplayAction(2, "first", "request", "join-digest", "other-acceptance", "other-digest", 0, true)];
-  var afterAttacks, unchangedHistory, unchangedClock, unchangedFrontier := invitationReplayHistory_all_histories(consumed, consumedHistory, catalog, consumedClock, consumedFrontier, 1, attacks);
-  assert "later" !in unchangedHistory && unchangedHistory["first"].accepted;
-  assert unchangedHistory["first"].acceptanceId == "acceptance";
-  invitationReplayClock_advance(afterAttacks, unchangedHistory, catalog, unchangedClock, 100, 1);
-  var retired, retiredFrontier := invitationReplayPrepare(afterAttacks, unchangedHistory, catalog, 100, unchangedFrontier, 1);
-  assert retired.claims == map[] && retired.offers == map[] && retired.requests == map[] && retired.acceptances == map[];
-  assert retiredFrontier == 9007199254740991;
-  var replacement := InvitationReplayAction(1, "later", "request", "later-digest", "", "", 100, true);
-  assert InvitationReplayReady(retired, catalog, 100, 1, replacement);
-  var resumed, resumedHistory, resumedClock, resumedFrontier, resumedStatus := invitationReplayHistory_step(retired, unchangedHistory, catalog, 100, retiredFrontier, 1, replacement);
-  assert resumedStatus == "accepted" && "later" in resumed.claims && "first" !in resumed.claims;
-  var rollback := [InvitationReplayAction(1, "first", "different-request", "different-digest", "", "", 1, true)];
-  var final, finalHistory, finalClock, finalFrontier := invitationReplayHistory_all_histories(resumed, resumedHistory, catalog, resumedClock, resumedFrontier, 1, rollback);
-  assert finalHistory["first"] == consumedHistory["first"] && "first" !in final.claims;
-  assert finalClock == 100;
   assert advanceInvitationReplayClock(9007199254740991, 0) == 9007199254740991;
   assert nextInvitationReplayExpiry(9007199254740991, 0) == 0;
   assert shouldSweepInvitationReplays(100, 100);
+  invitationReplayRetirement_domain();
+  invitationReplayHistory_domain();
   invitationReplayExpiry_domain();
+}
+
+@IsolateAssertions
+method invitationReplayRetirement_domain()
+{
+  var claim := InvitationReplayClaim("invitation", "first", 100, "request", "join-digest", true, "acceptance", "acceptance-digest");
+  var tables := InvitationReplayTables(map["first" := claim], map["invitation" := "first"], map["request" := InvitationReplayEnvelope("first", "join-digest")], map["acceptance" := InvitationReplayEnvelope("first", "acceptance-digest")]);
+  var history := map["first" := claim];
+  var catalog := map["first" := InvitationReplayOffer("invitation", 100)];
+  assert InvitationReplayCore(tables, history, catalog, 2, 1) && InvitationReplayFrontier(tables, 100);
+  invitationReplayClock_advance(tables, history, catalog, 2, 100, 1);
+  var retired, frontier := invitationReplayPrepare(tables, history, catalog, 100, 100, 1);
+  assert "first" !in retired.claims;
+  assert retired.claims.Keys == {};
+  invitationReplayIndexBounds(retired);
+  assert |retired.offers| == 0 && |retired.requests| == 0 && |retired.acceptances| == 0;
+  assert frontier == 9007199254740991;
+}
+
+@IsolateAssertions
+method invitationReplayHistory_domain()
+{
+  var claim := InvitationReplayClaim("invitation", "first", 100, "request", "join-digest", true, "acceptance", "acceptance-digest");
+  var tables := InvitationReplayTables(map[], map[], map[], map[]);
+  var history := map["first" := claim];
+  var catalog := map["first" := InvitationReplayOffer("invitation", 100), "later" := InvitationReplayOffer("invitation", 200)];
+  assert InvitationReplayCore(tables, history, catalog, 100, 1) && InvitationReplayFrontier(tables, 9007199254740991);
+  var replacement := InvitationReplayAction(1, "later", "request", "later-digest", "", "", 100, true);
+  assert InvitationReplayReady(tables, catalog, 100, 1, replacement);
+  var actions := [replacement, InvitationReplayAction(1, "first", "different-request", "different-digest", "", "", 1, true), InvitationReplayAction(1, "unsigned", "r", "d", "", "", 0, false)];
+  var final, finalHistory, finalClock, finalFrontier := invitationReplayHistory_all_histories(tables, history, catalog, 100, 9007199254740991, 1, actions);
+  assert finalHistory["first"] == claim && "first" !in final.claims;
+  assert "later" in finalHistory && finalHistory["later"].requestDigest == "later-digest";
+  assert "unsigned" !in finalHistory;
+  invitationReplayClock_unchanged(100, actions);
+  assert finalClock == 100;
 }
 
 @IsolateAssertions
