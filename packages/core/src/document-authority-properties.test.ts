@@ -30,139 +30,156 @@ import {
 import { InMemoryDocumentJournalStore } from './document-journal-store.js';
 
 describe('causal document controller authority', () => {
-  test('checks pinned roots, role signatures, causal heads and controller transfer across generated histories', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.array(fc.boolean(), { minLength: 1, maxLength: 10 }),
-        async (transfers) => {
-          const f = await context(),
-            auth = testAuth(f),
-            authority = new DocumentGroupControlAuthority(
-              protocol,
-              groupId,
-              f.identities.actorId,
+  test.each([0, 1, 2, 3, 4, 5])(
+    'checks pinned roots, role signatures, causal heads and controller transfer across generated histories (batch %s)',
+    async (batch) => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.array(fc.boolean(), { minLength: 1, maxLength: 10 }),
+          async (transfers) => {
+            const f = await context(),
+              auth = testAuth(f),
+              authority = new DocumentGroupControlAuthority(
+                protocol,
+                groupId,
+                f.identities.actorId,
+              );
+            const coordinator = await GroupSecurityCoordinator.bootstrap(
+              { ...config(f), authorizeControl: authority.authorize },
+              createGroupInput,
+              { operationId: id(1), subjectId: f.identities.actorId },
             );
-          const coordinator = await GroupSecurityCoordinator.bootstrap(
-            { ...config(f), authorizeControl: authority.authorize },
-            createGroupInput,
-            { operationId: id(1), subjectId: f.identities.actorId },
-          );
-          let controller = f.identities.actorId,
-            other = f.identities.attackerId;
-          const members = () => [
-            {
-              memberId: controller,
-              publicKey: documentBytesId(controller),
-              role: 3 as const,
-            },
-            {
-              memberId: other,
-              publicKey: documentBytesId(other),
-              role: 1 as const,
-            },
-          ];
-          const log = await DocumentAuthorityLog.create(
-            '/private',
-            coordinator.documentContext,
-            members(),
-            controller,
-            auth,
-            authority,
-          );
-          const root = log.genesisId;
-          for (let index = 0; index < transfers.length; index++) {
-            await flushAndCollect(coordinator);
-            // The coordinator's local signing actor stays fixed. After transferring
-            // authority away, direct control requests from that actor must fail.
-            if (
-              documentBytesId(controller) !==
-              documentBytesId(f.identities.actorId)
-            ) {
-              await expect(
-                coordinator.createCommit(
-                  { changes: [] },
-                  control(index + 2, 'update', f.identities.actorId),
-                ),
-              ).rejects.toThrow();
-              break;
-            }
-            const oldContext = coordinator.documentContext;
-            await expect(
-              log.signUpdate(oldContext, members(), controller),
-            ).rejects.toThrow('fresh');
-            await coordinator.createCommit(
-              { changes: [] },
-              control(index + 2, 'update', f.identities.actorId),
-            );
-            expect(() => log.capture(coordinator.documentContext)).toThrow(
-              'history',
-            );
-            const nextController = transfers[index] ? other : controller;
-            const roster = [
+            let controller = f.identities.actorId,
+              other = f.identities.attackerId;
+            const members = () => [
               {
-                memberId: nextController,
-                publicKey: documentBytesId(nextController),
+                memberId: controller,
+                publicKey: documentBytesId(controller),
                 role: 3 as const,
               },
               {
-                memberId: transfers[index] ? controller : other,
-                publicKey: documentBytesId(
-                  transfers[index] ? controller : other,
-                ),
+                memberId: other,
+                publicKey: documentBytesId(other),
                 role: 1 as const,
               },
             ];
-            const update = await log.signUpdate(
+            const log = await DocumentAuthorityLog.create(
+              '/private',
               coordinator.documentContext,
-              roster,
+              members(),
               controller,
+              auth,
+              authority,
             );
-            const corrupt = update.slice();
-            corrupt[corrupt.length - 1] ^= 1;
-            await expect(
-              log.applyUpdate(coordinator, corrupt),
-            ).rejects.toThrow();
-            await log.applyUpdate(coordinator, update);
-            await expect(log.applyUpdate(coordinator, update)).rejects.toThrow(
-              'forked',
-            );
-            if (transfers[index]) [controller, other] = [other, controller];
-            expect(
-              log
-                .capture(coordinator.documentContext)
-                .members.find((member) => member.role === 3)!.memberId,
-            ).toEqual(controller);
-          }
-          const restored = await DocumentAuthorityLog.restore(
-            log.exportRecords(),
-            root,
-            auth,
-            new DocumentGroupControlAuthority(
-              protocol,
-              groupId,
-              f.identities.actorId,
-            ),
-          );
-          expect(restored.headId).toEqual(log.headId);
-          const badRoot = root.slice();
-          badRoot[0] ^= 1;
-          await expect(
-            DocumentAuthorityLog.restore(
+            const root = log.genesisId;
+            for (let index = 0; index < transfers.length; index++) {
+              await flushAndCollect(coordinator);
+              // The coordinator's local signing actor stays fixed. After transferring
+              // authority away, direct control requests from that actor must fail.
+              if (
+                documentBytesId(controller) !==
+                documentBytesId(f.identities.actorId)
+              ) {
+                await expect(
+                  coordinator.createCommit(
+                    { changes: [] },
+                    control(index + 2, 'update', f.identities.actorId),
+                  ),
+                ).rejects.toThrow();
+                break;
+              }
+              const oldContext = coordinator.documentContext;
+              await expect(
+                log.signUpdate(oldContext, members(), controller),
+              ).rejects.toThrow('fresh');
+              await coordinator.createCommit(
+                { changes: [] },
+                control(index + 2, 'update', f.identities.actorId),
+              );
+              expect(() => log.capture(coordinator.documentContext)).toThrow(
+                'history',
+              );
+              const nextController = transfers[index] ? other : controller;
+              const roster = [
+                {
+                  memberId: nextController,
+                  publicKey: documentBytesId(nextController),
+                  role: 3 as const,
+                },
+                {
+                  memberId: transfers[index] ? controller : other,
+                  publicKey: documentBytesId(
+                    transfers[index] ? controller : other,
+                  ),
+                  role: 1 as const,
+                },
+              ];
+              const update = await log.signUpdate(
+                coordinator.documentContext,
+                roster,
+                controller,
+              );
+              const corrupt = update.slice();
+              corrupt[corrupt.length - 1] ^= 1;
+              await expect(
+                log.applyUpdate(coordinator, corrupt),
+              ).rejects.toThrow();
+              await log.applyUpdate(coordinator, update);
+              await expect(
+                log.applyUpdate(coordinator, update),
+              ).rejects.toThrow('forked');
+              if (transfers[index]) [controller, other] = [other, controller];
+              expect(
+                log
+                  .capture(coordinator.documentContext)
+                  .members.find((member) => member.role === 3)!.memberId,
+              ).toEqual(controller);
+            }
+            const restored = await DocumentAuthorityLog.restore(
               log.exportRecords(),
-              badRoot,
+              root,
               auth,
               new DocumentGroupControlAuthority(
                 protocol,
                 groupId,
                 f.identities.actorId,
               ),
-            ),
-          ).rejects.toThrow('genesis');
+            );
+            expect(restored.headId).toEqual(log.headId);
+            const badRoot = root.slice();
+            badRoot[0] ^= 1;
+            await expect(
+              DocumentAuthorityLog.restore(
+                log.exportRecords(),
+                badRoot,
+                auth,
+                new DocumentGroupControlAuthority(
+                  protocol,
+                  groupId,
+                  f.identities.actorId,
+                ),
+              ),
+            ).rejects.toThrow('genesis');
+          },
+        ),
+        {
+          seed:
+            batch === 0
+              ? 2011151
+              : batch === 1
+                ? 2012151
+                : batch === 2
+                  ? 2013151
+                  : batch === 3
+                    ? 2014151
+                    : batch === 4
+                      ? 2015151
+                      : 2016151,
+          numRuns: 4,
         },
-      ),
-      { seed: 2011151, numRuns: 24 },
-    );
-  });
+      );
+    },
+  );
 
   test('persists an acknowledged controller transfer and rejects local writes after restart', async () => {
     const f = await context(),

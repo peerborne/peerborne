@@ -65,7 +65,8 @@ for (const { framework, port } of cases.ssr) {
     page,
     request,
   }) => {
-    const url = `http://127.0.0.1:${port}/`;
+    const origins = JSON.parse(process.env.PEERBORNE_SSR_ORIGINS ?? '{}');
+    const url = origins[framework] ?? `http://127.0.0.1:${port}/`;
     const response = await request.get(url);
     expect(response.ok()).toBe(true);
     expect(await response.text()).toContain('Start local document');

@@ -9,9 +9,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Distribution and operations
 
-- **Packages are unpublished.** The `@peerborne/*` packages are source workspaces, not published to npm. Clean local-tarball installation, Node ESM imports, strict NodeNext typechecking, and a Vite build are automated; registry installation, browser runtime behavior, and packaged daemon execution remain unverified. You must clone and build from source.
+- **Packages are unpublished.** The eleven `@peerborne/*` libraries are not on npm yet. The release gate installs exact tarballs in an external npm project and checks imports, strict declarations, production dependency advisories, framework/editor mutations, SSR hydration, and Note sharing/recovery in real browsers. Actual registry bootstrap and packaged daemon behavior remain separate checks.
 - **No deployment automation.** There is no CI/CD pipeline for deploying relays, bootstrap nodes, or pinning services.
-- **Current formats only.** API, wire, and storage changes between commits may break your application without warning. Peerborne supports only its current formats; there is no state migration framework, changelog, semver, or deprecation period.
+- **Current formats only.** Release versions are validated as strict SemVer, but alpha API, wire, and storage changes can still break an application. There is no state migration framework or promised upgrade compatibility.
 
 ## Offline and durability
 
@@ -21,12 +21,12 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   onboarding an invited collaborator still require reachable peers. Without a
   durable outbox or delivery acknowledgment, later connectivity does not prove
   that changes made offline will reach another replica.
-- **No durable outbox.** Changes are published to GossipSub and stored locally, but there is no queue with retry for unreachable peers. If a peer is offline when a change is published, it may never receive it.
+- **Default publication remains best-effort.** The default BeeKEM path has no durable publication outbox. Note repairs missed same-epoch edits through its retained checkpoints and periodic sync; the release gate covers a bounded relay outage with two writers and browser restarts. Experimental coordinated mode has a separate bounded journal/outbox. Neither mode provides a remote delivery acknowledgment.
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation/storage pipeline and the GossipSub publish call, not remote receipt.
-- **No durable reconnect-and-replay guarantee.** Libp2p may redial keep-alive peers, and an explicit load or later sync history may catch a peer up, but Peerborne does not durably guarantee connection restoration or replay of every missed update.
+- **No general reconnect-and-replay guarantee.** Note resumes relay reservations and periodic history requests after opening a retained note. Release acceptance verifies two writers repairing edits after an owned relay restart and browser-process relaunch. Other applications must arrange their own recovery, and membership changes, key loss, multi-document histories and relay failover remain outside that gate.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
 - **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key; it needs another recipient-bound Welcome or an explicit out-of-band recovery path.
-- **General restart recovery remains incomplete.** Peerborne Note and the password-manager example test encrypted local checkpoints across reload and Chromium relaunch. Peer reconnection after restart, peer-assisted recovery, and distributed crash consistency remain unverified.
+- **Recovery requires retained local state.** Note and the password-manager example test encrypted checkpoints across reload/relaunch. The installed-package Note gate additionally verifies an acknowledged write after forced Chromium termination and both replicas recovering concurrent same-epoch edits after an owned relay outage. A Linux/WebKit readiness run timed out during missed-edit catch-up, so recovery remains experimental across browser/OS combinations. This does not establish crash consistency across every interrupted write, device loss or malicious storage rollback.
 - **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no application-facing key backup or recovery service.
 
 ## Storage and persistence
@@ -65,9 +65,10 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   for larger groups is not implemented or verified. Both `addReader` and the
   bounded invitation path support the first collaborator and exact retries for
   that identity, not a replacement after revocation.
-- **Initial invitations are founder-process only.** A replica that loaded the
-  document later cannot issue an offer, even if its signing identity is a
-  writer. Founder and recipient identities must be distinct.
+- **Initial invitations require founder authority.** Note can restore its
+  founding browser from an encrypted local checkpoint and issue a fresh offer.
+  A collaborator that loaded the document cannot issue an offer, even if its
+  signing identity is a writer. Founder and recipient identities must be distinct.
 - **Invitation bootstraps are bounded to one attested provider profile.** The
   bundled Automerge JSON CRDT, ACL, and keychain adapters with P-384/SHA-384
   SubtleCrypto declare the profile that Peerborne tests. Other providers reject
@@ -118,7 +119,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Convergence and verification
 
-- **System-level partition/rejoin is not proven.** Single-document convergence works, but multi-document, multi-peer partition/rejoin cycles have no CI coverage.
+- **Broader partition/rejoin remains unverified.** The installed-package Note gate covers one Automerge note, two retained identities, one owned relay outage and same-epoch concurrent edits across browser restarts. Multi-document/many-peer cycles, concurrent membership changes and missed group-key recovery still need acceptance coverage.
 - **No pass/fail performance budgets.** Benchmark suites exist but have no thresholds. A regression that doubles latency would not be caught in CI.
 - **Cross-CRDT convergence is not tested.** A Yjs document and an Automerge document being edited by different peers in the same application has no CI coverage.
 
@@ -133,13 +134,13 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 ## Examples and documentation
 
-- **Peerborne Note is a bounded demo, not a complete sharing product.** It adds
-  an explicit founder-plus-one invitation UI, non-extractable browser signing
-  identity storage, fragment scrubbing, and reader/editor modes. It does not
-  provide account recovery, authenticated collaborator discovery, offline
-  acceptance, durable invitation/KEM state, automatic reconnect, revocation
-  UX, or a delivery guarantee. Its source smoke test is not proof that the
-  public relay or deployment will remain available.
+- **Peerborne Note has a bounded sharing and recovery profile.** It supports
+  one founder and one reader/editor, retained signing/KEM/storage keys, encrypted
+  checkpoints, automatic relay reconnection after reopening a note, and tested
+  same-epoch history repair after a relay outage. Account/key recovery,
+  authenticated collaborator discovery, offline invitation acceptance, larger
+  groups, revocation UX, delivery guarantees and public-service availability
+  remain outside that profile.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
 - **No changelog.** Release notes and version history are not published.
 

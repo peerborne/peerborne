@@ -24,10 +24,10 @@ system-level statuses below.
 ## Core document and storage features
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create, open, change, close, and synchronize documents | Verified | Core and adapter suites plus the relay-backed distinct-identity browser acceptance job | Restart recovery and partition/rejoin are separate unverified durability paths. |
-| Strong eventual consistency under concurrent edits | Partial | Automerge/Yjs adapter tests and convergence benchmark source | The benchmark is not an assertion-based CI gate; partition/rejoin convergence needs a deterministic acceptance test. |
-| Automerge adapter | Verified | Adapter/serializer tests, typechecked production builds, Chromium smoke tests, and the cross-NAT bidirectional document job | Partition/rejoin and restart recovery remain system-level gaps. |
+| --- | --- | --- | --- |
+| Create, open, change, close, and synchronize documents | Verified | Core and adapter suites plus the relay-backed distinct-identity browser acceptance job | Recovery acceptance is bounded to the Note profile; other applications and general partition histories remain unverified. |
+| Strong eventual consistency under concurrent edits | Partial | Automerge/Yjs adapter tests plus installed-package Note acceptance with concurrent same-epoch edits, an owned relay outage and both browser processes restarting | General multi-document/many-peer partition histories, membership changes and compaction during concurrent writes remain unverified. |
+| Automerge adapter | Verified | Adapter/serializer tests, typechecked production builds, Chromium smoke tests, and the cross-NAT bidirectional document job | Note covers bounded same-epoch two-writer recovery; general many-peer and key-epoch recovery remain system-level gaps. |
 | Yjs adapter | Verified | 92 passing tests; password-manager production build | Multi-browser convergence still depends on the separate Playwright/Docker path. |
 | Merkle-DAG change history and serialization | Verified | Merkle serialization and cross-link suites | Maliciously deep/wide DAG resource-exhaustion limits need dedicated coverage. |
 | Snapshots and history compaction | Verified | Snapshot, compaction, and blockstore-GC suites | Long-running multi-peer compaction during concurrent writes is not exercised. |
@@ -40,9 +40,9 @@ system-level statuses below.
 ## Networking and availability
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| ------------------------------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --- | --- | --- | --- |
 | libp2p peer lifecycle and discovery | Partial | Core tests, peer-discovery integration spec | Requires Docker/integration services and is excluded from `yarn test`. |
-| Gossipsub document updates | Verified | The dedicated cross-NAT job asserts fresh document mutations in both directions after two replicas are open | Partition/rejoin, automatic reconnect, and dropped-message recovery remain unverified. |
+| Gossipsub document updates | Verified | The dedicated cross-NAT job asserts fresh document mutations in both directions after two replicas are open | Note repairs a bounded owned-relay outage; general dropped-message delivery, many-peer partitions and membership-change recovery remain unverified. |
 | WebRTC browser transport | Partial | Browser configuration tests and NAT Playwright specs | NAT suite is an opt-in Docker environment. |
 | WebSocket transport | Verified | The dedicated cross-NAT job connects both isolated Chromium peers to the Circuit Relay over `/ws` and asserts signed invitation bootstrap plus bidirectional document convergence | TLS-terminated `wss` deployment and relay failover while an edit is in flight remain unverified. |
 | WebTransport transport | Claim only | Configured transport | No WebTransport-specific successful synchronization assertion was located. |
@@ -56,7 +56,7 @@ system-level statuses below.
 ## Security and membership
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| ------------------------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --- | --- | --- | --- |
 | Public-key user identity and signatures | Verified | SubtleCrypto, ECIES, ACL, and serialization tests plus Peerborne Note's non-extractable P-384 IndexedDB identity tests | Account recovery, cross-device identity transfer, backup, and authenticated collaborator discovery are not implemented. |
 | AES-GCM document/change confidentiality | Verified | Encryption and tamper-failure tests | Metadata leakage and traffic analysis are not addressed by the product claim. |
 | Reader/writer ACLs | Partial | ACL, document-boundary, and both CRDT adapter ACL suites | The current-replica writer check is exercised, but stale-writer re-grants and removal across a real partition are not prevented by a wired causal authorization chain. |
@@ -73,7 +73,7 @@ system-level statuses below.
 ## Query and framework integration
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| ------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| --- | --- | --- | --- |
 | React hooks and lifecycle management | Verified | Hook/cache/lifecycle and import-safety suites | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
 | Field extraction and local indexes | Verified | Index manager and extractor suites plus planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
@@ -86,14 +86,14 @@ system-level statuses below.
 ## Applications, packaging, and operations
 
 | Feature | Status | Current evidence | Missing or adversarial case |
-| -------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Buildable ESM workspace packages | Verified | Topological TypeScript build and full unit suite; exact packed tarballs are inspected and installed in a clean Node 22.19.0 consumer for ESM and native CommonJS imports, shared export identity, strict NodeNext typechecking for both module styles, and a Vite build | Packages are not yet published; registry installation, browser runtime execution, and packaged daemon execution are not tested. |
+| --- | --- | --- | --- |
+| Buildable ESM workspace packages | Verified | Topological build and unit suites; exact tarballs installed outside the checkout with package identity/integrity and dependency-audit gates; ESM/native CommonJS import identity, strict NodeNext declarations, framework-free/framework/editor browser mutations, SSR hydration, and Note invitation/recovery acceptance | Packages remain unpublished; actual registry bootstrap and packaged daemon execution remain separate checks. |
 | Node entry point | Verified | The packed `/node` export imports at runtime and typechecks from a clean consumer on Node 22.19.0 | No clean-consumer Node behavior beyond module import is exercised. |
 | Password-manager reference app | Partial | Vite production build, authenticated/encrypted checkpoint tests, Chromium reload and persistent-profile relaunch, damaged-storage and failed-write retry checks, and permissions UI tests | Browser-local recovery only: no peer-assisted recovery, backup, password lock, multi-device identity transfer, storage rollback protection, or two-browser synchronization acceptance. |
 | Wiki reference app | Partial | Vite production build and strict Automerge-WASM Chromium startup test pass | Article mutation and cross-browser convergence are not yet asserted. |
 | Generic browser-test app | Partial | Vite production build, real Helia/libp2p Chromium initialization, and relay-only distinct-identity invitation plus live bidirectional mutation pass | This is a test harness rather than a polished demo; restart recovery is not asserted. |
-| Peerborne Note initial-release demo | Partial | Typechecked Vite production build; signing-identity, invitation-link, and encrypted storage tests; Chromium reload, repeated edit/reopen, full process relaunch, damaged-storage, failed-write retry, and single-tab checks | Local relay and deployed-app gates cover editor and reader invitations, full browser-process restart on either side, missed-edit catch-up and fresh bidirectional edits. Missed group-key recovery, revocation UX, delivery acknowledgement and distributed crash consistency remain outside this gate. |
-| Relay server | Verified | TypeScript build, 109 tests, production container build, and a local two-restart identity/readiness smoke | Hosted restart, public WSS reservation, failover, capacity, and upgrade/rollback remain unverified. |
+| Peerborne Note initial-release demo | Partial | Local and installed-tarball builds; reader/editor invitations; encrypted checkpoint, reload, full browser relaunch, damaged-storage and failed-write retry checks; bounded first-WebSocket failure; two writers recovering after an owned relay outage and both processes restarting; acknowledged local write after forced Chromium termination | Founder-plus-one and retained identities in one key epoch. Key-loss/missed-epoch recovery, revocation UX, larger groups, failover, remote acknowledgment and distributed crash consistency remain outside this gate. Browser/OS recovery is experimental: a Linux/WebKit missed-edit catch-up timed out during readiness testing. |
+| Relay server | Verified | TypeScript build, 136 tests, production container build, local identity/readiness restarts, and an installed-app public WSS invitation/restart pilot | Hosted restart, failover, capacity, and upgrade/rollback remain unverified; a passing pilot is not an availability guarantee. |
 | Docker Compose development environment | Verified | Compose images build and the relay-backed Playwright topology passed twice from clean Podman networks | Docker Engine CI remains the authoritative portability gate. |
 | Production deployment guide | Claim only | `docs/deployment.md` and Docker guide files | No automated deployment validation or upgrade/rollback test. |
 | Performance benchmarks | Partial | Runnable ESM crypto, sync, convergence, Bloom, blind-index, and v2 physical-query benchmarks | Results are informational and lack pass/fail budgets. |
@@ -129,6 +129,7 @@ system-level statuses below.
    the offer without a prior founder connection, onboards through a
    recipient-bound encrypted bootstrap, and exchanges actual Automerge
    mutations through the relay in both directions.
+
 
 The Automerge adapter accepts the append-only keychain encoding produced by
 `@automerge/automerge` **3.4.1**, pinned as both its dependency and peer dependency.

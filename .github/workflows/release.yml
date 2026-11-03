@@ -15,6 +15,17 @@ on:
       - 'scripts/set-version.mjs'
       - 'scripts/tag-release.sh'
       - 'scripts/validate-release-consumer.mjs'
+      - 'verification/release/**'
+      - 'e2e/integrations.spec.ts'
+      - 'e2e/integration-cases.json'
+      - 'e2e/peerborne-note*.spec.ts'
+      - 'e2e/release-recovery.spec.ts'
+      - 'examples/integrations/**'
+      - 'examples/peerborne-note/**'
+      - 'examples/nextjs/**'
+      - 'examples/tanstack-start/**'
+      - 'examples/shared/**'
+      - 'relay-server/**'
       - 'package.json'
       - 'yarn.lock'
       - 'packages/*/package.json'
@@ -33,6 +44,7 @@ concurrency:
 jobs:
   validate-artifacts:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -56,13 +68,23 @@ jobs:
       - run: corepack enable
       - run: npm install --global npm@11.21.1
       - run: yarn install --immutable
+      - name: Audit workspace and separately locked project dependencies
+        run: |
+          yarn npm audit --all --recursive --severity high
+          yarn --cwd relay-server npm audit --recursive --severity high
+          yarn --cwd e2e/test-app npm audit --recursive --severity high
       - run: yarn test:release
       - run: yarn build
       - run: yarn test:serial
+      - run: yarn exec playwright install chromium firefox webkit --with-deps
+      - run: yarn --cwd relay-server install --immutable
+      - run: yarn --cwd relay-server build
       - name: Pack and inspect release artifacts
         run: yarn release:prepare "$RUNNER_TEMP/peerborne-release"
       - name: Validate clean external consumer
         run: yarn release:validate-consumer "$RUNNER_TEMP/peerborne-release" "$RUNNER_TEMP"
+        env:
+          PEERBORNE_RELEASE_BROWSERS: chromium,firefox,webkit
       - uses: actions/upload-artifact@v7
         with:
           name: npm-release-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
@@ -70,6 +92,13 @@ jobs:
             ${{ runner.temp }}/peerborne-release/*.tgz
             ${{ runner.temp }}/peerborne-release/release-manifest.json
           if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: release-browser-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/results/release/
+          if-no-files-found: ignore
           retention-days: 14
 
   publish:

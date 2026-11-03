@@ -1,5 +1,5 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { expect, test, type Page } from '@playwright/test';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,8 +8,22 @@ test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 let lastTestFinishedAt: number | undefined;
 
 test.beforeEach(async () => {
-  if (process.env.PEERBORNE_NOTE_LIVE_URL?.startsWith('http://127.0.0.1:'))
+  if (
+    process.env.PEERBORNE_NOTE_LIVE_URL?.startsWith('http://127.0.0.1:') &&
+    process.env.PEERBORNE_NOTE_PUBLIC_RELAY !== '1'
+  )
     return;
+  const cooldownFile = process.env.PEERBORNE_NOTE_LIVE_COOLDOWN_FILE;
+  if (cooldownFile) {
+    try {
+      const previous = Number(await readFile(cooldownFile, 'utf8'));
+      if (!Number.isSafeInteger(previous) || previous < 0)
+        throw new Error('Invalid public-relay session cooldown');
+      lastTestFinishedAt = previous;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   if (lastTestFinishedAt === undefined) return;
   // Separate independent sessions to respect the public demo relay's burst cap.
   const cooldown = Math.max(0, 60_000 - (Date.now() - lastTestFinishedAt));
@@ -17,8 +31,10 @@ test.beforeEach(async () => {
     await new Promise((resolve) => setTimeout(resolve, cooldown));
 });
 
-test.afterEach(() => {
+test.afterEach(async () => {
   lastTestFinishedAt = Date.now();
+  const cooldownFile = process.env.PEERBORNE_NOTE_LIVE_COOLDOWN_FILE;
+  if (cooldownFile) await writeFile(cooldownFile, String(lastTestFinishedAt));
 });
 
 function failOnRuntimeErrors(page: Page, errors: string[] = []): string[] {
@@ -29,6 +45,48 @@ function failOnRuntimeErrors(page: Page, errors: string[] = []): string[] {
     }
   });
   return errors;
+}
+
+async function recoveryDiagnostics(page: Page) {
+  const transport = { sockets: 0, sent: 0, received: 0, closed: 0 };
+  page.on('websocket', (socket) => {
+    transport.sockets++;
+    socket.on('framesent', () => transport.sent++);
+    socket.on('framereceived', () => transport.received++);
+    socket.on('close', () => transport.closed++);
+  });
+  await page.addInitScript(() => {
+    const operations = Object.fromEntries(
+      ['sign', 'verify', 'encrypt', 'decrypt'].map((name) => [
+        name,
+        { calls: 0, failures: 0 },
+      ]),
+    );
+    Reflect.set(window, 'peerborneRecoveryDiagnostics', operations);
+    for (const name of ['sign', 'verify', 'encrypt', 'decrypt'] as const) {
+      const native = crypto.subtle[name];
+      Object.defineProperty(crypto.subtle, name, {
+        configurable: true,
+        value: async (...args: unknown[]) => {
+          operations[name].calls++;
+          try {
+            return await Reflect.apply(native, crypto.subtle, args);
+          } catch (error) {
+            operations[name].failures++;
+            throw error;
+          }
+        },
+      });
+    }
+  });
+  return async () => ({
+    transport,
+    browser: await page.evaluate(() => ({
+      crypto: Reflect.get(window, 'peerborneRecoveryDiagnostics'),
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+    })),
+  });
 }
 
 async function createSharedNote(page: Page, role: 'Editor' | 'Reader') {
@@ -63,7 +121,9 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
 }) => {
   const founderContext = await browser.newContext();
   const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-editor-'));
-  let recipientContext = await chromium.launchPersistentContext(profile);
+  let recipientContext = await browser
+    .browserType()
+    .launchPersistentContext(profile);
   const founder = await founderContext.newPage();
   let recipient = await recipientContext.newPage();
   let founderSockets = 0;
@@ -154,9 +214,12 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     await expect(
       founder.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
-    recipientContext = await chromium.launchPersistentContext(profile);
+    recipientContext = await browser
+      .browserType()
+      .launchPersistentContext(profile);
     recipient = await recipientContext.newPage();
     failOnRuntimeErrors(recipient, recipientErrors);
+    const diagnostics = await recoveryDiagnostics(recipient);
     await recipient.goto(new URL(shared.invitationUrl).origin);
     await recipient
       .getByRole('button', { name: 'Open saved note 1', exact: true })
@@ -164,7 +227,12 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     const restoredEditor = recipient.getByRole('textbox', {
       name: 'Note text',
     });
-    await expect(restoredEditor).toHaveValue(offlineEdit);
+    try {
+      await expect(restoredEditor).toHaveValue(offlineEdit);
+    } catch (error) {
+      console.info('Note recovery counters', await diagnostics());
+      throw error;
+    }
     await expect(restoredEditor).toBeEditable();
     const resumedEdit = `Resumed editor ${crypto.randomUUID()}`;
     await restoredEditor.fill(resumedEdit);
@@ -184,9 +252,11 @@ test('deployed founding browser resumes invitations and live sharing after full 
   baseURL,
 }) => {
   const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-founder-'));
-  let founderContext = await chromium.launchPersistentContext(profile, {
-    baseURL,
-  });
+  let founderContext = await browser
+    .browserType()
+    .launchPersistentContext(profile, {
+      baseURL,
+    });
   const recipientContext = await browser.newContext();
   let founder = await founderContext.newPage();
   const recipient = await recipientContext.newPage();
@@ -203,9 +273,11 @@ test('deployed founding browser resumes invitations and live sharing after full 
       founder.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
     await founderContext.close();
-    founderContext = await chromium.launchPersistentContext(profile, {
-      baseURL,
-    });
+    founderContext = await browser
+      .browserType()
+      .launchPersistentContext(profile, {
+        baseURL,
+      });
     founder = await founderContext.newPage();
     failOnRuntimeErrors(founder, founderErrors);
     await founder.goto('/');
@@ -240,9 +312,11 @@ test('deployed founding browser resumes invitations and live sharing after full 
     await expect(
       recipient.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
-    founderContext = await chromium.launchPersistentContext(profile, {
-      baseURL,
-    });
+    founderContext = await browser
+      .browserType()
+      .launchPersistentContext(profile, {
+        baseURL,
+      });
     founder = await founderContext.newPage();
     failOnRuntimeErrors(founder, founderErrors);
     await founder.goto('/');
@@ -271,7 +345,9 @@ test('deployed reader invitation receives edits and remains read-only after a br
 }) => {
   const founderContext = await browser.newContext();
   const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-reader-'));
-  let recipientContext = await chromium.launchPersistentContext(profile);
+  let recipientContext = await browser
+    .browserType()
+    .launchPersistentContext(profile);
   const founder = await founderContext.newPage();
   let recipient = await recipientContext.newPage();
   const founderErrors = failOnRuntimeErrors(founder);
@@ -306,7 +382,9 @@ test('deployed reader invitation receives edits and remains read-only after a br
     await expect(
       founder.getByText('Saved in this browser', { exact: true }),
     ).toBeVisible();
-    recipientContext = await chromium.launchPersistentContext(profile);
+    recipientContext = await browser
+      .browserType()
+      .launchPersistentContext(profile);
     recipient = await recipientContext.newPage();
     failOnRuntimeErrors(recipient, recipientErrors);
     await recipient.goto(new URL(shared.invitationUrl).origin);
@@ -350,30 +428,36 @@ test('recovers when the first relay WebSocket never opens, then shares a fresh e
   );
   const founderContext = await browser.newContext();
   const recipientContext = await browser.newContext();
-  await founderContext.addInitScript(() => {
-    const NativeWebSocket = window.WebSocket;
-    let injected = false;
-    class PendingWebSocket extends EventTarget {
-      binaryType = 'arraybuffer';
-      readyState: number = NativeWebSocket.CONNECTING;
-      close() {
-        this.readyState = NativeWebSocket.CLOSED;
-        this.dispatchEvent(new CloseEvent('close'));
-      }
-    }
-    window.WebSocket = new Proxy(NativeWebSocket, {
-      construct(target, args) {
-        if (
-          !injected &&
-          new URL(String(args[0])).hostname === 'relay.peerborne.io'
-        ) {
-          injected = true;
-          return new PendingWebSocket();
+  await founderContext.addInitScript(
+    (relayHostname) => {
+      const NativeWebSocket = window.WebSocket;
+      let injected = false;
+      class PendingWebSocket extends EventTarget {
+        binaryType = 'arraybuffer';
+        readyState: number = NativeWebSocket.CONNECTING;
+        close() {
+          this.readyState = NativeWebSocket.CLOSED;
+          this.dispatchEvent(new CloseEvent('close'));
         }
-        return Reflect.construct(target, args);
-      },
-    });
-  });
+      }
+      window.WebSocket = new Proxy(NativeWebSocket, {
+        construct(target, args) {
+          if (
+            !injected &&
+            new URL(String(args[0])).hostname === relayHostname
+          ) {
+            injected = true;
+            return new PendingWebSocket();
+          }
+          return Reflect.construct(target, args);
+        },
+      });
+    },
+    new URL(
+      process.env.PEERBORNE_NOTE_RELAY_CONNECT_SOURCE ??
+        'wss://relay.peerborne.io',
+    ).hostname,
+  );
   const founder = await founderContext.newPage();
   const recipient = await recipientContext.newPage();
   const founderErrors = failOnRuntimeErrors(founder);

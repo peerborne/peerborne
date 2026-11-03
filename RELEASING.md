@@ -11,9 +11,14 @@ Releases contain exactly these packages, in dependency-first order:
 1. `@peerborne/core`
 2. `@peerborne/automerge`
 3. `@peerborne/yjs`
-4. `@peerborne/react`
-5. `@peerborne/redux`
-6. `@peerborne/index`
+4. `@peerborne/store`
+5. `@peerborne/react`
+6. `@peerborne/redux`
+7. `@peerborne/index`
+8. `@peerborne/vue`
+9. `@peerborne/svelte`
+10. `@peerborne/loro`
+11. `@peerborne/tanstack-db`
 
 Set one strict SemVer across the allowlist and update the Yarn lockfile:
 
@@ -24,7 +29,7 @@ yarn version:set 0.1.0
 yarn install --immutable
 yarn test:release
 yarn build
-yarn test
+yarn test:serial
 ```
 
 Land the version and release changes through a reviewed pull request. On a clean, synchronized `main`, create an annotated tag:
@@ -39,16 +44,22 @@ Use `scripts/tag-release.sh` without `--push` to create the tag locally for insp
 
 ## Secretless artifact validation
 
-Pull requests, manual workflow dispatches, and `v*` tag pushes install, build, test, pack, inspect, and exercise the exact tarballs in a clean npm consumer. Validation covers ESM imports, native CommonJS loading, shared export identity, TypeScript NodeNext declarations for both module styles, and a Vite browser build. Legacy CommonJS output is excluded from the package contents. Pull requests and manual dispatches have no npm environment, npm token, or OIDC permission and can never publish. A tag must exactly match the six package versions, use strict SemVer, and point to a commit contained in `origin/main`.
+Pull requests, manual workflow dispatches, and `v*` tag pushes install, build, test, pack, inspect, and exercise the exact tarballs in a clean npm consumer. Validation covers ESM imports, native CommonJS loading, shared export identity, TypeScript NodeNext declarations for both module styles, and a Vite browser build. The gate also audits the installed production graph, verifies tarball identity after adding application tooling, and executes the framework-free/framework/editor, SSR and Note recovery cases in Chromium, Firefox and WebKit. The Note profile covers a bounded relay outage, retained identities, same-epoch repair and a Chromium process crash; it is not a general offline-delivery or key-recovery guarantee. Legacy CommonJS output is excluded from the package contents. Pull requests and manual dispatches have no npm environment, npm token, or OIDC permission and can never publish. A tag must exactly match the eleven package versions, use strict SemVer, and point to a commit contained in `origin/main`.
 
 To reproduce artifact validation locally:
 
 ```sh
 ARTIFACT_DIR="$(mktemp -d)"
 yarn build
+yarn --cwd relay-server install --immutable
+yarn --cwd relay-server build
+yarn exec playwright install chromium firefox webkit
 yarn release:prepare "$ARTIFACT_DIR"
-yarn release:validate-consumer "$ARTIFACT_DIR" "$(dirname "$ARTIFACT_DIR")"
+PEERBORNE_RELEASE_BROWSERS=chromium,firefox,webkit \
+  yarn release:validate-consumer "$ARTIFACT_DIR" "$(dirname "$ARTIFACT_DIR")"
 ```
+
+See [installed release acceptance](verification/release/README.md) for evidence profiles and the automated external-relay pilot. The Release workflow uploads case/audit metadata without keys or application payloads.
 
 `release-manifest.json` records package order, filenames, contents, versions, and SHA-512 integrity. Remove the temporary artifact directory afterward.
 
