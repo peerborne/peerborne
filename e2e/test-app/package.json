@@ -24,6 +24,9 @@
     "uint8arraylist": "^3.0.2"
   },
   "resolutions": {
+    "serve/ajv": "^8.18.0",
+    "compression": "1.8.2",
+    "minimatch@npm:3.1.2": "3.1.5",
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
