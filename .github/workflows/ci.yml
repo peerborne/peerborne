@@ -213,6 +213,8 @@ jobs:
           cache: 'yarn'
       - name: Install dependencies
         run: yarn install --immutable
+      - name: Test static network fixture server
+        run: node --test e2e/test-app/serve.test.mjs
       - name: Install Playwright Browsers
         run: yarn exec playwright install chromium --with-deps
       - name: Build and start services

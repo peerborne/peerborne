@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "node build.js",
-    "start": "npx serve dist -l 3000 --cors"
+    "start": "node serve.mjs",
+    "test": "node --test serve.test.mjs"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
@@ -24,13 +25,11 @@
     "uint8arraylist": "^3.0.2"
   },
   "resolutions": {
-    "serve/ajv": "^8.18.0",
-    "compression": "1.8.2",
-    "minimatch@npm:3.1.2": "3.1.5",
+    "glob": "14.0.3",
+    "minimatch": "11.0.4",
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1",
-    "serve": "^14.2.4"
+    "esbuild": "^0.28.1"
   }
 }

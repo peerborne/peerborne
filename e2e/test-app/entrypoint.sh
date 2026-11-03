@@ -36,5 +36,5 @@ cat > dist/config.json <<EOF
 }
 EOF
 
-echo "Starting serve on port 3000..."
-exec serve dist -l 3000 --cors
+echo "Starting test app on port 3000..."
+exec node serve.mjs
