@@ -121,12 +121,15 @@ tarball integrities before promotion.
 The clean installed library graph has no reported production advisories in the
 November 2 readiness run. The broader applications/build graph retains a low
 severity [deepmerge advisory](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)
-through Svelte's Vite plugin; upstream has no patched release. The workspace also
+through Svelte's Vite plugin and relay test configuration; upstream has no
+patched release. The workspace also
 uses patched [glob](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) 14.0.3 and
 [minimatch](https://github.com/advisories/GHSA-g3hv-75wg-m249) 11.0.4 resolutions
 for its Jest and ESLint tooling. These cross-major resolutions require build,
-test-discovery and coverage validation when updated. Audit findings in the
-separate relay and network-test projects remain recorded by their own gates.
+test-discovery and coverage validation when updated. The separate relay and
+network-test projects use the same patched versions. The relay uses Jest 30,
+and the network fixture serves its fixed public asset list with Node's HTTP
+server instead of installing an unaudited global `serve` package in its image.
 Build-tool findings are separate from the audited installed-library runtime graph.
 
 TypeDoc 0.28.20 calls the `Minimatch.matchOne` method removed in minimatch 11.

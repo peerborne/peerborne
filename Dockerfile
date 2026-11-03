@@ -11,6 +11,7 @@ COPY yarn.lock /app/yarn.lock
 COPY .yarnrc.yml /app/.yarnrc.yml
 RUN mkdir -p /app/.yarn
 COPY .yarn/releases /app/.yarn/releases
+COPY .yarn/patches /app/.yarn/patches
 RUN mkdir -p /app/packages/core
 RUN mkdir -p /app/packages/automerge
 RUN mkdir -p /app/packages/yjs
