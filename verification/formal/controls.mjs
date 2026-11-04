@@ -227,6 +227,54 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'utf8-oversized-preflight-admission',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (value.length > maximum) return -1;',
+      'if (value.length > maximum) return 0;',
+    ],
+    [
+      'utf8-unpaired-surrogate-admission',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (!isPairedUtf16Unit(value, index)) return -2;',
+      'if (isPairedUtf16Unit(value, index)) return -2;',
+    ],
+    [
+      'utf8-byte-limit-off-by-one',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (width > maximum - bytes) return -1;',
+      'if (width > maximum - bytes + 1) return -1;',
+    ],
+    [
+      'utf8-weight-accounting-loss',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'bytes += width;',
+      'bytes += 1;',
+    ],
+    [
+      'utf8-ascii-overcount',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (code < 0x80) return 1;',
+      'if (code < 0x80) return 2;',
+    ],
+    [
+      'utf8-two-byte-undercount',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (code < 0x800) return 2;',
+      'if (code < 0x800) return 1;',
+    ],
+    [
+      'utf8-surrogate-overcount',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'if (code >= 0xd800 && code <= 0xdfff) return 2;',
+      'if (code >= 0xd800 && code <= 0xdfff) return 3;',
+    ],
+    [
+      'utf8-three-byte-undercount',
+      'packages/core/src/internal/canonical-encoding.ts',
+      'return 3;',
+      'return 2;',
+    ],
+    [
       'document-write-missing-prefix-reservation',
       'frame-layout.ts',
       '    maximum,\n    prefix,',

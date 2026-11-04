@@ -3,6 +3,19 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "bounded-load-metadata-admission",
+      "formalBoundary": "The actual UTF-8 sizing implementation has checked exact prefix-weight accounting, accepts exactly paired UTF-16 whose UTF-8 weight fits the byte cap, and returns its exact byte count. Rejected excessive code-unit lengths perform no scan; admitted scans have a decreasing variant bounded by the configured byte cap. Native TextEncoder semantics, string access counts, safe-integer/type guards, metadata validation before graph/payload work, canonical hash/signature bytes and mutation by serializer callbacks require properties. These are scalar/loop-work guarantees, not a proof of VM heap usage, wall-clock/UI latency, cryptographic unforgeability or the complete asynchronous load protocol.",
+      "evidence": [
+        "packages/core/src/load-metadata-admission-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/internal/canonical-encoding.ts",
+        "packages/core/src/initial-load-challenge.ts",
+        "packages/core/src/load-security-state.ts",
+        "packages/core/src/load-response-manifest.ts"
+      ]
+    },
+    {
       "id": "runtime-model-calibration",
       "formalBoundary": "Native IEEE-754 arithmetic, data views, UTF-16 operations and frozen exports remain trusted runtime boundaries.",
       "evidence": [

@@ -8,6 +8,14 @@ import { runChecks } from './checks.mjs';
 
 const root = import.meta.dirname;
 const evidencePaths = [
+  'packages/core/src/internal/canonical-encoding.ts',
+  'packages/core/dist/esm/src/internal/canonical-encoding.js',
+  'packages/core/src/initial-load-challenge.ts',
+  'packages/core/dist/esm/src/initial-load-challenge.js',
+  'packages/core/src/load-security-state.ts',
+  'packages/core/dist/esm/src/load-security-state.js',
+  'packages/core/src/load-response-manifest.ts',
+  'packages/core/dist/esm/src/load-response-manifest.js',
   'packages/core/src/coordinated-document.ts',
   'packages/core/dist/esm/src/coordinated-document.js',
   'packages/core/src/captured-document-authority.ts',

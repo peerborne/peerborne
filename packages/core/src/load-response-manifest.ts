@@ -13,12 +13,11 @@ import { copyUnsharedUint8Array } from './utils.js';
 import {
   concatenate,
   encodeUtf8,
-  isWellFormedUtf16,
+  assertBoundedUtf8,
   uint32,
 } from './internal/canonical-encoding.js';
 
-const LOAD_RESPONSE_MANIFEST_DOMAIN =
-  'peerborne/load-response-manifest/v1\0';
+const LOAD_RESPONSE_MANIFEST_DOMAIN = 'peerborne/load-response-manifest/v1\0';
 
 export const LOAD_RESPONSE_MANIFEST_HASH_LENGTH = 32;
 export const MAX_LOAD_RESPONSE_MANIFEST_NODES = 4096;
@@ -47,8 +46,6 @@ const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
-
-
 
 export interface LoadResponseManifestSnapshot {
   readonly stateBytes: Uint8Array;
@@ -94,22 +91,12 @@ function requireString(
   value: unknown,
   options: { allowEmpty?: boolean } = {},
 ): string {
-  if (
-    typeof value !== 'string' ||
-    (!options.allowEmpty && value.length === 0)
-  ) {
-    throw new TypeError(`${name} must be a ${
-      options.allowEmpty ? '' : 'non-empty '
-    }string`);
-  }
-  if (!isWellFormedUtf16(value)) {
-    throw new TypeError(`${name} must be well-formed UTF-16`);
-  }
-  if (encodeUtf8(value).length > MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES) {
-    throw new RangeError(
-      `${name} exceeds ${MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES} UTF-8 bytes`,
-    );
-  }
+  assertBoundedUtf8(
+    value,
+    MAX_LOAD_RESPONSE_MANIFEST_ID_BYTES,
+    name,
+    options.allowEmpty,
+  );
   return value;
 }
 
@@ -134,14 +121,15 @@ function kindByte(kind: CRDTChangeNodeKind): number {
 function requirePlainNode<ChangesType>(
   node: CRDTChangeNode<ChangesType>,
 ): void {
-  if (node === null || typeof node !== 'object' || reflectApply(arrayIsArray, Array, [node])) {
+  if (
+    node === null ||
+    typeof node !== 'object' ||
+    reflectApply(arrayIsArray, Array, [node])
+  ) {
     throw new TypeError('load response manifest node must be an object');
   }
   kindByte(node.kind);
-  if (
-    node.children !== undefined &&
-    node.children !== crdtChangeNodeDeferred
-  ) {
+  if (node.children !== undefined && node.children !== crdtChangeNodeDeferred) {
     if (
       node.children === null ||
       typeof node.children !== 'object' ||
@@ -151,7 +139,9 @@ function requirePlainNode<ChangesType>(
         'change-node children must be an object, false, or undefined',
       );
     }
-    const prototype = reflectApply(objectGetPrototypeOf, Object, [node.children]);
+    const prototype = reflectApply(objectGetPrototypeOf, Object, [
+      node.children,
+    ]);
     if (prototype !== objectPrototype && prototype !== null) {
       throw new TypeError('change-node children must be a plain object');
     }
@@ -247,7 +237,10 @@ function descriptorParts(descriptor: NodeDescriptor): Uint8Array[] {
       descriptor.inlineChangeBytes,
     );
   }
-  parts.push(uint8(descriptor.childrenMode), uint32(descriptor.childIds.length));
+  parts.push(
+    uint8(descriptor.childrenMode),
+    uint32(descriptor.childIds.length),
+  );
   for (const childId of descriptor.childIds) {
     parts.push(...stringParts(childId));
   }
@@ -277,8 +270,7 @@ function snapshotManifestOwnDataFields<Fields extends readonly string[]>(
   try {
     isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
     prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
-      | object
-      | null;
+      object | null;
     if (prototype !== null) {
       prototypeParent = reflectApply(objectGetPrototypeOf, Object, [
         prototype,
@@ -364,6 +356,17 @@ export async function loadResponseManifestHash<ChangesType>(
     'load response manifest input',
     false,
   );
+  const changeId = inputFields.changeId as string | undefined;
+  const changes = inputFields.changes as
+    CRDTChangeNode<ChangesType> | undefined;
+  const serializeChange = inputFields.serializeChange as
+    ((change: ChangesType) => Uint8Array) | undefined;
+  if (changes === undefined && changeId !== undefined) {
+    throw new TypeError(
+      'load response manifest cannot name a change root without a tree',
+    );
+  }
+  if (changeId !== undefined) requireString('change root CID', changeId);
   const rawSnapshot = inputFields.snapshot;
   const snapshotFields =
     rawSnapshot === undefined
@@ -374,37 +377,45 @@ export async function loadResponseManifestHash<ChangesType>(
           'load response manifest snapshot',
           true,
         );
-  const snapshot =
-    snapshotFields === undefined
-      ? undefined
-      : {
-          stateBytes: snapshotPayloadBytes(
-            'snapshot state',
-            snapshotFields.stateBytes,
-          ),
-          lastChangeNodeCID: snapshotFields.lastChangeNodeCID,
-          compactedCount: snapshotFields.compactedCount,
-          timestamp: snapshotFields.timestamp,
-        };
+  let snapshot: LoadResponseManifestSnapshot | undefined;
+  if (snapshotFields !== undefined) {
+    const lastChangeNodeCID = requireString(
+      'snapshot lastChangeNodeCID',
+      snapshotFields.lastChangeNodeCID,
+      { allowEmpty: true },
+    );
+    const compactedCount = snapshotFields.compactedCount;
+    if (
+      typeof compactedCount !== 'number' ||
+      !Number.isInteger(compactedCount) ||
+      compactedCount < 0 ||
+      compactedCount > 0xffffffff
+    )
+      throw new RangeError('snapshot compactedCount must be a uint32');
+    const timestamp = snapshotFields.timestamp;
+    if (
+      typeof timestamp !== 'number' ||
+      !Number.isSafeInteger(timestamp) ||
+      timestamp < 0
+    )
+      throw new RangeError(
+        'snapshot timestamp must be a non-negative safe integer',
+      );
+    snapshot = {
+      stateBytes: snapshotPayloadBytes(
+        'snapshot state',
+        snapshotFields.stateBytes,
+      ),
+      lastChangeNodeCID,
+      compactedCount,
+      timestamp,
+    };
+  }
   const inputKeychainChangesBytes = inputFields.keychainChangesBytes;
   const keychainChangesBytes =
     inputKeychainChangesBytes === undefined
       ? undefined
-      : snapshotPayloadBytes(
-          'keychain changes',
-          inputKeychainChangesBytes,
-        );
-  const changeId = inputFields.changeId as string | undefined;
-  const changes = inputFields.changes as CRDTChangeNode<ChangesType> | undefined;
-  const serializeChange = inputFields.serializeChange as
-    | ((change: ChangesType) => Uint8Array)
-    | undefined;
-
-  if (changes === undefined && changeId !== undefined) {
-    throw new TypeError(
-      'load response manifest cannot name a change root without a tree',
-    );
-  }
+      : snapshotPayloadBytes('keychain changes', inputKeychainChangesBytes);
   let changesSnapshot: Readonly<CRDTChangeNode<ChangesType>> | undefined;
   try {
     changesSnapshot =
@@ -572,10 +583,7 @@ export async function loadResponseManifestHash<ChangesType>(
         }
       }
     } else {
-      walkNamed(
-        requireString('change root CID', changeId),
-        changesSnapshot,
-      );
+      walkNamed(changeId, changesSnapshot);
     }
   }
 
@@ -606,30 +614,9 @@ export async function loadResponseManifestHash<ChangesType>(
   if (snapshot === undefined) {
     parts.push(uint8(0));
   } else {
-    const snapshotCid = requireString(
-      'snapshot lastChangeNodeCID',
-      snapshot.lastChangeNodeCID,
-      { allowEmpty: true },
-    );
+    const snapshotCid = snapshot.lastChangeNodeCID;
     const compactedCount = snapshot.compactedCount;
-    if (
-      typeof compactedCount !== 'number' ||
-      !Number.isInteger(compactedCount) ||
-      compactedCount < 0 ||
-      compactedCount > 0xffffffff
-    ) {
-      throw new RangeError('snapshot compactedCount must be a uint32');
-    }
     const timestamp = snapshot.timestamp;
-    if (
-      typeof timestamp !== 'number' ||
-      !Number.isSafeInteger(timestamp) ||
-      timestamp < 0
-    ) {
-      throw new RangeError(
-        'snapshot timestamp must be a non-negative safe integer',
-      );
-    }
     parts.push(
       uint8(1),
       ...stringParts(snapshotCid),
