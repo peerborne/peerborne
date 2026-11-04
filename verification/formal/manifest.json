@@ -105,6 +105,8 @@
     {
       "path": "packages/core/src/policy/keychain-order.ts",
       "functions": [
+        "keychainHistoryTailClock",
+        "orderKeychainHistory",
         "sameKeychainEntry",
         "isKeychainPrefix",
         "firstKeychainRewrite"
@@ -112,11 +114,19 @@
       "witness": "keychainOrder_domain",
       "consumers": ["packages/core/src/keychain-canonical.ts"],
       "verifiedTargets": [
+        "keychainHistoryTailClock_ensures",
+        "orderKeychainHistory",
+        "keychainHistory_removeCardinality",
+        "keychainHistory_uniquePrefix",
+        "keychainHistory_certificateComplete",
+        "keychainHistory_exact",
+        "keychainHistory_domain",
         "sameKeychainEntry_ensures",
         "isKeychainPrefix",
         "firstKeychainRewrite",
         "keychainPrefix_transitive"
-      ]
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/maintenance.ts",
