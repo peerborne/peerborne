@@ -3670,6 +3670,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@libp2p/ping@npm:^3.1.17":
+  version: 3.1.17
+  resolution: "@libp2p/ping@npm:3.1.17"
+  dependencies:
+    "@libp2p/interface": "npm:^3.4.0"
+    "@libp2p/interface-internal": "npm:^3.2.2"
+    p-event: "npm:^8.0.1"
+    race-signal: "npm:^2.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10/4e63857741f0cc8b52d90414a261c794c176fdaf72afb7f0674fe9983100586eb90b3acc3f1fb4b99eb031c6f3cfe095b3a36dd8e29f78af2f15c52b27355fb9
+  languageName: node
+  linkType: hard
+
 "@libp2p/pubsub-peer-discovery@npm:^12.0.0":
   version: 12.0.0
   resolution: "@libp2p/pubsub-peer-discovery@npm:12.0.0"
@@ -4865,7 +4879,7 @@ __metadata:
     "@libp2p/kad-dht": "npm:^16.4.5"
     "@libp2p/mdns": "npm:^12.0.32"
     "@libp2p/peer-id": "npm:^6.0.14"
-    "@libp2p/ping": "npm:^3.1.13"
+    "@libp2p/ping": "npm:^3.1.17"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
     "@libp2p/webrtc": "npm:^6.0.33"
     "@libp2p/websockets": "npm:^10.1.25"
