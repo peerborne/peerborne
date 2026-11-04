@@ -1,6 +1,9 @@
 import { expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { CoordinatedDocument } from './coordinated-document.js';
+import {
+  CoordinatedDocument,
+  type DocumentMemberAuthority,
+} from './coordinated-document.js';
 import { captureDocumentAuthorityLease } from './captured-document-authority.js';
 import {
   captureDocumentRoster,
@@ -214,7 +217,13 @@ function nativeLease() {
   const memberId = new Uint8Array(32).fill(7);
   return {
     headId: new Uint8Array(32).fill(11),
-    members: [{ memberId, publicKey: 'synthetic-public-key', role: 3 }],
+    members: [
+      {
+        memberId,
+        publicKey: 'synthetic-public-key',
+        role: 3 as DocumentMemberAuthority['role'],
+      },
+    ],
     alive: true,
     isCurrent() {
       return this.alive;
@@ -401,7 +410,7 @@ test('roster bounds reject before reading entries and admit exactly 256 own entr
         lease.members = Array.from({ length: count }, (_, index) => {
           const memberId = new Uint8Array(32).fill(7);
           memberId[31] = index;
-          return { memberId, publicKey: `key-${index}`, role: 3 };
+          return { memberId, publicKey: `key-${index}`, role: 3 as const };
         });
         const expectedLocalId =
           count > 0 ? documentBytesId(lease.members[0].memberId) : localId;
