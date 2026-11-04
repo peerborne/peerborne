@@ -512,7 +512,11 @@
     },
     {
       "path": "packages/core/src/policy/frame-layout.ts",
-      "functions": ["boundedFieldEnd", "frameCopyLength"],
+      "functions": [
+        "boundedFieldEnd",
+        "frameCopyLength",
+        "planDocumentFieldWrite"
+      ],
       "witness": "frameLayout_domain",
       "consumers": [
         "packages/core/src/membership-control-record.ts",
@@ -524,8 +528,12 @@
       "verifiedTargets": [
         "boundedFieldEnd_ensures",
         "frameCopyLength_ensures",
+        "planDocumentFieldWrite_ensures",
         "frameLayout_disjoint",
         "frameLayout_chunks",
+        "documentWrite_step",
+        "documentWrite_all_histories",
+        "documentWrite_domain",
         "journalRead_step",
         "journalRead_all_histories",
         "journalRead_batch_bound",

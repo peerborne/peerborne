@@ -211,6 +211,16 @@
       ]
     },
     {
+      "id": "document-writer-commit-boundaries",
+      "formalBoundary": "The production field-write planner accepts exactly when the payload and complete four-byte prefix, if present, fit both field and writer limits. Rejection preserves the offset and retains no payload or parts; accepted fields account for exactly one owned payload copy and omit empty parts. Checked arbitrary finite histories, with native-copy success as an input, bound retained payload bytes and part counts by the encoded byte budget and preserve exact payload/prefix accounting. Native safe-integer guards, actual typed-array copies, prefix endianness, malformed/shared/detached views, field ownership and failure before commit require properties. Native representation calibration inspects retained parts to establish the planner's resource assumptions. The model does not bound transient allocations, output materialization, TextEncoder work, VM heap overhead, UI latency or cryptographic security.",
+      "evidence": ["packages/core/src/document-writer-properties.test.ts"],
+      "sources": [
+        "packages/core/src/policy/frame-layout.ts",
+        "packages/core/src/internal/document-binary.ts",
+        "packages/core/src/document-security-wire.ts"
+      ]
+    },
+    {
       "id": "authenticated-quorum-runtime",
       "formalBoundary": "Exact first-eligible identity selection, digest multiplicities, strict-majority uniqueness, stable cohort projection and failure precedence are proved. Native bytes and map iteration, authority attribution, reflected probe results, Promise completion order, caller mutation and private error handling require runtime properties. Probe signatures and authorizer correctness remain caller responsibilities.",
       "evidence": ["packages/core/src/quorum-boundary-properties.test.ts"],

@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 139 production functions in 36 proof units. The runtime calls
+LemmaScript checks 140 production functions in 36 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -59,7 +59,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Authentication budget](../packages/core/src/policy/authentication-budget.ts) | 1 | Attempts and bytes are reserved atomically; either both advance exactly or neither changes. Arbitrary finite reservation histories conserve admitted counts and byte totals within both limits. |
 | [Control-chain admission](../packages/core/src/policy/control-chain.ts)       |         4 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection, authenticated self-update admission and error priority; valid epoch sequences do not wrap.                                                                                                    |
 | [Journal revision index](../packages/core/src/policy/journal-index.ts) | 1 | Exact retained suffix validity: at most 128 positive contiguous revisions ending at the head, minimum retained-byte accounting and an empty zero-revision/zero-byte index. |
-| [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
+| [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 3 | Whole-field write admission and finite-history retained-byte/part bounds; field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
@@ -197,6 +197,25 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The binary writer uses a checked planner to reserve a complete fixed or
+length-prefixed field before copying its payload. Rejected writes preserve the
+previous offset and retain no prefix or payload. Accepted fields own their
+payload once and retain only non-empty parts. Checked finite histories bound
+retained payload bytes and part counts by the encoded byte budget, with exact
+payload/prefix accounting even when an admitted native copy fails before commit.
+Native copy success is a proof input; the proof does not establish allocation
+success or VM exception behavior.
+
+The [writer properties](../packages/core/src/document-writer-properties.test.ts)
+reproduced partial prefixes after capacity rejection, duplicate payload copies,
+and unbounded retained empty parts outside the byte budget. They check actual
+copy counts, retained-part calibration, generated write/rejection histories,
+injected copy failures, malformed limits, canonical prefix bytes, ownership and
+shared/detached byte views. This bounds retained content and part counts, not
+transient allocations, TextEncoder work, output materialization, native heap
+overhead or UI latency. No remote exploit was established by these utility-level
+failures.
 
 The journal read planner now drives the built-in IndexedDB snapshot and outbox
 queries. Recovery requests every accepted entry, skips pending and publication
@@ -428,7 +447,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 55 property-suite files containing 156 explicit
+The inventory audits 56 property-suite files containing 163 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -440,6 +459,7 @@ properties can invoke the same assertion more than once.
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
+| Document binary writes | Whole-field rejection, native copy/part counts, generated write histories, prefix endianness, injected copy failures, malformed limits, detached/shared views and buffer ownership. |
 | Journal storage reads | Corrupt/valid IndexedDB rows, exact pending/publication sizes, retained-copy budgets, pre-read index rejection, owned-copy counters and native encrypted replay with provider mutation during anchor reads. |
 | Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
