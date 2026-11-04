@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 135 selected production functions in 34 proof units are compiled from their
+The 137 selected production functions in 35 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -30,7 +30,7 @@ each unit; unrelated imports elsewhere in the file do not become proof evidence.
 
 The runner rejects missing proof files, generated-file drift, unverified
 declarations, partial verification, proof escape annotations, a missing domain
-witness, and incorrect number/string/slicing configuration. The tree, Welcome-admission, invitation-replay and
+witness, and incorrect number/string/slicing configuration. The tree, Welcome-admission, invitation-replay, authority-capture and
 sync-response units also run complete verification under fixed solver seeds 1, 2, 7 and 19 with a
 10-second per-obligation limit; this changes solver search, not the contracts. Dafny's assumption
 audit must report zero findings, including no body-less declarations or
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 193 controls cover 34 accepted originals, map-comparison and native-map-alias
-calibrations, 153 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 200 controls cover 35 accepted originals, map-comparison and native-map-alias
+calibrations, 159 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four tree, fourteen invitation-replay and seventeen Welcome-admission
@@ -79,8 +79,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 52 property-suite files and
-137 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 53 property-suite files and
+145 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -137,6 +137,16 @@ Native BigInt properties cover backward and malformed clock samples,
 safe-integer boundaries, injected expiry failures and cancellation in the actual
 drain. Authentication, clock progress, periodic pruning, asynchronous replay,
 native heap usage and delivery remain outside this retention proof.
+
+Authority captures use two checked production helpers to accept exactly valid,
+unique scalar rosters containing the local identity. Successful maps retain
+exact ID/key/role bindings within 256 entries; rejection exposes an empty map.
+The native adapter reads own data properties by index, copies bytes using
+intrinsics and retains the original receiver-bound validity function. Properties
+reproduce method replacement during asynchronous provider calls and avoid
+custom typed-array slice/array iterator execution. Native ownership, reflection
+and callback truth remain outside the proof; these are provider-boundary
+findings, without an established remote exploit or UI-latency guarantee.
 
 Invitation-replay histories preserve one signed join binding and at most one
 acceptance per offer, including after expiry retirement and clock rollback.

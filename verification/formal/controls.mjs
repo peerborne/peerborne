@@ -227,6 +227,42 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'authority-capture-duplicate-binding',
+      'authority-capture.ts',
+      'count < 256 && !duplicate && idLength === 64',
+      'count < 256 && idLength === 64',
+    ],
+    [
+      'authority-capture-invalid-role',
+      'authority-capture.ts',
+      '(role === 1 || role === 2 || role === 3)',
+      'true',
+    ],
+    [
+      'authority-capture-capacity-overflow',
+      'authority-capture.ts',
+      'count < 256 && !duplicate',
+      'count <= 256 && !duplicate',
+    ],
+    [
+      'authority-capture-key-substitution',
+      'authority-capture.ts',
+      'members.set(entry.id, entry);',
+      'members.set(localId, entry);',
+    ],
+    [
+      'authority-capture-value-substitution',
+      'authority-capture.ts',
+      'members.set(entry.id, entry);',
+      'members.set(entry.id, entries[0]);',
+    ],
+    [
+      'authority-capture-missing-local-member',
+      'authority-capture.ts',
+      'if (!members.has(localId)) return { valid: false, members: new Map() };',
+      'if (false) return { valid: false, members: new Map() };',
+    ],
+    [
       'sync-clock-rollback',
       'sync-request.ts',
       'return previous > observed ? previous : observed;',

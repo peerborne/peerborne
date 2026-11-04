@@ -267,6 +267,18 @@
       ]
     },
     {
+      "id": "document-authority-capture",
+      "formalBoundary": "Detached roster acceptance is proved iff every entry has valid scalar fields, identities are unique and the local member exists. Successful lookup maps contain exactly the original ID/key/role bindings, retain at most 256 entries and expose no partial map on rejection. The immutable record/map model assumes owned scalar inputs. Native own-data descriptors, bounded indexed arrays, intrinsic byte copies, map independence, receiver-bound callback capture and asynchronous authorization invalidation require properties. Truthful synchronous provider guards, proxy behavior, cryptographic validity and UI latency are outside this proof; provider-boundary counterexamples are not evidence of a remote exploit.",
+      "evidence": [
+        "packages/core/src/document-authority-snapshot-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/authority-capture.ts",
+        "packages/core/src/captured-document-authority.ts",
+        "packages/core/src/coordinated-document.ts"
+      ]
+    },
+    {
       "id": "document-authority-history",
       "formalBoundary": "Exact roster shape, role validity, unique identities/keys, single-controller selection and fresh bounded controller binding are proved. Checked finite histories preserve every historical controller and admit a valid signed first transition. Native Map and byte ownership, numeric calibration, canonical wire parsing, Ed25519 signatures and racing asynchronous role updates require runtime properties. A signedByCurrent proof input assumes correct authentication; cryptographic unforgeability and provider membership are not established.",
       "evidence": [
