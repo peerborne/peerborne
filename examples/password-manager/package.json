@@ -6,7 +6,7 @@
     "@peerborne/core": "workspace:packages/core",
     "@peerborne/yjs": "workspace:packages/yjs",
     "@popperjs/core": "^2.11.8",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.6",
     "@types/uuid": "^11.0.0",
     "bootstrap": "^5.3.8",
     "quill-delta": "^5.1.0",
