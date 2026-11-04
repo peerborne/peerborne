@@ -3,6 +3,16 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "journal-storage-transition-boundaries",
+      "formalBoundary": "The actual store policies check exact staged revision/count/byte admission, unique bounded publication append/removal with exact byte totals and retained-index projection, and token/checkpoint-bound commit eligibility. Checked finite histories preserve metadata bounds and leave accepted entries unchanged on failed/rejected operations; histories without checkpoint commits retain the initial accepted prefix. Native strict scalar guards, byte equality, owned record/payload projection, pending checkpoint retention, transaction aborts and authenticated encrypted recovery require properties. Storage success and payload-match truth are model inputs; crash durability, cryptographic unforgeability, browser quota behavior and UI latency are not proved.",
+      "evidence": ["packages/core/src/journal-transition-properties.test.ts"],
+      "sources": [
+        "packages/core/src/policy/journal-store.ts",
+        "packages/core/src/document-journal-store.ts",
+        "packages/core/src/document-replay-journal.ts"
+      ]
+    },
+    {
       "id": "yjs-keychain-history-boundaries",
       "formalBoundary": "The actual history index and consuming traversal prove rooted, distinct predecessor order, exact acceptance of complete append chains, fork/orphan rejection and at most N+1 successor probes for at most 1000 items. Tail clocks have checked exact safe-integer bounds. Native Map/Set lookup, array ownership, IEEE-754 arithmetic, Yjs item encoding and batched actor histories require properties. Native read counters reproduce and prevent quadratic predecessor scans. These are abstract traversal-work and local validation guarantees; Yjs codecs, hash-table cost, cryptographic authentication, arbitrary concurrent epoch recovery, native heap use and UI latency remain outside the proof.",
       "evidence": [

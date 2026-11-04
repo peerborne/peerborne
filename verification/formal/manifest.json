@@ -716,6 +716,29 @@
         "controllerBindings_all_histories",
         "unsignedAuthorityHeads_excluded"
       ]
+    },
+    {
+      "path": "packages/core/src/policy/journal-store.ts",
+      "functions": [
+        "planJournalPublication",
+        "classifyJournalStage",
+        "isJournalCommitCurrent"
+      ],
+      "witness": "journalStore_domain",
+      "consumers": ["packages/core/src/document-journal-store.ts"],
+      "verifiedTargets": [
+        "planJournalPublication",
+        "classifyJournalStage_ensures",
+        "isJournalCommitCurrent_ensures",
+        "journalPublication_empty",
+        "journalPublication_appendBytes",
+        "journalPublication_filterAppend",
+        "journalPublication_withoutBounds",
+        "journalPublication_domain",
+        "journalStore_step",
+        "journalStore_all_histories"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     }
   ]
 }

@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 144 selected production functions have checked
+current proof scope. The 147 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -66,6 +66,7 @@ system-level statuses below.
 | Load metadata preflight | Partial | Verified exact bounded UTF-8 sizing and surrogate pairing; native encoding/read/copy costs, metadata-before-work and callback-mutation properties | Rejects invalid root/snapshot metadata before payload and serializer work. Native codecs, safe-integer/type checks, complete load ordering, VM heap and UI latency remain outside the proof; not an end-to-end secrecy guarantee. |
 | Document frame construction | Partial | Verified whole-field write planner and finite-history retained-byte/part bounds; native copy-cost, rejection, wire-prefix, ownership and injected-failure properties | Prevents retained empty-part growth and partial capacity-rejected writes. Bounds exclude transient allocations, output materialization, TextEncoder work, native heap overhead and UI latency; does not establish cryptographic security. |
 | Journal recovery I/O phases | Partial | Verified full/recovery read plans and classifier composition; 129 initial / 147 successful-recovery journal-get bounds; native crypto/IndexedDB request, corruption, ownership and capability properties | Applies to the built-in IndexedDB recovery path. Counts exclude writes and anchor-provider I/O; validation/anchor truth, browser internals, durability and UI latency remain unproved. |
+| Journal store transition integrity | Partial | Verified staging, token/checkpoint-bound commit admission and unique bounded outbox transitions; finite histories preserve accepted prefixes without checkpoint commits. Native properties cover malformed flags, one-read byte reservations, both backends, raw-row transaction aborts and encrypted recovery after duplicate rejection | Models storage-commit and payload-match truth as inputs. Crash durability, arbitrary provider failures, browser quotas, cryptographic unforgeability and UI latency remain outside the proof. |
 | Journal storage read admission | Partial | Verified revision-suffix validation and bounded byte decisions; checked finite read histories; native IndexedDB corruption/copy-cost properties and encrypted replay ownership | Bounds owned ciphertext copies, not browser structured-clone allocations, decoder buffers, total heap or UI latency. Cryptographic validity, transaction/abort behavior and independent-anchor honesty remain assumptions. |
 | Coordinator authority captures | Partial | Checked exact bounded roster maps plus seeded own-data/byte/map ownership and asynchronous guard-replacement properties | Requires truthful synchronous application-pinned authority. Native reflection, proxies, crypto and scheduling remain outside the proof. Provider-boundary failures do not establish a remote exploit or main-thread latency bound. |
 | Capability hierarchy and field capabilities | Partial | Standalone capability suite | The document mutation path does not enforce field capabilities. |

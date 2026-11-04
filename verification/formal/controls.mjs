@@ -227,6 +227,78 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'journal-store-duplicate-publication',
+      'journal-store.ts',
+      "return { decision: 'duplicate', publications: [], retained: [], bytes: 0, };",
+      "return { decision: 'accept', publications: [], retained: [], bytes: 0, };",
+    ],
+    [
+      'journal-store-byte-accounting',
+      'journal-store.ts',
+      'total += publication.bytes;',
+      'total += 0;',
+    ],
+    [
+      'journal-store-publication-count-overflow',
+      'journal-store.ts',
+      'publications.length >= 16',
+      'publications.length > 16',
+    ],
+    [
+      'journal-store-publication-byte-overflow',
+      'journal-store.ts',
+      'bytes > 16777216 - total',
+      'bytes > 16777216 - total + 1',
+    ],
+    [
+      'journal-store-acknowledges-other-id',
+      'journal-store.ts',
+      'if (append || publication.id !== id)',
+      'if (append || publication.id === id)',
+    ],
+    [
+      'journal-store-retained-index-substitution',
+      'journal-store.ts',
+      'retained.push(index);',
+      'retained.push(0);',
+    ],
+    [
+      'journal-store-pending-reservation-overwrite',
+      'journal-store.ts',
+      'if (revision !== expected || revision === 9007199254740991 || hasPending)',
+      'if (revision !== expected || revision === 9007199254740991 || false)',
+    ],
+    [
+      'journal-store-checkpoint-budget-inversion',
+      'journal-store.ts',
+      '(!checkpoint && (entries >= 128 || entryBytes + 32 > 134217728 - retainedBytes))',
+      '(checkpoint && (entries >= 128 || entryBytes + 32 > 134217728 - retainedBytes))',
+    ],
+    [
+      'journal-store-revision-overflow',
+      'journal-store.ts',
+      'revision === expected && revision < 9007199254740991 && hasPending && sameToken && sameCheckpoint',
+      'revision === expected && true && hasPending && sameToken && sameCheckpoint',
+    ],
+    [
+      'journal-store-checkpoint-substitution',
+      'journal-store.ts',
+      'revision === expected && revision < 9007199254740991 && hasPending && sameToken && sameCheckpoint',
+      'revision === expected && revision < 9007199254740991 && hasPending && sameToken && true',
+    ],
+    [
+      'journal-store-token-substitution',
+      'journal-store.ts',
+      'revision === expected && revision < 9007199254740991 && hasPending && sameToken && sameCheckpoint',
+      'revision === expected && revision < 9007199254740991 && hasPending && true && sameCheckpoint',
+    ],
+    [
+      'journal-store-missing-acceptance-overhead',
+      'journal-store.ts',
+      'entryBytes + 32 > 134217728 - retainedBytes',
+      'entryBytes > 134217728 - retainedBytes',
+    ],
+    [
       'keychain-history-empty-id',
       'keychain-order.ts',
       "id === '' || seen.has(id) || byParent.has(parent)",
