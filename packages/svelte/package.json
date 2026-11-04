@@ -47,7 +47,7 @@
     "svelte": "^5.57.3"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.6",
     "jest": "^30.5.2",
     "jest-environment-jsdom": "^30.5.2",
     "svelte": "^5.57.3",
