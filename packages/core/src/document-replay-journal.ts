@@ -412,13 +412,7 @@ export class DocumentReplayJournal {
       let last:
         | { revision: number; commitment: Uint8Array; parent: Uint8Array }
         | undefined;
-      for (const raw of snapshot.entries) {
-        const owned = copyUnsharedUint8Array(
-          raw,
-          1,
-          Math.min(MAX_ENTRY + 128, MAX_DOCUMENT_JOURNAL_BYTES - bytes),
-          'journal entry',
-        );
+      for (const owned of snapshot.entries) {
         bytes += owned.length;
         const accepted = new DocumentBinaryReader(owned, MAX_ENTRY + 128);
         const payload = accepted.bytes(MAX_ENTRY + 96),

@@ -267,6 +267,19 @@
       ]
     },
     {
+      "id": "journal-storage-read-boundaries",
+      "formalBoundary": "The retained revision index accepts exactly bounded contiguous suffixes ending at the stored head with coherent minimum byte counts. Production boundedFieldEnd decisions guard native row copies; checked arbitrary finite read histories preserve exact admitted-byte sums within the declared budget, exclude zero-length copies, keep failed preparations unchanged and make failure absorbing. A batch corollary bounds accepted rows by 128. Native safe-integer guards, IndexedDB transaction/abort behavior, structured cloning, ciphertext ownership, byte-copy instrumentation and mutation during anchor awaits require properties. The proof does not bound browser structured-clone allocations, decoding buffers, total heap use or UI latency, and does not establish cryptographic authenticity or rollback-anchor honesty.",
+      "evidence": [
+        "packages/core/src/journal-storage-boundary-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/journal-index.ts",
+        "packages/core/src/policy/frame-layout.ts",
+        "packages/core/src/document-journal-store.ts",
+        "packages/core/src/document-replay-journal.ts"
+      ]
+    },
+    {
       "id": "document-authority-capture",
       "formalBoundary": "Detached roster acceptance is proved iff every entry has valid scalar fields, identities are unique and the local member exists. Successful lookup maps contain exactly the original ID/key/role bindings, retain at most 256 entries and expose no partial map on rejection. The immutable record/map model assumes owned scalar inputs. Native own-data descriptors, bounded indexed arrays, intrinsic byte copies, map independence, receiver-bound callback capture and asynchronous authorization invalidation require properties. Truthful synchronous provider guards, proxy behavior, cryptographic validity and UI latency are outside this proof; provider-boundary counterexamples are not evidence of a remote exploit.",
       "evidence": [

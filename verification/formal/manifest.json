@@ -503,6 +503,14 @@
       ]
     },
     {
+      "path": "packages/core/src/policy/journal-index.ts",
+      "functions": ["isDocumentJournalIndexValid"],
+      "witness": "journalIndex_domain",
+      "consumers": ["packages/core/src/document-journal-store.ts"],
+      "verifiedTargets": ["isDocumentJournalIndexValid"],
+      "solverSeeds": [1, 2, 7, 19]
+    },
+    {
       "path": "packages/core/src/policy/frame-layout.ts",
       "functions": ["boundedFieldEnd", "frameCopyLength"],
       "witness": "frameLayout_domain",
@@ -510,14 +518,20 @@
         "packages/core/src/membership-control-record.ts",
         "packages/core/src/group-security-transition-record.ts",
         "packages/core/src/invitation-framing.ts",
-        "packages/core/src/internal/document-binary.ts"
+        "packages/core/src/internal/document-binary.ts",
+        "packages/core/src/document-journal-store.ts"
       ],
       "verifiedTargets": [
         "boundedFieldEnd_ensures",
         "frameCopyLength_ensures",
         "frameLayout_disjoint",
-        "frameLayout_chunks"
-      ]
+        "frameLayout_chunks",
+        "journalRead_step",
+        "journalRead_all_histories",
+        "journalRead_batch_bound",
+        "journalRead_domain"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/document-admission.ts",

@@ -116,3 +116,139 @@ method frameLayout_domain()
   frameLayout_disjoint(16, 4, 3, 5, 4, 6, 7);
   var received := frameLayout_chunks(7, [0, 1, 0, 3, 8]);
 }
+
+datatype JournalReadAttempt = JournalReadAttempt(length: int, exact: bool, copySucceeded: bool)
+
+opaque predicate JournalReadRejected(declared: int, copied: int, event: JournalReadAttempt)
+  requires 0 <= declared <= 134217728
+  requires 0 <= copied <= declared
+  requires 0 <= event.length <= 4294967295
+{
+  event.length == 0 || !event.copySucceeded ||
+  boundedFieldEnd(declared, copied, event.length, if event.exact then declared else 1, if event.exact then declared else 134217728, 0) == -1
+}
+
+method journalRead_step(declared: int, copied: int, length: int, exact: bool, alreadyFailed: bool, copySucceeded: bool)
+  returns (next: int, failed: bool)
+  requires 0 <= declared <= 134217728
+  requires 0 <= copied <= declared
+  requires 0 <= length <= 4294967295
+  ensures copied <= next <= declared
+  ensures alreadyFailed ==> failed
+  ensures failed ==> next == copied
+  ensures !failed ==> copySucceeded && 1 <= length <= 134217728 && next == copied + length && copied < next
+  ensures !failed && exact ==> length == declared
+  ensures failed <==> alreadyFailed || length == 0 || !copySucceeded || length > 134217728 || length > declared - copied || (exact && length != declared)
+  ensures failed <==> alreadyFailed || JournalReadRejected(declared, copied, JournalReadAttempt(length, exact, copySucceeded))
+{
+  reveal JournalReadRejected();
+  if alreadyFailed || length == 0 {
+    return copied, true;
+  }
+  var end := boundedFieldEnd(declared, copied, length, if exact then declared else 1, if exact then declared else 134217728, 0);
+  if end < 0 || !copySucceeded {
+    return copied, true;
+  }
+  return end, false;
+}
+
+method journalRead_all_histories(declared: int, attempts: seq<JournalReadAttempt>)
+  returns (copied: int, accepted: seq<int>, failed: bool)
+  requires 0 <= declared <= 134217728
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].length <= 4294967295
+  ensures 0 <= copied <= declared
+  ensures copied == ChunkBytes(accepted)
+  ensures |accepted| <= copied && |accepted| <= |attempts|
+  ensures forall i :: 0 <= i < |accepted| ==> 1 <= accepted[i] <= 134217728
+  ensures failed <==> |accepted| < |attempts|
+  ensures forall i :: 0 <= i < |accepted| ==> accepted[i] == attempts[i].length && attempts[i].copySucceeded && (attempts[i].exact ==> accepted[i] == declared)
+  ensures failed ==> JournalReadRejected(declared, copied, attempts[|accepted|])
+{
+  copied := 0;
+  accepted := [];
+  failed := false;
+  var index := 0;
+  while index < |attempts|
+    invariant 0 <= index <= |attempts|
+    invariant 0 <= copied <= declared
+    invariant copied == ChunkBytes(accepted)
+    invariant |accepted| <= copied && |accepted| <= index
+    invariant forall i :: 0 <= i < |accepted| ==> 1 <= accepted[i] <= 134217728
+    invariant failed <==> |accepted| < index
+    invariant forall i :: 0 <= i < |accepted| ==> accepted[i] == attempts[i].length && attempts[i].copySucceeded && (attempts[i].exact ==> accepted[i] == declared)
+    invariant failed ==> JournalReadRejected(declared, copied, attempts[|accepted|])
+    decreases |attempts| - index
+  {
+    var event := attempts[index];
+    var next, stopped := journalRead_step(declared, copied, event.length, event.exact, failed, event.copySucceeded);
+    if !stopped {
+      assert !failed && |accepted| == index;
+      var previous := accepted;
+      accepted := accepted + [event.length];
+      assert accepted[..|accepted|-1] == previous;
+      assert accepted[|accepted|-1] == event.length;
+    } else if !failed {
+      assert |accepted| == index;
+      assert JournalReadRejected(declared, copied, attempts[|accepted|]);
+    }
+    copied := next;
+    failed := stopped;
+    index := index + 1;
+  }
+}
+
+method journalRead_batch_bound(declared: int, attempts: seq<JournalReadAttempt>)
+  returns (copied: int, accepted: seq<int>, failed: bool)
+  requires 0 <= declared <= 134217728
+  requires |attempts| <= 128
+  requires forall i :: 0 <= i < |attempts| ==> 0 <= attempts[i].length <= 4294967295
+  ensures 0 <= copied <= declared <= 134217728
+  ensures |accepted| <= 128
+  ensures copied == ChunkBytes(accepted)
+  ensures |accepted| <= |attempts|
+  ensures failed <==> |accepted| < |attempts|
+  ensures forall i :: 0 <= i < |accepted| ==> accepted[i] == attempts[i].length && attempts[i].copySucceeded && (attempts[i].exact ==> accepted[i] == declared)
+  ensures failed ==> JournalReadRejected(declared, copied, attempts[|accepted|])
+{
+  copied, accepted, failed := journalRead_all_histories(declared, attempts);
+}
+
+method journalRead_domain()
+{
+  reveal JournalReadRejected();
+  var first, live := journalRead_step(5, 0, 3, false, false, true);
+  assert first == 3 && !live;
+  var second, stopped := journalRead_step(5, first, 3, false, live, true);
+  assert second == 3 && stopped;
+  var third, terminal := journalRead_step(5, second, 1, false, stopped, true);
+  assert third == 3 && terminal;
+  var exact, exactFailed := journalRead_step(5, 0, 5, true, false, true);
+  assert exact == 5 && !exactFailed;
+  var mismatch, mismatchFailed := journalRead_step(5, 0, 4, true, false, true);
+  assert mismatch == 0 && mismatchFailed;
+  var failedCopy, copyFailed := journalRead_step(5, 0, 4, false, false, false);
+  assert failedCopy == 0 && copyFailed;
+  var attempts := [JournalReadAttempt(3, false, true), JournalReadAttempt(3, false, true), JournalReadAttempt(1, false, true)];
+  assert ChunkBytes([]) == 0;
+  assert ChunkBytes([3]) == 3;
+  assert ChunkBytes([3, 3]) == 6;
+  assert ChunkBytes([3, 3, 1]) == 7;
+  var copied, accepted, failed := journalRead_batch_bound(5, attempts);
+  assert 0 <= copied <= 5 && |accepted| <= 128;
+  if |accepted| == 0 {
+    assert accepted == [] && copied == 0 && failed;
+    assert JournalReadRejected(5, 0, attempts[0]);
+  }
+  if |accepted| >= 2 {
+    assert accepted[0] == 3 && accepted[1] == 3;
+    if |accepted| == 2 {
+      assert accepted == [3, 3];
+    } else {
+      assert |accepted| == 3 && accepted[2] == 1;
+      assert accepted == [3, 3, 1];
+    }
+    assert copied >= 6;
+  }
+  assert |accepted| == 1 && accepted[0] == 3;
+  assert copied == 3 && accepted == [3] && failed;
+}
