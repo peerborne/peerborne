@@ -25,6 +25,7 @@ packages/core/src/policy/tree-index.ts
 packages/index/src/query-order.ts
 packages/core/src/policy/authentication-budget.ts
 packages/core/src/policy/control-chain.ts
+packages/core/src/policy/journal-index.ts
 packages/core/src/policy/frame-layout.ts
 packages/core/src/policy/document-admission.ts
 packages/core/src/policy/connection-retry.ts

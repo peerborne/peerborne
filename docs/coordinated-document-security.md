@@ -143,6 +143,12 @@ the authority on restart, restore the latest nonempty `authorityRecords` from th
 decrypted journal using the independently pinned genesis, then configure the
 coordinator and document with that verified log.
 Writable transactions request strict durability and resolve on completion.
+Recovery validates the contiguous retained revision index before requesting
+entry rows. IndexedDB copies reserve against the declared retained-byte budget;
+pending and publication rows must match their indexed sizes before copying.
+Authenticated replay reuses detached captured entries instead of making another
+outer copy. These checks bound owned ciphertext copies, not IndexedDB's internal
+structured cloning, decoder buffers or total browser heap use.
 
 The publication outbox has at most 16 frames/16 MiB and survives restart with
 the journal. After a publication failure, `retrySecurityPublications()` retries

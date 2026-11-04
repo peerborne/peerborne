@@ -12,7 +12,59 @@ import {
   MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
 } from './document-replay-journal.js';
 import { documentBytesEqual } from './internal/document-binary.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  copyUnsharedUint8Array,
+  unsharedUint8ArrayByteLength,
+} from './utils.js';
+import { boundedFieldEnd } from './policy/frame-layout.js';
+import { isDocumentJournalIndexValid } from './policy/journal-index.js';
+
+function copyIndexedJournalBytes(
+  value: unknown,
+  declared: number,
+  copied: number,
+  field: string,
+  exact = false,
+): { bytes: Uint8Array; copied: number } {
+  const length = unsharedUint8ArrayByteLength(
+    value,
+    1,
+    MAX_DOCUMENT_JOURNAL_BYTES,
+    field,
+  );
+  const end = boundedFieldEnd(
+    declared,
+    copied,
+    length,
+    exact ? declared : 1,
+    exact ? declared : MAX_DOCUMENT_JOURNAL_BYTES,
+    0,
+  );
+  if (end < 0) throw new Error('Journal row exceeds its byte index');
+  return {
+    bytes: copyUnsharedUint8Array(value, length, length, field),
+    copied: end,
+  };
+}
+
+function readIndexedPublication(
+  value: DocumentJournalPublication,
+  index: { id: string; bytes: number },
+): DocumentJournalPublication {
+  const id = copyUnsharedUint8Array(value.id, 32, 32, 'publication id');
+  if (publicationId(id) !== index.id)
+    throw new Error('Publication index mismatch');
+  return {
+    id,
+    frame: copyIndexedJournalBytes(
+      value.frame,
+      index.bytes,
+      0,
+      'publication frame',
+      true,
+    ).bytes,
+  };
+}
 
 function clone(
   value: DocumentJournalSnapshot | undefined,
@@ -322,19 +374,15 @@ function readHead(value: JournalHead | undefined): JournalHead {
     value.publications.length > 16
   )
     throw new Error('Invalid journal head');
-  let previous = 0,
-    publicationBytes = 0;
+  let publicationBytes = 0;
   for (const revision of value.revisions) {
-    if (
-      !Number.isSafeInteger(revision) ||
-      revision <= previous ||
-      revision > value.revision
-    )
+    if (!Number.isSafeInteger(revision))
       throw new Error('Invalid journal revision index');
-    previous = revision;
   }
-  if (previous !== value.revision)
-    throw new Error('Journal head has missing entries');
+  if (
+    !isDocumentJournalIndexValid(value.revision, value.revisions, value.bytes)
+  )
+    throw new Error('Journal head has an invalid retained revision index');
   const seen = new Set<string>();
   for (const publication of value.publications) {
     if (
@@ -414,6 +462,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       );
       const request = transaction.objectStore('heads').get(key);
       let head: JournalHead,
+        copiedBytes = 0,
         entries: Uint8Array[] = [],
         publications: DocumentJournalPublication[] = [],
         pending: DocumentJournalSnapshot['pending'];
@@ -435,12 +484,14 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               .get([key, revision]);
             item.onsuccess = () =>
               guard(() => {
-                entries[index] = copyUnsharedUint8Array(
+                const owned = copyIndexedJournalBytes(
                   item.result,
-                  1,
-                  MAX_DOCUMENT_JOURNAL_BYTES,
+                  head.bytes,
+                  copiedBytes,
                   'stored journal entry',
                 );
+                entries[index] = owned.bytes;
+                copiedBytes = owned.copied;
               });
           });
           head.publications.forEach((publication, index) => {
@@ -449,12 +500,10 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               .get([key, publication.id]);
             item.onsuccess = () =>
               guard(() => {
-                publications[index] = ownPublication(item.result);
-                if (
-                  publications[index].frame.length !== publication.bytes ||
-                  publicationId(publications[index].id) !== publication.id
-                )
-                  throw new Error('Publication index mismatch');
+                publications[index] = readIndexedPublication(
+                  item.result,
+                  publication,
+                );
               });
           });
           if (head.pending) {
@@ -473,12 +522,13 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                     32,
                     'journal token',
                   ),
-                  entry: copyUnsharedUint8Array(
+                  entry: copyIndexedJournalBytes(
                     item.result.entry,
-                    1,
-                    MAX_DOCUMENT_JOURNAL_BYTES,
+                    head.pending!.bytes,
+                    0,
                     'pending entry',
-                  ),
+                    true,
+                  ).bytes,
                   ...(item.result.publication
                     ? {
                         publication: ownStagedPublication(
@@ -491,9 +541,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
           }
         });
       transaction.oncomplete = () => {
-        if (
-          entries.reduce((sum, value) => sum + value.length, 0) !== head.bytes
-        ) {
+        if (copiedBytes !== head.bytes) {
           reject(new Error('Journal byte index mismatch'));
           return;
         }
@@ -532,12 +580,12 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               .get([key, revision]);
             item.onsuccess = () => {
               try {
-                entry = copyUnsharedUint8Array(
+                entry = copyIndexedJournalBytes(
                   item.result,
-                  1,
-                  MAX_DOCUMENT_JOURNAL_BYTES,
+                  head.bytes,
+                  0,
                   'accepted journal entry',
-                );
+                ).bytes;
               } catch (error) {
                 failure = error;
                 transaction.abort();
@@ -577,13 +625,10 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               .get([key, publication.id]);
             item.onsuccess = () => {
               try {
-                const value = ownPublication(item.result);
-                if (
-                  publicationId(value.id) !== publication.id ||
-                  value.frame.length !== publication.bytes
-                )
-                  throw new Error('Publication index mismatch');
-                publications[index] = value;
+                publications[index] = readIndexedPublication(
+                  item.result,
+                  publication,
+                );
               } catch (error) {
                 failure = error;
                 transaction.abort();

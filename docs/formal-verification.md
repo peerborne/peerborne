@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 137 production functions in 35 proof units. The runtime calls
+LemmaScript checks 138 production functions in 36 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -58,6 +58,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Query order and pages](../packages/index/src/query-order.ts)               |         4 | UTF-16/finite-real scalar order, lazy first-difference/direction/path ordering, symmetry and transitivity under per-field order laws, and exact reconstruction by successive positive-sized prefix pages. |
 | [Authentication budget](../packages/core/src/policy/authentication-budget.ts) | 1 | Attempts and bytes are reserved atomically; either both advance exactly or neither changes. Arbitrary finite reservation histories conserve admitted counts and byte totals within both limits. |
 | [Control-chain admission](../packages/core/src/policy/control-chain.ts)       |         4 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection, authenticated self-update admission and error priority; valid epoch sequences do not wrap.                                                                                                    |
+| [Journal revision index](../packages/core/src/policy/journal-index.ts) | 1 | Exact retained suffix validity: at most 128 positive contiguous revisions ending at the head, minimum retained-byte accounting and an empty zero-revision/zero-byte index. |
 | [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 2 | Field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
@@ -196,6 +197,33 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The [journal index policy](../packages/core/src/policy/journal-index.ts) validates
+retained revision metadata before requesting any entry rows. Checkpoint suffixes
+may start above revision one; every subsequent revision must be contiguous and
+the suffix must end at the stored head. Empty indexes have zero revision and zero
+bytes, and retained indexes contain at most 128 rows with coherent minimum bytes.
+
+IndexedDB row copying now calls the existing verified `boundedFieldEnd` policy
+before allocating an owned ciphertext copy. Accepted-entry reads share one
+remaining-byte budget from the validated head. Pending and publication rows must
+match their indexed sizes exactly; an isolated head read cannot exceed the
+retained-byte total. Checked finite-history methods preserve exact admitted-byte
+sums, positive copy sizes, the first rejected position and an absorbing failure.
+A bounded-batch corollary limits admitted rows to 128. Both this unit and the index
+unit run under four fixed solver seeds.
+
+Native properties reproduced copying past the declared retained total, oversized
+head/pending reads accepted by the store, and publication copies made before size
+mismatches were rejected. They exercise corrupt and valid IndexedDB records,
+request/copy counts, pre-read gap rejection and real encrypted replay. Replay now
+reuses its detached captured entries, removing the second outer journal-entry
+copy while still isolating provider-byte mutations during an anchor await.
+
+These are storage-boundary and allocation-cost guarantees. The proof assumes
+valid native scalar inputs and correct callback/abort behavior. IndexedDB's own
+structured cloning, parser/decryption buffers, JavaScript heap totals, UI latency,
+cryptographic correctness and anchor honesty remain outside the model.
 
 The [authority-capture policy](../packages/core/src/policy/authority-capture.ts)
 checks the scalar roster that the coordinated document actually uses. Acceptance
@@ -373,7 +401,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 53 property-suite files containing 145 explicit
+The inventory audits 54 property-suite files containing 151 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -384,6 +412,7 @@ properties can invoke the same assertion more than once.
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
+| Journal storage reads | Corrupt/valid IndexedDB rows, exact pending/publication sizes, retained-copy budgets, pre-read index rejection, owned-copy counters and native encrypted replay with provider mutation during anchor reads. |
 | Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
 | Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback, one-time package consumption, stable operation bindings, hydration/claim/finalize schedules and outbox ownership. |

@@ -227,6 +227,48 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'journal-index-gapped-suffix',
+      'journal-index.ts',
+      '(index > 0 && current - previous !== 1)',
+      'false',
+    ],
+    [
+      'journal-index-missing-head',
+      'journal-index.ts',
+      'return previous === revision;',
+      'return true;',
+    ],
+    [
+      'journal-index-capacity-overflow',
+      'journal-index.ts',
+      'revisions.length > 128',
+      'revisions.length > 129',
+    ],
+    [
+      'journal-index-orphan-bytes',
+      'journal-index.ts',
+      'return revision === 0 && bytes === 0;',
+      'return revision === 0;',
+    ],
+    [
+      'journal-index-undercounted-bytes',
+      'journal-index.ts',
+      'bytes < revisions.length',
+      'false',
+    ],
+    [
+      'journal-read-offset-overflow',
+      'frame-layout.ts',
+      'length > total - offset - trailer',
+      'length > total - trailer',
+    ],
+    [
+      'journal-read-exact-size-bypass',
+      'frame-layout.ts',
+      'length < minimum || length > maximum',
+      'length > maximum',
+    ],
+    [
       'authority-capture-duplicate-binding',
       'authority-capture.ts',
       'count < 256 && !duplicate && idLength === 64',
