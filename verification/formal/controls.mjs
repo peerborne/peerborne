@@ -1100,7 +1100,7 @@ method mapOperand_domain()
       'missing-path-parent',
       'tree-index.ts',
       'return [parent, ...treeDirectPath(parent, leaves)];',
-      'return treeDirectPath(parent, leaves);',
+      'return leaves === 2 && index === 0 ? [] : [parent, ...treeDirectPath(parent, leaves)];',
       'treeDirectPath',
     ],
     [

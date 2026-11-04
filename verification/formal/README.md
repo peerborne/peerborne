@@ -69,6 +69,8 @@ mutations check only the changed function and require that exact function to
 fail an obligation; the report labels these counterexample checks explicitly.
 The checked production program is always verified in full. This avoids
 reproving unchanged arithmetic and history helpers for each deliberately broken program.
+The missing-parent control omits the sole parent of leaf 0 in a two-leaf tree;
+the resulting empty path must violate the nonempty-path contract.
 
 The native-map-alias calibration intentionally verifies a candidate that aliases
 its parent, then confirms that the JavaScript parent is mutated. Dafny maps model
