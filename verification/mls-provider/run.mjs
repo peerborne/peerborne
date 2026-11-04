@@ -10,6 +10,10 @@ const root = import.meta.dirname;
 const evidencePaths = [
   'packages/core/src/coordinated-document.ts',
   'packages/core/dist/esm/src/coordinated-document.js',
+  'packages/core/src/captured-document-authority.ts',
+  'packages/core/dist/esm/src/captured-document-authority.js',
+  'packages/core/src/policy/authority-capture.ts',
+  'packages/core/dist/esm/src/policy/authority-capture.js',
   'packages/core/src/document-crdt-session.ts',
   'packages/core/dist/esm/src/document-crdt-session.js',
   'packages/core/src/document-security-wire.ts',

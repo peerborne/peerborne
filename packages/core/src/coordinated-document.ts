@@ -21,6 +21,8 @@ import {
   documentBytesId,
 } from './internal/document-binary.js';
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
+import { captureDocumentAuthorityLease } from './captured-document-authority.js';
+import type { CapturedDocumentMember } from './policy/authority-capture.js';
 import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
@@ -62,6 +64,7 @@ export interface DocumentAuthority {
     coordinator: GroupSecurityCoordinator,
     encoded: Uint8Array,
   ): Promise<void>;
+  /** Own data fields and a synchronous guard that invalidates when this captured authority changes. */
   capture(context: GroupSecurityDocumentContext): {
     readonly members: ReadonlyArray<DocumentMemberAuthority>;
     readonly headId: Uint8Array;
@@ -266,42 +269,10 @@ export class CoordinatedDocument<
   }
 
   private authority(context: GroupSecurityDocumentContext) {
-    const captured = this.options.authority.capture(context);
-    const headId = copyUnsharedUint8Array(
-      captured.headId,
-      32,
-      32,
-      'document authority head',
+    return captureDocumentAuthorityLease(
+      this.options.authority.capture(context),
+      documentBytesId(this.options.coordinator.localMemberId),
     );
-    if (
-      !Array.isArray(captured.members) ||
-      captured.members.length < 1 ||
-      captured.members.length > 256 ||
-      typeof captured.isCurrent !== 'function'
-    )
-      throw new Error('Invalid document authority');
-    const members = new Map<string, DocumentMemberAuthority>();
-    for (const member of captured.members) {
-      const id = documentBytesId(
-        copyUnsharedUint8Array(member.memberId, 32, 32, 'document member'),
-      );
-      if (
-        members.has(id) ||
-        typeof member.publicKey !== 'string' ||
-        !member.publicKey ||
-        member.publicKey.length > 16 * 1024 ||
-        ![1, 2, 3].includes(member.role)
-      )
-        throw new Error('Invalid document authority member');
-      members.set(id, {
-        memberId: member.memberId.slice(),
-        publicKey: member.publicKey,
-        role: member.role,
-      });
-    }
-    if (!members.has(documentBytesId(this.options.coordinator.localMemberId)))
-      throw new Error('Local group member has no document access');
-    return { members, headId, isCurrent: () => captured.isCurrent() === true };
   }
 
   private async key(
@@ -364,7 +335,7 @@ export class CoordinatedDocument<
               memberId: Uint8Array,
               sequence: number,
               parent: Uint8Array;
-            let member: DocumentMemberAuthority;
+            let member: CapturedDocumentMember;
             if (input !== undefined) {
               const envelope = decodeEncryptedDocumentContent(owned);
               if (!documentBytesEqual(envelope.epochTag, material.epochTag))

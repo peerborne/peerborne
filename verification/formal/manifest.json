@@ -637,6 +637,17 @@
       "solverSeeds": [1, 2, 7, 19]
     },
     {
+      "path": "packages/core/src/policy/authority-capture.ts",
+      "functions": ["isCapturedDocumentMemberValid", "captureDocumentRoster"],
+      "witness": "authorityCapture_domain",
+      "consumers": ["packages/core/src/captured-document-authority.ts"],
+      "verifiedTargets": [
+        "isCapturedDocumentMemberValid_ensures",
+        "captureDocumentRoster"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
+    },
+    {
       "path": "packages/core/src/policy/document-authority.ts",
       "functions": [
         "documentAuthorityControllerIndex",

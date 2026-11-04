@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 135 production functions in 34 proof units. The runtime calls
+LemmaScript checks 137 production functions in 35 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -62,6 +62,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
+| [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
 | [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 9 | Authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 
@@ -195,6 +196,29 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The [authority-capture policy](../packages/core/src/policy/authority-capture.ts)
+checks the scalar roster that the coordinated document actually uses. Acceptance
+is equivalent to valid ID/key lengths, valid roles, unique IDs and presence of the
+local member. Successful maps contain exactly the original entries, with at most
+256 bindings; failures expose no partial roster. The existing custom-provider
+policy permits roles 1–3 and public keys up to 16,384 UTF-16 units. The signed
+history validator above intentionally has its own stricter roster requirements.
+
+Native properties found that replacing a captured lease's `isCurrent` method
+during signing could bypass the original guard's rejection. The runtime now
+captures that function once with its original receiver, including across remote
+verification, activation and public-key conversion. Properties also reproduced
+execution of overridable typed-array `slice` and array iterator methods. The
+adapter now snapshots required own data properties, uses intrinsic byte copies
+and reads at most 256 own indexed entries without invoking those methods.
+
+Detached bytes/scalars, independent native maps, strict boolean guard results,
+accessor/inherited-field rejection and malformed/boundary rosters retain generated
+checks against an independent tuple oracle. Immutable proof records assume owned
+inputs. The proof does not establish provider honesty, proxy isolation,
+cryptographic correctness, asynchronous scheduling or a UI-latency bound. These
+are provider-boundary findings; no remote exploit has been established.
 
 The coordinator uses these admission policies for bounded document preparation
 and incoming membership deliveries. Document preparation runs outside the
@@ -349,7 +373,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 52 property-suite files containing 137 explicit
+The inventory audits 53 property-suite files containing 145 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -360,6 +384,7 @@ properties can invoke the same assertion more than once.
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
+| Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
 | Asynchronous lifecycle                  | FIFO exclusion, failure recovery, onboarding coalescing, reverse startup cleanup, encrypted store transactions, rollback, one-time package consumption, stable operation bindings, hydration/claim/finalize schedules and outbox ownership. |
 | Invitation replay                       | Delayed hashing, expiry retirement/clock rollback, actual signed recipient conflicts, independent tuple-ledger histories, malformed clocks, immutable capacity, native map ownership and live-traffic enumeration counts.                   |
