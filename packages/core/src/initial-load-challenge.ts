@@ -3,7 +3,7 @@ import { copyUnsharedUint8Array } from './utils.js';
 import {
   concatenate,
   encodeUtf8,
-  isWellFormedUtf16,
+  assertBoundedUtf8,
   uint32,
 } from './internal/canonical-encoding.js';
 
@@ -31,19 +31,12 @@ function snapshotInitialLoadChallenge(challenge: unknown): Uint8Array {
 }
 
 function validateDocumentId(documentId: string): Uint8Array {
-  if (typeof documentId !== 'string' || documentId.length === 0) {
-    throw new TypeError('initial-load documentId must be a non-empty string');
-  }
-  if (!isWellFormedUtf16(documentId)) {
-    throw new TypeError('initial-load documentId must be well-formed UTF-16');
-  }
-  const bytes = encodeUtf8(documentId);
-  if (bytes.length > MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES) {
-    throw new RangeError(
-      `initial-load documentId exceeds ${MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES} UTF-8 bytes`,
-    );
-  }
-  return bytes;
+  assertBoundedUtf8(
+    documentId,
+    MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
+    'initial-load documentId',
+  );
+  return encodeUtf8(documentId);
 }
 
 export function validateInitialLoadChallenge(
@@ -53,9 +46,7 @@ export function validateInitialLoadChallenge(
 }
 
 export function createInitialLoadChallenge(): Uint8Array {
-  return crypto.getRandomValues(
-    new Uint8Array(INITIAL_LOAD_CHALLENGE_LENGTH),
-  );
+  return crypto.getRandomValues(new Uint8Array(INITIAL_LOAD_CHALLENGE_LENGTH));
 }
 
 export function cloneInitialLoadChallenge(challenge: Uint8Array): Uint8Array {

@@ -3,7 +3,7 @@ import { copyUnsharedUint8Array } from './utils.js';
 import {
   concatenate,
   encodeUtf8,
-  isWellFormedUtf16,
+  assertBoundedUtf8,
   uint32,
 } from './internal/canonical-encoding.js';
 
@@ -35,8 +35,6 @@ const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const arrayIsArray = Array.isArray;
 const reflectApply = Reflect.apply;
-
-
 
 export interface LoadSecurityCommitments {
   version: typeof LOAD_SECURITY_STATE_VERSION;
@@ -72,17 +70,12 @@ export class TrustedLoadSecurityCommitmentsError extends Error {
   }
 }
 
-function requirePlainString(name: string, value: unknown, maxBytes: number): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new TypeError(`${name} must be a non-empty string`);
-  }
-  if (!isWellFormedUtf16(value)) {
-    throw new TypeError(`${name} must be well-formed UTF-16`);
-  }
-  const bytes = encodeUtf8(value);
-  if (bytes.length > maxBytes) {
-    throw new RangeError(`${name} exceeds ${maxBytes} UTF-8 bytes`);
-  }
+function requirePlainString(
+  name: string,
+  value: unknown,
+  maxBytes: number,
+): string {
+  assertBoundedUtf8(value, maxBytes, name);
   return value;
 }
 
@@ -175,8 +168,7 @@ function snapshotLoadSecurityOwnDataFields<Fields extends readonly string[]>(
   try {
     isArray = reflectApply(arrayIsArray, Array, [value]) as boolean;
     prototype = reflectApply(objectGetPrototypeOf, Object, [value]) as
-      | object
-      | null;
+      object | null;
     if (prototype !== null) {
       prototypeParent = reflectApply(objectGetPrototypeOf, Object, [
         prototype,
@@ -203,9 +195,7 @@ function snapshotLoadSecurityOwnDataFields<Fields extends readonly string[]>(
         field,
       ]) as PropertyDescriptor | undefined;
     } catch {
-      throw new TypeError(
-        `${label} must expose stable own data properties`,
-      );
+      throw new TypeError(`${label} must expose stable own data properties`);
     }
     if (
       descriptor === undefined ||
@@ -255,9 +245,7 @@ export async function captureTrustedLoadSecurityCommitments(
   }
 
   try {
-    return cloneLoadSecurityCommitments(
-      resolved as LoadSecurityCommitments,
-    );
+    return cloneLoadSecurityCommitments(resolved as LoadSecurityCommitments);
   } catch (cause) {
     throw new TrustedLoadSecurityCommitmentsError(
       documentPath,
@@ -428,7 +416,7 @@ export async function loadSecurityStateHash(
 
 export function loadSecurityStateHashToHex(hash: Uint8Array): string {
   const snapshot = requireHash('load security state hash', hash);
-  return Array.from(snapshot, (byte) => byte.toString(16).padStart(2, '0')).join(
-    '',
-  );
+  return Array.from(snapshot, (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 }

@@ -272,20 +272,31 @@
         "isWellFormedUtf16",
         "isPairedUtf16Unit",
         "isHighSurrogate",
-        "isLowSurrogate"
+        "isLowSurrogate",
+        "boundedUtf8ByteLength",
+        "utf8UnitByteLength"
       ],
       "witness": "canonicalEncoding_domain",
       "consumers": [
         "packages/core/src/peerborne-document.ts",
-        "packages/core/src/ucan-acl.ts"
+        "packages/core/src/ucan-acl.ts",
+        "packages/core/src/initial-load-challenge.ts",
+        "packages/core/src/load-security-state.ts",
+        "packages/core/src/load-response-manifest.ts"
       ],
       "verifiedTargets": [
         "isWellFormedUtf16",
         "isPairedUtf16Unit_ensures",
         "isHighSurrogate_ensures",
         "isLowSurrogate_ensures",
-        "canonicalUnit_exact"
-      ]
+        "canonicalUnit_exact",
+        "boundedUtf8ByteLength",
+        "utf8UnitByteLength_ensures",
+        "Utf8PrefixBytes",
+        "utf8PrefixMonotone",
+        "boundedUtf8_domain"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/bootstrap-config.ts",

@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 140 production functions in 36 proof units. The runtime calls
+LemmaScript checks 142 production functions in 36 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -46,7 +46,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                                            |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
-| [UTF-16 scanner](../packages/core/src/internal/canonical-encoding.ts)       |         4 | A string is accepted iff every surrogate code unit has its matching adjacent partner.                                                                                                                     |
+| [UTF-16 and bounded UTF-8](../packages/core/src/internal/canonical-encoding.ts) | 6 | Exact surrogate pairing and UTF-8 prefix-byte counts; acceptance iff the paired string fits the byte cap; bounded scan without encoded buffers and immediate rejection of excessive code-unit length.                                                                                                                     |
 | [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                                                  |
 | [React cache key](../packages/react/src/document-cache-key.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                                                 |
 | [Package partition](../packages/core/src/policy/package-partition.ts)       |         4 | Exact pending insertion/removal, irreversible consumption-marker growth, disjoint consume transfer with conserved membership/count, and stable operation-to-record bindings.                              |
@@ -197,6 +197,25 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The shared bounded UTF-8 preflight now counts bytes without constructing an
+encoded buffer. Checked prefix sums strengthen the generated method's contract:
+it accepts exactly paired UTF-16 whose UTF-8 weight fits the byte cap and returns
+that exact count. Oversized code-unit lengths reject before scanning. The loop
+variant and index invariant bound the scan by the configured byte cap. The
+prefix-sum functions, lemmas and strengthening annotations are proof additions;
+the runtime implementation remains iterative.
+
+Load challenges, trusted load commitments and response manifests use this
+preflight before UTF-8 allocation. Manifest root and snapshot scalar metadata
+are validated before graph capture, payload copying or change serialization.
+Native properties reproduced late snapshot validation and encoding oversized
+text before rejection. They exercise native encoder agreement, character-read
+counts, rejection copy/serializer costs, signature/hash bytes, ownership and
+mutation during serializer callbacks. TextEncoder and UTF-16 runtime semantics,
+safe-integer/type guards, complete pipeline ordering and cryptography remain
+native boundaries. These checks do not establish VM heap or UI latency bounds,
+nor end-to-end load security.
 
 The binary writer uses a checked planner to reserve a complete fixed or
 length-prefixed field before copying its payload. Rejected writes preserve the
@@ -447,7 +466,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 56 property-suite files containing 163 explicit
+The inventory audits 57 property-suite files containing 170 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -460,6 +479,7 @@ properties can invoke the same assertion more than once.
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Document binary writes | Whole-field rejection, native copy/part counts, generated write histories, prefix endianness, injected copy failures, malformed limits, detached/shared views and buffer ownership. |
+| Load metadata admission | Native UTF-8 agreement and character-read counts, no encoded buffers for rejected text, scalar/root rejection before graph/payload/serializer work, canonical challenge bytes and callback mutation ownership. |
 | Journal storage reads | Corrupt/valid IndexedDB rows, exact pending/publication sizes, retained-copy budgets, pre-read index rejection, owned-copy counters and native encrypted replay with provider mutation during anchor reads. |
 | Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |
