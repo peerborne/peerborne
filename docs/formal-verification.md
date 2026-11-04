@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 144 production functions in 36 proof units. The runtime calls
+LemmaScript checks 147 production functions in 37 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -66,6 +66,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
 | [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 10 | Exact bounded full/recovery read plans, authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
+| [Journal store transitions](../packages/core/src/policy/journal-store.ts) | 3 | Exact revision/count/byte admission, token/checkpoint-bound commit eligibility, unique bounded outbox append/removal, exact byte totals and retained-index projection. Checked finite histories preserve metadata bounds and accepted prefixes when no checkpoint commits occur. |
 
 Map proofs use immutable map values. Candidate/checkpoint ownership therefore also
 has native JavaScript properties: a missing copy can pass the value-model proof
@@ -484,7 +485,30 @@ UI latency remain outside these local ordering and abstract work proofs.
 
 ## Property testing after proofs
 
-The inventory audits 59 property-suite files containing 177 explicit
+The built-in journal stores share verified staging, commit and publication-index
+policies. Outbox additions require a fresh ID and fit both the 16-entry and
+16 MiB limits; acknowledgements remove exactly the named ID. The actual planner
+has checked exact byte totals, stable projection and empty rejection results.
+Finite histories compose staging, matching token/checkpoint commits,
+acknowledgements, discards and transaction outcomes. They preserve revision,
+retained-entry and outbox bounds, leave accepted entries unchanged on rejection
+or aborted transactions, and retain the initial accepted prefix whenever the
+history contains no checkpoint commits.
+
+Native properties reproduced duplicate outbox IDs making IndexedDB heads
+unreadable, nonboolean checkpoint flags persisting invalid pending metadata,
+changed checkpoint flags pruning the in-memory reference store, and repeated
+reads of a publication-size getter bypassing its range check. The stores now
+validate native scalars before payload copies or write transactions, capture
+publication reservations once, and preserve private staged checkpoint metadata.
+Generated native histories compare both backends with an independent model;
+aborted transactions preserve all indexed and unindexed rows. Actual encrypted
+journals recover accepted state after a rejected duplicate and can reuse the ID
+after acknowledgement. Storage-commit and payload-match truth remain proof
+inputs. The proof does not establish crash durability, cryptographic
+unforgeability, arbitrary provider failures, browser heap usage or UI latency.
+
+The inventory audits 60 property-suite files containing 186 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -496,6 +520,7 @@ properties can invoke the same assertion more than once.
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
+| Journal store transitions | Strict native scalar guards, one-read reservation capture, owned metadata/payload projection, modelled operation histories across both stores, raw-row transaction rollback and encrypted duplicate-rejection recovery. |
 | Document binary writes | Whole-field rejection, native copy/part counts, generated write histories, prefix endianness, injected copy failures, malformed limits, detached/shared views and buffer ownership. |
 | Load metadata admission | Native UTF-8 agreement and character-read counts, no encoded buffers for rejected text, scalar/root rejection before graph/payload/serializer work, canonical challenge bytes and callback mutation ownership. |
 | Yjs keychain history | Native predecessor-read counts, array-oracle Map/Set ordering, owned outputs, BigInt clock arithmetic, batched and permuted actor histories, unchanged commitments after merge/export, fork rejection and revalidation after mutable-document edits. |
