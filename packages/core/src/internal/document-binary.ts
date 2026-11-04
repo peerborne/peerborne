@@ -1,21 +1,22 @@
-import { boundedFieldEnd } from '../policy/frame-layout.js';
+import {
+  boundedFieldEnd,
+  planDocumentFieldWrite,
+} from '../policy/frame-layout.js';
 import { isWellFormedUtf16 } from './canonical-encoding.js';
-import { copyUnsharedUint8Array } from '../utils.js';
+import {
+  copyUnsharedUint8Array,
+  unsharedUint8ArrayByteLength,
+} from '../utils.js';
 
 export class DocumentBinaryWriter {
   private readonly parts: Uint8Array[] = [];
   private length = 0;
-  constructor(private readonly maximum = 1024 * 1024) {}
+  constructor(private readonly maximum = 1024 * 1024) {
+    if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 0xffffffff)
+      throw new TypeError('Invalid document writer capacity');
+  }
   fixed(value: Uint8Array): this {
-    const owned = copyUnsharedUint8Array(
-      value,
-      0,
-      this.maximum - this.length,
-      'document field',
-    );
-    this.length += owned.byteLength;
-    this.parts.push(owned);
-    return this;
+    return this.append(value, this.maximum, false);
   }
   integer(value: number | bigint, width: 1 | 2 | 4 | 8): this {
     if (
@@ -33,8 +34,41 @@ export class DocumentBinaryWriter {
     return this.fixed(bytes);
   }
   bytes(value: Uint8Array, maximum = 512 * 1024): this {
-    const owned = copyUnsharedUint8Array(value, 0, maximum, 'document bytes');
-    return this.integer(owned.length, 4).fixed(owned);
+    return this.append(value, maximum, true);
+  }
+  private append(value: Uint8Array, maximum: number, framed: boolean): this {
+    if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 0xffffffff)
+      throw new TypeError('Invalid document field bound');
+    const length = unsharedUint8ArrayByteLength(
+      value,
+      0,
+      maximum,
+      'document field',
+    );
+    const plan = planDocumentFieldWrite(
+      this.maximum,
+      this.length,
+      length,
+      maximum,
+      framed,
+    );
+    if (!plan.valid)
+      throw new RangeError('Document field exceeds writer capacity');
+    const owned = copyUnsharedUint8Array(
+      value,
+      plan.copyBytes,
+      plan.copyBytes,
+      'document field',
+    );
+    let header: Uint8Array | undefined;
+    if (framed) {
+      header = new Uint8Array(4);
+      new DataView(header.buffer).setUint32(0, length, false);
+    }
+    if (header) this.parts.push(header);
+    if (plan.copyBytes > 0) this.parts.push(owned);
+    this.length = plan.end;
+    return this;
   }
   text(value: string, maximum = 16 * 1024): this {
     if (

@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 139 selected production functions in 36 proof units are compiled from their
+The 140 selected production functions in 36 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 214 controls cover 36 accepted originals, map-comparison and native-map-alias
-calibrations, 172 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 222 controls cover 36 accepted originals, map-comparison and native-map-alias
+calibrations, 180 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four tree, fourteen invitation-replay and seventeen Welcome-admission
@@ -79,8 +79,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 55 property-suite files and
-156 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 56 property-suite files and
+163 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -137,6 +137,15 @@ Native BigInt properties cover backward and malformed clock samples,
 safe-integer boundaries, injected expiry failures and cancellation in the actual
 drain. Authentication, clock progress, periodic pruning, asynchronous replay,
 native heap usage and delivery remain outside this retention proof.
+
+The binary writer's additional planner reserves complete fields before copying.
+Checked finite histories preserve the previous offset on rejection or failed
+native copying, account for payload/prefix bytes and bound retained payload bytes
+and part counts by the wire-byte budget. Empty fixed fields retain no parts.
+Seven native properties exercise those resource assumptions, canonical prefixes,
+malformed limits, ownership, shared/detached views and copy-failure schedules.
+Copy success is a proof input; transient allocation, output materialization,
+TextEncoder work, native heap overhead and UI latency remain outside the model.
 
 One additional journal policy plans full and recovery row gets. Recovery reads
 all accepted entries and a pending token without pending/outbox bodies. Checked

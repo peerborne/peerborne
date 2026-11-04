@@ -227,6 +227,54 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'document-write-missing-prefix-reservation',
+      'frame-layout.ts',
+      '    maximum,\n    prefix,',
+      '    maximum,\n    0,',
+    ],
+    [
+      'document-write-missing-field-bound',
+      'frame-layout.ts',
+      '    maximum,\n    prefix,',
+      '    4294967295,\n    prefix,',
+    ],
+    [
+      'document-write-rejection-consumes-space',
+      'frame-layout.ts',
+      'end: valid ? payloadEnd + prefix : used,',
+      'end: valid ? payloadEnd + prefix : used + 1,',
+    ],
+    [
+      'document-write-double-payload-copy',
+      'frame-layout.ts',
+      'copyBytes: valid ? length : 0,',
+      'copyBytes: valid ? 2 * length : 0,',
+    ],
+    [
+      'document-write-empty-part-retention',
+      'frame-layout.ts',
+      'parts: valid ? (framed ? 1 : 0) + (length > 0 ? 1 : 0) : 0,',
+      'parts: valid ? (framed ? 1 : 0) + 1 : 0,',
+    ],
+    [
+      'document-write-missing-payload-copy',
+      'frame-layout.ts',
+      'copyBytes: valid ? length : 0,',
+      'copyBytes: 0,',
+    ],
+    [
+      'document-write-missing-prefix-size',
+      'frame-layout.ts',
+      'end: valid ? payloadEnd + prefix : used,',
+      'end: valid ? payloadEnd : used,',
+    ],
+    [
+      'document-write-zero-boundary-rejection',
+      'frame-layout.ts',
+      'const valid = payloadEnd >= 0;',
+      'const valid = payloadEnd > 0;',
+    ],
+    [
       'recovery-io-eager-publications',
       'document-journal.ts',
       'const publicationReads = recovery ? 0 : publications;',
