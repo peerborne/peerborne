@@ -267,6 +267,16 @@
       ]
     },
     {
+      "id": "journal-recovery-read-phases",
+      "formalBoundary": "The production read planner preserves every accepted-entry request, suppresses pending/outbox body reads in recovery mode, retains exactly a discard token and accounts for each planned row get. Checked composition with the actual recovery classifier gates later outbox reads on authenticated state and a successful required anchor decision, derives a 147-row get bound and saves one body read per queued publication and pending entry. These are IndexedDB journal get counts, excluding anchor-provider I/O, writes and cryptographic costs. Native transaction scopes, field/buffer ownership, optional capability dispatch, actual crypto/anchor checks and post-await mutation require properties. The proof assumes truthful validation/anchor observations; it does not prove signatures, browser heap use, storage durability or UI latency.",
+      "evidence": ["packages/core/src/journal-recovery-io-properties.test.ts"],
+      "sources": [
+        "packages/core/src/policy/document-journal.ts",
+        "packages/core/src/document-replay-journal.ts",
+        "packages/core/src/document-journal-store.ts"
+      ]
+    },
+    {
       "id": "journal-storage-read-boundaries",
       "formalBoundary": "The retained revision index accepts exactly bounded contiguous suffixes ending at the stored head with coherent minimum byte counts. Production boundedFieldEnd decisions guard native row copies; checked arbitrary finite read histories preserve exact admitted-byte sums within the declared budget, exclude zero-length copies, keep failed preparations unchanged and make failure absorbing. A batch corollary bounds accepted rows by 128. Native safe-integer guards, IndexedDB transaction/abort behavior, structured cloning, ciphertext ownership, byte-copy instrumentation and mutation during anchor awaits require properties. The proof does not bound browser structured-clone allocations, decoding buffers, total heap use or UI latency, and does not establish cryptographic authenticity or rollback-anchor honesty.",
       "evidence": [

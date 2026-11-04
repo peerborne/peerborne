@@ -3,6 +3,36 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+datatype DocumentJournalReadPlan = DocumentJournalReadPlan(entries: int, publications: int, pending: bool, pendingToken: bool, rowReads: int)
+
+function planDocumentJournalRead(entries: int, publications: int, hasPending: bool, recovery: bool): DocumentJournalReadPlan
+  requires (0 <= entries)
+  requires (entries <= 128)
+  requires (0 <= publications)
+  requires (publications <= 16)
+{
+  var publicationReads := (if recovery then 0 else publications);
+  var pending := (hasPending && !(recovery));
+  DocumentJournalReadPlan(entries, publicationReads, pending, (hasPending && recovery), (((1 + entries) + publicationReads) + (if pending then 1 else 0)))
+}
+
+lemma planDocumentJournalRead_ensures(entries: int, publications: int, hasPending: bool, recovery: bool)
+  requires (0 <= entries)
+  requires (entries <= 128)
+  requires (0 <= publications)
+  requires (publications <= 16)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).entries == entries)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).publications == (if recovery then 0 else publications))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).pending <==> (hasPending && !(recovery)))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).pendingToken <==> (hasPending && recovery))
+  ensures !((planDocumentJournalRead(entries, publications, hasPending, recovery).pending && planDocumentJournalRead(entries, publications, hasPending, recovery).pendingToken))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads == (((1 + planDocumentJournalRead(entries, publications, hasPending, recovery).entries) + planDocumentJournalRead(entries, publications, hasPending, recovery).publications) + (if planDocumentJournalRead(entries, publications, hasPending, recovery).pending then 1 else 0)))
+  ensures (1 <= planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads <= 146)
+  ensures (recovery ==> ((((planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads == (1 + entries)) && (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads <= 129)) && (planDocumentJournalRead(entries, publications, hasPending, recovery).publications == 0)) && !(planDocumentJournalRead(entries, publications, hasPending, recovery).pending)))
+{
+}
+
 function canRecordDocumentPublicationBinding(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int): bool
   requires (|ledger| <= 9007199254740991)
   requires (0 <= bindingRevision)
@@ -274,6 +304,56 @@ method documentJournal_domain()
   assert !canAdvanceDocumentAuthority(18446744073709551615, 0, true, true);
   journalRecovery_all_histories(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]);
   assert JournalRecoveryHistory(0, [1, 0, 1, 3, 2], [false, false, false, true, false], [true, true, false, true, true], [true, true, true, true, true]) == 2;
+}
+
+method journalRecovery_read_costs(entries: int, publications: int, outboxPublications: int, hasPending: bool,
+  stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool,
+  markerAuthenticated: bool, anchorFinished: bool)
+  returns (initial: DocumentJournalReadPlan, publicationRows: int, totalRows: int, ready: bool, savedRows: int)
+  requires 0 <= entries <= 128
+  requires 0 <= publications <= 16
+  requires 0 <= outboxPublications <= 16
+  requires 0 <= stored <= 9007199254740991
+  requires 0 <= anchored <= 9007199254740991
+  ensures initial == planDocumentJournalRead(entries, publications, hasPending, true)
+  ensures initial.entries == entries && initial.publications == 0 && !initial.pending
+  ensures initial.pendingToken == hasPending && initial.rowReads == 1 + entries
+  ensures ready <==> (!classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).reject? &&
+    (!classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated).finish_anchor? || anchorFinished))
+  ensures publicationRows == (if ready then outboxPublications else 0)
+  ensures !markerAuthenticated ==> !ready && publicationRows == 0
+  ensures totalRows == 1 + entries + (if ready then 1 + outboxPublications + (if hasPending then 1 else 0) else 0)
+  ensures 1 <= totalRows <= 147
+  ensures !ready ==> totalRows == 1 + entries
+  ensures savedRows == publications + (if hasPending then 1 else 0)
+{
+  initial := planDocumentJournalRead(entries, publications, hasPending, true);
+  var full := planDocumentJournalRead(entries, publications, hasPending, false);
+  var outbox := planDocumentJournalRead(0, outboxPublications, false, false);
+  var decision := classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated);
+  ready := !decision.reject? && (!decision.finish_anchor? || anchorFinished);
+  publicationRows := if ready then outbox.publications else 0;
+  var followup := if ready then outbox.rowReads + (if hasPending then 1 else 0) else 0;
+  totalRows := initial.rowReads + followup;
+  savedRows := full.rowReads + followup - totalRows;
+}
+
+method journalRecoveryRead_domain()
+{
+  var full := planDocumentJournalRead(128, 16, true, false);
+  assert full.entries == 128 && full.publications == 16 && full.pending && !full.pendingToken && full.rowReads == 146;
+  var empty := planDocumentJournalRead(0, 0, false, true);
+  assert empty.rowReads == 1 && !empty.pending && !empty.pendingToken;
+  var initial, rows, total, ready, saved := journalRecovery_read_costs(128, 16, 16, true, 128, 128, true, false, true, false);
+  assert initial.rowReads == 129 && initial.pendingToken && rows == 16 && total == 147 && ready && saved == 17;
+  var rejected, rejectedRows, rejectedTotal, rejectedReady, rejectedSaved := journalRecovery_read_costs(128, 16, 16, true, 128, 128, true, false, false, true);
+  assert rejected.rowReads == 129 && rejectedRows == 0 && rejectedTotal == 129 && !rejectedReady && rejectedSaved == 17;
+  var unanchored, unanchoredRows, unanchoredTotal, unanchoredReady, unanchoredSaved := journalRecovery_read_costs(1, 1, 1, false, 2, 1, false, true, true, false);
+  assert unanchoredRows == 0 && unanchoredTotal == 2 && !unanchoredReady;
+  var advanced, advancedRows, advancedTotal, advancedReady, advancedSaved := journalRecovery_read_costs(1, 1, 1, false, 2, 1, false, true, true, true);
+  assert advancedRows == 1 && advancedTotal == 4 && advancedReady && advancedSaved == 1;
+  var changed, changedRows, changedTotal, changedReady, changedSaved := journalRecovery_read_costs(1, 5, 1, false, 2, 2, true, false, true, false);
+  assert changedRows == 1 && changedTotal == 4 && changedReady && changedSaved == 5;
 }
 
 

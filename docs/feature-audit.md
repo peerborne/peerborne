@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 138 selected production functions have checked
+current proof scope. The 139 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -63,6 +63,7 @@ system-level statuses below.
 | Reader/writer ACLs | Partial | ACL, document-boundary, and both CRDT adapter ACL suites | The current-replica writer check is exercised, but stale-writer re-grants and removal across a real partition are not prevented by a wired causal authorization chain. |
 | ACL chain of trust | Partial | The standalone ACL-chain suite | `ACLChain` is not wired into `PeerborneDocument`; outer envelopes are authorized against the receiving replica's current writer set before enclosed ACL nodes are merged. Forked and concurrent ACL histories therefore remain a runtime gap. |
 | Coordinator-backed document mode | Partial | [Production document wiring, signed controller/role history, encrypted WAL and replay floors](coordinated-document-security.md); checked policies/history lemmas; seeded boundary/fault properties; actual Automerge/Yjs document API with MLS/native crypto and Chromium IndexedDB over simulated pubsub | Opt-in; requires provider, pinned root, device key and independent persistent anchor. Default BeeKEM mode is separate. Automatic content onboarding/anti-entropy, old-epoch edit recovery, field authorization, epoch-fork reconciliation, real-network and device-performance qualification remain required. |
+| Journal recovery I/O phases | Partial | Verified full/recovery read plans and classifier composition; 129 initial / 147 successful-recovery journal-get bounds; native crypto/IndexedDB request, corruption, ownership and capability properties | Applies to the built-in IndexedDB recovery path. Counts exclude writes and anchor-provider I/O; validation/anchor truth, browser internals, durability and UI latency remain unproved. |
 | Journal storage read admission | Partial | Verified revision-suffix validation and bounded byte decisions; checked finite read histories; native IndexedDB corruption/copy-cost properties and encrypted replay ownership | Bounds owned ciphertext copies, not browser structured-clone allocations, decoder buffers, total heap or UI latency. Cryptographic validity, transaction/abort behavior and independent-anchor honesty remain assumptions. |
 | Coordinator authority captures | Partial | Checked exact bounded roster maps plus seeded own-data/byte/map ownership and asynchronous guard-replacement properties | Requires truthful synchronous application-pinned authority. Native reflection, proxies, crypto and scheduling remain outside the proof. Provider-boundary failures do not establish a remote exploit or main-thread latency bound. |
 | Capability hierarchy and field capabilities | Partial | Standalone capability suite | The document mutation path does not enforce field capabilities. |

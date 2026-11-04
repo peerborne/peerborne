@@ -227,6 +227,42 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'recovery-io-eager-publications',
+      'document-journal.ts',
+      'const publicationReads = recovery ? 0 : publications;',
+      'const publicationReads = publications;',
+    ],
+    [
+      'recovery-io-eager-pending-body',
+      'document-journal.ts',
+      'const pending = hasPending && !recovery;',
+      'const pending = hasPending;',
+    ],
+    [
+      'recovery-io-lost-pending-token',
+      'document-journal.ts',
+      'pendingToken: hasPending && recovery,',
+      'pendingToken: false,',
+    ],
+    [
+      'recovery-io-dropped-accepted-entries',
+      'document-journal.ts',
+      'entries,',
+      'entries: 0,',
+    ],
+    [
+      'recovery-io-undercounted-rows',
+      'document-journal.ts',
+      'rowReads: 1 + entries + publicationReads + (pending ? 1 : 0),',
+      'rowReads: 1 + entries,',
+    ],
+    [
+      'recovery-io-inverted-publication-mode',
+      'document-journal.ts',
+      'const publicationReads = recovery ? 0 : publications;',
+      'const publicationReads = recovery ? publications : 0;',
+    ],
+    [
       'journal-index-gapped-suffix',
       'journal-index.ts',
       '(index > 0 && current - previous !== 1)',

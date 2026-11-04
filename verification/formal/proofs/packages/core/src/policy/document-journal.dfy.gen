@@ -3,6 +3,36 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+datatype DocumentJournalReadPlan = DocumentJournalReadPlan(entries: int, publications: int, pending: bool, pendingToken: bool, rowReads: int)
+
+function planDocumentJournalRead(entries: int, publications: int, hasPending: bool, recovery: bool): DocumentJournalReadPlan
+  requires (0 <= entries)
+  requires (entries <= 128)
+  requires (0 <= publications)
+  requires (publications <= 16)
+{
+  var publicationReads := (if recovery then 0 else publications);
+  var pending := (hasPending && !(recovery));
+  DocumentJournalReadPlan(entries, publicationReads, pending, (hasPending && recovery), (((1 + entries) + publicationReads) + (if pending then 1 else 0)))
+}
+
+lemma planDocumentJournalRead_ensures(entries: int, publications: int, hasPending: bool, recovery: bool)
+  requires (0 <= entries)
+  requires (entries <= 128)
+  requires (0 <= publications)
+  requires (publications <= 16)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).entries == entries)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).publications == (if recovery then 0 else publications))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).pending <==> (hasPending && !(recovery)))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).pendingToken <==> (hasPending && recovery))
+  ensures !((planDocumentJournalRead(entries, publications, hasPending, recovery).pending && planDocumentJournalRead(entries, publications, hasPending, recovery).pendingToken))
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads == (((1 + planDocumentJournalRead(entries, publications, hasPending, recovery).entries) + planDocumentJournalRead(entries, publications, hasPending, recovery).publications) + (if planDocumentJournalRead(entries, publications, hasPending, recovery).pending then 1 else 0)))
+  ensures (1 <= planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads)
+  ensures (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads <= 146)
+  ensures (recovery ==> ((((planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads == (1 + entries)) && (planDocumentJournalRead(entries, publications, hasPending, recovery).rowReads <= 129)) && (planDocumentJournalRead(entries, publications, hasPending, recovery).publications == 0)) && !(planDocumentJournalRead(entries, publications, hasPending, recovery).pending)))
+{
+}
+
 function canRecordDocumentPublicationBinding(ledger: map<string, int>, token: string, bindingRevision: int, entryRevision: int, checkpoint: bool, limit: int): bool
   requires (|ledger| <= 9007199254740991)
   requires (0 <= bindingRevision)

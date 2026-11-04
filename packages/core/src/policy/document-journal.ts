@@ -1,5 +1,41 @@
 export type DocumentJournalRecovery = 'current' | 'finish-anchor' | 'reject';
 
+export interface DocumentJournalReadPlan {
+  readonly entries: number;
+  readonly publications: number;
+  readonly pending: boolean;
+  readonly pendingToken: boolean;
+  readonly rowReads: number;
+}
+
+export function planDocumentJournalRead(
+  entries: number,
+  publications: number,
+  hasPending: boolean,
+  recovery: boolean,
+): DocumentJournalReadPlan {
+  //@ verify
+  //@ requires 0 <= entries && entries <= 128
+  //@ requires 0 <= publications && publications <= 16
+  //@ ensures \result.entries === entries
+  //@ ensures \result.publications === (recovery ? 0 : publications)
+  //@ ensures \result.pending <==> hasPending && !recovery
+  //@ ensures \result.pendingToken <==> hasPending && recovery
+  //@ ensures !(\result.pending && \result.pendingToken)
+  //@ ensures \result.rowReads === 1 + \result.entries + \result.publications + (\result.pending ? 1 : 0)
+  //@ ensures 1 <= \result.rowReads && \result.rowReads <= 146
+  //@ ensures recovery ==> \result.rowReads === 1 + entries && \result.rowReads <= 129 && \result.publications === 0 && !\result.pending
+  const publicationReads = recovery ? 0 : publications;
+  const pending = hasPending && !recovery;
+  return {
+    entries,
+    publications: publicationReads,
+    pending,
+    pendingToken: hasPending && recovery,
+    rowReads: 1 + entries + publicationReads + (pending ? 1 : 0),
+  };
+}
+
 export function canRecordDocumentPublicationBinding(
   ledger: Map<string, number>,
   token: string,
