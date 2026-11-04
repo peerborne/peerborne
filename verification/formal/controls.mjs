@@ -227,6 +227,66 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'keychain-history-empty-id',
+      'keychain-order.ts',
+      "id === '' || seen.has(id) || byParent.has(parent)",
+      'false || seen.has(id) || byParent.has(parent)',
+    ],
+    [
+      'keychain-history-duplicate-id',
+      'keychain-order.ts',
+      "id === '' || seen.has(id) || byParent.has(parent)",
+      "id === '' || false || byParent.has(parent)",
+    ],
+    [
+      'keychain-history-fork-admission',
+      'keychain-order.ts',
+      "id === '' || seen.has(id) || byParent.has(parent)",
+      "id === '' || seen.has(id) || false",
+    ],
+    [
+      'keychain-history-index-binding',
+      'keychain-order.ts',
+      'byParent.set(parent, index);',
+      'byParent.set(id, index);',
+    ],
+    [
+      'keychain-history-root',
+      'keychain-order.ts',
+      "let cursor = '';",
+      "let cursor = 'missing';",
+    ],
+    [
+      'keychain-history-nonconsuming-walk',
+      'keychain-order.ts',
+      'byParent.delete(cursor);',
+      'byParent.delete(cursor); byParent.set(cursor, next);',
+    ],
+    [
+      'keychain-history-successor',
+      'keychain-order.ts',
+      'cursor = ids[next];',
+      'cursor = parents[next];',
+    ],
+    [
+      'keychain-history-work-accounting',
+      'keychain-order.ts',
+      'probes++;',
+      'probes += 2;',
+    ],
+    [
+      'keychain-history-orphan-admission',
+      'keychain-order.ts',
+      'return { valid: order.length === ids.length, order, probes };',
+      'return { valid: true, order, probes };',
+    ],
+    [
+      'keychain-history-clock-off-by-one',
+      'keychain-order.ts',
+      'offset > 9007199254740991 - clock',
+      'offset >= 9007199254740991 - clock',
+    ],
+    [
       'utf8-oversized-preflight-admission',
       'packages/core/src/internal/canonical-encoding.ts',
       'if (value.length > maximum) return -1;',
@@ -1040,7 +1100,7 @@ method mapOperand_domain()
       'missing-path-parent',
       'tree-index.ts',
       'return [parent, ...treeDirectPath(parent, leaves)];',
-      'return treeDirectPath(parent, leaves);',
+      'return leaves === 2 && index === 0 ? [] : [parent, ...treeDirectPath(parent, leaves)];',
       'treeDirectPath',
     ],
     [

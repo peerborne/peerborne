@@ -2,6 +2,8 @@ import {
   sameKeychainEntry,
   isKeychainPrefix,
   firstKeychainRewrite,
+  orderKeychainHistory,
+  keychainHistoryTailClock,
 } from './policy/keychain-order.js';
 import { Base64 } from 'js-base64';
 import {
@@ -292,4 +294,6 @@ export const canonicalKeychain = Object.freeze({
   snapshotAppendIntent,
   stateCommitment,
   createMergeClaim,
+  orderKeychainHistory,
+  keychainHistoryTailClock,
 });

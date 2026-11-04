@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 142 selected production functions have checked
+current proof scope. The 144 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -144,3 +144,8 @@ replay, and invitation-history suites against the new encoding before release.
 Mixed Automerge encoding versions are not supported. Yjs keychain reads
 revalidate the bounded mutable document; an adapter revision alone cannot prove
 that its underlying `Y.Doc` has not changed in place.
+Its predecessor index and consuming walk have checked exact append-chain
+recognition and linear abstract traversal bounds. Native properties cover actor
+order, batched items, forks and mutable-document edits; a valid 1000-actor
+regression reduces predecessor reads from 499,501 to 1000. This does not bound
+Yjs codec cost or browser latency, or prove cryptographic epoch recovery.

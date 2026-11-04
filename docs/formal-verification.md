@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 142 production functions in 36 proof units. The runtime calls
+LemmaScript checks 144 production functions in 36 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -37,7 +37,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
 | [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
 | [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
-| [Keychain order](../packages/core/src/policy/keychain-order.ts)             |         3 | Entry equality, exact prefix recognition, prefix transitivity and first rewrite detection.                                                                                                                |
+| [Keychain order](../packages/core/src/policy/keychain-order.ts) | 5 | Entry equality, exact prefix recognition, prefix transitivity, first rewrite detection, safe operation-tail clocks and exact complete append-chain ordering with at most N+1 successor probes. |
 | [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
 | [Welcome admission](../packages/core/src/policy/welcome-admission.ts) | 10 | Exact byte accounting, bounded admission and trimming, expiry selection, a monotone observed clock, precise removal and value-map projection/insertion. Checked finite histories preserve retained bindings, count/byte limits, timestamp coherence and trusted-binding provenance. |
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)                       |         9 | Exact conflict classification, coherent bounded join/acceptance indexes, monotone time, expiry-only retirement and sweep frontier. Checked arbitrary finite histories preserve join and consumed acceptance bindings and prevent expired offer revival.                                                  |
@@ -464,9 +464,27 @@ finite-history lemma excludes tokens introduced only by abandoned attempts.
 Token generation, native Map ownership, authenticated decoding and storage
 readback remain property/integration boundaries.
 
+Yjs keychain history validation now indexes predecessor links and consumes each
+reachable item once. The actual ordering helper proves a distinct rooted prefix,
+rejects duplicate IDs and predecessor forks, and accepts exactly when a complete
+append order exists. Checked prefix uniqueness and a terminal-link certificate
+prove completeness as well as rejection. Index construction has at most N loop
+iterations; traversal has at most N iterations and N+1 condition probes, including
+the final missing successor. The adapter bounds retained entries and items to
+1000 and validates operation IDs before forming links. A separate helper proves
+exact safe tail-clock arithmetic, calibrated against native BigInt calculations.
+
+The native regression reproduces 499,501 predecessor reads on a valid 1000-actor
+history before the change and 1000 afterward. Generated native histories cover
+batched appends, permuted actors, merge/export commitments, fork rejection without
+publication and fresh validation after in-place edits. Array-oracle properties
+calibrate native Map/Set lookup, output ownership and linear element reads.
+Yjs decoding/integration, hash-table cost, authentication, total heap usage and
+UI latency remain outside these local ordering and abstract work proofs.
+
 ## Property testing after proofs
 
-The inventory audits 57 property-suite files containing 170 explicit
+The inventory audits 59 property-suite files containing 177 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -480,6 +498,7 @@ properties can invoke the same assertion more than once.
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Document binary writes | Whole-field rejection, native copy/part counts, generated write histories, prefix endianness, injected copy failures, malformed limits, detached/shared views and buffer ownership. |
 | Load metadata admission | Native UTF-8 agreement and character-read counts, no encoded buffers for rejected text, scalar/root rejection before graph/payload/serializer work, canonical challenge bytes and callback mutation ownership. |
+| Yjs keychain history | Native predecessor-read counts, array-oracle Map/Set ordering, owned outputs, BigInt clock arithmetic, batched and permuted actor histories, unchanged commitments after merge/export, fork rejection and revalidation after mutable-document edits. |
 | Journal storage reads | Corrupt/valid IndexedDB rows, exact pending/publication sizes, retained-copy budgets, pre-read index rejection, owned-copy counters and native encrypted replay with provider mutation during anchor reads. |
 | Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |

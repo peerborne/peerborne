@@ -69,6 +69,8 @@ const {
   snapshotAppendIntent,
   stateCommitment: yjsKeychainStateCommitment,
   createMergeClaim,
+  orderKeychainHistory,
+  keychainHistoryTailClock,
 }: typeof canonicalKeychain = canonicalKeychain;
 
 const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocumentKey = canonicalKeychain.assertSerializedDocumentKey;
@@ -1432,16 +1434,18 @@ function compareBytes(left: Uint8Array, right: Uint8Array): number {
 
 type YjsItemId = { readonly client: number; readonly clock: number };
 
-function sameYjsItemId(
-  left: YjsItemId | null,
-  right: YjsItemId | null,
-): boolean {
-  return (
-    left !== null &&
-    right !== null &&
-    left.client === right.client &&
-    left.clock === right.clock
-  );
+function yjsHistoryId(id: YjsItemId, length = 1): string {
+  if (
+    !Number.isSafeInteger(id.client) ||
+    id.client < 0 ||
+    !Number.isSafeInteger(id.clock) ||
+    id.clock < 0
+  )
+    throw new Error('Keychain history contains an invalid operation ID');
+  const tail = keychainHistoryTailClock(id.clock, length);
+  if (tail < 0)
+    throw new Error('Keychain history operation clock exceeds safe bounds');
+  return `${id.client}:${tail}`;
 }
 
 function validateRawYjsKeychainUpdate(update: Uint8Array): void {
@@ -1491,63 +1495,48 @@ function validateYjsKeychain(doc: Doc): CanonicalKeychainEntry[] {
   }
 
   const pending: Item[] = [];
+  const ids: string[] = [],
+    parents: string[] = [];
+  let retainedCount = 0;
+  if (decoded.structs.length > MAX_KEYCHAIN_EPOCHS)
+    throw new Error('Keychain exceeds the supported epoch limit');
   for (const struct of decoded.structs) {
     if (!(struct instanceof Item) || !(struct.content instanceof ContentAny)) {
       throw new Error('Keychain history contains an invalid operation');
     }
     if (
       struct.length !== struct.content.arr.length ||
-      struct.content.arr.length === 0
+      struct.content.arr.length === 0 ||
+      struct.content.arr.length > MAX_KEYCHAIN_EPOCHS - retainedCount
     ) {
       throw new Error('Keychain history contains an invalid operation');
     }
     if (struct.parentSub !== null) {
       throw new Error('Keychain history contains an unrelated operation');
     }
-    for (const entry of struct.content.arr) {
-      assertCanonicalKeychainEntry(entry);
-    }
+    retainedCount += struct.content.arr.length;
+    const origin = struct.origin;
+    if (
+      struct.rightOrigin !== null ||
+      (origin === null
+        ? (struct.parent as unknown) !== 'keys'
+        : struct.parent !== null)
+    )
+      throw new Error('Keychain history contains an unrelated operation');
+    ids.push(yjsHistoryId(struct.id, struct.length));
+    parents.push(origin === null ? '' : yjsHistoryId(origin));
     pending.push(struct);
   }
-
-  const accepted: Item[] = [];
-  let tailId: YjsItemId | null = null;
-  let progressed = true;
-  while (pending.length > 0 && progressed) {
-    progressed = false;
-    for (let index = pending.length - 1; index >= 0; index--) {
-      const item = pending[index];
-      const rootedAtKeys =
-        accepted.length === 0 &&
-        (item.parent as unknown) === 'keys' &&
-        item.origin === null &&
-        item.rightOrigin === null;
-      const extendsKeys =
-        accepted.length > 0 &&
-        item.parent === null &&
-        item.rightOrigin === null &&
-        sameYjsItemId(item.origin, tailId);
-      if (!rootedAtKeys && !extendsKeys) continue;
-      accepted.push(item);
-      tailId = {
-        client: item.id.client,
-        clock: item.id.clock + item.length - 1,
-      };
-      pending.splice(index, 1);
-      progressed = true;
-    }
-  }
-  if (pending.length !== 0) {
+  const plan = orderKeychainHistory(ids, parents);
+  if (!plan.valid) {
     throw new Error('Keychain history contains an unrelated operation');
   }
   const retained = validateCanonicalKeychainEntries(
-    accepted.flatMap((item) => (item.content as ContentAny).arr),
+    plan.order.flatMap((index) => (pending[index].content as ContentAny).arr),
   );
   if (
     retained.length !== entries.length ||
-    entries.some(
-      (entry, index) => !sameKeychainEntry(entry, retained[index]),
-    )
+    entries.some((entry, index) => !sameKeychainEntry(entry, retained[index]))
   ) {
     throw new Error('Yjs keychain history does not match visible state');
   }
