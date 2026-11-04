@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 138 production functions in 36 proof units. The runtime calls
+LemmaScript checks 139 production functions in 36 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -65,7 +65,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
 | [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
-| [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 9 | Authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
+| [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 10 | Exact bounded full/recovery read plans, authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 
 Map proofs use immutable map values. Candidate/checkpoint ownership therefore also
 has native JavaScript properties: a missing copy can pass the value-model proof
@@ -197,6 +197,33 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The journal read planner now drives the built-in IndexedDB snapshot and outbox
+queries. Recovery requests every accepted entry, skips pending and publication
+bodies, and captures only the pending discard token from head metadata. Full
+diagnostic snapshots retain their separate body reads. After accepted-state and
+anchor validation, recovery reads each queued publication once. Backends may
+provide this recovery-only capability; the required full snapshot API remains
+available to other providers.
+
+The checked planner and its composition with the production recovery classifier
+bound journal row gets to 129 for the initial recovery snapshot and 147 including
+outbox reads and a pending-token cleanup. A rejected state or failed required
+anchor advance triggers no publication-payload gets in the model. Compared with
+the former full snapshot path, it saves exactly one body get per queued
+publication and per pending entry in the initial metadata. The composition allows
+the later outbox metadata to differ. Counts exclude writes, anchor-provider I/O,
+cryptographic work and browser-internal operations. Authentication and anchor
+results are trusted proof inputs; they are exercised separately with native
+crypto and storage properties.
+
+Native properties reproduced duplicate publication reads, eager body reads before
+failed validation, and accepted recovery blocked by missing or corrupt unaccepted
+pending bodies. New properties check actual IndexedDB requests and transaction
+scopes, pending-body disposal without replay, full/recovery field ownership,
+receiver-bound capability dispatch and mutation during anchor awaits. Neither
+these checks nor the I/O model proves UI latency, physical erasure, browser heap
+bounds or recovery after losing both accepted storage and its independent anchor.
 
 The [journal index policy](../packages/core/src/policy/journal-index.ts) validates
 retained revision metadata before requesting any entry rows. Checkpoint suffixes
@@ -401,7 +428,7 @@ readback remain property/integration boundaries.
 
 ## Property testing after proofs
 
-The inventory audits 54 property-suite files containing 151 explicit
+The inventory audits 55 property-suite files containing 156 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -412,6 +439,7 @@ properties can invoke the same assertion more than once.
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
+| Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Journal storage reads | Corrupt/valid IndexedDB rows, exact pending/publication sizes, retained-copy budgets, pre-read index rejection, owned-copy counters and native encrypted replay with provider mutation during anchor reads. |
 | Authority capture | Native own-data descriptors and indexed-array bounds, intrinsic byte ownership, strict receiver-bound guards across provider awaits, independent maps and a separate scalar tuple oracle. |
 | Mutable caches and bounded buffers      | Independent LRU and Welcome-buffer models, eviction, staged finalization and producer/consumer ownership.                                                                                                                                   |

@@ -47,9 +47,12 @@ export interface DocumentJournalStagedPublication {
   readonly id: Uint8Array;
   readonly bytes: number;
 }
-export interface DocumentJournalSnapshot {
+export interface DocumentJournalRecoverySnapshot {
   readonly revision: number;
   readonly entries: ReadonlyArray<Uint8Array>;
+  readonly pending?: { readonly token: Uint8Array };
+}
+export interface DocumentJournalSnapshot extends DocumentJournalRecoverySnapshot {
   readonly publications?: ReadonlyArray<DocumentJournalPublication>;
   readonly pending?: {
     readonly token: Uint8Array;
@@ -60,6 +63,8 @@ export interface DocumentJournalSnapshot {
 /** Each mutation is one atomic transaction. A pending entry is never restored as accepted. */
 export interface DocumentJournalStore {
   load(key: string): Promise<DocumentJournalSnapshot>;
+  /** Accepted entries and a discardable pending token; pending/outbox bodies are not read. */
+  loadRecoverySnapshot?(key: string): Promise<DocumentJournalRecoverySnapshot>;
   loadAcceptedHead?(
     key: string,
   ): Promise<{ readonly revision: number; readonly entry?: Uint8Array }>;
@@ -262,8 +267,8 @@ function decodeItem(
 }
 
 function captureJournalSnapshot(
-  value: DocumentJournalSnapshot,
-): DocumentJournalSnapshot {
+  value: DocumentJournalRecoverySnapshot,
+): DocumentJournalRecoverySnapshot {
   const revision = value.revision,
     source = value.entries;
   const count = Array.isArray(source)
@@ -306,7 +311,6 @@ function captureJournalSnapshot(
               32,
               'pending journal token',
             ),
-            entry: new Uint8Array(),
           },
         }
       : {}),
@@ -399,8 +403,11 @@ export class DocumentReplayJournal {
       throw new Error('Document journal is unavailable');
     this.active = true;
     try {
+      const loadRecovery = this.store.loadRecoverySnapshot;
       const snapshot = captureJournalSnapshot(
-        await this.store.load(this.storageKey),
+        loadRecovery === undefined
+          ? await this.store.load(this.storageKey)
+          : await Reflect.apply(loadRecovery, this.store, [this.storageKey]),
       );
       const anchored = copyAnchor(await this.anchor.load(this.storageKey));
       let bytes = 0,
@@ -1029,9 +1036,7 @@ export class DocumentReplayJournal {
 }
 
 /** Test/reference anchor. Persistence and independent storage are application responsibilities. */
-export class InMemoryDocumentJournalRollbackAnchor
-  implements DocumentJournalRollbackAnchor
-{
+export class InMemoryDocumentJournalRollbackAnchor implements DocumentJournalRollbackAnchor {
   private readonly values = new Map<string, DocumentJournalAnchor>();
   async load(key: string): Promise<DocumentJournalAnchor | undefined> {
     return copyAnchor(this.values.get(key));

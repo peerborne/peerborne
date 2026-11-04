@@ -1,5 +1,6 @@
 import type {
   DocumentJournalSnapshot,
+  DocumentJournalRecoverySnapshot,
   DocumentJournalStore,
   DocumentJournalPublication,
   DocumentJournalStagedPublication,
@@ -18,6 +19,7 @@ import {
 } from './utils.js';
 import { boundedFieldEnd } from './policy/frame-layout.js';
 import { isDocumentJournalIndexValid } from './policy/journal-index.js';
+import { planDocumentJournalRead } from './policy/document-journal.js';
 
 function copyIndexedJournalBytes(
   value: unknown,
@@ -453,11 +455,32 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
     });
   }
 
-  async load(key: string): Promise<DocumentJournalSnapshot> {
+  load(key: string): Promise<DocumentJournalSnapshot> {
+    return this.readSnapshot(key, false);
+  }
+
+  loadRecoverySnapshot(key: string): Promise<DocumentJournalRecoverySnapshot> {
+    return this.readSnapshot(key, true);
+  }
+
+  private readSnapshot(
+    key: string,
+    recovery: false,
+  ): Promise<DocumentJournalSnapshot>;
+  private readSnapshot(
+    key: string,
+    recovery: true,
+  ): Promise<DocumentJournalRecoverySnapshot>;
+  private async readSnapshot(
+    key: string,
+    recovery: boolean,
+  ): Promise<DocumentJournalRecoverySnapshot> {
     const database = await this.database;
-    return new Promise((resolve, reject) => {
+    return new Promise<DocumentJournalRecoverySnapshot>((resolve, reject) => {
       const transaction = database.transaction(
-        ['heads', 'entries', 'pending', 'publications'],
+        recovery
+          ? ['heads', 'entries']
+          : ['heads', 'entries', 'pending', 'publications'],
         'readonly',
       );
       const request = transaction.objectStore('heads').get(key);
@@ -465,7 +488,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         copiedBytes = 0,
         entries: Uint8Array[] = [],
         publications: DocumentJournalPublication[] = [],
-        pending: DocumentJournalSnapshot['pending'];
+        pending: DocumentJournalRecoverySnapshot['pending'];
       let failure: unknown;
       const guard = (action: () => void) => {
         try {
@@ -478,7 +501,14 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       request.onsuccess = () =>
         guard(() => {
           head = readHead(request.result);
-          head.revisions.forEach((revision, index) => {
+          const plan = planDocumentJournalRead(
+            head.revisions.length,
+            head.publications.length,
+            !!head.pending,
+            recovery,
+          );
+          for (let index = 0; index < plan.entries; index++) {
+            const revision = head.revisions[index];
             const item = transaction
               .objectStore('entries')
               .get([key, revision]);
@@ -493,8 +523,9 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                 entries[index] = owned.bytes;
                 copiedBytes = owned.copied;
               });
-          });
-          head.publications.forEach((publication, index) => {
+          }
+          for (let index = 0; index < plan.publications; index++) {
+            const publication = head.publications[index];
             const item = transaction
               .objectStore('publications')
               .get([key, publication.id]);
@@ -505,8 +536,18 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                   publication,
                 );
               });
-          });
-          if (head.pending) {
+          }
+          if (plan.pendingToken) {
+            pending = {
+              token: copyUnsharedUint8Array(
+                head.pending!.token,
+                32,
+                32,
+                'journal token',
+              ),
+            };
+          }
+          if (plan.pending) {
             const item = transaction.objectStore('pending').get(key);
             item.onsuccess = () =>
               guard(() => {
@@ -515,7 +556,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                   !documentBytesEqual(item.result.token, head.pending!.token)
                 )
                   throw new Error('Pending journal index mismatch');
-                pending = {
+                const loaded: DocumentJournalSnapshot['pending'] = {
                   token: copyUnsharedUint8Array(
                     item.result.token,
                     32,
@@ -537,6 +578,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                       }
                     : {}),
                 };
+                pending = loaded;
               });
           }
         });
@@ -548,7 +590,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         resolve({
           revision: head.revision,
           entries,
-          publications,
+          ...(!recovery ? { publications } : {}),
           ...(pending ? { pending } : {}),
         });
       };
@@ -619,7 +661,14 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       request.onsuccess = () => {
         try {
           const head = readHead(request.result);
-          head.publications.forEach((publication, index) => {
+          const plan = planDocumentJournalRead(
+            0,
+            head.publications.length,
+            false,
+            false,
+          );
+          for (let index = 0; index < plan.publications; index++) {
+            const publication = head.publications[index];
             const item = transaction
               .objectStore('publications')
               .get([key, publication.id]);
@@ -634,7 +683,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
                 transaction.abort();
               }
             };
-          });
+          }
         } catch (error) {
           failure = error;
           transaction.abort();

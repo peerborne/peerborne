@@ -593,12 +593,14 @@
         "canRetainDocumentPublicationBindings",
         "retainDocumentPublicationBindings",
         "selectDocumentPublicationBindings",
-        "isAcceptedDocumentPublicationToken"
+        "isAcceptedDocumentPublicationToken",
+        "planDocumentJournalRead"
       ],
       "witness": "documentJournal_domain",
       "consumers": [
         "packages/core/src/document-replay-journal.ts",
-        "packages/core/src/document-authority-log.ts"
+        "packages/core/src/document-authority-log.ts",
+        "packages/core/src/document-journal-store.ts"
       ],
       "verifiedTargets": [
         "classifyDocumentJournalRecovery_ensures",
@@ -612,8 +614,12 @@
         "selectDocumentPublicationBindings_ensures",
         "isAcceptedDocumentPublicationToken_ensures",
         "publicationLedger_all_histories",
-        "publicationLedger_domain"
-      ]
+        "publicationLedger_domain",
+        "planDocumentJournalRead_ensures",
+        "journalRecovery_read_costs",
+        "journalRecoveryRead_domain"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/sync-request.ts",

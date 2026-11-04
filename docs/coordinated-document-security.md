@@ -146,6 +146,14 @@ Writable transactions request strict durability and resolve on completion.
 Recovery validates the contiguous retained revision index before requesting
 entry rows. IndexedDB copies reserve against the declared retained-byte budget;
 pending and publication rows must match their indexed sizes before copying.
+The built-in IndexedDB recovery capability reads accepted entries and only a
+pending discard token from head metadata. It avoids pending bodies entirely and
+reads each publication payload once after accepted-state and anchor validation.
+Missing or corrupt unaccepted pending bodies are discarded without replaying
+them. The full diagnostic snapshot API still loads its requested bodies. Other
+backends can provide the optional recovery capability or their full snapshots.
+The checked read plan bounds successful recovery to 147 journal row gets;
+anchor-provider I/O, writes, browser internals and crypto costs are excluded.
 Authenticated replay reuses detached captured entries instead of making another
 outer copy. These checks bound owned ciphertext copies, not IndexedDB's internal
 structured cloning, decoder buffers or total browser heap use.
