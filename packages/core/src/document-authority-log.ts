@@ -31,11 +31,16 @@ import {
 } from './document-security-wire.js';
 import { copyUnsharedUint8Array } from './utils.js';
 import {
+  captureDocumentWritePaths,
+  copyDocumentFieldPaths,
+  DocumentFieldScopeBudget,
+} from './document-field-authorization.js';
+import {
   admitContentSequence,
   nextContentSequence,
 } from './policy/document-content.js';
 
-const DOMAIN = Uint8Array.from('peerborne/document-authority/v1\0', (value) =>
+const DOMAIN = Uint8Array.from('peerborne/document-authority/v2\0', (value) =>
   value.charCodeAt(0),
 );
 const MAX_RECORDS = 1024,
@@ -59,13 +64,22 @@ function encode(record: AuthorityRecord): Uint8Array {
     .fixed(record.parent);
   writeDocumentContext(writer, record.context);
   writer.integer(record.members.length, 2);
-  for (const member of record.members)
+  for (const member of record.members) {
     writer
       .fixed(
         copyUnsharedUint8Array(member.memberId, 32, 32, 'authority member'),
       )
       .text(member.publicKey, 4096)
       .integer(member.role, 1);
+    writer.integer(member.writePaths === undefined ? 0 : 1, 1);
+    if (member.writePaths !== undefined) {
+      writer.integer(member.writePaths.length, 2);
+      for (const path of member.writePaths) {
+        writer.integer(path.length, 1);
+        for (const segment of path) writer.text(segment, 4096);
+      }
+    }
+  }
   return writer.finish();
 }
 
@@ -87,6 +101,7 @@ function decode(bytes: Uint8Array): AuthorityRecord {
   )
     throw new Error('Invalid authority record');
   const members: DocumentMemberAuthority[] = [];
+  const scopeBudget = new DocumentFieldScopeBudget();
   let previous = '';
   const ids: string[] = [],
     keys: string[] = [],
@@ -101,7 +116,37 @@ function decode(bytes: Uint8Array): AuthorityRecord {
     ids.push(id);
     keys.push(publicKey);
     roles.push(role);
-    members.push({ memberId, publicKey, role: role as 1 | 2 | 3 });
+    const restricted = reader.number(1);
+    if (restricted !== 0 && restricted !== 1)
+      throw new Error('Invalid document field authorization');
+    let writePaths;
+    if (restricted === 1) {
+      const pathCount = reader.number(2);
+      if (pathCount > 64)
+        throw new Error('Document field authorization exceeds bounds');
+      scopeBudget.charge(pathCount, 0, 0);
+      const paths: string[][] = [];
+      for (let path = 0; path < pathCount; path++) {
+        const depth = reader.number(1);
+        if (depth > 32)
+          throw new Error('Document field authorization exceeds bounds');
+        scopeBudget.charge(0, depth, 0);
+        const segments: string[] = [];
+        for (let segment = 0; segment < depth; segment++) {
+          const value = reader.text(4096);
+          scopeBudget.charge(0, 0, value.length);
+          segments.push(value);
+        }
+        paths.push(segments);
+      }
+      writePaths = copyDocumentFieldPaths(paths);
+    }
+    members.push({
+      memberId,
+      publicKey,
+      role: role as 1 | 2 | 3,
+      ...(writePaths === undefined ? {} : { writePaths }),
+    });
   }
   reader.end();
   if (!isDocumentAuthorityRosterValid(ids, keys, roles))
@@ -114,6 +159,7 @@ function canonicalMembers(
 ): DocumentMemberAuthority[] {
   if (!Array.isArray(members) || members.length < 1 || members.length > 256)
     throw new Error('Invalid authority roster');
+  const scopeBudget = new DocumentFieldScopeBudget();
   return members
     .map((member) => ({
       memberId: copyUnsharedUint8Array(
@@ -124,6 +170,7 @@ function canonicalMembers(
       ),
       publicKey: member.publicKey,
       role: member.role,
+      writePaths: captureDocumentWritePaths(member, scopeBudget),
     }))
     .sort((a, b) =>
       documentBytesId(a.memberId) < documentBytesId(b.memberId)
@@ -141,9 +188,11 @@ async function digest(value: Uint8Array): Promise<Uint8Array> {
 }
 
 /** Signed role history, rooted in a genesis hash pinned outside the document transport. */
-export class DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>
-  implements DocumentAuthority
-{
+export class DocumentAuthorityLog<
+  PrivateKey,
+  PublicKey,
+  DocumentKey,
+> implements DocumentAuthority {
   private records: Uint8Array[] = [];
   private historyBytes = 0;
   private revision = 1;

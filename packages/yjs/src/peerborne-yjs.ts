@@ -9,6 +9,8 @@ import {
   CRDTProvider,
   CRDTDocumentSession,
   PreparedDocumentChange,
+  DocumentOperationTargets,
+  DocumentPreparationOptions,
   preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
@@ -36,6 +38,7 @@ import {
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
+import { recordYjsOperationTargets } from './operation-targets.js';
 import {
   AbstractType,
   Map as YMap,
@@ -574,7 +577,7 @@ export class YjsProvider
         if (constructor) target.get(name, constructor);
       }
     };
-    const stage = (prepare: (value: Doc) => Uint8Array) => {
+    const stage = (prepare: (value: Doc) => Uint8Array, options?: DocumentPreparationOptions) => {
       assertHealthy();
       if (active || preparing) throw new Error('Document session is busy');
       preparing = true;
@@ -605,9 +608,24 @@ export class YjsProvider
         }
         const baseRevision = revision;
         let stable: Uint8Array;
+        const targets = options?.inspectOperations === true ? new DocumentOperationTargets() : undefined;
+        let inspectionFailed = false;
+        const inspect = (transaction: Transaction) => {
+          try {
+            recordYjsOperationTargets(transaction, targets!);
+          } catch {
+            inspectionFailed = true;
+          }
+        };
         try {
           copyRootTypes(document, shadow);
-          stable = new Uint8Array(prepare(shadow));
+          if (targets) shadow.on('beforeObserverCalls', inspect);
+          try {
+            stable = new Uint8Array(prepare(shadow));
+          } finally {
+            if (targets) shadow.off('beforeObserverCalls', inspect);
+          }
+          if (inspectionFailed) throw new Error('Yjs document operation inspection failed');
           assertHealthy();
           if (shadow.isDestroyed)
             throw new Error('Document mirror was destroyed during preparation');
@@ -697,6 +715,7 @@ export class YjsProvider
             active = undefined;
           },
           () => this.getSnapshot(shadow!),
+          targets ? () => targets.snapshot() : undefined,
         );
         active = plan;
         return plan;
@@ -709,18 +728,18 @@ export class YjsProvider
         assertHealthy();
         return document;
       },
-      prepareLocal: (_message, change) =>
+      prepareLocal: (_message, change, options) =>
         stage((value) => {
           const before = encodeStateVector(value);
           change(value);
           return encodeStateAsUpdateV2(value, before);
-        }),
-      prepareRemote: (changes) => {
+        }, options),
+      prepareRemote: (changes, options) => {
         const owned = new Uint8Array(changes);
         return stage((value) => {
           applyUpdateV2(value, owned);
           return owned;
-        });
+        }, options);
       },
       prepareSnapshot: (changes) => {
         const owned = new Uint8Array(changes);

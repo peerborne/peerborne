@@ -759,6 +759,29 @@
         "journalStore_all_histories"
       ],
       "solverSeeds": [1, 2, 7, 19]
+    },
+    {
+      "path": "packages/core/src/policy/field-authorization.ts",
+      "functions": [
+        "isFieldPathPrefix",
+        "grantsFieldPath",
+        "firstUnauthorizedFieldPath",
+        "canAdmitFieldInspection"
+      ],
+      "witness": "fieldAuthorization_domain",
+      "consumers": ["packages/core/src/document-field-authorization.ts"],
+      "verifiedTargets": [
+        "isFieldPathPrefix",
+        "grantsFieldPath",
+        "firstUnauthorizedFieldPath",
+        "canAdmitFieldInspection_ensures",
+        "field_prefix_transitive",
+        "field_prefix_comparable",
+        "field_protected_noninterference",
+        "field_grants_attenuate",
+        "field_all_histories"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     }
   ]
 }

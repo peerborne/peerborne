@@ -2,6 +2,11 @@ import {
   advancePreparedDocumentChange,
   type PreparedDocumentPhase,
 } from './policy/document-admission.js';
+import type { DocumentWritePaths } from './document-field-authorization.js';
+
+export interface DocumentPreparationOptions {
+  readonly inspectOperations?: boolean;
+}
 
 export interface PreparedDocumentChange<Changes> {
   readonly changes: Changes;
@@ -9,6 +14,7 @@ export interface PreparedDocumentChange<Changes> {
   commit(): void;
   discard(): void;
   snapshot?(): Changes;
+  operationPaths?(): DocumentWritePaths;
 }
 
 /** One document owner; preparation must not mutate its visible document. */
@@ -17,8 +23,12 @@ export interface CRDTDocumentSession<Document, Changes, Change> {
   prepareLocal(
     message: string,
     change: Change,
+    options?: DocumentPreparationOptions,
   ): PreparedDocumentChange<Changes>;
-  prepareRemote(changes: Changes): PreparedDocumentChange<Changes>;
+  prepareRemote(
+    changes: Changes,
+    options?: DocumentPreparationOptions,
+  ): PreparedDocumentChange<Changes>;
   prepareSnapshot?(snapshot: Changes): PreparedDocumentChange<Changes>;
   close(): void;
 }
@@ -29,6 +39,7 @@ export function preparedDocumentChange<Changes>(
   commit: () => void,
   discard: () => void,
   snapshot?: () => Changes,
+  operationPaths?: () => DocumentWritePaths,
 ): PreparedDocumentChange<Changes> {
   let phase: PreparedDocumentPhase = 'prepared';
   let checking = false;
@@ -43,6 +54,18 @@ export function preparedDocumentChange<Changes>(
   };
   return {
     changes,
+    ...(operationPaths
+      ? {
+          operationPaths: () => {
+            if (!isCurrent())
+              throw new Error('Stale document operation inspection');
+            const paths = operationPaths();
+            if (!isCurrent())
+              throw new Error('Stale document operation inspection');
+            return paths;
+          },
+        }
+      : {}),
     ...(snapshot
       ? {
           snapshot: () => {

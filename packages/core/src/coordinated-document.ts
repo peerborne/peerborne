@@ -22,6 +22,10 @@ import {
 } from './internal/document-binary.js';
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import { captureDocumentAuthorityLease } from './captured-document-authority.js';
+import {
+  assertDocumentOperationsAllowed,
+  type DocumentWritePaths,
+} from './document-field-authorization.js';
 import type { CapturedDocumentMember } from './policy/authority-capture.js';
 import {
   copyUnsharedUint8Array,
@@ -49,6 +53,8 @@ export interface DocumentMemberAuthority {
   readonly memberId: Uint8Array;
   readonly publicKey: string;
   readonly role: 1 | 2 | 3;
+  /** Omit for whole-document writes; [] denies every operation. Map-key segments, not JSON pointer strings. */
+  readonly writePaths?: DocumentWritePaths;
 }
 
 /** An application-pinned authority. A network-supplied roster is never a trust root. */
@@ -407,6 +413,10 @@ export class CoordinatedDocument<
               if (!replay)
                 plan = this.session.prepareRemote(
                   this.serializer.deserializeChanges(frame.changes),
+                  {
+                    inspectOperations:
+                      lease.writePaths.get(member.id) !== undefined,
+                  },
                 );
             } else {
               memberId = this.options.coordinator.localMemberId;
@@ -424,7 +434,14 @@ export class CoordinatedDocument<
                 throw new Error('Document sequence is exhausted');
               sequence = nextContentSequence(accepted?.sequence ?? 0);
               parent = accepted?.hash ?? ZERO_HASH;
-              plan = this.session.prepareLocal(message, change!);
+              plan = this.session.prepareLocal(message, change!, {
+                inspectOperations:
+                  lease.writePaths.get(member.id) !== undefined,
+              });
+              assertDocumentOperationsAllowed(
+                plan,
+                lease.writePaths.get(member.id),
+              );
               const changes = copyUnsharedUint8Array(
                 this.serializer.serializeChanges(plan.changes),
                 0,
@@ -482,6 +499,11 @@ export class CoordinatedDocument<
                 new Uint8Array(ciphertext),
               );
             }
+            if (!replay && input !== undefined)
+              assertDocumentOperationsAllowed(
+                plan!,
+                lease.writePaths.get(member.id),
+              );
             const { value: digest } = await work.observe<ArrayBuffer>(
               (async () =>
                 crypto.subtle.digest(

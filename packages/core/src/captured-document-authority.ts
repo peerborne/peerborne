@@ -5,6 +5,11 @@ import {
 } from './policy/authority-capture.js';
 import { copyUnsharedUint8Array } from './utils.js';
 import { documentBytesId } from './internal/document-binary.js';
+import {
+  captureDocumentWritePaths,
+  DocumentFieldScopeBudget,
+  type DocumentWritePaths,
+} from './document-field-authorization.js';
 
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const apply = Reflect.apply;
@@ -25,6 +30,7 @@ export function captureDocumentAuthorityLease(
 ): {
   readonly headId: Uint8Array;
   readonly members: ReadonlyMap<string, CapturedDocumentMember>;
+  readonly writePaths: ReadonlyMap<string, DocumentWritePaths | undefined>;
   isCurrent(): boolean;
 } {
   const guard = ownData(value, 'isCurrent');
@@ -47,6 +53,8 @@ export function captureDocumentAuthorityLease(
     'document authority head',
   );
   const entries: CapturedDocumentMember[] = [];
+  const writePaths = new Map<string, DocumentWritePaths | undefined>();
+  const scopeBudget = new DocumentFieldScopeBudget();
   for (let index = 0; index < count; index++) {
     const member = ownData(source, index);
     const publicKey = ownData(member, 'publicKey');
@@ -66,12 +74,14 @@ export function captureDocumentAuthorityLease(
       ),
     );
     entries.push({ id, publicKey, role });
+    writePaths.set(id, captureDocumentWritePaths(member, scopeBudget));
   }
   const roster = captureDocumentRoster(entries, localId);
   if (!roster.valid) throw new Error('Invalid document authority roster');
   return {
     headId,
     members: roster.members,
+    writePaths,
     isCurrent: () => apply(guard, value, []) === true,
   };
 }

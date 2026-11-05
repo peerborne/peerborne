@@ -33,6 +33,8 @@ export * from './group-security-store-commitment.js';
 export * from './group-security-durable-acceptance.js';
 export * from './group-security-coordinator.js';
 export * from './document-crdt-session.js';
+export { DocumentOperationTargets, assertDocumentOperationsAllowed } from './document-field-authorization.js';
+export type { DocumentFieldPath, DocumentWritePaths } from './document-field-authorization.js';
 export {
   GroupDocumentOperationError,
   type GroupDocumentOperationOptions,
