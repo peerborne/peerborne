@@ -288,12 +288,17 @@ test('native sweep histories preserve protected and unrelated blocks across repe
               protectedIds.has(id),
           );
           expect(remaining).toEqual(new Set(expected));
+          const addedProtection = new Set(
+            values.filter((_, index) => index % 2 === 0),
+          );
           const stronger = selectDeletableCids(
             values,
-            new Set([...retained, ...protectedIds]),
+            new Set([...retained, ...addedProtection]),
             protectedIds,
           );
-          expect([...stronger].every((id) => selected.has(id))).toBe(true);
+          expect(stronger).toEqual(
+            new Set([...selected].filter((id) => !addedProtection.has(id))),
+          );
         }
         const whole = selectDeletableCids(candidates, retained, protectedIds);
         expect(remaining).toEqual(
