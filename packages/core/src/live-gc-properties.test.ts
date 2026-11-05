@@ -45,6 +45,7 @@ function fixture(protectedIds: Set<string>, retained: string[] = []) {
     documentPath: '/gc',
     _mutationQueue: new InvitationMembershipQueue(),
     _gcLifecycle: {},
+    _gcClosed: false,
     _gcCandidates: new Set<string>(),
     _recentTips: [],
     _latestSnapshot: { lastChangeNodeCID: 'snapshot-boundary' },
@@ -237,6 +238,83 @@ test('close invalidates pending pin checks and waits for started deletions befor
       expect(document.swarm.unregisterDocument).toHaveBeenCalledTimes(1);
     }),
     { seed: 2012206, numRuns: 12 },
+  );
+});
+
+test('closing permanently refuses new maintenance and queued GC admission', async () => {
+  await fc.assert(
+    fc.asyncProperty(fc.boolean(), async (duringClose) => {
+      const { document, deleted } = fixture(new Set());
+      document._compactionConfig = { gcAfterPrune: true };
+      const entered = deferred(),
+        release = deferred();
+      let collecting: Promise<void> | undefined;
+      if (duringClose) {
+        document.swarm.heliaNode.pins.isPinned = async () => {
+          entered.resolve();
+          await release.promise;
+          return false;
+        };
+        collecting = document._gcPrunedBlocks(new Set(['before-close']));
+        await entered.promise;
+      }
+      const closing = document.close();
+      if (!duringClose) await closing;
+      const maintenance = expect(document.collectGarbage()).rejects.toThrow(
+        /closed/,
+      );
+      const queued = document._gcPrunedBlocks(new Set(['after-close']));
+      release.resolve();
+      await Promise.all([closing, collecting, maintenance, queued]);
+      await document._gcPrunedBlocks(new Set(['after-unregister']));
+      expect(deleted).toEqual([]);
+      expect(document._gcCandidates.has('after-close')).toBe(false);
+      expect(document._gcCandidates.has('after-unregister')).toBe(false);
+    }),
+    { seed: 2012214, numRuns: 12, examples: [[true], [false]] },
+  );
+});
+
+test('protected candidate hints survive until tree, boundary, tip or pin protection expires', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.constantFrom('tree', 'boundary', 'tip', 'pin'),
+      async (mode) => {
+        const pins = new Set(mode === 'pin' ? ['candidate'] : []);
+        const { document, deleted } = fixture(
+          pins,
+          mode === 'tree' ? ['candidate'] : [],
+        );
+        document._compactionConfig = { gcAfterPrune: true };
+        if (mode === 'boundary')
+          document._latestSnapshot.lastChangeNodeCID = 'candidate';
+        if (mode === 'tip')
+          document._recentTips = [
+            { cid: 'candidate', kind: crdtDocumentChangeNode },
+          ];
+        await document._gcPrunedBlocks(new Set(['candidate']));
+        expect(deleted).toEqual([]);
+        expect(document._gcCandidates).toEqual(new Set(['candidate']));
+        await document._mutationQueue.run(async () => {
+          document._lastSyncMessage = {
+            changeId: 'next-root',
+            changes: { kind: crdtDocumentChangeNode },
+          };
+          document._latestSnapshot = { lastChangeNodeCID: 'next-boundary' };
+          document._recentTips = [];
+          pins.clear();
+        });
+        await expect(document.collectGarbage()).resolves.toEqual({
+          pending: 0,
+        });
+        expect(deleted).toEqual(['candidate']);
+      },
+    ),
+    {
+      seed: 2012215,
+      numRuns: 16,
+      examples: [['tree'], ['boundary'], ['tip'], ['pin']],
+    },
   );
 });
 

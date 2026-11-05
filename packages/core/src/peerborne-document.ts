@@ -1385,6 +1385,7 @@ export class PeerborneDocument<
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
   private _gcLifecycle: object = {};
+  private _gcClosed = false;
   private _gcInProgress?: Promise<void>;
   private _gcCandidates = new Set<string>();
   private _gcRequested = false;
@@ -4287,7 +4288,7 @@ export class PeerborneDocument<
     prunedCIDs: Set<string>,
     lifecycle: object = this._gcLifecycle,
   ): Promise<void> {
-    if (lifecycle !== this._gcLifecycle) return;
+    if (this._gcClosed || lifecycle !== this._gcLifecycle) return;
     if (prunedCIDs.size === 0 && this._gcCandidates.size === 0) return;
     if (prunedCIDs.size > MAX_CHANGE_TREE_NODES)
       throw new RangeError('Garbage collection candidate limit exceeded');
@@ -4311,7 +4312,7 @@ export class PeerborneDocument<
     }
     const run = (async () => {
       for (let pass = 0; pass < 2; pass++) {
-        if (lifecycle !== this._gcLifecycle) break;
+        if (this._gcClosed || lifecycle !== this._gcLifecycle) break;
         this._gcRequested = false;
         await collectLiveBlocks({
           exclusive: (operation) => this._mutationQueue.run(operation),
@@ -4332,7 +4333,8 @@ export class PeerborneDocument<
                       this._recentTips[index].cid === tip.cid &&
                       this._recentTips[index].kind === tip.kind,
                   ),
-                this._gcLifecycle === lifecycle &&
+                !this._gcClosed &&
+                  this._gcLifecycle === lifecycle &&
                   !this._isStateApplicationBlocked(),
               );
             const protectedCids = [
@@ -4349,9 +4351,6 @@ export class PeerborneDocument<
                     protectedCids,
                   )
                 : new Set<string>();
-            if (message?.changeId && root && snapshot)
-              for (const cid of candidates)
-                if (!selected.has(cid)) this._gcCandidates.delete(cid);
             return {
               candidates: selected,
               isCurrent,
@@ -4361,8 +4360,8 @@ export class PeerborneDocument<
           remove: async (cid) => {
             await this.swarm.heliaNode.blockstore.delete(CID.parse(cid));
           },
-          completed: (cid) => {
-            this._gcCandidates.delete(cid);
+          completed: (cid, outcome) => {
+            if (outcome === 'deleted') this._gcCandidates.delete(cid);
           },
           yield: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
           failed: () => {
@@ -7294,6 +7293,7 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public async close() {
+    this._gcClosed = true;
     this._gcLifecycle = {};
     await this._gcInProgress?.catch(() => {});
     await this._coordinated?.close();
@@ -8217,6 +8217,8 @@ export class PeerborneDocument<
 
   /** Retry bounded local GC work without creating a new snapshot. */
   public async collectGarbage(): Promise<Readonly<{ pending: number }>> {
+    if (this._gcClosed)
+      throw new Error('Document garbage collection is closed');
     if (this._coordinated || !this._compactionConfig.gcAfterPrune)
       throw new Error('Document block garbage collection is not enabled');
     this._assertNoIncompleteBootstrapLoad();

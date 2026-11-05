@@ -530,10 +530,13 @@ Live GC additionally calls verified lease and phase guards. A lease binds the
 current tree, snapshot/boundary, recent tips and lifecycle. Each pin/deletion
 attempt owns one document mutation-queue slot through I/O settlement and yields
 before its next slot; a changed lease stops the pass. GC preserves existing pins
-and never unpins blocks. Close invalidates the lease and waits for begun work
-before unregistering. Overlapping requests coalesce into bounded candidate
+and never unpins blocks. Close permanently disables GC admission, invalidates
+the lease and waits for begun work before unregistering. Overlapping requests
+coalesce into bounded candidate
 metadata: at most 32,768 IDs of at most 512 code units. Rejected batches preserve
-the prior queue. A drain captures at most two plans; deferred/failed candidates
+the prior queue. Temporarily retained, protected and pinned candidates remain
+pending until their protection expires. A drain captures at most two plans;
+deferred/failed candidates
 can be retried through `collectGarbage()` or a later snapshot.
 
 Exact finite phase histories prove monotone phase order, at most one deletion
@@ -546,7 +549,7 @@ the copied GC-gating helper tests. Object identity, pin truth, I/O settlement an
 Helia's locking remain native boundaries; this does not establish arbitrary-driver
 liveness, total disk quota, browser heap or physical crash durability.
 
-The inventory audits 63 property-suite files containing 203 explicit
+The inventory audits 63 property-suite files containing 205 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
