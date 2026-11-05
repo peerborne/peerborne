@@ -1,6 +1,6 @@
 # Formal policy verification
 
-The 147 selected production functions in 37 proof units are compiled from their
+The 150 selected production functions in 37 proof units are compiled from their
 actual TypeScript implementations to Dafny by LemmaScript. These include the
 core policy directory and selected functions in core, index and React modules.
 The runtime calls those same functions; there is no parallel executable model.
@@ -60,8 +60,8 @@ proof files to make regeneration succeed. Recovery files `.dfy.base` and
 [regen guidance](https://github.com/midspiral/LemmaScript/blob/f245e9878aa23a3c4a2d3f75ade4a44cebd545dc/AGENTS.md).
 
 The control runner copies selected sources and proofs into temporary
-directories. Its 256 controls cover 37 accepted originals, map-comparison and native-map-alias
-calibrations, 213 semantic/vacuity mutations, stale generated code, `assume false`,
+directories. Its 265 controls cover 37 accepted originals, map-comparison and native-map-alias
+calibrations, 222 semantic/vacuity mutations, stale generated code, `assume false`,
 body-less lemmas and unproved imports. Semantic mutations must reach the verifier and fail an obligation;
 a parser error, a timeout alone or a drift-only rejection is insufficient.
 All accepted originals receive full-unit verification. Four tree, fourteen invitation-replay and seventeen Welcome-admission
@@ -81,8 +81,8 @@ production copies; this calibration is not an additional verified security claim
 It also audits all fast-check imports/assertions for explicit fixed seeds and
 bounded run counts, and requires every property suite to have evidence paths
 and a formal-boundary explanation in the
-[fallback catalog](../strategy.json). It reports 61 property-suite files and
-190 assertion declarations; parameterized suites can execute declarations more
+[fallback catalog](../strategy.json). It reports 63 property-suite files and
+203 assertion declarations; parameterized suites can execute declarations more
 than once. Remaining named top-level functions are listed for future
 specification work. These are structural counts, not semantic coverage.
 
@@ -128,6 +128,15 @@ malformed-tree rejection before publication, repeated batches and source
 reflection counts through the 32,768-node cap. CID parsing is stubbed; dynamic
 guard freshness, asynchronous deletion, crash durability, heap use and UI latency
 remain outside this evidence.
+
+The live-GC helpers additionally verify bounded candidate admission and exact
+lease/phase decisions. Finite phase histories are exact folds of the production
+transition and allow at most one deletion entry per attempt. Native properties
+calibrate mutation-queue ownership through I/O, pin retention, stale plans, close,
+coalescing, atomic candidate refusal, opaque diagnostics and explicit retry.
+The offline Helia fixture uses real CIDs, pins and storage. Pin truth, pointer/Set
+identity, backend settlement and crash durability remain native assumptions;
+metadata bounds do not bound total disk, VM heap or main-thread latency.
 
 The journal-store unit checks staged revision/count/byte admission and commit
 token/checkpoint binding. Its publication planner proves exact fresh-ID

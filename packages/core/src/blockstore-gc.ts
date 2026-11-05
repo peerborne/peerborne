@@ -1,4 +1,8 @@
-import { selectDeletableCids } from './policy/retention.js';
+import {
+  advanceBlockGc,
+  selectDeletableCids,
+  type BlockGcPhase,
+} from './policy/retention.js';
 /**
  * Blockstore garbage collection helpers for compaction.
  *
@@ -14,6 +18,60 @@ import { CRDTChangeNode } from './crdt-change-node.js';
 import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import { crdtChangeNodeDeferred } from './crdt-change-node.js';
 import { reachableCids, type CidEdge } from './policy/graph-reachability.js';
+
+export interface BlockGcLease {
+  readonly candidates: ReadonlySet<string>;
+  isCurrent(): boolean;
+}
+
+export interface LiveBlockGcHooks {
+  exclusive<T>(operation: () => Promise<T>): Promise<T>;
+  capture(): BlockGcLease;
+  isPinned(cid: string): Promise<unknown>;
+  remove(cid: string): Promise<void>;
+  completed(cid: string, outcome: 'deleted' | 'pinned'): void;
+  yield(): Promise<void>;
+  failed(): void;
+}
+
+/** A deletion slot owns the document mutation queue until its I/O settles. */
+export async function collectLiveBlocks(
+  hooks: LiveBlockGcHooks,
+): Promise<void> {
+  const lease = await hooks.exclusive(async () => hooks.capture());
+  for (const cid of lease.candidates) {
+    const current = await hooks.exclusive(async () => {
+      let phase: BlockGcPhase = advanceBlockGc(
+        'ready',
+        'check',
+        lease.isCurrent() === true,
+        false,
+      );
+      if (phase !== 'checking') return false;
+      try {
+        const pinned = await hooks.isPinned(cid);
+        if (typeof pinned !== 'boolean')
+          throw new TypeError('Invalid pin observation');
+        const leaseCurrent = lease.isCurrent() === true;
+        phase = advanceBlockGc(phase, 'delete', leaseCurrent, pinned === false);
+        if (phase !== 'deleting') {
+          if (leaseCurrent && pinned) hooks.completed(cid, 'pinned');
+          return leaseCurrent;
+        }
+        await hooks.remove(cid);
+        phase = advanceBlockGc(phase, 'settle', false, false);
+        hooks.completed(cid, 'deleted');
+        return phase === 'settled';
+      } catch {
+        phase = advanceBlockGc(phase, 'abort', false, false);
+        hooks.failed();
+        return lease.isCurrent() === true;
+      }
+    });
+    if (!current) break;
+    await hooks.yield();
+  }
+}
 
 /**
  * Walk a CRDTChangeNode tree and collect the CID strings of every
