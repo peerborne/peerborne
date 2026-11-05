@@ -18,3 +18,49 @@ export function selectDeletableCids(
   }
   return result;
 }
+
+export type BlockGcPhase =
+  'ready' | 'checking' | 'deleting' | 'settled' | 'aborted';
+export type BlockGcAction = 'check' | 'delete' | 'settle' | 'abort';
+
+export function canRetainGcCandidate(
+  known: boolean,
+  count: number,
+  length: number,
+): boolean {
+  //@ verify
+  //@ requires 0 <= count && count <= 32768 && 0 <= length && length <= 9007199254740991
+  //@ ensures \result <==> 1 <= length && length <= 512 && (known || count < 32768)
+  //@ ensures \result && !known ==> count + 1 <= 32768
+  return length >= 1 && length <= 512 && (known || count < 32768);
+}
+
+export function gcLeaseIsCurrent(
+  sameTree: boolean,
+  sameSnapshot: boolean,
+  sameTips: boolean,
+  active: boolean,
+): boolean {
+  //@ verify
+  //@ ensures \result <==> sameTree && sameSnapshot && sameTips && active
+  return sameTree && sameSnapshot && sameTips && active;
+}
+
+export function advanceBlockGc(
+  phase: BlockGcPhase,
+  action: BlockGcAction,
+  leaseCurrent: boolean,
+  unpinned: boolean,
+): BlockGcPhase {
+  //@ verify
+  //@ ensures \result === "deleting" <==> phase === "checking" && action === "delete" && leaseCurrent && unpinned
+  //@ ensures \result === "checking" <==> phase === "ready" && action === "check" && leaseCurrent
+  //@ ensures \result === "settled" <==> phase === "deleting" && action === "settle"
+  //@ ensures phase === "settled" || phase === "aborted" ==> \result === "aborted"
+  if (phase === 'ready' && action === 'check' && leaseCurrent)
+    return 'checking';
+  if (phase === 'checking' && action === 'delete' && leaseCurrent && unpinned)
+    return 'deleting';
+  if (phase === 'deleting' && action === 'settle') return 'settled';
+  return 'aborted';
+}

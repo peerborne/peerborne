@@ -1,6 +1,7 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
+import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
 import type { InitialLoadSession } from './internal/initial-load-session.js';
 import {
   decodeSyncRequest, encodeSyncRequest, isSyncRequest, isSyncRequestFresh,
@@ -69,6 +70,7 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import {
+  MAX_CHANGE_TREE_NODES,
   collectBoundedChangeTree,
   snapshotBoundedChangeTree,
   type BoundedChangeTreeEntry,
@@ -152,6 +154,7 @@ import { CRDTSnapshotNode } from './snapshot-node.js';
 import type { CompactionConfig } from './compaction-config.js';
 import { mergeCompactionConfig } from './compaction-config.js';
 import {
+  collectLiveBlocks,
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
 } from './blockstore-gc.js';
@@ -1381,6 +1384,11 @@ export class PeerborneDocument<
   private _latestSnapshotSource?: object;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
+  private _gcLifecycle: object = {};
+  private _gcClosed = false;
+  private _gcInProgress?: Promise<void>;
+  private _gcCandidates = new Set<string>();
+  private _gcRequested = false;
   private _snapshotUnsupported = false;
   // Counts only document-kind changes (excludes ACL reader/writer changes).
   // Used by _maybeCompact() for the minChangesBeforeSnapshot threshold.
@@ -4273,51 +4281,102 @@ export class PeerborneDocument<
   }
 
   /**
-   * Delete pruned blocks from the Helia blockstore. Unpins each block first
-   * (if pinned), then deletes the raw block data. CIDs are intentionally
-   * kept in `_hashes` so that `_mergeSyncTree()` still deduplicates if a
-   * peer re-sends the same change block.
-   *
-   * Errors on individual blocks are logged but do not abort the overall GC pass.
+   * Delete currently unreferenced, unpinned blocks under a retention lease.
+   * Each deletion owns one mutation-queue slot until its I/O settles.
    */
-  private async _gcPrunedBlocks(prunedCIDs: Set<string>): Promise<void> {
-    if (prunedCIDs.size === 0) {
-      return;
+  private async _gcPrunedBlocks(
+    prunedCIDs: Set<string>,
+    lifecycle: object = this._gcLifecycle,
+  ): Promise<void> {
+    if (this._gcClosed || lifecycle !== this._gcLifecycle) return;
+    if (prunedCIDs.size === 0 && this._gcCandidates.size === 0) return;
+    if (prunedCIDs.size > MAX_CHANGE_TREE_NODES)
+      throw new RangeError('Garbage collection candidate limit exceeded');
+    const nextCandidates = new Set(this._gcCandidates);
+    for (const cid of prunedCIDs) {
+      if (
+        typeof cid !== 'string' ||
+        !canRetainGcCandidate(
+          nextCandidates.has(cid),
+          nextCandidates.size,
+          cid.length,
+        )
+      )
+        throw new RangeError('Garbage collection candidate limit exceeded');
+      nextCandidates.add(cid);
     }
-
-    const blockstore = this.swarm.heliaNode.blockstore;
-    const pins = this.swarm.heliaNode.pins;
-    let deleted = 0;
-
-    for (const cidStr of prunedCIDs) {
-      try {
-        const cid = CID.parse(cidStr);
-
-        // Unpin first -- pins.rm is an AsyncGenerator, drain it.
-        try {
-          for await (const _ of pins.rm(cid)) { /* drain */ }
-        } catch (unpinErr) {
-          const msg = String(unpinErr);
-          if (!msg.includes('not pinned') && !msg.includes('is not pinned')) {
-            throw unpinErr;
-          }
-          console.debug(`Unpin skipped for ${cidStr} (not pinned)`);
-        }
-
-        // Delete the raw block from the blockstore.
-        // Note: we intentionally keep the CID in _hashes so that
-        // _mergeSyncTree() still deduplicates if a peer re-sends
-        // the same change block (e.g., a peer that hasn't compacted).
-        await blockstore.delete(cid);
-        deleted++;
-      } catch (err) {
-        console.error(`Failed to GC block ${cidStr}:`, err);
+    this._gcCandidates = nextCandidates;
+    if (this._gcInProgress) {
+      this._gcRequested = true;
+      return this._gcInProgress;
+    }
+    const run = (async () => {
+      for (let pass = 0; pass < 2; pass++) {
+        if (this._gcClosed || lifecycle !== this._gcLifecycle) break;
+        this._gcRequested = false;
+        await collectLiveBlocks({
+          exclusive: (operation) => this._mutationQueue.run(operation),
+          capture: () => {
+            const message = this._lastSyncMessage;
+            const snapshot = this._latestSnapshot;
+            const root = message?.changes;
+            const boundary = snapshot?.lastChangeNodeCID;
+            const tips = this._recentTips.map((tip) => ({ ...tip }));
+            const isCurrent = () =>
+              gcLeaseIsCurrent(
+                this._lastSyncMessage === message && message?.changes === root,
+                this._latestSnapshot === snapshot &&
+                  snapshot?.lastChangeNodeCID === boundary,
+                this._recentTips.length === tips.length &&
+                  tips.every(
+                    (tip, index) =>
+                      this._recentTips[index].cid === tip.cid &&
+                      this._recentTips[index].kind === tip.kind,
+                  ),
+                !this._gcClosed &&
+                  this._gcLifecycle === lifecycle &&
+                  !this._isStateApplicationBlocked(),
+              );
+            const protectedCids = [
+              ...(boundary ? [boundary] : []),
+              ...tips.map((tip) => tip.cid),
+            ];
+            const candidates = [...this._gcCandidates];
+            const selected =
+              message?.changeId && root && snapshot
+                ? filterDeletableCIDs(
+                    candidates,
+                    message.changeId,
+                    root,
+                    protectedCids,
+                  )
+                : new Set<string>();
+            return {
+              candidates: selected,
+              isCurrent,
+            };
+          },
+          isPinned: (cid) => this.swarm.heliaNode.pins.isPinned(CID.parse(cid)),
+          remove: async (cid) => {
+            await this.swarm.heliaNode.blockstore.delete(CID.parse(cid));
+          },
+          completed: (cid, outcome) => {
+            if (outcome === 'deleted') this._gcCandidates.delete(cid);
+          },
+          yield: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+          failed: () => {
+            console.error('Document block garbage collection failed');
+          },
+        });
+        if (!this._gcRequested || this._gcCandidates.size === 0) break;
       }
+    })();
+    this._gcInProgress = run;
+    try {
+      await run;
+    } finally {
+      if (this._gcInProgress === run) this._gcInProgress = undefined;
     }
-
-    console.log(
-      `Blockstore GC for ${this.documentPath}: deleted ${deleted}/${prunedCIDs.size} blocks`,
-    );
   }
 
   /**
@@ -7234,6 +7293,9 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public async close() {
+    this._gcClosed = true;
+    this._gcLifecycle = {};
+    await this._gcInProgress?.catch(() => {});
     await this._coordinated?.close();
     // Use the cached topic for cleanup; it is initialized in the constructor.
     const topic = this._topic;
@@ -8153,9 +8215,21 @@ export class PeerborneDocument<
     return this._runStateMutation(() => this._snapshotUnlocked());
   }
 
+  /** Retry bounded local GC work without creating a new snapshot. */
+  public async collectGarbage(): Promise<Readonly<{ pending: number }>> {
+    if (this._gcClosed)
+      throw new Error('Document garbage collection is closed');
+    if (this._coordinated || !this._compactionConfig.gcAfterPrune)
+      throw new Error('Document block garbage collection is not enabled');
+    this._assertNoIncompleteBootstrapLoad();
+    await this._gcPrunedBlocks(new Set());
+    return Object.freeze({ pending: this._gcCandidates.size });
+  }
+
   private async _snapshotUnlocked(
     signal?: AbortSignal,
   ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
+    const gcLifecycle = this._gcLifecycle;
     await this._ensureCurrentUserCanWrite();
     throwIfLoadAborted(signal);
 
@@ -8213,24 +8287,12 @@ export class PeerborneDocument<
       // Fire-and-forget: GC errors are logged but don't block snapshot creation.
       if (
         this._compactionConfig.gcAfterPrune &&
-        prunedCIDs.size > 0 &&
         this._lastSyncMessage?.changes &&
         this._lastSyncMessage.changeId
       ) {
-        const protectedCIDs = lastChangeNodeCID
-          ? [lastChangeNodeCID]
-          : [];
-        const deletable = filterDeletableCIDs(
-          prunedCIDs,
-          this._lastSyncMessage.changeId,
-          this._lastSyncMessage.changes,
-          protectedCIDs,
-        );
-        if (deletable.size > 0) {
-          this._gcPrunedBlocks(deletable).catch((err) => {
-            console.error(`Blockstore GC failed for ${this.documentPath}:`, err);
-          });
-        }
+        this._gcPrunedBlocks(prunedCIDs, gcLifecycle).catch(() => {
+          console.error('Document block garbage collection failed');
+        });
       }
     }
 

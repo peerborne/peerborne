@@ -250,12 +250,26 @@
     },
     {
       "path": "packages/core/src/policy/retention.ts",
-      "functions": ["selectDeletableCids"],
+      "functions": [
+        "selectDeletableCids",
+        "canRetainGcCandidate",
+        "gcLeaseIsCurrent",
+        "advanceBlockGc"
+      ],
       "witness": "retention_domain",
-      "consumers": ["packages/core/src/blockstore-gc.ts"],
+      "consumers": [
+        "packages/core/src/blockstore-gc.ts",
+        "packages/core/src/peerborne-document.ts"
+      ],
       "solverSeeds": [1, 2, 7, 19],
       "verifiedTargets": [
         "selectDeletableCids",
+        "canRetainGcCandidate_ensures",
+        "gcLeaseIsCurrent_ensures",
+        "advanceBlockGc_ensures",
+        "blockGc_phase_order",
+        "blockGc_all_histories",
+        "blockGc_domain",
         "retention_protection_monotone",
         "retention_batches",
         "retention_all_sweeps"

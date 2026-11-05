@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 147 production functions in 37 proof units. The runtime calls
+LemmaScript checks 150 production functions in 37 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -43,7 +43,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)                       |         9 | Exact conflict classification, coherent bounded join/acceptance indexes, monotone time, expiry-only retirement and sweep frontier. Checked arbitrary finite histories preserve join and consumed acceptance bindings and prevent expired offer revival.                                                  |
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
 | [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
-| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | Exact candidate/retained/protected membership, protection monotonicity, batch equivalence and finite sweep histories preserving initially guarded and unrelated blocks.                                                                            |
+| [Retention](../packages/core/src/policy/retention.ts)                       |         4 | Exact selection, protection/batch/sweep composition, bounded candidate admission, live-lease conjunction and deletion phases. Exact finite phase histories permit at most one deletion entry per attempt and require current unpinned admission. |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
 | [UTF-16 and bounded UTF-8](../packages/core/src/internal/canonical-encoding.ts) | 6 | Exact surrogate pairing and UTF-8 prefix-byte counts; acceptance iff the paired string fits the byte cap; bounded scan without encoded buffers and immediate rejection of excessive code-unit length.                                                                                                                     |
@@ -526,7 +526,30 @@ CID parsing is stubbed. Dynamic guard freshness, asynchronous deletion outcomes,
 cryptographic authentication, crash durability, heap use and UI latency remain
 outside these proofs and properties.
 
-The inventory audits 61 property-suite files containing 190 explicit
+Live GC additionally calls verified lease and phase guards. A lease binds the
+current tree, snapshot/boundary, recent tips and lifecycle. Each pin/deletion
+attempt owns one document mutation-queue slot through I/O settlement and yields
+before its next slot; a changed lease stops the pass. GC preserves existing pins
+and never unpins blocks. Close permanently disables GC admission, invalidates
+the lease and waits for begun work before unregistering. Overlapping requests
+coalesce into bounded candidate
+metadata: at most 32,768 IDs of at most 512 code units. Rejected batches preserve
+the prior queue. Temporarily retained, protected and pinned candidates remain
+pending until their protection expires. A drain captures at most two plans;
+deferred/failed candidates
+can be retried through `collectGarbage()` or a later snapshot.
+
+Exact finite phase histories prove monotone phase order, at most one deletion
+entry per attempt, and no entry when all observations deny a live unpinned lease.
+Native properties reproduce stale-candidate deletion and unpinning, then check
+queue/I/O exclusion, close, coalescing, atomic refusal, input ownership, bounded
+candidate histories and opaque failure diagnostics. A separate native fixture
+uses real offline Helia, CIDs, pins and blockstore operations. These tests replace
+the copied GC-gating helper tests. Object identity, pin truth, I/O settlement and
+Helia's locking remain native boundaries; this does not establish arbitrary-driver
+liveness, total disk quota, browser heap or physical crash durability.
+
+The inventory audits 63 property-suite files containing 205 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -537,6 +560,7 @@ properties can invoke the same assertion more than once.
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Compaction and deletion | Actual pruner/GC-adapter ACL preservation, sparse aliases, source ownership, malformed-tree publication rollback, source-reflection counts and repeated batch histories. |
+| Live GC | Actual mutation-queue and I/O schedules, existing pins, stale leases, close quiescence, coalescing, candidate ownership/admission histories, fixed diagnostics and real offline Helia pin/blockstore behavior. |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Journal store transitions | Strict native scalar guards, one-read reservation capture, owned metadata/payload projection, modelled operation histories across both stores, raw-row transaction rollback and encrypted duplicate-rejection recovery. |

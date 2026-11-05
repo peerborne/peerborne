@@ -3,6 +3,19 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "live-gc-lease-and-io",
+      "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, stale trees/snapshots, existing pins, coalescing, atomic metadata refusal, close quiescence, opaque provider failures and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
+      "evidence": [
+        "packages/core/src/live-gc-properties.test.ts",
+        "packages/core/src/live-gc-native.fixture.mjs"
+      ],
+      "sources": [
+        "packages/core/src/policy/retention.ts",
+        "packages/core/src/blockstore-gc.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "compaction-retention-boundaries",
       "formalBoundary": "The actual deletion selector has exact candidate/retained/protected membership. Checked composition proves that adding protections can only reduce deletions, partitioned batches have the same selected union, and arbitrary finite sweep histories preserve initially retained/protected and unrelated blocks under fixed truthful guard sets. Native properties call the actual document pruner and GC adapter to check ACL payload preservation, sparse aliases, rejection before publishing malformed trees, owned selection results and per-occurrence reflection counts through the node cap. CID parsing is stubbed in these properties; cryptographic authentication, dynamic guard freshness, asynchronous blockstore deletion, crash durability, native heap and UI latency are not proved.",
       "evidence": ["packages/core/src/compaction-retention-properties.test.ts"],
