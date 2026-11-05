@@ -43,7 +43,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Invitation replay](../packages/core/src/policy/replay-admission.ts)                       |         9 | Exact conflict classification, coherent bounded join/acceptance indexes, monotone time, expiry-only retirement and sweep frontier. Checked arbitrary finite histories preserve join and consumed acceptance bindings and prevent expired offer revival.                                                  |
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
 | [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
-| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | A CID is selected iff it is a candidate and is neither retained nor protected. This includes completeness, not just exclusion.                                                                            |
+| [Retention](../packages/core/src/policy/retention.ts)                       |         1 | Exact candidate/retained/protected membership, protection monotonicity, batch equivalence and finite sweep histories preserving initially guarded and unrelated blocks.                                                                            |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
 | [UTF-16 and bounded UTF-8](../packages/core/src/internal/canonical-encoding.ts) | 6 | Exact surrogate pairing and UTF-8 prefix-byte counts; acceptance iff the paired string fits the byte cap; bounded scan without encoded buffers and immediate rejection of excessive code-unit length.                                                                                                                     |
@@ -508,7 +508,25 @@ after acknowledgement. Storage-commit and payload-match truth remain proof
 inputs. The proof does not establish crash durability, cryptographic
 unforgeability, arbitrary provider failures, browser heap usage or UI latency.
 
-The inventory audits 60 property-suite files containing 186 explicit
+The deletion selector additionally has checked composition laws. Increasing
+the retained/protected sets cannot increase the deletion set, splitting
+candidates into batches preserves their selected union, and arbitrary finite
+sweeps preserve initially guarded and unrelated blocks under fixed guard sets.
+These laws call the actual production selector; the remaining-block set is an
+abstract storage model, not a proof of asynchronous blockstore deletion.
+
+Four native properties exercise the actual document pruner and GC adapter on
+generated branching trees, including sparse ACL aliases. They check preservation
+of every ACL payload, source ownership, rejection before publishing malformed
+trees, and repeated deletion batches against a separate set oracle. A proxy
+counter checks at most `2N - 1` source key scans and `4N - 1` source descriptor
+reads with no source property gets or mutations; an explicit case reaches the
+32,768-node cap. These count source reflection operations, not all pruning work.
+CID parsing is stubbed. Dynamic guard freshness, asynchronous deletion outcomes,
+cryptographic authentication, crash durability, heap use and UI latency remain
+outside these proofs and properties.
+
+The inventory audits 61 property-suite files containing 190 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -518,6 +536,7 @@ properties can invoke the same assertion more than once.
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
+| Compaction and deletion | Actual pruner/GC-adapter ACL preservation, sparse aliases, source ownership, malformed-tree publication rollback, source-reflection counts and repeated batch histories. |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Journal store transitions | Strict native scalar guards, one-read reservation capture, owned metadata/payload projection, modelled operation histories across both stores, raw-row transaction rollback and encrypted duplicate-rejection recovery. |

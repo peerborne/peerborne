@@ -3,6 +3,16 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "compaction-retention-boundaries",
+      "formalBoundary": "The actual deletion selector has exact candidate/retained/protected membership. Checked composition proves that adding protections can only reduce deletions, partitioned batches have the same selected union, and arbitrary finite sweep histories preserve initially retained/protected and unrelated blocks under fixed truthful guard sets. Native properties call the actual document pruner and GC adapter to check ACL payload preservation, sparse aliases, rejection before publishing malformed trees, owned selection results and per-occurrence reflection counts through the node cap. CID parsing is stubbed in these properties; cryptographic authentication, dynamic guard freshness, asynchronous blockstore deletion, crash durability, native heap and UI latency are not proved.",
+      "evidence": ["packages/core/src/compaction-retention-properties.test.ts"],
+      "sources": [
+        "packages/core/src/policy/retention.ts",
+        "packages/core/src/blockstore-gc.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "journal-storage-transition-boundaries",
       "formalBoundary": "The actual store policies check exact staged revision/count/byte admission, unique bounded publication append/removal with exact byte totals and retained-index projection, and token/checkpoint-bound commit eligibility. Checked finite histories preserve metadata bounds and leave accepted entries unchanged on failed/rejected operations; histories without checkpoint commits retain the initial accepted prefix. Native strict scalar guards, byte equality, owned record/payload projection, pending checkpoint retention, transaction aborts and authenticated encrypted recovery require properties. Storage success and payload-match truth are model inputs; crash durability, cryptographic unforgeability, browser quota behavior and UI latency are not proved.",
       "evidence": ["packages/core/src/journal-transition-properties.test.ts"],
