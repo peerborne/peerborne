@@ -253,7 +253,13 @@
       "functions": ["selectDeletableCids"],
       "witness": "retention_domain",
       "consumers": ["packages/core/src/blockstore-gc.ts"],
-      "verifiedTargets": ["selectDeletableCids"]
+      "solverSeeds": [1, 2, 7, 19],
+      "verifiedTargets": [
+        "selectDeletableCids",
+        "retention_protection_monotone",
+        "retention_batches",
+        "retention_all_sweeps"
+      ]
     },
     {
       "path": "packages/core/src/policy/encoded-size.ts",

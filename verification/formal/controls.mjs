@@ -1004,6 +1004,24 @@ method mapOperand_domain()
       'if (!retained.has(cid)) result.add(cid);',
     ],
     [
+      'retained-gc-cid',
+      'retention.ts',
+      'if (!retained.has(cid) && !protectedCids.has(cid)) result.add(cid);',
+      'if (!protectedCids.has(cid)) result.add(cid);',
+    ],
+    [
+      'gc-noncandidate-substitution',
+      'retention.ts',
+      'const cid = candidates[index];',
+      'const cid = "injected-not-candidate";',
+    ],
+    [
+      'gc-safe-candidate-omission',
+      'retention.ts',
+      'if (!retained.has(cid) && !protectedCids.has(cid)) result.add(cid);',
+      'if (false) result.add(cid);',
+    ],
+    [
       'encoded-underestimate',
       'encoded-size.ts',
       'return 4 * Math.ceil(rawBytes / 3);',

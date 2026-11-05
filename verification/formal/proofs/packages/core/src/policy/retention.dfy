@@ -27,4 +27,62 @@ method retention_domain()
 {
   var empty := selectDeletableCids([], {}, {});
   var selection := selectDeletableCids(["a", "a", "b", "c"], {"b"}, {"c"});
+  assert empty == {} && selection == {"a"};
+  var before, after := retention_protection_monotone(["a", "b", "c"], {}, {}, {"b"}, {"c"});
+  assert before == {"a", "b", "c"} && after == {"a"};
+  var whole, left, right := retention_batches(["a", "b"], ["a", "c"], {"b"}, {"c"});
+  assert whole == {"a"} && left == {"a"} && right == {"a"};
+  var remaining := retention_all_sweeps({"a", "b", "c", "untouched"}, [["a", "b"], ["a", "c"]], {"b"}, {"c"});
+  assert remaining == {"b", "c", "untouched"};
+}
+
+method retention_protection_monotone(candidates: seq<string>, retained: set<string>, protectedCids: set<string>, nextRetained: set<string>, nextProtected: set<string>)
+  returns (before: set<string>, after: set<string>)
+  requires |candidates| <= 4294967295
+  requires retained <= nextRetained && protectedCids <= nextProtected
+  ensures before == (set cid | cid in candidates) - (retained + protectedCids)
+  ensures after == (set cid | cid in candidates) - (nextRetained + nextProtected)
+  ensures after <= before
+  ensures before - after == before * (nextRetained + nextProtected)
+{
+  before := selectDeletableCids(candidates, retained, protectedCids);
+  after := selectDeletableCids(candidates, nextRetained, nextProtected);
+}
+
+method retention_batches(first: seq<string>, second: seq<string>, retained: set<string>, protectedCids: set<string>)
+  returns (whole: set<string>, left: set<string>, right: set<string>)
+  requires |first| + |second| <= 4294967295
+  ensures whole == (set cid | cid in first + second) - (retained + protectedCids)
+  ensures left == (set cid | cid in first) - (retained + protectedCids)
+  ensures right == (set cid | cid in second) - (retained + protectedCids)
+  ensures whole == left + right
+{
+  whole := selectDeletableCids(first + second, retained, protectedCids);
+  left := selectDeletableCids(first, retained, protectedCids);
+  right := selectDeletableCids(second, retained, protectedCids);
+}
+
+function RetentionCandidates(batches: seq<seq<string>>): set<string>
+  decreases |batches|
+{
+  if |batches| == 0 then {} else
+    (set cid | cid in batches[0]) + RetentionCandidates(batches[1..])
+}
+
+method retention_all_sweeps(initial: set<string>, batches: seq<seq<string>>, retained: set<string>, protectedCids: set<string>)
+  returns (remaining: set<string>)
+  requires forall i :: 0 <= i < |batches| ==> |batches[i]| <= 4294967295
+  ensures remaining == initial - (RetentionCandidates(batches) - (retained + protectedCids))
+  ensures remaining <= initial
+  ensures initial * (retained + protectedCids) <= remaining
+  ensures initial - RetentionCandidates(batches) <= remaining
+  decreases |batches|
+{
+  if |batches| == 0 {
+    remaining := initial;
+  } else {
+    var selected := selectDeletableCids(batches[0], retained, protectedCids);
+    assert selected == (set cid | cid in batches[0]) - (retained + protectedCids);
+    remaining := retention_all_sweeps(initial - selected, batches[1..], retained, protectedCids);
+  }
 }
