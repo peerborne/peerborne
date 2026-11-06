@@ -73,7 +73,10 @@ objects nested inside a sequence. Their mutations require the container grant.
 Both bundled adapters inspect native operations in their detached preparation.
 Automerge indexes immutable creation ancestry, including losing/deleted objects;
 Yjs inspects integrated items and deletion ranges before native GC. Comparing
-only visible JSON would miss hidden concurrent writes. The engine checks every
+only visible JSON would miss hidden concurrent writes. Restricted local Yjs
+changes serialize inspectable items before GC. With GC enabled, the private
+mirror is pruned after serialization. A GC callback that adds unencoded state
+invalidates the preparation. The engine checks every
 reported target before local signing, WAL staging and CRDT commit. Missing,
 unknown or unsupported inspection fails closed for a restricted member.
 Permission changes require the existing fresh-epoch signed role transition.

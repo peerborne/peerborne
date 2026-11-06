@@ -26,7 +26,7 @@ const initial = () => {
   return document;
 };
 const clone = (base: Y.Doc, client: number) => {
-  const doc = new Y.Doc();
+  const doc = new Y.Doc({ gc: base.gc });
   for (const [name, root] of base.share) {
     if (root instanceof Y.Map) doc.getMap(name);
     if (root instanceof Y.Array) doc.getArray(name);
@@ -495,5 +495,106 @@ test('text attributes require the container grant and unknown root schemas fail 
         [true, 2],
       ],
     },
+  );
+});
+
+test('authorized nested create/delete changes round-trip after GC and do not strand the next signed frame', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.boolean(),
+      fc.boolean(),
+      fc.integer({ min: 2, max: 1000 }),
+      async (gc, together, value) => {
+        const f = await fieldDocumentFixture(
+          new YjsProvider(),
+          new YjsJSONSerializer(),
+          [['root', 'allowed']],
+        );
+        const base = initial();
+        base.gc = gc;
+        const local = clone(base, 20),
+          remote = clone(base, 30);
+        const sender = f.create(local),
+          receiver = f.create(remote, false, true);
+        let mirror!: Y.Doc;
+        await receiver.activate();
+        const first = await sender.change((draft) => {
+          mirror = draft;
+          const edit = () => {
+            const root = draft.getMap('root');
+            root.set('allowed', new Y.Map([['nested', value]]));
+            root.delete('allowed');
+          };
+          if (together) draft.transact(edit);
+          else edit();
+        });
+        expect(await receiver.receive(first)).toBe(true);
+        expect(remote.getMap('root').has('allowed')).toBe(false);
+        expect(mirror.gc).toBe(gc);
+        expect(Y.encodeStateAsUpdateV2(mirror)).toEqual(
+          Y.encodeStateAsUpdateV2(local),
+        );
+        const second = await sender.change((draft) => {
+          draft.getMap('root').set('allowed', value);
+        });
+        expect(await receiver.receive(second)).toBe(true);
+        expect(remote.getMap('root').get('allowed')).toBe(value);
+        await sender.close();
+        await receiver.close();
+        for (const doc of [base, local, remote]) doc.destroy();
+      },
+    ),
+    {
+      seed: 2012330,
+      numRuns: 12,
+      examples: [
+        [true, true, 2],
+        [true, false, 2],
+        [false, true, 2],
+        [false, false, 2],
+      ],
+    },
+  );
+});
+
+test('native GC callbacks cannot add unencoded state after operation inspection', () => {
+  fc.assert(
+    fc.property(fc.integer({ min: 2, max: 1000 }), (value) => {
+      const document = initial(),
+        session = new YjsProvider().createDocumentSession(document);
+      let changed = false;
+      expect(() =>
+        session.prepareLocal(
+          '',
+          (draft) => {
+            draft.gcFilter = () => {
+              if (!changed) {
+                changed = true;
+                draft.getMap('root').set('protected', value);
+              }
+              return true;
+            };
+            draft.getMap('root').set('allowed', new Y.Map([['nested', value]]));
+            draft.getMap('root').delete('allowed');
+          },
+          { inspectOperations: true },
+        ),
+      ).toThrow(/collecting staged garbage/);
+      expect(changed).toBe(true);
+      expect(document.getMap('root').has('protected')).toBe(false);
+      const valid = session.prepareLocal(
+        '',
+        (draft) => {
+          draft.getMap('root').set('allowed', value);
+        },
+        { inspectOperations: true },
+      );
+      assertDocumentOperationsAllowed(valid, [['root', 'allowed']]);
+      valid.commit();
+      expect(document.getMap('root').get('allowed')).toBe(value);
+      session.close();
+      document.destroy();
+    }),
+    { seed: 2012331, numRuns: 12 },
   );
 });

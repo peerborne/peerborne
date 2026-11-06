@@ -386,6 +386,91 @@ test('native counters, Unicode text splices and rich-text marks retain their con
   );
 });
 
+test('real counter predecessor fuzzing admits a valid increment and preserves protected counters under forgery', () => {
+  fc.assert(
+    fc.property(
+      fc.integer({ min: 1, max: 100 }),
+      fc.integer({ min: 0, max: 3 }),
+      (value, mode) => {
+        type Counters = { allowed: A.Counter; protected: A.Counter };
+        const base = A.from<Counters>(
+          { allowed: new A.Counter(1), protected: new A.Counter(2) },
+          { actor: 'aa' },
+        );
+        const change = A.decodeChange(A.getAllChanges(base)[0]);
+        const reference = (key: string) =>
+          `${change.startOp + change.ops.findIndex((op) => op.key === key)}@${change.actor}`;
+        const increment = (pred: string[]) =>
+          A.encodeChange({
+            actor: 'bb',
+            seq: 1,
+            startOp: change.startOp + change.ops.length,
+            deps: A.getHeads(base),
+            time: 0,
+            message: '',
+            ops: [{ action: 'inc', obj: '_root', key: 'allowed', pred, value }],
+          });
+        const valid = new AutomergeProvider<Counters>().createDocumentSession(
+          A.clone(base),
+        );
+        const accepted = valid.prepareRemote(
+          [increment([reference('allowed')])],
+          { inspectOperations: true },
+        );
+        assertDocumentOperationsAllowed(accepted, [['allowed']]);
+        accepted.commit();
+        expect(valid.document.allowed.value).toBe(1 + value);
+        expect(valid.document.protected.value).toBe(2);
+        const hostile = new AutomergeProvider<Counters>().createDocumentSession(
+          A.clone(base),
+        );
+        const pred =
+          mode === 0
+            ? [reference('protected')]
+            : mode === 1
+              ? [reference('allowed'), reference('protected')]
+              : mode === 2
+                ? [reference('protected'), reference('protected')]
+                : ['999999@cc'];
+        let plan: ReturnType<typeof hostile.prepareRemote> | undefined;
+        try {
+          plan = hostile.prepareRemote([increment(pred)], {
+            inspectOperations: true,
+          });
+          assertDocumentOperationsAllowed(plan, [['allowed']]);
+          plan.commit();
+        } catch {
+          plan?.discard();
+        }
+        expect(hostile.document.protected.value).toBe(2);
+        const continuation = hostile.prepareLocal(
+          '',
+          (draft) => {
+            draft.protected.increment(1);
+          },
+          { inspectOperations: true },
+        );
+        assertDocumentOperationsAllowed(continuation, [['protected']]);
+        continuation.commit();
+        expect(hostile.document.protected.value).toBe(3);
+        valid.close();
+        hostile.close();
+        for (const doc of [base, valid.document, hostile.document]) A.free(doc);
+      },
+    ),
+    {
+      seed: 2012320,
+      numRuns: 32,
+      examples: [
+        [1, 0],
+        [1, 1],
+        [1, 2],
+        [1, 3],
+      ],
+    },
+  );
+});
+
 test('tracks immutable object ancestry after a parent is deleted and treats sequence descendants atomically', () => {
   fc.assert(
     fc.property(fc.integer({ min: 2, max: 1000 }), (value) => {
