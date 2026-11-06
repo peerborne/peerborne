@@ -227,6 +227,62 @@ method mapOperand_domain()
   results.at(-1).nativeCounterexample = 'candidate-mutated-parent';
   const mutations = [
     [
+      'field-parent-path-bypass',
+      'field-authorization.ts',
+      'if (grant.length > target.length) return false;',
+      'if (false) return false;',
+      'isFieldPathPrefix',
+    ],
+    [
+      'field-segment-mismatch-bypass',
+      'field-authorization.ts',
+      'if (grant[index] !== target[index]) return false;',
+      'if (false) return false;',
+      'isFieldPathPrefix',
+    ],
+    [
+      'field-ungranted-sibling',
+      'field-authorization.ts',
+      'if (isFieldPathPrefix(grants[index], target)) return true;',
+      'if (isFieldPathPrefix(grants[index], target) || index >= 0) return true;',
+      'grantsFieldPath',
+    ],
+    [
+      'field-first-operation-omission',
+      'field-authorization.ts',
+      'for (let index = 0; index < targets.length; index++)',
+      'for (let index = 1; index < targets.length; index++)',
+      'firstUnauthorizedFieldPath',
+    ],
+    [
+      'field-grant-direction',
+      'field-authorization.ts',
+      'if (isFieldPathPrefix(grants[index], target)) return true;',
+      'if (isFieldPathPrefix(target, grants[index])) return true;',
+      'grantsFieldPath',
+    ],
+    [
+      'field-inspection-work-overflow',
+      'field-authorization.ts',
+      'additional <= 131072 - scanned',
+      'additional <= 131073 - scanned',
+      'canAdmitFieldInspection_ensures',
+    ],
+    [
+      'field-inspection-target-overflow',
+      'field-authorization.ts',
+      'known || distinct < 4096',
+      'known || distinct <= 4096',
+      'canAdmitFieldInspection_ensures',
+    ],
+    [
+      'field-inspection-units-overflow',
+      'field-authorization.ts',
+      'addedUnits <= 1048576 - units',
+      'addedUnits <= 1048577 - units',
+      'canAdmitFieldInspection_ensures',
+    ],
+    [
       'journal-store-duplicate-publication',
       'journal-store.ts',
       "return { decision: 'duplicate', publications: [], retained: [], bytes: 0, };",

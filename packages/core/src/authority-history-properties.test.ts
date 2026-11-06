@@ -96,7 +96,7 @@ async function rawRecord(
   const writer = new DocumentBinaryWriter();
   writer
     .fixed(
-      Uint8Array.from('peerborne/document-authority/v1\0', (c) =>
+      Uint8Array.from('peerborne/document-authority/v2\0', (c) =>
         c.charCodeAt(0),
       ),
     )
@@ -109,7 +109,8 @@ async function rawRecord(
     writer
       .fixed(member.memberId)
       .text(member.publicKey, 4096)
-      .integer(member.role, 1);
+      .integer(member.role, 1)
+      .integer(0, 1);
   const unsigned = writer.finish();
   return encodeSignedDocumentContent(
     unsigned,

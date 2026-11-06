@@ -3,6 +3,26 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "signed-native-field-authorization",
+      "formalBoundary": "The production segment-prefix, grant and first-rejection selectors are exact. Checked composition proves prefix order, grant attenuation and that accepted finite target histories cannot overlap a protected path disjoint from every grant; rejected or stale batches contribute no targets. Inspection admission bounds scanned work, unique targets and retained string units. Native operation extraction is an explicit trusted abstraction, calibrated by actual Automerge object ancestry (including losing/deleted objects), Yjs integrated items before GC, forged origin references, raw deletion sets, predecessor-reference fuzzing and signed/encrypted document/WAL admission properties. Scalars, own descriptors, array ownership, native clocks/IDs, aggregate scope budgets and root/index lookup cost require properties. Native parser correctness, complete native heap/CPU bounds, hard browser scheduling, cryptographic unforgeability and the semantics of arbitrary application authority adapters are not proved. Field scopes apply to coordinated Automerge/Yjs mode, not the legacy BeeKEM/UCAN path.",
+      "evidence": [
+        "packages/core/src/field-authorization-properties.test.ts",
+        "packages/automerge/src/field-authorization-properties.test.ts",
+        "packages/yjs/src/field-authorization-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/field-authorization.ts",
+        "packages/core/src/document-field-authorization.ts",
+        "packages/core/src/document-authority-log.ts",
+        "packages/core/src/captured-document-authority.ts",
+        "packages/core/src/coordinated-document.ts",
+        "packages/automerge/src/operation-targets.ts",
+        "packages/automerge/src/peerborne-automerge.ts",
+        "packages/yjs/src/operation-targets.ts",
+        "packages/yjs/src/peerborne-yjs.ts"
+      ]
+    },
+    {
       "id": "live-gc-lease-and-io",
       "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, stale trees/snapshots, existing pins, coalescing, atomic metadata refusal, close quiescence, opaque provider failures and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
       "evidence": [

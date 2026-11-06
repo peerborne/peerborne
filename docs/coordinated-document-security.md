@@ -43,13 +43,58 @@ member IDs and canonical public keys, and exactly one controller. Controllers
 can write and sign role transitions; writers can change document content;
 readers cannot author accepted mutations. The separate signed role log holds
 permissions: writing a property named `role` in user data cannot change it.
-Field-level permissions inside application data are not enforced by this mode.
+Optional signed `writePaths` restrict a member's native operations inside
+application data. These write scopes do not restrict what a decrypting group
+member can read.
 
 Applications provision and validate the actual cryptographic group membership.
 The role log does not independently enumerate the provider's decrypting members.
 Removing a reader therefore requires the real group removal/key transition as
 well as the signed role update. A role change alone cannot erase keys or
 plaintext already learned by a member.
+
+## Native field write scopes
+
+Set a member's `writePaths` when creating or updating `DocumentAuthorityLog`.
+The current v2 authority format signs these grants with the roster, group context
+and causal parent. Omit the field for whole-document writes; `[]` allows no
+operations, and `[[]]` explicitly grants the whole document. A reader still
+cannot write. A grant is an array of map-key segments and covers its subtree.
+There is no JSON-pointer parsing, string-prefix matching or numeric-index grant.
+
+For Automerge, `writePaths: [['profiles', 'alice']]` permits writes within
+`profiles.alice`. For Yjs, include the root shared-type name:
+`writePaths: [['root', 'profiles', 'alice']]`. Provision parent containers before
+restricting their writers. Deleting or replacing an ancestor requires a grant
+for that ancestor; a child grant cannot replace a parent with a new object.
+Lists, arrays and text are indivisible authorization containers, including
+objects nested inside a sequence. Their mutations require the container grant.
+
+Both bundled adapters inspect native operations in their detached preparation.
+Automerge indexes immutable creation ancestry, including losing/deleted objects;
+Yjs inspects integrated items and deletion ranges before native GC. Comparing
+only visible JSON would miss hidden concurrent writes. Restricted local Yjs
+changes serialize inspectable items before GC. With GC enabled, the private
+mirror is pruned after serialization. A GC callback that adds unencoded state
+invalidates the preparation. The engine checks every
+reported target before local signing, WAL staging and CRDT commit. Missing,
+unknown or unsupported inspection fails closed for a restricted member.
+Permission changes require the existing fresh-epoch signed role transition.
+
+Each member has at most 64 grant paths, each with 32 segments of at most 1,024
+UTF-16 units. A roster has aggregate caps of 4,096 paths, 32,768 segments and
+1,048,576 segment units, and retains the existing authority-record byte bound.
+One inspection admits at most 131,072 units of native operation work, 4,096
+distinct targets and 1,048,576 retained segment units. Automerge ancestry retains
+at most 262,144 object creations with actor identifiers capped at 64 bytes;
+Yjs inspection accepts at most 4,096 root shared types and scans their bindings
+once per transaction. Restricted operations require a declared root shared type;
+an unknown root is refused without changing visible state and can be retried
+after the application declares its schema. Text attributes require the text
+container grant. Oversized work must be split or explicitly reprovisioned.
+These are profile and metadata bounds, not total heap or main-thread latency
+guarantees. Native decoding and provenance extraction remain property-tested
+boundaries. Legacy BeeKEM and UCAN field-capability strings use a separate path.
 
 ## Admission and role transitions
 

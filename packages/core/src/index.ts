@@ -443,6 +443,8 @@ export { MAX_DOCUMENT_CHECKPOINT_BYTES } from './document-checkpoint.js';
 export type { DocumentCheckpoint } from './document-checkpoint.js';
 
 export * from './coordinated-document.js';
+export { DocumentOperationTargets, assertDocumentOperationsAllowed } from './document-field-authorization.js';
+export type { DocumentFieldPath, DocumentWritePaths } from './document-field-authorization.js';
 export * from './document-authority-log.js';
 export * from './document-replay-journal.js';
 export * from './document-journal-store.js';

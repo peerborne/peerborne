@@ -35,3 +35,4 @@ packages/core/src/policy/sync-request.ts
 packages/core/src/policy/authority-capture.ts
 packages/core/src/policy/document-authority.ts
 packages/core/src/policy/journal-store.ts
+packages/core/src/policy/field-authorization.ts

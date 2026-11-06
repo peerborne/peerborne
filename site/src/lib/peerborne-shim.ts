@@ -5,6 +5,7 @@
 // config aliases bare `@peerborne/core` imports to this module.
 export {
   preparedDocumentChange,
+  DocumentOperationTargets,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   canonicalKeychain,

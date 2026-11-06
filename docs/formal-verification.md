@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 150 production functions in 37 proof units. The runtime calls
+LemmaScript checks 154 production functions in 38 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -44,6 +44,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Invitation time](../packages/core/src/policy/invitation-time.ts)           |         3 | Expiry, future-skew and minimum processing-window boundaries.                                                                                                                                             |
 | [Rollback anchor](../packages/core/src/policy/anchor-advance.ts)              |         2 | Exact valid-advance conditions, same-epoch control-head binding, terminal poison, and exact-parent next-epoch authenticated removal admission.                                                                                                                                                           |
 | [Retention](../packages/core/src/policy/retention.ts)                       |         4 | Exact selection, protection/batch/sweep composition, bounded candidate admission, live-lease conjunction and deletion phases. Exact finite phase histories permit at most one deletion entry per attempt and require current unpinned admission. |
+| [Field authorization](../packages/core/src/policy/field-authorization.ts) | 4 | Exact segment prefixes, grant membership, first unauthorized target and inspection budgets. Prefix order, grant attenuation and finite admission histories exclude operations overlapping a protected path disjoint from every grant. Native target extraction remains an explicit abstraction. |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
 | [UTF-16 and bounded UTF-8](../packages/core/src/internal/canonical-encoding.ts) | 6 | Exact surrogate pairing and UTF-8 prefix-byte counts; acceptance iff the paired string fits the byte cap; bounded scan without encoded buffers and immediate rejection of excessive code-unit length.                                                                                                                     |
@@ -549,7 +550,22 @@ the copied GC-gating helper tests. Object identity, pin truth, I/O settlement an
 Helia's locking remain native boundaries; this does not establish arbitrary-driver
 liveness, total disk quota, browser heap or physical crash durability.
 
-The inventory audits 63 property-suite files containing 205 explicit
+The field-authorization unit compiles the actual segment-prefix, grant,
+first-rejection and inspection-budget functions. Checked composition establishes
+prefix order, attenuated grants and exact finite-history target admission.
+Accepted targets cannot overlap a protected path disjoint from every grant;
+rejected or stale batches contribute no targets. This is conditional on truthful
+native target extraction and does not prove a complete CRDT implementation.
+The runtime binds scopes into the signed v2 permission log and checks detached
+plans before local signing, journal staging and commit. Native properties cover
+hidden losing writes, deleted ancestry, sequence boundaries, raw predecessor and
+origin references, deletion sets, aggregate scope ownership/budgets and actual
+encrypted-frame rejection before WAL admission in both adapters. The Yjs root
+read counter and Automerge history-index counter check specific traversal costs,
+not VM heap use or a browser latency limit. See the
+[field-scope profile](coordinated-document-security.md#native-field-write-scopes).
+
+The inventory audits 66 property-suite files containing 234 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

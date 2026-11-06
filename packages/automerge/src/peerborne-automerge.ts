@@ -31,6 +31,8 @@ import {
   CRDTProvider,
   CRDTDocumentSession,
   PreparedDocumentChange,
+  DocumentPreparationOptions,
+  DocumentWritePaths,
   preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
@@ -60,6 +62,7 @@ import {
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
 import { Base64 } from 'js-base64';
+import { AutomergeOperationIndex } from './operation-targets.js';
 
 const {
   toHex,
@@ -96,7 +99,8 @@ export class AutomergeProvider<T = any>
     let closed = false;
     let actor: string | undefined = getActorId(initial);
     let preparing = false;
-    const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]]) => {
+    let operationIndex: AutomergeOperationIndex | undefined;
+    const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]], options?: DocumentPreparationOptions) => {
       if (closed || active || preparing)
         throw new Error('Document session is closed or busy');
       preparing = true;
@@ -117,12 +121,32 @@ export class AutomergeProvider<T = any>
           const changes = delta.map(
             (bytes) => new Uint8Array(bytes) as BinaryChange,
           );
+          let paths: DocumentWritePaths | undefined;
+          let nextIndex: AutomergeOperationIndex | undefined;
+          let acceptInspection: (() => void) | undefined;
+          if (options?.inspectOperations === true) {
+            operationIndex ??= AutomergeOperationIndex.from(base);
+            const inspected = operationIndex.inspect(base, changes);
+            paths = inspected.paths;
+            nextIndex = operationIndex;
+            acceptInspection = inspected.accept;
+          } else if (operationIndex) {
+            try {
+              const indexed = operationIndex.extend(base, changes);
+              nextIndex = operationIndex;
+              acceptInspection = indexed.accept;
+            } catch {
+              nextIndex = undefined;
+            }
+          }
           const plan: PreparedDocumentChange<BinaryChange[]> =
             preparedDocumentChange(
               changes,
               () => !closed && document === base && active === plan,
               () => {
                 document = staged;
+                acceptInspection?.();
+                operationIndex = nextIndex;
                 active = undefined;
               },
               () => {
@@ -131,6 +155,7 @@ export class AutomergeProvider<T = any>
                 actor = undefined;
               },
               () => this.getSnapshot(staged),
+              paths === undefined ? undefined : () => paths!,
             );
           active = plan;
           return plan;
@@ -147,15 +172,15 @@ export class AutomergeProvider<T = any>
       get document() {
         return document;
       },
-      prepareLocal: (message, fn) =>
-        stage((base) => this.localChange(base, message, fn)),
-      prepareRemote: (changes) => {
+      prepareLocal: (message, fn, options) =>
+        stage((base) => this.localChange(base, message, fn), options),
+      prepareRemote: (changes, options) => {
         return stage((base) => {
           const owned = changes.map(
             (bytes) => new Uint8Array(bytes) as BinaryChange,
           );
           return [this.remoteChange(base, owned), owned];
-        });
+        }, options);
       },
       prepareSnapshot: (snapshot) => {
         return stage((base) => {

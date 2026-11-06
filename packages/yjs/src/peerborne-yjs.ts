@@ -9,6 +9,8 @@ import {
   CRDTProvider,
   CRDTDocumentSession,
   PreparedDocumentChange,
+  DocumentOperationTargets,
+  DocumentPreparationOptions,
   preparedDocumentChange,
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
@@ -36,6 +38,7 @@ import {
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
 } from '@peerborne/core';
+import { recordYjsOperationTargets } from './operation-targets.js';
 import {
   AbstractType,
   Map as YMap,
@@ -49,6 +52,8 @@ import {
   encodeStateAsUpdateV2,
   encodeStateVector,
   getState,
+  mergeDeleteSets,
+  tryGc,
   ID,
   Item,
   ContentType,
@@ -574,7 +579,11 @@ export class YjsProvider
         if (constructor) target.get(name, constructor);
       }
     };
-    const stage = (prepare: (value: Doc) => Uint8Array) => {
+    const stage = (
+      prepare: (value: Doc) => Uint8Array,
+      options?: DocumentPreparationOptions,
+      preserveEncoding = false,
+    ) => {
       assertHealthy();
       if (active || preparing) throw new Error('Document session is busy');
       preparing = true;
@@ -605,12 +614,49 @@ export class YjsProvider
         }
         const baseRevision = revision;
         let stable: Uint8Array;
+        const targets =
+          options?.inspectOperations === true
+            ? new DocumentOperationTargets()
+            : undefined;
+        const preparingDocument = shadow;
+        const collectGarbage = preparingDocument.gc;
+        const deletions: Transaction['deleteSet'][] = [];
+        let inspectionFailed = false;
+        const inspect = (transaction: Transaction) => {
+          try {
+            recordYjsOperationTargets(transaction, targets!);
+            if (preserveEncoding && transaction.deleteSet.clients.size > 0)
+              deletions.push(transaction.deleteSet);
+          } catch {
+            inspectionFailed = true;
+          }
+        };
         try {
           copyRootTypes(document, shadow);
-          stable = new Uint8Array(prepare(shadow));
+          if (targets) preparingDocument.on('beforeObserverCalls', inspect);
+          try {
+            if (preserveEncoding) preparingDocument.gc = false;
+            stable = new Uint8Array(prepare(preparingDocument));
+          } finally {
+            if (preserveEncoding) preparingDocument.gc = collectGarbage;
+            if (targets) preparingDocument.off('beforeObserverCalls', inspect);
+          }
+          if (inspectionFailed)
+            throw new Error('Yjs document operation inspection failed');
           assertHealthy();
           if (shadow.isDestroyed)
             throw new Error('Document mirror was destroyed during preparation');
+          const encodedVersion = shadowVersion;
+          if (preserveEncoding && collectGarbage && deletions.length > 0)
+            tryGc(
+              mergeDeleteSets(deletions),
+              preparingDocument.store,
+              preparingDocument.gcFilter,
+            );
+          deletions.length = 0;
+          assertHealthy();
+          if (shadowVersion !== encodedVersion || preparingDocument.isDestroyed)
+            throw new Error('Document changed while collecting staged garbage');
           if (!idle(document) || !idle(shadow))
             throw new Error('Document transaction is still active');
           if (
@@ -697,6 +743,7 @@ export class YjsProvider
             active = undefined;
           },
           () => this.getSnapshot(shadow!),
+          targets ? () => targets.snapshot() : undefined,
         );
         active = plan;
         return plan;
@@ -709,18 +756,22 @@ export class YjsProvider
         assertHealthy();
         return document;
       },
-      prepareLocal: (_message, change) =>
-        stage((value) => {
-          const before = encodeStateVector(value);
-          change(value);
-          return encodeStateAsUpdateV2(value, before);
-        }),
-      prepareRemote: (changes) => {
+      prepareLocal: (_message, change, options) =>
+        stage(
+          (value) => {
+            const before = encodeStateVector(value);
+            change(value);
+            return encodeStateAsUpdateV2(value, before);
+          },
+          options,
+          options?.inspectOperations === true,
+        ),
+      prepareRemote: (changes, options) => {
         const owned = new Uint8Array(changes);
         return stage((value) => {
           applyUpdateV2(value, owned);
           return owned;
-        });
+        }, options);
       },
       prepareSnapshot: (changes) => {
         const owned = new Uint8Array(changes);
