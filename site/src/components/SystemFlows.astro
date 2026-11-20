@@ -1,0 +1,250 @@
+---
+import { evidenceLabels } from '../lib/system-spec.mjs';
+import { architectureFlows } from '../lib/system-spec-evidence.mjs';
+---
+
+<div class="system-flows not-content" data-system-flows>
+  <nav aria-label="Architecture flows" data-flow-choices hidden>
+    {architectureFlows.map(({ id, title }, index) => (
+      <button
+        type="button"
+        aria-controls={`system-flow-${id}`}
+        aria-pressed={index === 0}
+        data-flow-choice={id}
+      >{title}</button>
+    ))}
+  </nav>
+  {architectureFlows.map(({ id, title, description, stages }) => (
+    <figure id={`system-flow-${id}`} data-flow={id} aria-labelledby={`flow-title-${id}`}>
+      <figcaption>
+        <strong id={`flow-title-${id}`}>{title}</strong>
+        <span>{description}</span>
+      </figcaption>
+      <ol>
+        {stages.map(({ boundary, title, claims }) => (
+          <li>
+            <span class="boundary">{boundary}</span>
+            <span class="stage-title">{title}</span>
+            <ul aria-label="Associated evidence">
+              {claims.map((claim) => (
+                <li>
+                  <a href={`#claim-${claim.id}`} data-evidence={claim.state}>
+                    <span>{claim.label}</span>
+                    <small>{evidenceLabels[claim.state]}</small>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ol>
+    </figure>
+  ))}
+</div>
+
+<script>
+  for (const diagram of document.querySelectorAll<HTMLElement>('[data-system-flows]')) {
+    const controls = diagram.querySelector<HTMLElement>('[data-flow-choices]');
+    const buttons = Array.from(diagram.querySelectorAll<HTMLButtonElement>('[data-flow-choice]'));
+    const panels = Array.from(diagram.querySelectorAll<HTMLElement>('[data-flow]'));
+    if (!controls || !buttons.length) continue;
+
+    const selectFlow = (id: string | undefined) => {
+      for (const button of buttons) {
+        button.setAttribute('aria-pressed', String(button.dataset.flowChoice === id));
+      }
+      for (const panel of panels) {
+        panel.hidden = panel.dataset.flow !== id;
+      }
+    };
+
+    for (const button of buttons) {
+      button.addEventListener('click', () => selectFlow(button.dataset.flowChoice));
+    }
+    const deepLink = panels.find((panel) => '#' + panel.id === location.hash);
+    selectFlow(deepLink?.dataset.flow ?? buttons[0].dataset.flowChoice);
+    controls.hidden = false;
+  }
+</script>
+
+<style>
+  .system-flows {
+    --diagram-border: var(--sl-color-gray-5);
+    --diagram-muted: var(--sl-color-gray-2);
+    --diagram-highlight: var(--sl-color-text-accent);
+    container-type: inline-size;
+    padding: clamp(0.75rem, 2.2vw, 1.4rem);
+    border: 1px solid var(--diagram-border);
+    border-radius: 0.9rem;
+    background: var(--sl-color-bg-sidebar);
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-block-end: 1.35rem;
+  }
+
+  button {
+    border: 1px solid var(--diagram-border);
+    border-radius: 0.4rem;
+    color: var(--sl-color-text);
+    background: var(--sl-color-bg);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--sl-text-sm);
+    padding: 0.4rem 0.6rem;
+  }
+
+  button:hover,
+  button[aria-pressed='true'] {
+    border-color: var(--diagram-highlight);
+    color: var(--diagram-highlight);
+  }
+
+  button[aria-pressed='true'] {
+    box-shadow: inset 0 -2px var(--diagram-highlight);
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--diagram-highlight);
+    outline-offset: 2px;
+  }
+
+  [hidden] {
+    display: none;
+  }
+
+  figure {
+    margin: 0;
+  }
+
+  figure + figure {
+    margin-block-start: 1.35rem;
+  }
+
+  figcaption {
+    display: grid;
+    margin-block-end: 0.8rem;
+  }
+
+  figcaption strong {
+    font-size: var(--sl-text-lg);
+  }
+
+  figcaption span {
+    color: var(--diagram-muted);
+    font-size: var(--sl-text-sm);
+  }
+
+  ol,
+  ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  ol {
+    display: grid;
+    gap: 1.6rem;
+  }
+
+  ol > li {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-inline-size: 0;
+    border: 1px solid var(--diagram-border);
+    border-radius: 0.55rem;
+    padding: 0.7rem;
+    background: var(--sl-color-bg);
+  }
+
+  ol > li:not(:last-child)::after {
+    content: '';
+    display: block;
+    position: absolute;
+    inset-block-end: -1.1rem;
+    inset-inline-start: calc(50% - 0.24rem);
+    inline-size: 0.48rem;
+    block-size: 0.48rem;
+    border: solid var(--diagram-highlight);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  .boundary,
+  .stage-title {
+    line-height: 1.35;
+  }
+
+  .boundary {
+    color: var(--diagram-muted);
+    font-size: var(--sl-text-xs);
+  }
+
+  .stage-title {
+    font-weight: 650;
+    font-size: var(--sl-text-sm);
+  }
+
+  ul {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  a {
+    display: grid;
+    border: 1px solid var(--diagram-border);
+    border-radius: 0.3rem;
+    padding: 0.35rem;
+    color: var(--sl-color-text);
+    font-size: var(--sl-text-xs);
+    overflow-wrap: anywhere;
+    text-decoration: none;
+  }
+
+  a:hover {
+    border-color: var(--diagram-highlight);
+    text-decoration: underline;
+  }
+
+  a small {
+    color: var(--diagram-muted);
+    font-size: inherit;
+  }
+
+  a[data-evidence='open'] {
+    border-style: dashed;
+  }
+
+  @container (min-width: 40rem) {
+    ol {
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(0, 1fr);
+    }
+
+    ol > li:not(:last-child)::after {
+      inset-block: 1.25rem auto;
+      inset-inline: auto -1.08rem;
+      transform: rotate(-45deg);
+    }
+
+    ol > li:not(:last-child):dir(rtl)::after {
+      transform: rotate(135deg);
+    }
+  }
+
+  @media print {
+    nav {
+      display: none;
+    }
+
+    figure[hidden] {
+      display: block;
+    }
+  }
+</style>

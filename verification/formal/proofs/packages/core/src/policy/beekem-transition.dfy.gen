@@ -58,3 +58,41 @@ lemma isAppendOnlyLeafCount_ensures(current: int, incoming: int, capacity: int)
   ensures ((current == capacity) ==> isAppendOnlyLeafCount(current, incoming, capacity) ==> (incoming == current))
 {
 }
+
+function canCommitBeeKEMPathUpdate(current: int, incoming: int, sameParent: bool, sameWriters: bool): bool
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+{
+  ((classifyBeeKEMGeneration(current, incoming, false).next? && sameParent) && sameWriters)
+}
+
+lemma canCommitBeeKEMPathUpdate_ensures(current: int, incoming: int, sameParent: bool, sameWriters: bool)
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+  ensures (canCommitBeeKEMPathUpdate(current, incoming, sameParent, sameWriters) <==> (((incoming == (current + 1)) && sameParent) && sameWriters))
+{
+}
+
+function checkpointCommitmentPermitsRestore(pinSupplied: bool, pinMatches: bool): bool
+{
+  (!(pinSupplied) || pinMatches)
+}
+
+lemma checkpointCommitmentPermitsRestore_ensures(pinSupplied: bool, pinMatches: bool)
+  ensures (checkpointCommitmentPermitsRestore(pinSupplied, pinMatches) <==> (!(pinSupplied) || pinMatches))
+{
+}
+
+function beeKEMLeafTransitionAllowed(currentLive: bool, nextLive: bool): bool
+{
+  (currentLive || !(nextLive))
+}
+
+lemma beeKEMLeafTransitionAllowed_ensures(currentLive: bool, nextLive: bool)
+  ensures (beeKEMLeafTransitionAllowed(currentLive, nextLive) <==> (nextLive ==> currentLive))
+{
+}

@@ -113,6 +113,16 @@ lemma isAcceptedDocumentPublication_ensures(revision: int, currentRevision: int,
 {
 }
 
+function canExposeDocumentJournalRecovery(recovery: DocumentJournalRecovery, finalAnchorMatches: bool): bool
+{
+  ((!recovery.reject?) && finalAnchorMatches)
+}
+
+lemma canExposeDocumentJournalRecovery_ensures(recovery: DocumentJournalRecovery, finalAnchorMatches: bool)
+  ensures (canExposeDocumentJournalRecovery(recovery, finalAnchorMatches) <==> (finalAnchorMatches && (recovery.current? || recovery.finish_anchor?)))
+{
+}
+
 function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)
@@ -281,6 +291,21 @@ lemma journalRecovery_all_histories(anchor: int, stores: seq<int>, commitments: 
   }
 }
 
+lemma journalRecovery_exposure(stored: int, anchored: int, commitmentMatches: bool,
+    parentMatches: bool, markerAuthenticated: bool, finalAnchorMatches: bool)
+  requires 0 <= stored <= 9007199254740991
+  requires 0 <= anchored <= 9007199254740991
+  ensures canExposeDocumentJournalRecovery(
+      classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated),
+      finalAnchorMatches)
+    <==> (finalAnchorMatches && markerAuthenticated &&
+      ((stored == anchored && commitmentMatches) || (stored == anchored + 1 && parentMatches)))
+{
+  var recovery := classifyDocumentJournalRecovery(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated);
+  classifyDocumentJournalRecovery_ensures(stored, anchored, commitmentMatches, parentMatches, markerAuthenticated);
+  canExposeDocumentJournalRecovery_ensures(recovery, finalAnchorMatches);
+}
+
 method documentJournal_domain()
 {
   publicationLedger_domain();
@@ -297,6 +322,10 @@ method documentJournal_domain()
   assert classifyDocumentJournalRecovery(9007199254740991, 9007199254740990, false, true, true).finish_anchor?;
   assert classifyDocumentJournalRecovery(1, 0, false, true, false).reject?;
   assert classifyDocumentJournalRecovery(1, 1, true, true, false).reject?;
+  assert canExposeDocumentJournalRecovery(DocumentJournalRecovery.current, true);
+  assert canExposeDocumentJournalRecovery(DocumentJournalRecovery.finish_anchor, true);
+  assert !canExposeDocumentJournalRecovery(DocumentJournalRecovery.current, false);
+  assert !canExposeDocumentJournalRecovery(DocumentJournalRecovery.reject, true);
   assert canAdvanceDocumentAuthority(0, 1, true, true);
   assert !canAdvanceDocumentAuthority(1, 1, true, true);
   assert !canAdvanceDocumentAuthority(0, 1, false, true);

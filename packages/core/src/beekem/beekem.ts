@@ -22,6 +22,7 @@ import {
 } from '../utils.js';
 import type { DeepDataSnapshotLimits } from '../utils.js';
 import {
+  beeKEMLeafTransitionAllowed,
   classifyBeeKEMGeneration,
   isAppendOnlyLeafCount,
 } from '../policy/beekem-transition.js';
@@ -1942,14 +1943,10 @@ export class BeeKEM {
       const nodeIndex = TreeMath.leafToNodeIndex(leafPosition);
       const currentPublicKey = this._nodes.get(nodeIndex)?.publicKey ?? null;
       const nextPublicKey = nextPublicKeys.get(nodeIndex) ?? null;
-      if (currentPublicKey === null) {
-        if (nextPublicKey !== null) {
-          throw new Error(
-            'BeeKEM v2 update cannot reactivate an append-only blank leaf',
-          );
-        }
-        continue;
+      if (!beeKEMLeafTransitionAllowed(currentPublicKey !== null, nextPublicKey !== null)) {
+        throw new Error('BeeKEM v2 update cannot reactivate an append-only blank leaf');
       }
+      if (currentPublicKey === null) continue;
       if (nodeIndex === update.senderLeafIndex) {
         if (nextPublicKey === null) {
           throw new Error('BeeKEM v2 update sender must remain live');

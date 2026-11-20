@@ -12,13 +12,30 @@
     },
     {
       "path": "packages/core/src/policy/beekem-transition.ts",
-      "functions": ["classifyBeeKEMGeneration", "isAppendOnlyLeafCount"],
+      "functions": [
+        "classifyBeeKEMGeneration",
+        "isAppendOnlyLeafCount",
+        "canCommitBeeKEMPathUpdate",
+        "checkpointCommitmentPermitsRestore",
+        "beeKEMLeafTransitionAllowed"
+      ],
       "witness": "beekemTransition_domain",
-      "consumers": ["packages/core/src/beekem/beekem.ts"],
+      "consumers": [
+        "packages/core/src/beekem/beekem.ts",
+        "packages/core/src/peerborne-document.ts"
+      ],
       "verifiedTargets": [
         "classifyBeeKEMGeneration_ensures",
-        "isAppendOnlyLeafCount_ensures"
-      ]
+        "isAppendOnlyLeafCount_ensures",
+        "canCommitBeeKEMPathUpdate_ensures",
+        "checkpointCommitmentPermitsRestore_ensures",
+        "beekemContinuation_all_histories",
+        "beekemContinuation_domain",
+        "beeKEMLeafTransitionAllowed_ensures",
+        "beekemLeaf_nonReactivation",
+        "beekemLeaf_domain"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     },
     {
       "path": "packages/core/src/policy/quorum.ts",
@@ -635,6 +652,7 @@
       "path": "packages/core/src/policy/document-journal.ts",
       "functions": [
         "classifyDocumentJournalRecovery",
+        "canExposeDocumentJournalRecovery",
         "canAdvanceDocumentAuthority",
         "isAcceptedDocumentPublication",
         "canRecordDocumentPublicationBinding",
@@ -653,6 +671,8 @@
       ],
       "verifiedTargets": [
         "classifyDocumentJournalRecovery_ensures",
+        "canExposeDocumentJournalRecovery_ensures",
+        "journalRecovery_exposure",
         "canAdvanceDocumentAuthority_ensures",
         "journalRecovery_all_histories",
         "isAcceptedDocumentPublication_ensures",

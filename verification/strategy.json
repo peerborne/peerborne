@@ -101,6 +101,17 @@
       "sources": ["packages/core/src/beekem/tree-math.ts"]
     },
     {
+      "id": "beekem-revocation-restart",
+      "formalBoundary": "The exact-next parent and writer guard, existing-leaf non-reactivation, and optional checkpoint commitment matching are proved. Finite histories preserve accepted generation and revoked slots with an authenticated checkpoint and an independently trusted current pin. Native tree construction, WebCrypto keys, removal paths, recipient access, export and restoration require generated tests. This does not establish distributed ACL revocation, forward secrecy or post-compromise security.",
+      "evidence": ["packages/core/src/beekem/local-state.test.ts"],
+      "sources": [
+        "packages/core/src/beekem/beekem.ts",
+        "packages/core/src/document-checkpoint.ts",
+        "packages/core/src/peerborne-document.ts",
+        "packages/core/src/policy/beekem-transition.ts"
+      ]
+    },
+    {
       "id": "wire-and-reflection",
       "formalBoundary": "JSON, regex, object descriptors, typed arrays, aliases and chunked async input require native boundary checks.",
       "evidence": [
@@ -357,7 +368,7 @@
     },
     {
       "id": "journal-recovery-read-phases",
-      "formalBoundary": "The production read planner preserves every accepted-entry request, suppresses pending/outbox body reads in recovery mode, retains exactly a discard token and accounts for each planned row get. Checked composition with the actual recovery classifier gates later outbox reads on authenticated state and a successful required anchor decision, derives a 147-row get bound and saves one body read per queued publication and pending entry. These are IndexedDB journal get counts, excluding anchor-provider I/O, writes and cryptographic costs. Native transaction scopes, field/buffer ownership, optional capability dispatch, actual crypto/anchor checks and post-await mutation require properties. The proof assumes truthful validation/anchor observations; it does not prove signatures, browser heap use, storage durability or UI latency.",
+      "formalBoundary": "The production read planner preserves every accepted-entry request, suppresses pending/outbox body reads in recovery mode, retains exactly a discard token and accounts for each planned row get. Checked composition with the actual recovery classifier gates later outbox reads on authenticated state and a successful required anchor decision, requires a matching final anchor observation before exposing recovered state, derives a 147-row get bound and saves one body read per queued publication and pending entry. These are IndexedDB journal get counts, excluding anchor-provider I/O, writes and cryptographic costs. Native transaction scopes, field/buffer ownership, optional capability dispatch, actual crypto/anchor checks and post-await mutation require properties. The proof assumes truthful validation/anchor observations; it does not prove signatures, browser heap use, storage durability or UI latency.",
       "evidence": ["packages/core/src/journal-recovery-io-properties.test.ts"],
       "sources": [
         "packages/core/src/policy/document-journal.ts",

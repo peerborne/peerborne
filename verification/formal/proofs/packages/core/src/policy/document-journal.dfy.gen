@@ -113,6 +113,16 @@ lemma isAcceptedDocumentPublication_ensures(revision: int, currentRevision: int,
 {
 }
 
+function canExposeDocumentJournalRecovery(recovery: DocumentJournalRecovery, finalAnchorMatches: bool): bool
+{
+  ((!recovery.reject?) && finalAnchorMatches)
+}
+
+lemma canExposeDocumentJournalRecovery_ensures(recovery: DocumentJournalRecovery, finalAnchorMatches: bool)
+  ensures (canExposeDocumentJournalRecovery(recovery, finalAnchorMatches) <==> (finalAnchorMatches && (recovery.current? || recovery.finish_anchor?)))
+{
+}
+
 function classifyDocumentJournalRecovery(stored: int, anchored: int, commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool): DocumentJournalRecovery
   requires (0 <= stored)
   requires (stored <= 9007199254740991)

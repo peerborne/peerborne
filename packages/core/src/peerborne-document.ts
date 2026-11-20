@@ -14,7 +14,16 @@ import {
   rememberSyncRequest,
   syncResponseAllowed,
 } from './policy/sync-request.js';
-import { checkpointEncode, checkpointDecode, encodeCheckpointState, decodeCheckpointState, MAX_DOCUMENT_CHECKPOINT_BYTES, type DocumentCheckpoint } from './document-checkpoint.js';
+import {
+  captureDocumentCheckpoint,
+  checkpointDecode,
+  checkpointEncode,
+  decodeCheckpointState,
+  digestDocumentCheckpointPayload,
+  encodeCheckpointState,
+  type DocumentCheckpoint,
+} from './document-checkpoint.js';
+import { canCommitBeeKEMPathUpdate, checkpointCommitmentPermitsRestore } from './policy/beekem-transition.js';
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
@@ -6687,32 +6696,22 @@ export class PeerborneDocument<
    * Restore this identity's authenticated checkpoint on a fresh instance.
    * All fallible decoding/provider work is staged before any live state changes.
    * The next open activates the restored local state without a network load.
-   * Authenticated old checkpoints can still be replayed by a storage attacker;
-   * applications that require rollback protection need an independent anchor.
+   * Supply the independently trusted commitment from
+   * `documentCheckpointCommitment` to restrict restoration to that exact state.
+   * Applications must protect the pin and keep it current independently of the
+   * checkpoint. A signature alone cannot establish freshness.
    */
   public async restoreCheckpoint(
     checkpoint: DocumentCheckpoint,
+    expectedCommitment?: Uint8Array,
   ): Promise<void> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
-    const record = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
-      checkpoint,
-      'Document checkpoint',
-    );
-    if (Object.keys(record).sort().join() !== 'payload,signature')
-      throw new TypeError('Invalid checkpoint envelope');
-    const payload = copyUnsharedUint8Array(
-      record.payload,
-      1,
-      MAX_DOCUMENT_CHECKPOINT_BYTES,
-      'Checkpoint payload',
-    );
-    const signature = copyUnsharedUint8Array(
-      record.signature,
-      1,
-      8192,
-      'Checkpoint signature',
-    );
+    const { payload, signature } = captureDocumentCheckpoint(checkpoint);
+    const commitment =
+      expectedCommitment === undefined
+        ? undefined
+        : copyUnsharedUint8Array(expectedCommitment, 32, 32, 'Checkpoint commitment');
     return this._runStateMutation(async () => {
       if (
         this._activationInProgress ||
@@ -6727,6 +6726,15 @@ export class PeerborneDocument<
         (await this._keychain.keys()).length > 0
       )
         throw new Error('Checkpoint restoration requires a fresh document');
+      if (
+        !checkpointCommitmentPermitsRestore(
+          commitment !== undefined,
+          commitment !== undefined &&
+            constantTimeEqual(commitment, await digestDocumentCheckpointPayload(payload)),
+        )
+      ) {
+        throw new Error('Local checkpoint commitment mismatch');
+      }
       if (
         (await this._authProvider.verify(
           new Uint8Array(payload),
@@ -11165,7 +11173,9 @@ export class PeerborneDocument<
         );
         return;
       }
-      const beekem = this._beekem.clone();
+      const parentBeeKEM = this._beekem;
+      const parentGeneration = parentBeeKEM.generation;
+      const beekem = parentBeeKEM.clone();
       let rootSecret: Uint8Array;
       let disposition: 'applied' | 'duplicate';
       try {
@@ -11235,8 +11245,19 @@ export class PeerborneDocument<
 
       try {
         const committed = await runSharedProtocolMutation(admission, () => {
-          if (this._writerKeysVersion !== writerKeysVersion) {
-            throw new Error('Writer ACL changed before PathUpdate commit');
+          const currentGeneration = this._beekem?.generation;
+          const incomingGeneration = beekem.generation;
+          if (
+            currentGeneration == null ||
+            incomingGeneration == null ||
+            !canCommitBeeKEMPathUpdate(
+              currentGeneration,
+              incomingGeneration,
+              this._beekem === parentBeeKEM && currentGeneration === parentGeneration,
+              this._writerKeysVersion === writerKeysVersion,
+            )
+          ) {
+            throw new Error('BeeKEM parent or writer ACL changed before PathUpdate commit');
           }
           const epochCommit = this._claimPreparedCommit(
             epochClaimCommit,

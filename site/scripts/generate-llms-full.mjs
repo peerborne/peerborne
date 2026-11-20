@@ -9,6 +9,8 @@ import {
 } from 'node:fs';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { evidenceLabels } from '../src/lib/system-spec.mjs';
+import { architectureFlows, ledger } from '../src/lib/system-spec-evidence.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), '..', '..');
@@ -218,9 +220,43 @@ function removeMdxImports(markdown, sourceName) {
   return output.join('\n');
 }
 
+function systemFlowsMarkdown() {
+  return architectureFlows.map(({ title, description, stages }) => {
+    const steps = stages.map(({ boundary, title, claims }, index) => {
+      const evidence = claims.map(({ id, state }) =>
+        `[${id}](#claim-${id}) (${evidenceLabels[state]})`,
+      ).join(', ');
+      return `${index + 1}. **${title}** · ${boundary} · ${evidence}`;
+    });
+    return [`### ${title}`, '', description, '', ...steps].join('\n');
+  }).join('\n\n');
+}
+
+function systemClaimsMarkdown() {
+  return ledger.map(({ id, title, state, rule, checked, limit, proofs, code, runtime }) => {
+    const links = [
+      ...proofs.flatMap(({ production, obligations, witness, consumers }) => [production, ...obligations, witness, ...consumers]),
+      ...(code ? [code] : []),
+      ...runtime,
+    ];
+    const sections = [
+      `### ${title}`,
+      `[${id}](#claim-${id}) · ${evidenceLabels[state]}`,
+      rule,
+      ...(checked ? [`**Proved** · ${checked}`] : []),
+      limit,
+      links.map(({ label, href }) => `[${label}](${href})`).join(' · '),
+    ];
+    return sections.join('\n\n');
+  }).join('\n\n');
+}
+
 export function cleanMdx(markdown, sourceName = 'MDX') {
   return mapOutsideFences(markdown, (chunk) => {
     let clean = removeMdxImports(chunk, sourceName);
+
+    clean = clean.replace(/<SystemFlows\s*\/>/g, systemFlowsMarkdown);
+    clean = clean.replace(/<SystemClaimLedger\s*\/>/g, systemClaimsMarkdown);
 
     clean = clean.replace(
       /<SyncStory\s*\/>/g,

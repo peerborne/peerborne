@@ -1,0 +1,33 @@
+---
+title: System Specification
+description: Trace Peerborne document changes, membership, recovery, and release gates to the contracts and runtime evidence for each boundary.
+---
+
+import SystemFlows from '../../../components/SystemFlows.astro';
+import SystemClaimLedger from '../../../components/SystemClaimLedger.astro';
+
+## Architecture and trust boundaries
+
+Peerborne runs the application and document replica on each device. The network carries encrypted storage blocks and sync envelopes. Two document modes define who can authorize changes and how that authorization survives transitions.
+
+| Mode                     | Authority                                                                                                 | Local recovery                                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **BeeKEM** (default)     | Local writer ACL, authenticated BeeKEM membership messages and independently provisioned load commitments | Encrypted blocks and signed checkpoints. An optional fresh, independently stored commitment binds checkpoint restore. |
+| **Coordinated** (opt-in) | Signed role history, pinned genesis and a configured group-security provider                              | Optional authenticated journal with a device key and independent rollback anchor.                                     |
+
+Select a flow, then follow a card to its rule and evidence.
+
+<SystemFlows />
+
+## Evidence and assumptions
+
+| Label                | What it establishes                                                                                                                                                   |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Proved contract**  | The linked Dafny obligation checks the selected production TypeScript under its stated input domain. Runtime tests can cover the boundary that supplies those inputs. |
+| **Runtime evidence** | The linked properties, integration tests or checks exercise the named behavior under their recorded schedules and environments.                                       |
+| **Trust assumption** | The claim depends on input supplied by the application, platform or cryptographic provider.                                                                           |
+| **Open guarantee**   | The linked evidence covers part of the path. The full stated guarantee still needs a proof or a platform check.                                                       |
+
+Review a proof by comparing the claim to the linked `requires` and `ensures`, then checking that the production caller establishes those preconditions. A domain witness demonstrates valid inputs. Counterexample controls check that selected broken variants fail. A passing solver result cannot establish that the contract captures all the behavior the application needs.
+
+<SystemClaimLedger />

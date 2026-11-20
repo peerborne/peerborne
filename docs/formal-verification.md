@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 154 production functions in 38 proof units. The runtime calls
+LemmaScript checks 158 production functions in 38 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -32,7 +32,7 @@ consumer, proof obligation and non-vacuity witness.
 | Production source                                                           | Functions | Proved behavior                                                                                                                                                                                           |
 | --------------------------------------------------------------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                                      |
-| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         2 | Exact stale/duplicate/conflicting/next/skipped generation classification and bounded append-only leaf counts.                                                                                             |
+| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         5 | Exact generation classification, append-only leaf counts, current parent/writer checks, blank-slot non-reactivation and matching an optional restart pin.                                                                                             |
 | [Quorum](../packages/core/src/policy/quorum.ts) | 7 | Strict-majority default and explicit trust floor; exact first-eligible peer selection, distinct identities, digest multiplicities, stable cohort projection and failure precedence. Distinct digests cannot both reach a strict majority of the counted votes; ambiguous threshold winners are rejected. |
 | [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
 | [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
@@ -66,8 +66,28 @@ consumer, proof obligation and non-vacuity witness.
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
 | [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
-| [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 10 | Exact bounded full/recovery read plans, authenticated recovery, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
+| [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 11 | Exact bounded full/recovery read plans, authenticated recovery with a final anchor match, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 | [Journal store transitions](../packages/core/src/policy/journal-store.ts) | 3 | Exact revision/count/byte admission, token/checkpoint-bound commit eligibility, unique bounded outbox append/removal, exact byte totals and retained-index projection. Checked finite histories preserve metadata bounds and accepted prefixes when no checkpoint commits occur. |
+
+### BeeKEM revocation and pinned restart
+
+The [BeeKEM continuation proof](../verification/formal/proofs/packages/core/src/policy/beekem-transition.dfy)
+uses the production guards for an exact-next generation, current parent and writer set,
+and append-only leaf slots. Its finite-history lemmas prove that an accepted generation
+cannot go backward and a blanked slot cannot become live again. The restart cases assume
+the application's protected pin identifies the exact current authenticated checkpoint.
+Without that pin, a signed checkpoint establishes authenticity only.
+
+The [provider property](../packages/core/src/beekem/local-state.test.ts) varies
+tree size, removed leaf and writer restart timing. It checks that a restarted
+survivor derives the accepted key, a removed leaf stays blank after another rotation,
+and the removed instance cannot accept the removal update. The
+[document fixture](../examples/password-manager/src/document-checkpoint.test.ts)
+covers four restart placements across invitation and removal and checks that the
+current pin refuses earlier signed checkpoints before installing state. The
+default document flow supports a founder and one active collaborator.
+Distributed ACL agreement, full epoch-fork recovery and cryptographic secrecy
+across every distribution path remain open.
 
 Map proofs use immutable map values. Candidate/checkpoint ownership therefore also
 has native JavaScript properties: a missing copy can pass the value-model proof
@@ -256,6 +276,15 @@ the later outbox metadata to differ. Counts exclude writes, anchor-provider I/O,
 cryptographic work and browser-internal operations. Authentication and anchor
 results are trusted proof inputs; they are exercised separately with native
 crypto and storage properties.
+
+The recovery exposure theorem composes the initial classifier with a final
+rollback-anchor observation after outbox reads. The journal exposes a snapshot
+only when its entries were authenticated, the initial head was current or a
+valid one-step repair, and the final observed anchor agrees with the recovered
+head. The extra anchor load is outside the IndexedDB row-get count. This checks
+freshness at the final observation and assumes an independently trusted anchor.
+A generated two-session schedule checks that an accepted advance during outbox
+loading rejects the old recovery and remains available to a new session.
 
 Native properties reproduced duplicate publication reads, eager body reads before
 failed validation, and accepted recovery blocked by missing or corrupt unaccepted
@@ -565,7 +594,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 66 property-suite files containing 234 explicit
+The inventory audits 67 property-suite files containing 236 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

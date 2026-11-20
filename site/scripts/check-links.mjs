@@ -301,7 +301,10 @@ function repositoryTargetFor(url) {
     const route = [kind, branch].filter(Boolean).join('/');
     return { error: `uses unsupported repository route "${route}"` };
   }
-  if (branch !== 'main') {
+  const currentRevision = process.env.GITHUB_SHA;
+  const checkedRevision =
+    /^[a-f0-9]{40}$/.test(currentRevision ?? '') && branch === currentRevision;
+  if (branch !== 'main' && !checkedRevision) {
     return { error: `uses unsupported repository branch "${branch ?? ''}"` };
   }
   if (

@@ -173,6 +173,15 @@ export function isAcceptedDocumentPublication(
   );
 }
 
+export function canExposeDocumentJournalRecovery(
+  recovery: DocumentJournalRecovery,
+  finalAnchorMatches: boolean,
+): boolean {
+  //@ verify
+  //@ ensures \result <==> finalAnchorMatches && (recovery === "current" || recovery === "finish-anchor")
+  return recovery !== 'reject' && finalAnchorMatches;
+}
+
 export function classifyDocumentJournalRecovery(
   stored: number,
   anchored: number,

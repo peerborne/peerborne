@@ -439,7 +439,10 @@ export type {
   CanonicalKeychainEntry,
   CanonicalAppendIntent,
 } from './keychain-canonical.js';
-export { MAX_DOCUMENT_CHECKPOINT_BYTES } from './document-checkpoint.js';
+export {
+  documentCheckpointCommitment,
+  MAX_DOCUMENT_CHECKPOINT_BYTES,
+} from './document-checkpoint.js';
 export type { DocumentCheckpoint } from './document-checkpoint.js';
 
 export * from './coordinated-document.js';
