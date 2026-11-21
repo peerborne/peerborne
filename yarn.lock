@@ -4878,7 +4878,7 @@ __metadata:
     datastore-core: "npm:^12.0.1"
     datastore-idb: "npm:^5.0.1"
     eslint: "npm:^10.12.0"
-    fake-indexeddb: "npm:^6.2.5"
+    fake-indexeddb: "npm:^6.2.7"
     fast-check: "npm:^4.10.2"
     helia: "npm:^7.1.10"
     ipns: "npm:^11.0.1"
@@ -4906,7 +4906,7 @@ __metadata:
     "@testing-library/react": "npm:^16.3.3"
     "@types/node": "npm:^26.6.2"
     "@types/react": "npm:^19.3.0"
-    fake-indexeddb: "npm:^6.0.0"
+    fake-indexeddb: "npm:^6.2.7"
     fast-check: "npm:^4.10.2"
     idb: "npm:^8.0.0"
     jest: "npm:^30.5.2"
@@ -5021,7 +5021,7 @@ __metadata:
     "@vitejs/plugin-react": "npm:^6.1.2"
     blockstore-core: "npm:^7.0.1"
     bootstrap: "npm:^5.3.8"
-    fake-indexeddb: "npm:^6.2.5"
+    fake-indexeddb: "npm:^6.2.7"
     quill-delta: "npm:^5.1.0"
     react: "npm:^19.3.1"
     react-bootstrap: "npm:^2.10.10"
@@ -5048,7 +5048,7 @@ __metadata:
     "@types/react": "npm:^19.3.0"
     "@types/react-dom": "npm:^19.3.0"
     "@vitejs/plugin-react": "npm:^6.1.2"
-    fake-indexeddb: "npm:^6.2.5"
+    fake-indexeddb: "npm:^6.2.7"
     jest: "npm:^30.5.2"
     react: "npm:^19.3.1"
     react-dom: "npm:^19.3.1"
@@ -9265,10 +9265,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fake-indexeddb@npm:^6.0.0, fake-indexeddb@npm:^6.2.5":
-  version: 6.2.5
-  resolution: "fake-indexeddb@npm:6.2.5"
-  checksum: 10/a0b6a81413a8dd40d3ae31d6158ffa8a3d113981b11644e206874847c454d5a1519a9fe2b6008d8f66d5630ba96b3da43789a20b6462a0e7cadc008caea15ae8
+"fake-indexeddb@npm:^6.2.7":
+  version: 6.2.7
+  resolution: "fake-indexeddb@npm:6.2.7"
+  checksum: 10/785c7b44d7e8781df280380a4e3402331d67620bde6474449093923f99eb0a77f7994177817f22dda044d2b210806e4acb267b90697a9fac1c253d770b00a08a
   languageName: node
   linkType: hard
 
