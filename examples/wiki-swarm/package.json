@@ -6,7 +6,7 @@
     "@peerborne/automerge": "workspace:packages/automerge",
     "@peerborne/core": "workspace:packages/core",
     "@peerborne/redux": "workspace:packages/redux",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-bootstrap": "^1.1.0",
     "@types/react-dom": "^19.3.0",
