@@ -1,14 +1,14 @@
 {
   "name": "@peerborne/tanstack-start-starter",
   "dependencies": {
-    "@hono/node-server": "^2.1.3",
+    "@hono/node-server": "^2.1.6",
     "@peerborne/core": "workspace:^",
     "@peerborne/react": "workspace:^",
     "@peerborne/store": "workspace:^",
     "@peerborne/yjs": "workspace:^",
     "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-start": "^1.169.4",
-    "hono": "^4.0.0",
+    "hono": "^4.13.16",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "yjs": "^13.6.33"

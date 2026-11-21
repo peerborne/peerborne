@@ -22,7 +22,14 @@ yarn install --immutable
 yarn build
 yarn test
 yarn test:relay
-yarn workspace @peerborne/site build
+```
+
+For the site build, use the Node.js 22.23.5 runtime pinned in
+[`site/.tool-versions`](site/.tool-versions). Run the build from that directory
+after selecting the site runtime.
+
+```sh
+(cd site && yarn build)
 ```
 
 Run the relevant example or Docker-backed suite for affected behavior. Follow the bounded topology setup and teardown sequence in the [contributing guide](https://peerborne.io/community/contributing/#docker-backed-suites); the test command alone does not start the required services.

@@ -7,7 +7,7 @@ Discuss non-trivial, architecture-changing, or security-sensitive work before im
 
 ## Setup
 
-Use Node.js **22.19.0** and Yarn **4.5.0**, as pinned by `.tool-versions` and `package.json`.
+Use Node.js **22.19.0** and Yarn **4.5.0** for the libraries and examples, as pinned by `.tool-versions` and `package.json`. The documentation site has a separate Node pin.
 
 ```sh
 git clone https://github.com/Peerborne/peerborne.git
@@ -49,10 +49,17 @@ yarn build                         # eleven library workspaces
 yarn build:examples                # libraries, then all four Vite examples
 yarn test                          # eleven library Jest suites
 yarn test:relay                    # separate relay-server Jest suite
-yarn workspace @peerborne/site build
 yarn exec playwright install chromium
 yarn test:e2e                     # four Vite example smoke suites; no Docker
 yarn test:e2e:peerborne-note:live # deployed app + public relay; set PEERBORNE_NOTE_LIVE_URL
+```
+
+For the documentation build, use Node.js **22.23.5**, as pinned in
+[`site/.tool-versions`](https://github.com/Peerborne/peerborne/blob/main/site/.tool-versions).
+Run the build from `site/` after selecting that runtime.
+
+```sh
+(cd site && yarn build)
 ```
 
 Use `yarn exec playwright install chromium --with-deps` when Linux system browser dependencies are also needed.
@@ -108,7 +115,7 @@ revocation, partition/rejoin, or relay failover.
 
 ## Generated API reference
 
-The **Site** workflow runs `yarn workspace @peerborne/site build`. Starlight TypeDoc generates package API Markdown during that build into `site/src/content/docs/reference/api/`; the directory is ignored. Do not edit generated Markdown. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. Starlight TypeDoc is the only API reference workflow.
+The **Site** workflow runs the documentation build with the Node runtime pinned in `site/.tool-versions`. Starlight TypeDoc generates package API Markdown into the ignored `site/src/content/docs/reference/api/` directory. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. Starlight TypeDoc is the only API reference workflow.
 
 ## Pull request expectations
 
