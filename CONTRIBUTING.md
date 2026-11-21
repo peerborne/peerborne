@@ -15,6 +15,8 @@ Discuss architecture-changing, format-changing, or security-sensitive work befor
 ## Development baseline
 
 Use Node.js 22.19.0 and Yarn 4.5.0 through Corepack.
+For the site build, switch to Node.js 22.23.5 as pinned in
+[`site/.tool-versions`](site/.tool-versions).
 
 ```sh
 corepack enable
