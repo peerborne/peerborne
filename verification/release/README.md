@@ -5,9 +5,11 @@ outside the checkout. It checks their package identities, lockfile integrity,
 and every packed file's SHA-512 digest before and after browser acceptance,
 rejects workspace symlinks, and audits production dependencies before adding any
 application tooling. The browser applications have a separate dependency audit.
-The application and plain-app graphs are audited after acceptance as well.
-Audits fail on high or critical findings and fail closed if npm cannot complete
-its audit.
+The clean production graphs fail on any npm advisory, including informational,
+low and moderate findings. The application and plain-app graphs with added
+test and build tooling are audited after acceptance and fail on high or
+critical findings. Every graph fails validation if npm cannot complete its
+audit or the report's counts disagree with its findings.
 
 Release CI also checks the workspace, relay and network-test lockfiles for high
 and critical advisories, including development dependencies.
