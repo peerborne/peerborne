@@ -8,7 +8,8 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 
 ## Toolchain and setup
 
-- Node.js 22.19.0
+- Node.js 22.19.0 at the repository root
+- Node.js 22.23.5 for the documentation build, as pinned in `site/.tool-versions`
 - Yarn 4.5.0 through Corepack
 - `corepack enable`
 - `yarn install --immutable`
@@ -35,7 +36,6 @@ yarn build
 yarn build:examples
 yarn test
 yarn test:relay
-yarn workspace @peerborne/site build
 yarn test:e2e
 yarn test:e2e:browser-test
 yarn test:e2e:wiki-swarm
@@ -51,6 +51,8 @@ Docker-backed suites require their matching topology and readiness checks. Do no
 Do not describe `yarn benchmark:all` as working until its runner module mismatch is fixed.
 
 ## Documentation
+
+Select the Node runtime pinned in `site/.tool-versions` and run `(cd site && yarn build)`.
 
 The Site build generates API Markdown with Starlight TypeDoc under `site/src/content/docs/reference/api/`. That directory is ignored. Never edit generated API Markdown; change source comments or `site/astro.config.mjs` and rebuild the site. Starlight TypeDoc is the only API reference workflow.
 
@@ -68,7 +70,7 @@ The Site build generates API Markdown with Starlight TypeDoc under `site/src/con
 ## Completion checklist
 
 - Run `yarn install --immutable` when dependency integrity matters.
-- Run `yarn build`, `yarn test`, `yarn test:relay`, and `yarn workspace @peerborne/site build` for repository-wide changes.
+- Run `yarn build`, `yarn test`, `yarn test:relay`, and the site build for repository-wide changes.
 - Run relevant example or Docker-backed suites for affected behavior.
 - Run `git diff --check` and validate changed documentation links.
 - Confirm generated files, lockfiles, and unrelated source are unchanged unless required.
