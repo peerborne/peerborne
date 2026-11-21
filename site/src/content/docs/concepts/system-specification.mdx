@@ -8,16 +8,16 @@ import SystemClaimLedger from '../../../components/SystemClaimLedger.astro';
 
 ## Architecture and trust boundaries
 
-Peerborne runs the application and document replica on each device. The network carries encrypted storage blocks and sync envelopes. Two document modes define who can authorize changes and how that authorization survives transitions.
+Peerborne runs the application and document replica on each device. GossipSub carries sync envelopes, Helia serves encrypted blocks, and direct streams carry messages such as invitations and load replies.
+
+Select a flow or a component to trace its route. Each step links to the evidence for that decision.
+
+<SystemFlows />
 
 | Mode                     | Authority                                                                                                 | Local recovery                                                                                                        |
 | ------------------------ | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **BeeKEM** (default)     | Local writer ACL, authenticated BeeKEM membership messages and independently provisioned load commitments | Encrypted blocks and signed checkpoints. An optional fresh, independently stored commitment binds checkpoint restore. |
 | **Coordinated** (opt-in) | Signed role history, pinned genesis and a configured group-security provider                              | Optional authenticated journal with a device key and independent rollback anchor.                                     |
-
-Select a flow, then follow a card to its rule and evidence.
-
-<SystemFlows />
 
 ## Evidence and assumptions
 

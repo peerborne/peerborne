@@ -1,250 +1,424 @@
 ---
+import SystemTopology from './SystemTopology.astro';
 import { evidenceLabels } from '../lib/system-spec.mjs';
 import { architectureFlows } from '../lib/system-spec-evidence.mjs';
+import { mapEdges, mapNodes } from '../lib/system-map-layout.mjs';
+import { flowRoutes } from '../lib/system-map-routes.mjs';
+
+const edgesById = new Map(mapEdges.map((edge) => [edge.id, edge]));
+const nodeIds = new Set(mapNodes.map((node) => node.id));
+const flows = architectureFlows.map((flow) => {
+  const route = flowRoutes[flow.id];
+  if (route?.length !== flow.stages.length)
+    throw new Error(`Missing map stages for ${flow.id}`);
+
+  return {
+    ...flow,
+    stages: flow.stages.map((stage, index) => {
+      const { edges, nodes = [], note } = route[index];
+      const activeNodes = new Set(nodes);
+      for (const edgeId of edges) {
+        const edge = edgesById.get(edgeId.replace(/^-/, ''));
+        if (!edge) throw new Error(`Unknown map edge ${edgeId} in ${flow.id}`);
+        activeNodes.add(edge.from);
+        activeNodes.add(edge.to);
+      }
+      for (const id of activeNodes) {
+        if (!nodeIds.has(id)) throw new Error(`Unknown map node ${id} in ${flow.id}`);
+      }
+      return { ...stage, note, edges: edges.join(' '), nodes: [...activeNodes].join(' ') };
+    }),
+  };
+});
 ---
 
-<div class="system-flows not-content" data-system-flows>
-  <nav aria-label="Architecture flows" data-flow-choices hidden>
-    {architectureFlows.map(({ id, title }, index) => (
-      <button
-        type="button"
-        aria-controls={`system-flow-${id}`}
-        aria-pressed={index === 0}
-        data-flow-choice={id}
-      >{title}</button>
+<div class="system-map not-content" data-system-map>
+  <nav class="flow-controls" aria-label="Architecture flows" data-map-controls hidden>
+    {flows.map(({ id, title }, index) => (
+      <button type="button" data-flow-choice={id} aria-controls={`system-flow-${id}`}
+        aria-pressed={index === 0}>{title}</button>
     ))}
   </nav>
-  {architectureFlows.map(({ id, title, description, stages }) => (
-    <figure id={`system-flow-${id}`} data-flow={id} aria-labelledby={`flow-title-${id}`}>
-      <figcaption>
-        <strong id={`flow-title-${id}`}>{title}</strong>
-        <span>{description}</span>
-      </figcaption>
-      <ol>
-        {stages.map(({ boundary, title, claims }) => (
+
+  <SystemTopology />
+
+  <div class="map-legend" aria-label="Route colors">
+    <span><i class="local" aria-hidden="true"></i>On device</span>
+    <span><i class="trust" aria-hidden="true"></i>Independent trust</span>
+    <span><i class="network" aria-hidden="true"></i>Peer transport</span>
+  </div>
+
+  {flows.map(({ id, title, description, stages }) => (
+    <section class="flow" id={`system-flow-${id}`} data-flow={id} aria-label={title}>
+      <h3 class="fallback-title">{title}</h3>
+      <p class="flow-context">{description}</p>
+      <ol class="timeline" aria-label={`${title} steps`} data-timeline hidden>
+        {stages.map((stage, index) => (
           <li>
-            <span class="boundary">{boundary}</span>
-            <span class="stage-title">{title}</span>
-            <ul aria-label="Associated evidence">
-              {claims.map((claim) => (
+            <button type="button" data-step-choice
+              aria-controls={`system-step-${id}-${index + 1}`} aria-pressed={index === 0}>
+              <span class="step-number" aria-hidden="true">{index + 1}</span>
+              <span>{stage.title}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+      <div class="step-details">
+        {stages.map((stage, index) => (
+          <div class="step-detail" id={`system-step-${id}-${index + 1}`}
+            data-step-detail data-edges={stage.edges} data-nodes={stage.nodes}>
+            <div class="step-copy">
+              <h4 data-step-title>{stage.title}</h4>
+              <p>{stage.note}</p>
+            </div>
+            <ul class="step-evidence" aria-label="Evidence for this step">
+              {stage.claims.map((claim) => (
                 <li>
                   <a href={`#claim-${claim.id}`} data-evidence={claim.state}>
-                    <span>{claim.label}</span>
-                    <small>{evidenceLabels[claim.state]}</small>
+                    <i aria-hidden="true"></i>
+                    <span>{claim.label}<small>{evidenceLabels[claim.state]}</small></span>
+                    <span class="evidence-arrow" aria-hidden="true">↗</span>
                   </a>
                 </li>
               ))}
             </ul>
-          </li>
+          </div>
         ))}
-      </ol>
-    </figure>
+      </div>
+    </section>
   ))}
+
+  <div class="step-controls" aria-label="Step playback" data-playback-controls hidden>
+    <span data-step-count></span>
+    <div>
+      <button type="button" aria-label="Previous step" data-map-prev>←</button>
+      <button type="button" data-map-play>Play flow</button>
+      <button type="button" aria-label="Next step" data-map-next>→</button>
+    </div>
+  </div>
+  <span class="sr-only" aria-live="polite" data-map-announcement></span>
 </div>
 
 <script>
-  for (const diagram of document.querySelectorAll<HTMLElement>('[data-system-flows]')) {
-    const controls = diagram.querySelector<HTMLElement>('[data-flow-choices]');
-    const buttons = Array.from(diagram.querySelectorAll<HTMLButtonElement>('[data-flow-choice]'));
-    const panels = Array.from(diagram.querySelectorAll<HTMLElement>('[data-flow]'));
-    if (!controls || !buttons.length) continue;
+  for (const map of document.querySelectorAll<HTMLElement>('[data-system-map]')) {
+    const nav = map.querySelector<HTMLElement>('[data-map-controls]')!;
+    const playback = map.querySelector<HTMLElement>('[data-playback-controls]')!;
+    const play = map.querySelector<HTMLButtonElement>('[data-map-play]')!;
+    const previous = map.querySelector<HTMLButtonElement>('[data-map-prev]')!;
+    const next = map.querySelector<HTMLButtonElement>('[data-map-next]')!;
+    const counter = map.querySelector<HTMLElement>('[data-step-count]')!;
+    const announcement = map.querySelector<HTMLElement>('[data-map-announcement]')!;
+    const choices = Array.from(nav.querySelectorAll<HTMLButtonElement>('[data-flow-choice]'));
+    const nodes = Array.from(map.querySelectorAll<HTMLButtonElement>('[data-map-node]'));
+    const edges = Array.from(map.querySelectorAll<SVGGElement>('[data-map-edge]'));
+    const flows = Array.from(map.querySelectorAll<HTMLElement>('[data-flow]'), (section) => ({
+      section,
+      buttons: Array.from(section.querySelectorAll<HTMLButtonElement>('[data-step-choice]')),
+      details: Array.from(section.querySelectorAll<HTMLElement>('[data-step-detail]')),
+    }));
+    const tokens = (value = '') => value.split(' ').filter(Boolean);
 
-    const selectFlow = (id: string | undefined) => {
-      for (const button of buttons) {
-        button.setAttribute('aria-pressed', String(button.dataset.flowChoice === id));
-      }
-      for (const panel of panels) {
-        panel.hidden = panel.dataset.flow !== id;
-      }
-    };
+    let flowIndex = 0;
+    let stepIndex = 0;
+    let timer: number | undefined;
 
-    for (const button of buttons) {
-      button.addEventListener('click', () => selectFlow(button.dataset.flowChoice));
+    function render() {
+      const flow = flows[flowIndex];
+      const detail = flow.details[stepIndex];
+      const activeNodes = new Set(tokens(detail.dataset.nodes));
+      const routeNodes = new Set(flow.details.flatMap((step) => tokens(step.dataset.nodes)));
+      const activeEdges = new Map(tokens(detail.dataset.edges).map((edge) =>
+        edge.startsWith('-') ? [edge.slice(1), 'reverse'] : [edge, 'forward']));
+      const routeEdges = new Set(flow.details.flatMap((step) =>
+        tokens(step.dataset.edges).map((edge) => edge.replace(/^-/, ''))));
+
+      for (const node of nodes) {
+        node.toggleAttribute('data-route', routeNodes.has(node.dataset.mapNode!));
+        node.toggleAttribute('data-active', activeNodes.has(node.dataset.mapNode!));
+      }
+      for (const edge of edges) {
+        const direction = activeEdges.get(edge.dataset.mapEdge!);
+        edge.toggleAttribute('data-route', routeEdges.has(edge.dataset.mapEdge!));
+        if (direction) edge.dataset.direction = direction;
+        else delete edge.dataset.direction;
+      }
+      for (const [index, candidate] of flows.entries()) {
+        const selected = flowIndex === index;
+        choices[index].setAttribute('aria-pressed', String(selected));
+        candidate.section.hidden = !selected;
+        if (!selected) continue;
+        for (const [step, button] of candidate.buttons.entries()) {
+          button.setAttribute('aria-pressed', String(step === stepIndex));
+          candidate.details[step].hidden = step !== stepIndex;
+        }
+      }
+      previous.disabled = stepIndex === 0;
+      next.disabled = stepIndex === flow.details.length - 1;
+      counter.textContent = `${stepIndex + 1} / ${flow.details.length}`;
+      announcement.textContent = `${flow.section.getAttribute('aria-label')}. Step ${stepIndex + 1} of ${flow.details.length}. ${detail.querySelector('[data-step-title]')?.textContent}`;
     }
-    const deepLink = panels.find((panel) => '#' + panel.id === location.hash);
-    selectFlow(deepLink?.dataset.flow ?? buttons[0].dataset.flowChoice);
-    controls.hidden = false;
+
+    function pause() {
+      window.clearInterval(timer);
+      timer = undefined;
+      play.textContent = 'Play flow';
+    }
+
+    function selectStep(index: number) {
+      pause();
+      stepIndex = index;
+      render();
+    }
+
+    function selectFlow(index: number) {
+      if (index === flowIndex && map.hasAttribute('data-enhanced')) return;
+      flowIndex = index;
+      selectStep(0);
+    }
+
+    function selectFromHash() {
+      const index = flows.findIndex(({ section }) => location.hash === `#${section.id}`);
+      if (index >= 0) selectFlow(index);
+    }
+
+    for (const [index, choice] of choices.entries()) {
+      choice.addEventListener('click', () => {
+        selectFlow(index);
+        history.replaceState(history.state, '', `#${flows[index].section.id}`);
+      });
+    }
+    for (const flow of flows) {
+      flow.section.querySelector<HTMLElement>('[data-timeline]')!.hidden = false;
+      for (const [index, button] of flow.buttons.entries()) {
+        button.addEventListener('click', () => selectStep(index));
+      }
+    }
+    for (const node of nodes) {
+      node.disabled = false;
+      node.addEventListener('click', () => {
+        const includesNode = (step: HTMLElement) => tokens(step.dataset.nodes).includes(node.dataset.mapNode!);
+        const current = flows[flowIndex];
+        for (let offset = 1; offset <= current.details.length; offset++) {
+          const index = (stepIndex + offset) % current.details.length;
+          if (!includesNode(current.details[index])) continue;
+          selectStep(index);
+          return;
+        }
+        const other = flows.findIndex((flow) => flow.details.some(includesNode));
+        if (other < 0) return;
+        flowIndex = other;
+        selectStep(flows[other].details.findIndex(includesNode));
+        history.replaceState(history.state, '', `#${flows[other].section.id}`);
+      });
+    }
+    previous.addEventListener('click', () => selectStep(stepIndex - 1));
+    next.addEventListener('click', () => selectStep(stepIndex + 1));
+    play.addEventListener('click', () => {
+      if (timer !== undefined) {
+        pause();
+        return;
+      }
+      stepIndex = 0;
+      render();
+      play.textContent = 'Pause flow';
+      timer = window.setInterval(() => {
+        stepIndex++;
+        render();
+        if (stepIndex === flows[flowIndex].details.length - 1) pause();
+      }, 2300);
+    });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+    window.addEventListener('hashchange', selectFromHash);
+    selectFromHash();
+    render();
+    map.setAttribute('data-enhanced', '');
+    nav.hidden = false;
+    playback.hidden = false;
   }
 </script>
 
 <style>
-  .system-flows {
-    --diagram-border: var(--sl-color-gray-5);
-    --diagram-muted: var(--sl-color-gray-2);
-    --diagram-highlight: var(--sl-color-text-accent);
+  .system-map {
     container-type: inline-size;
-    padding: clamp(0.75rem, 2.2vw, 1.4rem);
-    border: 1px solid var(--diagram-border);
-    border-radius: 0.9rem;
-    background: var(--sl-color-bg-sidebar);
+    isolation: isolate;
+    margin-block: 1rem 1.5rem;
+    color: var(--sl-color-white);
+    background: var(--sl-color-bg-nav);
+    border: 2px solid var(--pb-color-border);
+    border-block-start: 4px solid var(--sw-color-teal);
+    box-shadow: 4px 4px 0 var(--pb-color-shadow);
+    overflow: hidden;
+    font-family: var(--sl-font-mono);
+    font-size: 0.85rem;
+    line-height: 1.45;
   }
-
-  nav {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-block-end: 1.35rem;
-  }
-
+  button, a { -webkit-tap-highlight-color: transparent; }
   button {
-    border: 1px solid var(--diagram-border);
-    border-radius: 0.4rem;
-    color: var(--sl-color-text);
-    background: var(--sl-color-bg);
+    color: var(--sl-color-gray-2);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 0;
     cursor: pointer;
     font: inherit;
-    font-size: var(--sl-text-sm);
-    padding: 0.4rem 0.6rem;
   }
-
-  button:hover,
+  button:hover { color: var(--sl-color-white); background: var(--sl-color-gray-6); }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--sw-color-teal); outline-offset: 2px; }
+  button:disabled { opacity: 0.43; cursor: default; }
   button[aria-pressed='true'] {
-    border-color: var(--diagram-highlight);
-    color: var(--diagram-highlight);
+    color: var(--sl-color-accent-high);
+    background: var(--sl-color-accent-low);
+    border-color: var(--sl-color-accent);
+    box-shadow: inset 0 -2px var(--sl-color-accent);
   }
-
-  button[aria-pressed='true'] {
-    box-shadow: inset 0 -2px var(--diagram-highlight);
-  }
-
-  a:focus-visible,
-  button:focus-visible {
-    outline: 2px solid var(--diagram-highlight);
-    outline-offset: 2px;
-  }
-
-  [hidden] {
-    display: none;
-  }
-
-  figure {
-    margin: 0;
-  }
-
-  figure + figure {
-    margin-block-start: 1.35rem;
-  }
-
-  figcaption {
+  .flow-controls {
     display: grid;
-    margin-block-end: 0.8rem;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.25rem;
+    padding: 0.62rem 0.72rem;
   }
-
-  figcaption strong {
-    font-size: var(--sl-text-lg);
+  .flow-controls button {
+    min-height: 2.3rem;
+    padding: 0.32rem 0.35rem;
+    font-size: 0.76rem;
+    font-weight: 700;
   }
-
-  figcaption span {
-    color: var(--diagram-muted);
-    font-size: var(--sl-text-sm);
-  }
-
-  ol,
-  ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-  }
-
-  ol {
-    display: grid;
-    gap: 1.6rem;
-  }
-
-  ol > li {
-    position: relative;
+  .map-legend {
     display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    min-inline-size: 0;
-    border: 1px solid var(--diagram-border);
-    border-radius: 0.55rem;
-    padding: 0.7rem;
-    background: var(--sl-color-bg);
+    flex-wrap: wrap;
+    gap: 0.3rem 1.05rem;
+    padding: 0.55rem 0.9rem;
+    color: var(--sl-color-gray-2);
+    background: var(--sl-color-black);
+    border-bottom: 1px solid var(--pb-color-border);
+    font-size: 0.71rem;
   }
-
-  ol > li:not(:last-child)::after {
-    content: '';
-    display: block;
-    position: absolute;
-    inset-block-end: -1.1rem;
-    inset-inline-start: calc(50% - 0.24rem);
-    inline-size: 0.48rem;
-    block-size: 0.48rem;
-    border: solid var(--diagram-highlight);
-    border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
+  .map-legend span { display: flex; gap: 0.38rem; align-items: center; }
+  .map-legend i { width: 0.84rem; border-top: 3px solid var(--sl-color-accent); }
+  .map-legend .trust { border-color: var(--pb-color-peach); }
+  .map-legend .network { border-color: var(--sw-color-teal); border-top-style: dashed; }
+  .flow { padding: 0.9rem; }
+  .flow + .flow { border-top: 1px solid var(--pb-color-border); }
+  .fallback-title { color: var(--sl-color-white); font: 400 0.71rem / 1.6 var(--pb-font-pixel); }
+  [data-enhanced] .fallback-title { display: none; }
+  .flow-context {
+    margin: 0 0 0.75rem;
+    color: var(--sl-color-gray-2);
+    font-size: 0.79rem;
   }
-
-  .boundary,
-  .stage-title {
-    line-height: 1.35;
-  }
-
-  .boundary {
-    color: var(--diagram-muted);
-    font-size: var(--sl-text-xs);
-  }
-
-  .stage-title {
-    font-weight: 650;
-    font-size: var(--sl-text-sm);
-  }
-
-  ul {
+  .timeline {
     display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 0.38rem;
+    list-style: none;
+    margin: 0 0 0.75rem;
+    padding: 0;
+  }
+  .timeline li { display: flex; min-width: 0; }
+  .timeline button {
+    display: flex;
+    align-items: center;
     gap: 0.4rem;
+    width: 100%;
+    min-height: 2.85rem;
+    padding: 0.38rem 0.42rem;
+    text-align: left;
+    font-size: 0.74rem;
+    font-weight: 700;
+    line-height: 1.32;
+    border-color: var(--pb-color-border);
   }
-
-  a {
+  .step-number {
     display: grid;
-    border: 1px solid var(--diagram-border);
-    border-radius: 0.3rem;
-    padding: 0.35rem;
-    color: var(--sl-color-text);
-    font-size: var(--sl-text-xs);
-    overflow-wrap: anywhere;
+    place-items: center;
+    flex: none;
+    inline-size: 1.2rem;
+    block-size: 1.2rem;
+    border: 1px solid var(--pb-color-border);
+    color: var(--sl-color-gray-2);
+    font: 400 0.56rem / 1 var(--pb-font-pixel);
+    font-variant-numeric: tabular-nums;
+  }
+  button[aria-pressed='true'] .step-number {
+    color: var(--sl-color-black);
+    border-color: var(--sl-color-accent-high);
+    background: var(--sl-color-accent-high);
+  }
+  .step-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(11rem, 0.64fr);
+    align-items: start;
+    gap: 0.65rem 1rem;
+    padding: 0.7rem 0.82rem;
+    background: var(--sl-color-gray-6);
+    border: 1px solid var(--pb-color-border);
+    border-inline-start: 4px solid var(--sl-color-accent);
+  }
+  .step-detail + .step-detail { margin-block-start: 0.45rem; }
+  [data-enhanced] .step-detail { margin-block-start: 0; }
+  .step-copy h4 {
+    margin: 0 0 0.22rem;
+    color: var(--sl-color-white);
+    font: 400 0.62rem / 1.65 var(--pb-font-pixel);
+  }
+  .step-copy p { margin: 0; color: var(--sl-color-gray-2); font-size: 0.82rem; }
+  .step-evidence { display: grid; gap: 0.22rem; list-style: none; margin: 0; padding: 0; }
+  .step-evidence a {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.46rem;
+    padding: 0.25rem 0.35rem;
+    color: var(--sl-color-white);
+    font-weight: 700;
     text-decoration: none;
+    font-size: 0.74rem;
+    line-height: 1.24;
   }
-
-  a:hover {
-    border-color: var(--diagram-highlight);
-    text-decoration: underline;
+  .step-evidence a:hover { background: var(--sl-color-accent-low); }
+  .step-evidence i {
+    inline-size: 0.47rem;
+    block-size: 0.47rem;
+    background: var(--sl-color-accent);
   }
-
-  a small {
-    color: var(--diagram-muted);
-    font-size: inherit;
+  .step-evidence a[data-evidence='proved'] i { background: var(--sw-color-teal); }
+  .step-evidence a[data-evidence='assumed'] i { background: var(--pb-color-peach); }
+  .step-evidence a[data-evidence='open'] i { background: none; border: 1px solid var(--pb-color-peach); }
+  .step-evidence small { color: var(--sl-color-gray-2); display: block; font-size: 0.67rem; font-weight: 400; }
+  .evidence-arrow { color: var(--sl-color-accent); font-size: 0.9rem; }
+  .step-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-top: 1px solid var(--pb-color-border);
+    padding: 0.55rem 0.9rem;
+    color: var(--sl-color-gray-2);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
   }
-
-  a[data-evidence='open'] {
-    border-style: dashed;
+  .step-controls > div { display: flex; gap: 0.36rem; }
+  .step-controls button { min-height: 2rem; min-width: 2.12rem; padding-inline: 0.58rem; border-color: var(--pb-color-border); }
+  .step-controls button[data-map-play] { min-width: 5.5rem; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    clip-path: inset(50%);
   }
-
-  @container (min-width: 40rem) {
-    ol {
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(0, 1fr);
-    }
-
-    ol > li:not(:last-child)::after {
-      inset-block: 1.25rem auto;
-      inset-inline: auto -1.08rem;
-      transform: rotate(-45deg);
-    }
-
-    ol > li:not(:last-child):dir(rtl)::after {
-      transform: rotate(135deg);
-    }
+  [hidden] { display: none; }
+  @container (max-width: 34rem) {
+    .flow-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .timeline { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .step-detail { grid-template-columns: minmax(0, 1fr); }
+    .flow, .step-controls { padding-inline: 0.65rem; }
   }
-
   @media print {
-    nav {
-      display: none;
-    }
-
-    figure[hidden] {
-      display: block;
-    }
+    .flow[hidden], .step-detail[hidden] { display: grid; }
+    .flow-controls, .timeline, .step-controls { display: none; }
+    [data-enhanced] .fallback-title { display: block; }
   }
 </style>

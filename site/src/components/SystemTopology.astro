@@ -1,0 +1,267 @@
+---
+import { mapEdges, mapNodes, mapRegions, mapSizes } from '../lib/system-map-layout.mjs';
+
+const layouts = ['wide', 'compact'] as const;
+type Layout = (typeof layouts)[number];
+
+const percent = (value: number, size: number) => `${(value / size) * 100}%`;
+const placement = (item: Record<Layout, number[]>) =>
+  layouts.flatMap((layout) => {
+    const [x, y, width, height] = item[layout];
+    const [stageWidth, stageHeight] = mapSizes[layout];
+    return [
+      `--${layout}-x:${percent(x, stageWidth)}`,
+      `--${layout}-y:${percent(y, stageHeight)}`,
+      `--${layout}-w:${percent(width, stageWidth)}`,
+      `--${layout}-h:${percent(height, stageHeight)}`,
+    ];
+  }).join(';');
+
+const sprites: Record<string, string[]> = {
+  app: ['#########', '#.......#', '#########', '#.#.....#', '#..#....#', '#.#.###.#', '#.......#', '#########'],
+  trust: ['...###...', '.##...##.', '#.......#', '#.....#.#', '#.#..#..#', '.#.#...#.', '..#...#..', '...###...'],
+  admission: ['.#####...', '.#...##..', '.#...#.#.', '.#...####', '.#....#.#', '.#.#.#..#', '.#..#...#', '.########'],
+  crypto: ['..#####..', '..#...#..', '..#...#..', '.#######.', '.###.###.', '.###.###.', '.#######.', '.........'],
+  replica: ['..#####..', '.#.....#.', '#.......#', '.#######.', '.........', '.#######.', '.........', '.#######.'],
+  storage: ['.#######.', '##.....##', '#.#####.#', '#.......#', '#.#####.#', '#.......#', '##.....##', '.#######.'],
+  gossip: ['#.......#', '#.#...#.#', '.#..#..#.', '....#....', '...###...', '...#.#...', '..#...#..', '.#######.'],
+  streams: ['.....#...', '......#..', '########.', '......#..', '..#......', '.########', '..#......', '...#.....'],
+  blocks: ['.####....', '.#..#....', '.#..#....', '.########', '....#...#', '....#...#', '....#...#', '....#####'],
+  peer: ['#######..', '#.....#..', '#.....###', '#######.#', '...#..#.#', '.#####..#', '......###', '.......#.'],
+};
+const spritePath = (sprite: string[]) => sprite
+  .flatMap((row, y) => Array.from(row.matchAll(/#+/g), ({ index, 0: run }) =>
+    `M${index} ${y}h${run.length}v1h-${run.length}z`))
+  .join('');
+---
+
+<div class="topology" role="group" aria-label="Peerborne system topology" data-map-topology>
+  {mapRegions.map((region) => (
+    <div class:list={['region', 'positioned', region.kind]} style={placement(region)}>
+      <span>{region.title}</span>
+      <small>{region.detail}</small>
+    </div>
+  ))}
+
+  {layouts.map((layout) => (
+    <svg class:list={['routes', layout]} viewBox={`0 0 ${mapSizes[layout].join(' ')}`}
+      preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <marker id={`system-arrow-${layout}`} viewBox="0 0 10 10" refX="9" refY="5"
+          markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+          <path d="M0 0H3V2H6V4H9V6H6V8H3V10H0Z" fill="currentColor" />
+        </marker>
+      </defs>
+      {mapEdges.map((edge) => (
+        <g class="connection" data-map-edge={edge.id} data-kind={edge.kind} data-from={edge.from} data-to={edge.to}>
+          <path class="wire" d={edge[layout]}
+            style={`--arrow:url(#system-arrow-${layout})`} />
+          <path class="signal" d={edge[layout]} pathLength="100" />
+        </g>
+      ))}
+    </svg>
+  ))}
+
+  {mapNodes.map((node) => (
+    <button type="button" class:list={['node', 'positioned', node.kind]} style={placement(node)}
+      data-map-node={node.id} disabled>
+      <svg class="node-icon" viewBox="0 0 9 8" width="18" height="16"
+        shape-rendering="crispEdges" aria-hidden="true">
+        <path d={spritePath(sprites[node.icon])} fill="currentColor" />
+      </svg>
+      <span>
+        <strong>{node.title}</strong>
+        <small>{node.detail}</small>
+      </span>
+    </button>
+  ))}
+</div>
+
+<style>
+  .topology {
+    position: relative;
+    aspect-ratio: 1000 / 480;
+    isolation: isolate;
+    overflow: hidden;
+    color: var(--sl-color-white);
+    background-color: var(--sl-color-black);
+    background-image:
+      linear-gradient(var(--pb-color-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--pb-color-grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+    border-block: 2px solid var(--pb-color-border);
+  }
+  .positioned {
+    position: absolute;
+    left: var(--wide-x);
+    top: var(--wide-y);
+    width: var(--wide-w);
+    height: var(--wide-h);
+  }
+  .region {
+    padding: 0.65rem 0.75rem;
+    border: 2px solid var(--sl-color-accent);
+    background: var(--sl-color-accent-low);
+    color: var(--sl-color-accent-high);
+    box-shadow: 4px 4px 0 var(--pb-color-shadow);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem;
+  }
+  .region.network {
+    border-color: var(--sw-color-teal);
+    background: var(--sw-color-teal-low);
+    color: var(--sw-color-teal-high);
+    padding-inline: 0.55rem;
+  }
+  .region span {
+    font: 400 clamp(0.46rem, 1.12cqw, 0.62rem) / 1.65 var(--pb-font-pixel);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .region small {
+    font-size: clamp(0.63rem, 1.35cqw, 0.76rem);
+    color: var(--sl-color-gray-2);
+    white-space: nowrap;
+  }
+  .routes {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .routes.compact { display: none; }
+  .connection {
+    --active-line: var(--sl-color-accent);
+    --base-line: var(--sl-color-gray-4);
+  }
+  .connection[data-kind='network'] {
+    --active-line: var(--sw-color-teal);
+    --base-line: color-mix(in srgb, var(--sw-color-teal) 43%, var(--sl-color-gray-5));
+  }
+  .connection[data-kind='trust'] {
+    --active-line: var(--pb-color-peach);
+    --base-line: color-mix(in srgb, var(--pb-color-peach) 45%, var(--sl-color-gray-5));
+  }
+  .connection path {
+    fill: none;
+    vector-effect: non-scaling-stroke;
+  }
+  .wire {
+    color: var(--base-line);
+    stroke: currentColor;
+    stroke-width: 1;
+    transition: stroke 180ms ease, stroke-width 180ms ease;
+  }
+  [data-kind='network'] .wire { stroke-dasharray: 3 5; }
+  .connection[data-route] .wire {
+    color: color-mix(in srgb, var(--active-line) 65%, var(--sl-color-gray-5));
+    stroke-width: 1.5;
+  }
+  .connection[data-direction] .wire {
+    color: var(--active-line);
+    stroke-width: 2;
+    stroke-dasharray: none;
+  }
+  [data-direction='forward'] .wire { marker-end: var(--arrow); }
+  [data-direction='reverse'] .wire { marker-start: var(--arrow); }
+  .signal {
+    visibility: hidden;
+    stroke: var(--sl-color-white);
+    stroke-width: 4;
+    stroke-linecap: butt;
+    stroke-dasharray: 3 97;
+  }
+  [data-direction] .signal {
+    visibility: visible;
+    animation: travel 1.55s steps(14, end) 1 both;
+  }
+  [data-direction='reverse'] .signal { animation-direction: reverse; }
+  @keyframes travel {
+    from { stroke-dashoffset: 100; opacity: 0; }
+    15%, 80% { opacity: 1; }
+    to { stroke-dashoffset: 0; opacity: 0; }
+  }
+  .node {
+    --node-accent: var(--sl-color-accent);
+    --node-active-background: var(--sl-color-accent-low);
+    display: flex;
+    align-items: center;
+    gap: clamp(0.25rem, 0.72cqw, 0.63rem);
+    padding: clamp(0.28rem, 0.77cqw, 0.65rem);
+    min-width: 0;
+    background: var(--sl-color-gray-6);
+    border: 2px solid var(--pb-color-border);
+    border-radius: 0;
+    box-shadow: 3px 3px 0 var(--pb-color-shadow);
+    font: inherit;
+    text-align: left;
+    transition: border-color 170ms, background 170ms, box-shadow 170ms;
+  }
+  .node:enabled { cursor: pointer; }
+  .node:enabled:hover { border-color: var(--node-accent); }
+  .node:focus-visible { outline: 2px solid var(--sw-color-teal); outline-offset: 2px; }
+  .node.trust { --node-accent: var(--pb-color-peach); }
+  .node.network {
+    --node-accent: var(--sw-color-teal);
+    --node-active-background: var(--sw-color-teal-low);
+  }
+  .node.network .node-icon {
+    width: clamp(0.74rem, 1.72cqw, 1.04rem);
+  }
+  .node[data-route] { border-color: color-mix(in srgb, var(--node-accent) 65%, var(--pb-color-border)); }
+  .node[data-active] {
+    border-color: var(--node-accent);
+    background: var(--node-active-background);
+    box-shadow: 3px 3px 0 var(--node-accent);
+  }
+  .node-icon {
+    flex: none;
+    width: clamp(0.8rem, 2cqw, 1.2rem);
+    height: auto;
+    color: var(--node-accent);
+  }
+  .node > span { min-width: 0; }
+  .node strong,
+  .node small {
+    display: block;
+    line-height: 1.2;
+    letter-spacing: normal;
+    word-break: normal;
+    overflow-wrap: normal;
+  }
+  .node strong {
+    font-size: clamp(0.64rem, 1.5cqw, 0.82rem);
+    color: var(--sl-color-white);
+    font-weight: 700;
+  }
+  .node small {
+    margin-top: 0.16rem;
+    color: var(--sl-color-gray-2);
+    font-size: clamp(0.57rem, 1.2cqw, 0.72rem);
+  }
+  @container (max-width: 42rem) {
+    .topology { aspect-ratio: 400 / 594; }
+    .positioned {
+      left: var(--compact-x);
+      top: var(--compact-y);
+      width: var(--compact-w);
+      height: var(--compact-h);
+    }
+    .region { padding: 0.52rem 0.58rem; }
+    .routes.wide { display: none; }
+    .routes.compact { display: block; }
+    .node { padding-inline: clamp(0.29rem, 1.8cqw, 0.7rem); }
+  }
+  @container (max-width: 19rem) {
+    .node { gap: 0.19rem; padding-inline: 0.22rem; }
+    .node .node-icon, .node.network .node-icon { width: 0.64rem; }
+    .node strong { font-size: 0.625rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wire, .node { transition: none; }
+    [data-direction] .signal { visibility: hidden; animation: none; }
+  }
+</style>
