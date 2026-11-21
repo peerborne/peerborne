@@ -1,9 +1,5 @@
 export type BeeKEMGenerationDisposition =
-  | 'stale'
-  | 'duplicate'
-  | 'fork'
-  | 'next'
-  | 'gap';
+  'stale' | 'duplicate' | 'fork' | 'next' | 'gap';
 
 /** Generation policy after the runtime adapter validates the uint32 header. */
 export function classifyBeeKEMGeneration(
@@ -40,4 +36,41 @@ export function isAppendOnlyLeafCount(
   return (
     incoming <= capacity && (incoming === current || incoming === current + 1)
   );
+}
+
+/** Finalize only an exact-next transition prepared for the current parent and writers. */
+export function canCommitBeeKEMPathUpdate(
+  current: number,
+  incoming: number,
+  sameParent: boolean,
+  sameWriters: boolean,
+): boolean {
+  //@ verify
+  //@ requires 0 <= current && current <= 4294967295
+  //@ requires 1 <= incoming && incoming <= 4294967295
+  //@ ensures \result <==> incoming === current + 1 && sameParent && sameWriters
+  return (
+    classifyBeeKEMGeneration(current, incoming, false) === 'next' &&
+    sameParent &&
+    sameWriters
+  );
+}
+
+export function checkpointCommitmentPermitsRestore(
+  pinSupplied: boolean,
+  pinMatches: boolean,
+): boolean {
+  //@ verify
+  //@ ensures \result <==> !pinSupplied || pinMatches
+  return !pinSupplied || pinMatches;
+}
+
+/** Existing leaf slots can be blanked but cannot be reused. */
+export function beeKEMLeafTransitionAllowed(
+  currentLive: boolean,
+  nextLive: boolean,
+): boolean {
+  //@ verify
+  //@ ensures \result <==> (nextLive ==> currentLive)
+  return currentLive || !nextLive;
 }

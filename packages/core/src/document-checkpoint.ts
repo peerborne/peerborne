@@ -1,6 +1,9 @@
 import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  copyUnsharedUint8Array,
+  snapshotEnumerableOwnDataObject,
+} from './utils.js';
 import type { SerializedBeeKEMWelcomeV2 } from './beekem-welcome-wire.js';
 import { MAX_RECENT_TIPS } from './merkle-cross-links.js';
 
@@ -11,6 +14,52 @@ const MAX_CHECKPOINT_CIDS = 100_000;
 export interface DocumentCheckpoint {
   payload: Uint8Array;
   signature: Uint8Array;
+}
+
+/** @internal Capture the signed envelope once before any asynchronous work. */
+export function captureDocumentCheckpoint(
+  checkpoint: DocumentCheckpoint,
+): DocumentCheckpoint {
+  const record = snapshotEnumerableOwnDataObject<Record<string, unknown>>(
+    checkpoint,
+    'Document checkpoint',
+  );
+  if (Object.keys(record).sort().join() !== 'payload,signature')
+    throw new TypeError('Invalid checkpoint envelope');
+  return {
+    payload: copyUnsharedUint8Array(
+      record.payload,
+      1,
+      MAX_DOCUMENT_CHECKPOINT_BYTES,
+      'Checkpoint payload',
+    ),
+    signature: copyUnsharedUint8Array(
+      record.signature,
+      1,
+      8192,
+      'Checkpoint signature',
+    ),
+  };
+}
+
+/** @internal Hash only owned, validated checkpoint payload bytes. */
+export async function digestDocumentCheckpointPayload(
+  payload: Uint8Array,
+): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest('SHA-256', payload as Uint8Array<ArrayBuffer>),
+  );
+}
+
+/**
+ * Compute the SHA-256 commitment of a locally exported checkpoint payload.
+ * Store this digest independently of rollbackable checkpoint storage.
+ */
+export async function documentCheckpointCommitment(
+  checkpoint: DocumentCheckpoint,
+): Promise<Uint8Array> {
+  const { payload } = captureDocumentCheckpoint(checkpoint);
+  return digestDocumentCheckpointPayload(payload);
 }
 
 /** @internal Current local checkpoint format; independent of network message formats. */

@@ -316,3 +316,64 @@ test('recovery captures the new snapshot capability before anchor awaits and pre
     { seed: 2011605, numRuns: 12 },
   );
 });
+
+test('recovery rechecks its accepted anchor after delayed publication loading', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uint8Array({ minLength: 1, maxLength: 64 }),
+      fc.boolean(),
+      async (changes, advance) => {
+        const f = await fixture(changes, false);
+        try {
+          const owner = f.create();
+          const [before] = await owner.restore();
+          const next = Uint8Array.of(...changes, 1);
+          const loadPublications = f.store.loadPublications.bind(f.store);
+          const reader = f.create({
+            load: f.store.load.bind(f.store),
+            loadRecoverySnapshot: f.store.loadRecoverySnapshot.bind(f.store),
+            loadPublications: async (key) => {
+              const payloads = await loadPublications(key);
+              if (advance) {
+                await (
+                  await owner.prepare({
+                    ...before,
+                    checkpoint: true,
+                    changes: next,
+                  })
+                ).commit();
+              }
+              return payloads;
+            },
+            stage: f.store.stage.bind(f.store),
+            commit: f.store.commit.bind(f.store),
+            discard: f.store.discard.bind(f.store),
+          });
+          if (advance) {
+            const outcome = await reader.restore().then(
+              () => 'recovered',
+              (error: unknown) =>
+                error instanceof Error ? error.message : 'unexpected error',
+            );
+            expect(outcome).toBe('Journal anchor changed during recovery');
+            await expect(reader.pendingPublications()).rejects.toThrow();
+          } else {
+            expect(
+              (await reader.restore()).map((item) => item.changes),
+            ).toEqual([changes]);
+          }
+          const restored = await f.create().restore();
+          expect(restored.map((item) => item.changes)).toEqual([
+            advance ? next : changes,
+          ]);
+          expect((await f.anchor.load(f.storageKey))?.revision).toBe(
+            advance ? 2 : 1,
+          );
+        } finally {
+          await f.store.close();
+        }
+      },
+    ),
+    { seed: 2011606, numRuns: 12, examples: [[Uint8Array.of(1), true]] },
+  );
+});

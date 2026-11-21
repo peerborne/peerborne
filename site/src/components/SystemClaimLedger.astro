@@ -1,0 +1,116 @@
+---
+import { evidenceLabels } from '../lib/system-spec.mjs';
+import { ledger, evidenceReference } from '../lib/system-spec-evidence.mjs';
+---
+
+<p>
+  CI checks the proof units listed in the <a href={evidenceReference.manifest.href}>formal manifest</a>.
+  See the <a href={evidenceReference.runner.href}>verifier and counterexample controls</a>
+  and the <a href={evidenceReference.strategy.href}>runtime evidence catalog</a>.
+</p>
+<div class="ledger">
+  {ledger.map(({ id, title, state, rule, checked, limit, proofs, code, runtime }) => (
+    <article id={`claim-${id}`} aria-labelledby={`claim-title-${id}`}>
+      <p class="state">
+        <a aria-label={`Link to ${title}`} href={`#claim-${id}`}>{id}</a>
+        <span>{evidenceLabels[state]}</span>
+      </p>
+      <h3 id={`claim-title-${id}`}>{title}</h3>
+      <p>{rule}</p>
+      {checked && <p class="checked"><strong>Proved</strong> {checked}</p>}
+      <p class="limit">{limit}</p>
+      {(proofs.length > 0 || code || runtime.length > 0) && (
+        <details>
+          <summary>Inspect evidence</summary>
+          {proofs.map(({ production, obligations, witness, consumers }) => (
+            <ul aria-label={`Proof links for ${production.label}`}>
+              <li><a href={production.href}>Production <code>{production.label}</code></a></li>
+              {obligations.map(({ label, href }) => (
+                <li><a href={href}><code>{label}</code></a></li>
+              ))}
+              <li><a href={witness.href}>Domain witness <code>{witness.label}</code></a></li>
+              {consumers.map(({ label, href }) => (
+                <li><a href={href}>Runtime caller <code>{label}</code></a></li>
+              ))}
+            </ul>
+          ))}
+          {code && <p><a href={code.href}><code>{code.label}</code></a></p>}
+          {runtime.length > 0 && (
+            <ul aria-label="Runtime evidence">
+              {runtime.map(({ label, href }) => <li><a href={href}><code>{label}</code></a></li>)}
+            </ul>
+          )}
+        </details>
+      )}
+    </article>
+  ))}
+</div>
+
+<style>
+  .ledger {
+    display: grid;
+    gap: 0.75rem;
+    margin-block-start: 1rem;
+  }
+
+  article {
+    margin: 0;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.65rem;
+    padding: 0.85rem;
+    scroll-margin-block-start: calc(var(--sl-nav-height) + 1rem);
+    overflow-wrap: anywhere;
+  }
+
+  article:target {
+    border-color: var(--sl-color-text-accent);
+    box-shadow: 0 0 0 1px var(--sl-color-text-accent);
+  }
+
+  h3 {
+    font-size: var(--sl-text-lg);
+    margin-block-start: 0.3rem;
+  }
+
+  p {
+    margin-block-start: 0.35rem;
+  }
+
+  .state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.7rem;
+    align-items: baseline;
+    margin: 0;
+    font-size: var(--sl-text-xs);
+  }
+
+  .state a {
+    font-family: var(--sl-font-mono);
+  }
+
+  .state span,
+  .limit {
+    color: var(--sl-color-gray-2);
+  }
+
+  .checked {
+    border-inline-start: 2px solid var(--sl-color-text-accent);
+    padding-inline-start: 0.66rem;
+  }
+
+  .checked strong {
+    display: block;
+    color: var(--sl-color-text-accent);
+    font-size: var(--sl-text-xs);
+  }
+
+  details {
+    padding: 0;
+    border: 0;
+  }
+
+  summary {
+    cursor: pointer;
+  }
+</style>

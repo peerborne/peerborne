@@ -63,6 +63,7 @@ function validMessage(epochId: Uint8Array) {
 
 function stagedTree(processPathUpdate: (update: unknown) => unknown) {
   return {
+    generation: 2,
     processPathUpdate,
     processPathUpdateTransactionally: async (
       update: unknown,
@@ -102,7 +103,7 @@ function pathHarness(
     },
     _verifyMembershipWriterSignature: verify,
     _beekemInitialized: true,
-    _beekem: { clone: () => stagedTree(processPathUpdate) },
+    _beekem: { generation: 1, clone: () => stagedTree(processPathUpdate) },
     _keychain: { prepareEpochKey },
     ...fields,
   });
@@ -201,7 +202,7 @@ describe('BeeKEM PathUpdate context confinement', () => {
     const decoded = validMessage(epochId);
     const harness = pathHarness(decoded);
     const stagedBeeKEM = stagedTree(harness.processPathUpdate);
-    harness.document._beekem = { clone: () => stagedBeeKEM };
+    harness.document._beekem = { generation: 1, clone: () => stagedBeeKEM };
     harness.processPathUpdate.mockResolvedValue(rootSecret);
     harness.verify.mockImplementation(async () => {
       decoded.pathUpdate.senderLeafIndex = 9;

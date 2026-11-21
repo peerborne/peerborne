@@ -167,6 +167,7 @@ export default defineConfig({
             'concepts/epoch-transitions',
             'concepts/why-peerborne',
             'concepts/architecture',
+            'concepts/system-specification',
             'concepts/local-first',
             'concepts/crdts',
             'concepts/networking',

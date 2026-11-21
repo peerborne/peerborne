@@ -59,6 +59,44 @@ lemma isAppendOnlyLeafCount_ensures(current: int, incoming: int, capacity: int)
 {
 }
 
+function canCommitBeeKEMPathUpdate(current: int, incoming: int, sameParent: bool, sameWriters: bool): bool
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+{
+  ((classifyBeeKEMGeneration(current, incoming, false).next? && sameParent) && sameWriters)
+}
+
+lemma canCommitBeeKEMPathUpdate_ensures(current: int, incoming: int, sameParent: bool, sameWriters: bool)
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+  ensures (canCommitBeeKEMPathUpdate(current, incoming, sameParent, sameWriters) <==> (((incoming == (current + 1)) && sameParent) && sameWriters))
+{
+}
+
+function checkpointCommitmentPermitsRestore(pinSupplied: bool, pinMatches: bool): bool
+{
+  (!(pinSupplied) || pinMatches)
+}
+
+lemma checkpointCommitmentPermitsRestore_ensures(pinSupplied: bool, pinMatches: bool)
+  ensures (checkpointCommitmentPermitsRestore(pinSupplied, pinMatches) <==> (!(pinSupplied) || pinMatches))
+{
+}
+
+function beeKEMLeafTransitionAllowed(currentLive: bool, nextLive: bool): bool
+{
+  (currentLive || !(nextLive))
+}
+
+lemma beeKEMLeafTransitionAllowed_ensures(currentLive: bool, nextLive: bool)
+  ensures (beeKEMLeafTransitionAllowed(currentLive, nextLive) <==> (nextLive ==> currentLive))
+{
+}
+
 method beekemTransition_domain()
 {
   assert classifyBeeKEMGeneration(0, 1, false).next?;
@@ -72,4 +110,146 @@ method beekemTransition_domain()
   assert !isAppendOnlyLeafCount(8192, 8193, 8192);
   assert !isAppendOnlyLeafCount(2, 1, 8192);
   assert !isAppendOnlyLeafCount(1, 3, 8192);
+  assert canCommitBeeKEMPathUpdate(2, 3, true, true);
+  assert !canCommitBeeKEMPathUpdate(2, 3, false, true);
+  assert !canCommitBeeKEMPathUpdate(2, 3, true, false);
+  assert !canCommitBeeKEMPathUpdate(3, 3, true, true);
+  assert checkpointCommitmentPermitsRestore(true, true);
+  assert !checkpointCommitmentPermitsRestore(true, false);
+}
+
+datatype BeeKEMContinuation =
+  PathUpdate(generation: int, parentCurrent: bool, writersCurrent: bool) |
+  RestorePinned(generation: int, matches: bool, authenticated: bool)
+
+predicate BoundedBeeKEMContinuation(step: BeeKEMContinuation)
+{
+  step.generation <= 4294967295 &&
+    (if step.PathUpdate? then 1 <= step.generation else 0 <= step.generation)
+}
+
+// The accepted generation remains the security floor while a checkpoint is
+// unavailable or refused. A failed restart does not produce a live session.
+function BeeKEMContinuationStep(current: int, step: BeeKEMContinuation): int
+  requires 0 <= current <= 4294967295
+  requires BoundedBeeKEMContinuation(step)
+  ensures 0 <= BeeKEMContinuationStep(current, step) <= 4294967295
+{
+  match step
+  case PathUpdate(generation, parentCurrent, writersCurrent) =>
+    if canCommitBeeKEMPathUpdate(current, generation, parentCurrent, writersCurrent)
+    then generation else current
+  case RestorePinned(generation, matches, authenticated) =>
+    if authenticated && checkpointCommitmentPermitsRestore(true, matches)
+    then generation else current
+}
+
+// A current application-owned pin identifies the exact authenticated state
+// at the accepted generation. Native digest computation and pin storage are
+// outside LemmaScript's model.
+predicate BeeKEMPinsTrackAcceptedState(current: int, steps: seq<BeeKEMContinuation>)
+  requires 0 <= current <= 4294967295
+  requires forall i :: 0 <= i < |steps| ==> BoundedBeeKEMContinuation(steps[i])
+  decreases |steps|
+{
+  |steps| == 0 ||
+    ((!steps[0].RestorePinned? || !steps[0].matches || steps[0].generation == current) &&
+      BeeKEMPinsTrackAcceptedState(BeeKEMContinuationStep(current, steps[0]), steps[1..]))
+}
+
+function BeeKEMContinuationHistory(current: int, steps: seq<BeeKEMContinuation>): int
+  requires 0 <= current <= 4294967295
+  requires forall i :: 0 <= i < |steps| ==> BoundedBeeKEMContinuation(steps[i])
+  ensures 0 <= BeeKEMContinuationHistory(current, steps) <= 4294967295
+  decreases |steps|
+{
+  if |steps| == 0 then current
+  else BeeKEMContinuationHistory(BeeKEMContinuationStep(current, steps[0]), steps[1..])
+}
+
+lemma beekemContinuation_all_histories(current: int, steps: seq<BeeKEMContinuation>)
+  requires 0 <= current <= 4294967295
+  requires forall i :: 0 <= i < |steps| ==> BoundedBeeKEMContinuation(steps[i])
+  requires BeeKEMPinsTrackAcceptedState(current, steps)
+  ensures current <= BeeKEMContinuationHistory(current, steps) <= current + |steps|
+  ensures (forall i :: 0 <= i < |steps| ==>
+    steps[i].RestorePinned? ||
+    !steps[i].parentCurrent || !steps[i].writersCurrent ||
+    steps[i].generation <= current)
+    ==> BeeKEMContinuationHistory(current, steps) == current
+  decreases |steps|
+{
+  if |steps| > 0 {
+    var step := steps[0];
+    var after := BeeKEMContinuationStep(current, step);
+    if step.PathUpdate? {
+      canCommitBeeKEMPathUpdate_ensures(current, step.generation, step.parentCurrent, step.writersCurrent);
+    }
+    assert current <= after <= current + 1;
+    beekemContinuation_all_histories(after, steps[1..]);
+  }
+}
+
+method beekemContinuation_domain()
+{
+  var steps := [PathUpdate(3, true, true), RestorePinned(2, false, true),
+    RestorePinned(3, true, true), PathUpdate(4, true, false),
+    PathUpdate(4, false, true), PathUpdate(4, true, true)];
+  assert BeeKEMPinsTrackAcceptedState(2, steps);
+  beekemContinuation_all_histories(2, steps);
+  assert BeeKEMContinuationHistory(2, steps) == 4;
+}
+
+datatype BeeKEMLeafChange =
+  UpdateLeaf(nextLive: bool) |
+  RestoreLeaf(nextLive: bool, matches: bool, authenticated: bool)
+
+function BeeKEMLeafAfter(live: bool, action: BeeKEMLeafChange): bool
+{
+  match action
+  case UpdateLeaf(nextLive) =>
+    if beeKEMLeafTransitionAllowed(live, nextLive) then nextLive else live
+  case RestoreLeaf(nextLive, matches, authenticated) =>
+    if authenticated && checkpointCommitmentPermitsRestore(true, matches)
+    then nextLive else live
+}
+
+predicate BeeKEMLeafPinsAreCurrent(live: bool, actions: seq<BeeKEMLeafChange>)
+  decreases |actions|
+{
+  |actions| == 0 ||
+    ((!actions[0].RestoreLeaf? || !actions[0].matches || actions[0].nextLive == live) &&
+      BeeKEMLeafPinsAreCurrent(BeeKEMLeafAfter(live, actions[0]), actions[1..]))
+}
+
+function BeeKEMLeafHistory(live: bool, actions: seq<BeeKEMLeafChange>): bool
+  decreases |actions|
+{
+  if |actions| == 0 then live
+  else BeeKEMLeafHistory(BeeKEMLeafAfter(live, actions[0]), actions[1..])
+}
+
+lemma beekemLeaf_nonReactivation(live: bool, actions: seq<BeeKEMLeafChange>)
+  requires BeeKEMLeafPinsAreCurrent(live, actions)
+  ensures BeeKEMLeafHistory(live, actions) ==> live
+  decreases |actions|
+{
+  if |actions| > 0 {
+    var action := actions[0];
+    var after := BeeKEMLeafAfter(live, action);
+    if action.UpdateLeaf? {
+      beeKEMLeafTransitionAllowed_ensures(live, action.nextLive);
+    }
+    assert after ==> live;
+    beekemLeaf_nonReactivation(after, actions[1..]);
+  }
+}
+
+method beekemLeaf_domain()
+{
+  var steps := [UpdateLeaf(false), RestoreLeaf(true, false, true),
+    RestoreLeaf(false, true, true), UpdateLeaf(true)];
+  assert BeeKEMLeafPinsAreCurrent(true, steps);
+  assert !BeeKEMLeafHistory(true, steps);
+  assert BeeKEMLeafHistory(true, [RestoreLeaf(true, true, true)]);
 }

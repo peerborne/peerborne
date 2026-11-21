@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import fc from 'fast-check';
 import { BeeKEM } from './beekem.js';
 import { generateEciesKeyPair } from '../ecies.js';
 import {
@@ -97,5 +98,92 @@ describe('authenticated local BeeKEM recovery', () => {
     state.welcome!.pathKeys[0].encryptedPrivateKey.fill(0);
     await restore;
     sameSecret(await restored.getRootSecret(), await bob.getRootSecret());
+  });
+
+  test('keeps a revoked leaf excluded when survivors restart and rotate again', async () => {
+    const restart = async (current: BeeKEM, keys: CryptoKeyPair) => {
+      const next = new BeeKEM();
+      await next.restoreLocalState(
+        await current.exportLocalState(keys.publicKey),
+        keys,
+      );
+      return next;
+    };
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .integer({ min: 1, max: 4 })
+          .chain((count) =>
+            fc.tuple(
+              fc.constant(count),
+              fc.integer({ min: 0, max: count - 1 }),
+            ),
+          ),
+        fc.boolean(),
+        async ([count, removedIndex], restartBeforeRemoval) => {
+          const founderKeys = await generateEciesKeyPair();
+          let founder = new BeeKEM();
+          await founder.initialize(
+            founderKeys.privateKey,
+            founderKeys.publicKey,
+          );
+          const readers: Array<{ tree: BeeKEM; keys: CryptoKeyPair }> = [];
+          for (let index = 0; index < count; index++) {
+            const keys = await generateEciesKeyPair();
+            const { pathUpdate, welcome } = await founder.addMember(
+              keys.publicKey,
+            );
+            for (const reader of readers)
+              await reader.tree.processPathUpdate(pathUpdate);
+            const tree = new BeeKEM();
+            await tree.processWelcome(welcome, keys.privateKey, keys.publicKey);
+            readers.push({ keys, tree });
+          }
+          if (restartBeforeRemoval)
+            founder = await restart(founder, founderKeys);
+          const removed = readers[removedIndex];
+          const revokedGeneration = removed.tree.generation;
+          const leaf = removed.tree.myLeafIndex;
+          const { pathUpdate, rootSecret } = await founder.removeMember(leaf);
+          const revokedRestart = await restart(removed.tree, removed.keys);
+          await expect(
+            revokedRestart.processPathUpdate(pathUpdate),
+          ).rejects.toThrow(/local member was removed/);
+          expect(revokedRestart.generation).toBe(revokedGeneration);
+
+          const surviving: BeeKEM[] = [];
+          for (const reader of readers) {
+            if (reader === removed) continue;
+            sameSecret(
+              await reader.tree.processPathUpdate(pathUpdate),
+              rootSecret,
+            );
+            surviving.push(await restart(reader.tree, reader.keys));
+          }
+          const restored = await restart(founder, founderKeys);
+          sameSecret(await restored.getRootSecret(), rootSecret);
+          const next = await restored.update();
+          expect(
+            next.pathUpdate.treeNodePublicKeys.find(
+              (entry) => entry.nodeIndex === leaf,
+            )?.publicKey ?? null,
+          ).toBeNull();
+          for (const reader of surviving) {
+            sameSecret(
+              await reader.processPathUpdate(next.pathUpdate),
+              next.rootSecret,
+            );
+          }
+        },
+      ),
+      {
+        seed: 20261120,
+        numRuns: 12,
+        examples: [
+          [[4, 1], true],
+          [[1, 0], false],
+        ],
+      },
+    );
   });
 });

@@ -5,6 +5,8 @@ description: How Peerborne is structured — packages, data flow, networking, an
 
 Peerborne composes several open-source subsystems into a coherent local-first stack. This page describes how the pieces fit together.
 
+Trace the runtime and trust boundaries through the [interactive system specification](../system-specification/). Each stage links to its checked contracts, runtime evidence and remaining gaps.
+
 ## Runtime overview
 
 ![UI and React connect to an in-memory CRDT. Epoch keys feed encryption before local persistence and peer transport.](/diagrams/runtime.svg)

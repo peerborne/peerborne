@@ -45,6 +45,15 @@ test('represents the scripted sync story honestly in the plain-text corpus', () 
   assert.match(output, /not an acceptance test/);
 });
 
+test('exports architecture and linked proof scope from the system specification', () => {
+  const output = cleanMdx('<SystemFlows />\n\n<SystemClaimLedger />');
+  assert.match(output, /### Coordinated write/);
+  assert.match(output, /\[field-scope\]\(#claim-field-scope\) \(Proved contract\)/);
+  assert.match(output, /\[beekem-removal\]\(#claim-beekem-removal\) \(Open guarantee\)/);
+  assert.match(output, /\[field_all_histories\]\([^)]*field-authorization\.dfy#L\d+\)/);
+  assert.match(output, /model assumes faithful target extraction/);
+});
+
 test('rejects an unclosed fenced block', () => {
   assert.throws(
     () =>

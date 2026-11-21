@@ -7,6 +7,7 @@ import {
   SubtleCrypto,
   generateEciesKeyPair,
   deserializeBeeKEMWelcomeV2FromWire,
+  documentCheckpointCommitment,
 } from '@peerborne/core';
 import {
   YjsProvider,
@@ -202,6 +203,66 @@ test('preserves membership state so a restored founder can remove an existing re
     afterRemoval.document.getText('fixture').toString(),
     'current before restart',
   );
+});
+
+test('pinned restart preserves accepted reader removal across restart schedules', async () => {
+  for (const restartMask of [0, 1, 2, 3]) {
+    const { document, created, kem } = await fixture();
+    async function start(
+      checkpoint: Awaited<ReturnType<typeof created.exportCheckpoint>>,
+    ) {
+      const fresh = document();
+      await fresh.setKemKeyPair(kem);
+      await fresh.restoreCheckpoint(
+        checkpoint,
+        await documentCheckpointCommitment(checkpoint),
+      );
+      await fresh.open();
+      return fresh;
+    }
+    const beforeInvitation = await created.exportCheckpoint();
+    let live = restartMask & 1 ? await start(beforeInvitation) : created;
+    const member = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      false,
+      ['sign', 'verify'],
+    );
+    const memberKem = await generateEciesKeyPair();
+    await live.addReader(
+      member.publicKey,
+      new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
+    );
+    const beforeRemoval = await live.exportCheckpoint();
+    if (restartMask & 2) live = await start(beforeRemoval);
+    assert.equal((await live.getReaders()).length, 2);
+    await live.removeReader(member.publicKey);
+
+    const checkpoint = await live.exportCheckpoint();
+    const trustedCommitment = await documentCheckpointCommitment(checkpoint);
+    const restarted = document();
+    await restarted.setKemKeyPair(kem);
+    for (const older of [beforeInvitation, beforeRemoval]) {
+      await assert.rejects(
+        restarted.restoreCheckpoint(older, trustedCommitment),
+        /checkpoint commitment mismatch/,
+      );
+      assert.equal(restarted.historySize(), 0);
+      assert.equal((await restarted.getReaders()).length, 0);
+    }
+    await restarted.restoreCheckpoint(checkpoint, trustedCommitment);
+    assert.equal((await restarted.getReaders()).length, 1);
+    assert.equal((await restarted.getWriters()).length, 1);
+    await restarted.open();
+    await restarted.change((doc) =>
+      doc.getText('fixture').insert(0, 'current '),
+    );
+    const resumed = await start(await restarted.exportCheckpoint());
+    assert.equal(
+      resumed.document.getText('fixture').toString(),
+      'current before restart',
+    );
+    assert.equal((await resumed.getReaders()).length, 1);
+  }
 });
 
 test('provider decoding failures do not install staged ACLs or document keys', async () => {

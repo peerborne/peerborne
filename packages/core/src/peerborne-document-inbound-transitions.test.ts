@@ -366,9 +366,10 @@ function pathUpdateHarness(
     options.initialEpoch === undefined
       ? undefined
       : new Uint8Array(options.initialEpoch);
-  const liveBeeKEM = { name: 'live-tree' } as Record<string, unknown>;
+  const liveBeeKEM = { name: 'live-tree', generation: 1 } as Record<string, unknown>;
   const stagedBeeKEM = {
     name: 'staged-tree',
+    generation: 2,
     processPathUpdate: jest.fn(async () => {
       options.onProcess?.();
       return rootSecret;
@@ -478,6 +479,7 @@ beforeEach(() => {
     derivedDocumentKey,
   );
   jest.mocked(deserializePathUpdateV2FromWire).mockReturnValue({
+    generation: 2,
     senderLeafIndex: 4,
     senderLeafPublicKey: new Uint8Array(65).fill(7),
     nodes: [],
@@ -1447,6 +1449,24 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
     expect(harness.liveEpoch()).toBeUndefined();
     expect(harness.installedBeeKEM()).toBe(harness.liveBeeKEM);
     expect(harness.order).toEqual(['prepare']);
+  });
+
+  test('leaves a replacement parent untouched even when its generation is unchanged', async () => {
+    const replacement = { name: 'replacement-tree', generation: 1 };
+    const harness = pathUpdateHarness({
+      onPrepare: () => {
+        harness.document._beekem = replacement;
+      },
+    });
+
+    await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(
+      new Uint8Array([1]),
+    );
+
+    expect(harness.prepareEpochKey).toHaveBeenCalledTimes(1);
+    expect(harness.claimCommit).not.toHaveBeenCalled();
+    expect(harness.liveEpoch()).toBeUndefined();
+    expect(harness.installedBeeKEM()).toBe(replacement);
   });
 
   test('poisons and keeps the old tree when an epoch finalizer violates its contract', async () => {

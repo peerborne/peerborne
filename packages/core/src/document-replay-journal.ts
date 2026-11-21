@@ -1,5 +1,6 @@
 import {
   classifyDocumentJournalRecovery,
+  canExposeDocumentJournalRecovery,
   canRecordDocumentPublicationBinding,
   recordDocumentPublicationBinding,
   canRetainDocumentPublicationBindings,
@@ -534,6 +535,14 @@ export class DocumentReplayJournal {
         acceptedBindings,
         stored?.revision ?? 0,
       );
+      const finalAnchor = copyAnchor(await this.anchor.load(this.storageKey));
+      if (
+        !canExposeDocumentJournalRecovery(
+          recovery,
+          documentJournalAnchorsEqual(stored, finalAnchor),
+        )
+      )
+        throw new Error('Journal anchor changed during recovery');
       this.acceptedPublicationBindings = acceptedBindings;
       this.pendingPublicationBindings = publications.bindings;
       this.head = stored;
