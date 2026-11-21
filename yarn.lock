@@ -4955,7 +4955,7 @@ __metadata:
     monaco-editor: "npm:^0.57.0"
     prosemirror-model: "npm:^1.25.12"
     prosemirror-state: "npm:^1.4.4"
-    prosemirror-view: "npm:^1.42.6"
+    prosemirror-view: "npm:^1.42.9"
     react: "npm:^19.3.1"
     react-dom: "npm:^19.3.1"
     svelte: "npm:^5.57.3"
@@ -14170,6 +14170,17 @@ __metadata:
     prosemirror-state: "npm:^1.0.0"
     prosemirror-transform: "npm:^1.1.0"
   checksum: 10/8365647bac89f0c8a7315342665d1e45ba7683d97816c96a9cddeb76155bae3b1ca55045de88d28172a5599cad146c8a168f2198e9d4ee0aadac1a2a24725731
+  languageName: node
+  linkType: hard
+
+"prosemirror-view@npm:^1.42.9":
+  version: 1.42.9
+  resolution: "prosemirror-view@npm:1.42.9"
+  dependencies:
+    prosemirror-model: "npm:^1.25.12"
+    prosemirror-state: "npm:^1.0.0"
+    prosemirror-transform: "npm:^1.1.0"
+  checksum: 10/bd2b4a7b7856d54bd7c399d37c40b2feec756688fc8be18961e24d0ac67b5a575f1e645258e4a6a08b5361a8e776fcfab067d02c4e66c6fa1cdd28b95d4a93bc
   languageName: node
   linkType: hard
 
