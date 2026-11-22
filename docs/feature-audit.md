@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 158 selected production functions have checked
+current proof scope. The 163 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -70,7 +70,7 @@ system-level statuses below.
 | Journal store transition integrity | Partial | Verified staging, token/checkpoint-bound commit admission and unique bounded outbox transitions; finite histories preserve accepted prefixes without checkpoint commits. Native properties cover malformed flags, one-read byte reservations, both backends, raw-row transaction aborts and encrypted recovery after duplicate rejection | Models storage-commit and payload-match truth as inputs. Crash durability, arbitrary provider failures, browser quotas, cryptographic unforgeability and UI latency remain outside the proof. |
 | Journal storage read admission | Partial | Verified revision-suffix validation and bounded byte decisions; checked finite read histories; native IndexedDB corruption/copy-cost properties and encrypted replay ownership | Bounds owned ciphertext copies, not browser structured-clone allocations, decoder buffers, total heap or UI latency. Cryptographic validity, transaction/abort behavior and independent-anchor honesty remain assumptions. |
 | Coordinator authority captures | Partial | Checked exact bounded roster maps plus seeded own-data/byte/map ownership and asynchronous guard-replacement properties | Requires truthful synchronous application-pinned authority. Native reflection, proxies, crypto and scheduling remain outside the proof. Provider-boundary failures do not establish a remote exploit or main-thread latency bound. |
-| Capability hierarchy and field capabilities | Partial | Standalone UCAN capability suite; coordinated mode has separate signed native-operation write scopes | Legacy BeeKEM/UCAN field capability strings are not enforced by its document mutation path. Field scopes do not redact reads. |
+| Capability hierarchy and field capabilities | Partial | Standalone UCAN capability suite, bounded field-path extraction, and separate signed native-operation write scopes in coordinated mode | Legacy BeeKEM/UCAN field capability strings are not enforced by its document mutation path. Field scopes do not redact reads. |
 | Coordinated native field authorization | Partial | Verified segment-prefix grants, exact first-rejection/budget policies and finite-history noninterference/attenuation lemmas; actual Automerge/Yjs hidden-operation, malformed-reference, scope-ownership, resource-cost and signed/encrypted WAL-admission properties | Opt-in signed write scopes; native operation decoding/provenance remains a property-tested boundary. Arrays/text require a grant for the entire container. No native parser, complete heap, cryptographic secrecy or browser latency proof. |
 | UCAN creation, signatures, and delegation chains | Verified | Standalone UCAN and UCAN-ACL suites | UCAN capability metadata is process-local and the document mutation path does not evaluate it; it is not replicated or enforced as shared revocation state. |
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |
@@ -85,7 +85,7 @@ system-level statuses below.
 | --- | --- | --- | --- |
 | React hooks and lifecycle management | Verified | Hook/cache/lifecycle and import-safety suites | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
 | Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
-| Field extraction and local indexes | Verified | Index manager and extractor suites plus planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
+| Field extraction and local indexes | Verified | Proved reserved path-segment exclusion, generated own-data extraction and projection ownership checks, and index planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
 | Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, current-schema rejection, and corrupted-row suites | Persistent schema invalidation should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
 | Bloom-filter CRDT | Partial | Local Bloom CRDT add, merge, serialization, and false-positive suites | There is no peer distribution protocol; a future one needs authentication and resource limits for hostile high-volume input. |

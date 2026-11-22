@@ -21,6 +21,7 @@ import {
 } from './query-ast.js';
 import { compareEntriesForQuery, createQueryCursor, isAfterQueryCursor, parseQueryCursor } from './query-cursor.js';
 import { extractField } from './field-extractor.js';
+import { FieldProjection } from './field-projection.js';
 
 export type FederatedCoverageReason =
   | 'byzantine-omission-possible'
@@ -411,29 +412,13 @@ function materializeIndexedFields(
   snapshot: Record<string, unknown>,
   definition: IndexDefinition,
 ): Record<string, unknown> | undefined {
-  const fields: Record<string, unknown> = {};
+  const projection = new FieldProjection();
   for (const field of definition.fields) {
     const value = extractField(snapshot, field.path);
     if (invalidIndexedValueReason(value, field)) return undefined;
-    setNestedField(fields, field.path, value);
+    projection.set(field.path, value);
   }
-  return fields;
-}
-
-function setNestedField(target: Record<string, unknown>, path: string, value: unknown): void {
-  const segments = path.split('.');
-  let cursor = target;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const existing = cursor[segments[i]];
-    if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
-      cursor = existing as Record<string, unknown>;
-    } else {
-      const nested: Record<string, unknown> = {};
-      cursor[segments[i]] = nested;
-      cursor = nested;
-    }
-  }
-  cursor[segments.at(-1)!] = value;
+  return projection.fields;
 }
 
 function validCandidateValues(

@@ -54,4 +54,35 @@ describe('extractField generated object/array paths', () => {
       },
     );
   });
+
+  test('only reads own data properties and never invokes getters', () => {
+    fc.assert(
+      fc.property(
+        fc.array(segment, { minLength: 1, maxLength: 12 }),
+        scalar,
+        (segments, value) => {
+          const prefix = segments.slice(0, -1);
+          const key = segments.at(-1)!;
+          const wrap = (target: object) =>
+            prefix.reduceRight((nested, pathSegment) => ({
+              [pathSegment]: nested,
+            }), target);
+          const path = segments.join('.');
+          const data = { [key]: value };
+          let reads = 0;
+          const accessor = Object.defineProperty({}, key, {
+            get() {
+              reads++;
+              return value;
+            },
+          });
+          expect(Object.is(extractField(wrap(data), path), value)).toBe(true);
+          expect(extractField(wrap(Object.create(data)), path)).toBeUndefined();
+          expect(extractField(wrap(accessor), path)).toBeUndefined();
+          expect(reads).toBe(0);
+        },
+      ),
+      { seed: 9546, numRuns: 300 },
+    );
+  });
 });

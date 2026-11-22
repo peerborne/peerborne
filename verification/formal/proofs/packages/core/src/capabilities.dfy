@@ -85,6 +85,32 @@ lemma parentGrantsCapability_ensures(parent: seq<DelegatedCapability>, resource:
 {
 }
 
+function isLineTerminator(code: int): bool
+{
+  ((((code == 10) || (code == 13)) || (code == 8232)) || (code == 8233))
+}
+
+lemma isLineTerminator_ensures(code: int)
+  ensures (isLineTerminator(code) <==> ((((code == 10) || (code == 13)) || (code == 8232)) || (code == 8233)))
+{
+}
+
+function isFieldMarkerAt(capability: string, index: int): bool
+  requires (0 <= index)
+  requires ((index + 7) <= |capability|)
+  requires (|capability| <= 4294967295)
+{
+  (capability[index..(index + 7)] == "/field/")
+}
+
+lemma isFieldMarkerAt_ensures(capability: string, index: int)
+  requires (0 <= index)
+  requires ((index + 7) <= |capability|)
+  requires (|capability| <= 4294967295)
+  ensures (isFieldMarkerAt(capability, index) <==> (capability[index..(index + 7)] == "/field/"))
+{
+}
+
 const CAP_DOC_ADMIN: string := "/doc/admin"
 
 const CAP_DOC_WRITE: string := "/doc/write"
@@ -119,6 +145,37 @@ method findUnauthorizedCapability(delegated: seq<DelegatedCapability>, parent: s
   return -1;
 }
 
+method fieldPathStart(capability: string) returns (res: int)
+  requires (|capability| <= 4294967295)
+  ensures ((res == -1) || ((7 <= res) && (res < |capability|)))
+  ensures ((res >= 0) ==> (isFieldMarkerAt(capability, (res - 7)) && forall j: int :: (((res - 7) <= j) ==> (j < |capability|) ==> !(isLineTerminator((capability[j] as int))))))
+  ensures forall i: int :: ((0 <= i) ==> ((i + 7) < |capability|) ==> ((res == -1) || ((i + 7) < res)) ==> isFieldMarkerAt(capability, i) ==> exists j: int :: (((i <= j) && (j < |capability|)) && isLineTerminator((capability[j] as int))))
+{
+  var boundary := |capability|;
+  while ((boundary > 0) && !(isLineTerminator((capability[(boundary - 1)] as int))))
+    invariant (0 <= boundary)
+    invariant (boundary <= |capability|)
+    invariant forall j: int :: ((boundary <= j) ==> (j < |capability|) ==> !(isLineTerminator((capability[j] as int))))
+    decreases boundary
+  {
+    boundary := (boundary - 1);
+  }
+  var index := boundary;
+  while ((index + 7) < |capability|)
+    invariant (boundary <= index)
+    invariant (index <= |capability|)
+    invariant forall i: int :: ((boundary <= i) ==> (i < index) ==> ((i + 7) < |capability|) ==> !(isFieldMarkerAt(capability, i)))
+    decreases (|capability| - index)
+  {
+    var i_t1 := isFieldMarkerAt(capability, index);
+    if i_t1 {
+      return (index + 7);
+    }
+    index := (index + 1);
+  }
+  return -1;
+}
+
 lemma capability_order(held: string, middle: string, required: string)
   ensures capabilityImplies(held, held)
   ensures capabilityImplies(held, middle) && capabilityImplies(middle, required) ==> capabilityImplies(held, required)
@@ -138,6 +195,17 @@ method capabilities_domain()
   assert isFieldCapability("/field/");
   assert parentGrantsCapability([DelegatedCapability("a", "/doc/admin")], "a", "/doc/read");
   assert !parentGrantsCapability([DelegatedCapability("a", "/doc/admin")], "b", "/doc/read");
+  var sample := "/field/a";
+  assert |sample| == 8 && isFieldMarkerAt(sample, 0);
+  forall j | 0 <= j < |sample|
+    ensures !isLineTerminator(sample[j] as int)
+  {
+    assert j == 0 || j == 1 || j == 2 || j == 3 || j == 4 || j == 5 || j == 6 || j == 7;
+  }
+  var selected := fieldPathStart(sample);
+  assert selected == 7;
+  var empty := fieldPathStart("/field/");
+  assert empty == -1;
   var none := findUnauthorizedCapability([], []);
   var attenuated := findUnauthorizedCapability([DelegatedCapability("a", "/doc/read")], [DelegatedCapability("a", "/doc/write")]);
   var broadened := findUnauthorizedCapability([DelegatedCapability("a", "/doc/admin")], [DelegatedCapability("a", "/doc/write")]);
