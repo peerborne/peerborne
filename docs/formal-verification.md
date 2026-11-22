@@ -501,6 +501,8 @@ under the checked local signing identity and current authority lease. A seeded
 [restart property](../packages/core/src/document-journal-properties.test.ts)
 holds that identity check pending and covers successful activation, a changed
 lease, a failed identity lookup, and closing before activation commits.
+The queue-order property covers change callbacks and publication access before
+activation, and confirms that work queued behind successful activation resumes.
 
 Yjs keychain history validation now indexes predecessor links and consumes each
 reachable item once. The actual ordering helper proves a distinct rooted prefix,
@@ -601,7 +603,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 67 property-suite files containing 241 explicit
+The inventory audits 67 property-suite files containing 242 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

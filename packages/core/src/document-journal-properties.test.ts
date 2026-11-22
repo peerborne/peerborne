@@ -318,6 +318,70 @@ describe('accepted document WAL and replay persistence', () => {
     );
   });
 
+  test('runs queued changes only after authenticated journal activation', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.integer(), { minLength: 1, maxLength: 6 }),
+        fc.integer(),
+        async (accepted, next) => {
+          const f = await documentFixture(),
+            key = await deviceKey(),
+            store = new InMemoryDocumentJournalStore(),
+            anchor = new InMemoryDocumentJournalRollbackAnchor();
+          const original = engine(f, key, store, anchor, true);
+          let originalFrame: Uint8Array;
+          try {
+            await original.activate();
+            originalFrame = await original.change((draft) => {
+              draft.push(...accepted);
+            });
+          } finally {
+            await original.close();
+          }
+
+          const reopened = engine(f, key, store, anchor, true);
+          const earlyChange = jest.fn((_draft: number[]) => {});
+          const resumedChange = jest.fn((draft: number[]) => {
+            expect(draft).toEqual(accepted);
+            draft.push(next);
+          });
+          try {
+            const beforeActivation = Promise.all([
+              expect(reopened.change(earlyChange)).rejects.toThrow(/activation/),
+              expect(reopened.receive(originalFrame)).rejects.toThrow(
+                /activation/,
+              ),
+              expect(reopened.pendingPublications()).rejects.toThrow(
+                /activation/,
+              ),
+              expect(reopened.publicationSent(originalFrame)).rejects.toThrow(
+                /activation/,
+              ),
+            ]);
+            const activating = reopened.activate();
+            const changing = reopened.change(resumedChange);
+            const [, , newFrame] = await Promise.all([
+              beforeActivation,
+              activating,
+              changing,
+            ]);
+
+            expect(earlyChange).not.toHaveBeenCalled();
+            expect(resumedChange).toHaveBeenCalledTimes(1);
+            expect(reopened.document).toEqual([...accepted, next]);
+            expect(await reopened.pendingPublications()).toEqual([
+              originalFrame,
+              newFrame,
+            ]);
+          } finally {
+            await reopened.close();
+          }
+        },
+      ),
+      { seed: 20261121, numRuns: 12 },
+    );
+  });
+
   test.each(['memory', 'indexeddb'] as const)(
     'preserves accepted state and replay floors over generated %s restarts',
     async (backend) => {

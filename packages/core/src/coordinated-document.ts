@@ -161,8 +161,7 @@ export class CoordinatedDocument<
 
   get document(): Document {
     this.assertUsable();
-    if (this.options.journal && !this.activated)
-      throw new Error('Document activation is not complete');
+    this.assertActivated();
     return this.session.document;
   }
 
@@ -185,6 +184,11 @@ export class CoordinatedDocument<
   private assertUsable(): void {
     if (this.closed || this.failed)
       throw new Error('Coordinated document must be reopened');
+  }
+
+  private assertActivated(): void {
+    if (this.options.journal && !this.activated)
+      throw new Error('Document activation is not complete');
   }
 
   private enqueue<T>(
@@ -251,10 +255,10 @@ export class CoordinatedDocument<
   change(change: Change, message = ''): Promise<Uint8Array> {
     if (typeof message !== 'string' || message.length > 4096)
       return Promise.reject(new TypeError('Invalid change message'));
-    return this.enqueue(
-      MAX_DOCUMENT_CONTENT_BYTES,
-      () => () => this.apply(undefined, change, message),
-    );
+    return this.enqueue(MAX_DOCUMENT_CONTENT_BYTES, () => () => {
+      this.assertActivated();
+      return this.apply(undefined, change, message);
+    });
   }
 
   receive(frame: Uint8Array): Promise<boolean> {
@@ -273,6 +277,7 @@ export class CoordinatedDocument<
           'document frame',
         );
         return async () => {
+          this.assertActivated();
           const result = await this.apply(owned);
           return result.length !== 0;
         };
@@ -310,7 +315,6 @@ export class CoordinatedDocument<
     change?: Change,
     message = '',
   ): Promise<Uint8Array> {
-    await this.recover();
     const context = this.options.coordinator.documentContext;
     const receipts =
       this.receiptsContext &&
@@ -698,7 +702,7 @@ export class CoordinatedDocument<
           'authority update',
         );
         return async () => {
-          await this.recover();
+          this.assertActivated();
           if (!this.options.authority.applyUpdate)
             throw new Error(
               'Document authority does not support signed transitions',
@@ -773,7 +777,7 @@ export class CoordinatedDocument<
 
   pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
     return this.enqueue(0, () => async () => {
-      await this.recover();
+      this.assertActivated();
       return this.options.journal
         ? this.options.journal.pendingPublications()
         : this.publications.map((frame) => frame.slice());
@@ -796,7 +800,7 @@ export class CoordinatedDocument<
           'published document frame',
         );
         return async () => {
-          await this.recover();
+          this.assertActivated();
           if (this.options.journal)
             await this.options.journal.publicationSent(owned);
           else
