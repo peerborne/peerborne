@@ -14,6 +14,7 @@
       "path": "packages/core/src/policy/beekem-transition.ts",
       "functions": [
         "classifyBeeKEMGeneration",
+        "isCompetingBeeKEMEpoch",
         "isAppendOnlyLeafCount",
         "canCommitBeeKEMPathUpdate",
         "checkpointCommitmentPermitsRestore",
@@ -26,6 +27,7 @@
       ],
       "verifiedTargets": [
         "classifyBeeKEMGeneration_ensures",
+        "isCompetingBeeKEMEpoch_ensures",
         "isAppendOnlyLeafCount_ensures",
         "canCommitBeeKEMPathUpdate_ensures",
         "checkpointCommitmentPermitsRestore_ensures",
@@ -800,6 +802,18 @@
         "field_protected_noninterference",
         "field_grants_attenuate",
         "field_all_histories"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
+    },
+    {
+      "path": "packages/core/src/policy/document-recovery.ts",
+      "functions": ["classifyDocumentRecovery", "canPublishDocumentRecovery"],
+      "witness": "documentRecovery_domain",
+      "consumers": ["packages/core/src/document-recovery.ts"],
+      "verifiedTargets": [
+        "classifyDocumentRecovery_ensures",
+        "canPublishDocumentRecovery_ensures",
+        "documentRecovery_all_histories"
       ],
       "solverSeeds": [1, 2, 7, 19]
     }

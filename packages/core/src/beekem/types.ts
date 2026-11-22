@@ -119,10 +119,13 @@ export interface BeeKEMWelcomeV2 {
 
 /** Recipient-sealed recovery state for the local member, stored inside an authenticated checkpoint. */
 export interface BeeKEMLocalState {
+  generation: number;
   leafPublicKey: Uint8Array;
   sealedLeafPrivateKey: Uint8Array | null;
   welcome: BeeKEMWelcomeV2 | null;
   lastAppliedUpdateDigest: Uint8Array | null;
+  /** Public commitment of the most recent PathUpdate's predecessor, if known. */
+  lastAppliedParentTreeHash: Uint8Array | null;
 }
 
 /**

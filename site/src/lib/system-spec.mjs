@@ -27,6 +27,25 @@ export const claims = [
     tests: ['packages/core/src/peerborne-document-sync-context.test.ts'],
   },
   {
+    id: 'gossip-receive',
+    label: 'Inbound limits',
+    title: 'Reserve capacity before handling a gossip frame',
+    rule: 'Share capacity between the ordinary listener and topic validator. Charge a work item and its ciphertext bytes before copying, decrypting, decoding, or queuing it.',
+    checked:
+      'The budget policy preserves count and byte bounds across finite histories. Runtime tests check the shared budgets, cutoff on close, and batches of up to four signature checks per verification.',
+    limit:
+      'Limits account for admitted frames. Native heap and wall time need measurement. A locally skipped frame needs subsequent synchronization.',
+    proof: [
+      'packages/core/src/policy/document-admission.ts',
+      'documentAdmission_all_histories',
+    ],
+    source: 'packages/core/src/gossip-receive-admission.ts',
+    tests: [
+      'packages/core/src/gossip-receive-admission-properties.test.ts',
+      'packages/core/src/peerborne-document-gossip-admission.test.ts',
+    ],
+  },
+  {
     id: 'invitation',
     label: 'Invitation binding',
     title: 'Keep an invitation bound to its recipient',
@@ -45,7 +64,7 @@ export const claims = [
     id: 'beekem-generation',
     label: 'Epoch order',
     title: 'Classify a BeeKEM transition',
-    rule: 'Advance only one generation. Classify an identical same-generation update as a duplicate and a different digest as a fork. Grow the tree by at most one leaf.',
+    rule: 'Advance only one generation. Ignore exact redelivery. For a same-generation conflict, check its predecessor and public tree commitment. Grow the tree by at most one leaf.',
     checked:
       'For validated counters and a supplied digest match, the classifier recognizes exactly stale, duplicate, fork, next and gap. It enforces the configured leaf capacity.',
     limit:
@@ -87,16 +106,56 @@ export const claims = [
     ],
   },
   {
+    id: 'beekem-fork',
+    label: 'Competing epochs',
+    title: 'Stop a replica that observes competing BeeKEM successors',
+    rule: 'After checking the current writers, stop the document on a signed claim at the current generation for the last accepted predecessor and a different validated public tree.',
+    checked:
+      'The competing-epoch predicate requires all three conditions. Runtime properties exercise independently generated successors, signed competing removals, and a restored predecessor commitment.',
+    limit:
+      'Each document instance stops on observed evidence. A signed public tree does not establish that its private epoch is usable. Automatic branch selection, old-document convergence, and durable fork quarantine require further evidence.',
+    proof: [
+      'packages/core/src/policy/beekem-transition.ts',
+      'isCompetingBeeKEMEpoch_ensures',
+    ],
+    source: 'packages/core/src/peerborne-document.ts',
+    tests: [
+      'packages/core/src/beekem/local-state.test.ts',
+      'examples/password-manager/src/document-checkpoint.test.ts',
+    ],
+  },
+  {
+    id: 'beekem-replacement',
+    label: 'Opt-in replacement',
+    title: 'Activate an approved replacement with fresh keys',
+    rule: 'Bind approval to the current logical locator, replacement identity and selected content. Stage the fresh document privately, then advance the application locator atomically.',
+    checked:
+      'Modeled activation histories permit at most one successor for the pinned base. An exact retry after activation confirms the same receipt.',
+    limit:
+      'The application owns the recovery authority, private staging, recipient enrollment and independently protected atomic locator. This flow creates a new document path.',
+    proof: [
+      'packages/core/src/policy/document-recovery.ts',
+      'classifyDocumentRecovery_ensures',
+      'canPublishDocumentRecovery_ensures',
+      'documentRecovery_all_histories',
+    ],
+    tests: [
+      'packages/core/src/document-recovery-properties.test.ts',
+      'examples/password-manager/src/document-checkpoint.test.ts',
+    ],
+  },
+  {
     id: 'beekem-removal',
     label: 'Removal continuity',
     title: 'Carry a BeeKEM removal through every authority boundary',
     rule: 'After an authenticated removal, a current replica should use the matching tree, key epoch and writer set together. Restart should preserve that decision.',
     limit:
-      'The end-to-end guarantee across tree transition, reader and writer ACLs, loading and restart remains open. Independently replicated ACLs can temporarily disagree.',
+      'Pinned founder restarts and new-epoch encryption have runtime coverage. The group-wide guarantee across tree transition, reader and writer ACLs, and loading remains open. Independently replicated ACLs can temporarily disagree.',
     source: 'packages/core/src/peerborne-document.ts',
     tests: [
       'packages/core/src/peerborne-document-role-transitions.test.ts',
       'packages/core/src/beekem/local-state.test.ts',
+      'examples/password-manager/src/document-checkpoint.test.ts',
     ],
     state: 'open',
   },
@@ -394,6 +453,7 @@ export const flows = [
         'Recipient device',
         'Check local writers and merge',
         'legacy-content',
+        'gossip-receive',
         'convergence',
       ],
     ],
@@ -406,12 +466,13 @@ export const flows = [
     stages: [
       ['Application trust', 'Pin issuer and enroll identity', 'trust'],
       ['Sender device', 'Bind offer, request and Welcome', 'invitation'],
-      ['Recipient device', 'Classify signed PathUpdate', 'beekem-generation'],
+      ['Recipient device', 'Classify signed PathUpdate', 'beekem-generation', 'beekem-fork'],
       [
         'Across replicas',
         'Apply removal and next epoch',
         'beekem-continuation',
         'beekem-removal',
+        'beekem-replacement',
         'key-secrecy',
       ],
     ],
@@ -482,6 +543,7 @@ export const flows = [
         'Client device',
         'Authenticate checkpoint and compare pin',
         'beekem-continuation',
+        'beekem-fork',
       ],
       [
         'Across replicas',

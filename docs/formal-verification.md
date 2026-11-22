@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 158 production functions in 38 proof units. The runtime calls
+LemmaScript checks 161 production functions in 39 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -32,7 +32,8 @@ consumer, proof obligation and non-vacuity witness.
 | Production source                                                           | Functions | Proved behavior                                                                                                                                                                                           |
 | --------------------------------------------------------------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Work budget](../packages/core/src/policy/work-budget.ts)                   |         1 | Reservation succeeds iff it fits; accepted addition stays within the budget and safe-integer domain.                                                                                                      |
-| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         5 | Exact generation classification, append-only leaf counts, current parent/writer checks, blank-slot non-reactivation and matching an optional restart pin.                                                                                             |
+| [BeeKEM transitions](../packages/core/src/policy/beekem-transition.ts)      |         6 | Exact generation and competing-epoch classification, append-only leaf counts, current parent/writer checks, blank-slot non-reactivation and matching an optional restart pin. |
+| [Document replacement](../packages/core/src/policy/document-recovery.ts) | 2 | Exact pinned-locator and staging gates. Finite histories permit at most one approved successor for the pinned base. |
 | [Quorum](../packages/core/src/policy/quorum.ts) | 7 | Strict-majority default and explicit trust floor; exact first-eligible peer selection, distinct identities, digest multiplicities, stable cohort projection and failure precedence. Distinct digests cannot both reach a strict majority of the counted votes; ambiguous threshold winners are rejected. |
 | [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
 | [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
@@ -83,11 +84,33 @@ tree size, removed leaf and writer restart timing. It checks that a restarted
 survivor derives the accepted key, a removed leaf stays blank after another rotation,
 and the removed instance cannot accept the removal update. The
 [document fixture](../examples/password-manager/src/document-checkpoint.test.ts)
-covers four restart placements across invitation and removal and checks that the
-current pin refuses earlier signed checkpoints before installing state. The
-default document flow supports a founder and one active collaborator.
-Distributed ACL agreement, full epoch-fork recovery and cryptographic secrecy
-across every distribution path remain open.
+covers four restart placements across invitation and removal for a reader and a
+former editor. It checks that the
+current pin refuses earlier signed checkpoints and that the pre-removal key
+cannot decrypt a post-removal write from the restored founder. The default
+document flow supports a founder and one active collaborator.
+
+The same proof unit checks the exact competing-epoch rule. The incoming claim
+names the current generation and the last accepted predecessor and presents a
+validated distinct public tree commitment. The runtime checks the signature
+against its current writer set before classifying the claim. A property exercises
+parallel signed removal branches through the document API, including pinned
+restart on either branch before rejoining. Each observed branch stops without
+installing the other branch’s key. Checkpoints retain the accepted predecessor
+commitment. An already detected conflict stops the live instance, so an
+application must store any durable decision independently of that instance.
+The proof does not cover private-key recovery from a competing claim, branch
+selection, agreement across partitioned writer ACLs, or cryptographic secrecy
+across every distribution path.
+
+The opt-in [replacement API](../packages/core/src/document-recovery.ts) stages
+approved content on a fresh document path. A durable application compare-and-set
+publishes one successor for the exact pinned base. The [proof](../verification/formal/proofs/packages/core/src/policy/document-recovery.dfy)
+checks monotone revision and at most one accepted successor over finite concurrent
+attempt histories. A retry after acknowledgment loss recognizes the accepted
+receipt. Native tests cover authorized content selection, racing stages, and
+restoring a new Yjs document and key after a detected fork. Application authority,
+staging durability, fresh key provisioning and atomic locator storage are trusted.
 
 Map proofs use immutable map values. Candidate/checkpoint ownership therefore also
 has native JavaScript properties: a missing copy can pass the value-model proof
@@ -594,7 +617,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 67 property-suite files containing 236 explicit
+The inventory audits 69 property-suite files containing 244 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

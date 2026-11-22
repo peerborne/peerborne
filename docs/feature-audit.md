@@ -16,7 +16,7 @@ Status meanings:
   direct executable evidence.
 
 The [formal-verification assessment](formal-verification.md) describes the
-current proof scope. The 158 selected production functions have checked
+current proof scope. The 161 selected production functions have checked
 contracts, an assumption audit, and complementary property tests. These proofs
 establish the specified local policies; they do not change the broader
 system-level statuses below.
@@ -76,7 +76,9 @@ system-level statuses below.
 | Epoch-based key rotation | Verified | Epoch and document-key suites | Rotation under simultaneous membership and document changes needs integration coverage. |
 | BeeKEM group key agreement | Verified | Current V2 tree, Welcome, churn, transactional rollback, wire-codec, and signed document-handler replay suites | Primitive churn coverage does not establish large-group network support. Updates require the exact parent and next generation; skipped updates need ordered redelivery or explicit ratchet recovery. |
 | Signed online invitation and encrypted welcome | Verified | Canonical wire, length-framed join bounds, signature, expiry, binding, malformed-input, replay, KEM-pair, deadline, complete bootstrap/catch-up CID coverage, exact BeeKEM/ACL topology, combined-capacity boundary, attested-profile growth, canonical-root Automerge ACL initialization and rejection of noncanonical histories plus the distinct-identity cross-NAT job that dials the signed circuit rendezvous without preconnecting | Inviter restart, recipient restart, offline acceptance, durable replay state, and multi-address failover remain unverified. The tested profile is Automerge JSON with P-384/SHA-384 signing and AES-GCM; deliberately compatible custom providers may attest the same bounds and then own that guarantee. Oversized retained state is rejected. Any failure after the first admitted membership mutation can leave partial or complete founder-side membership because there is no transactional rollback. |
-| Member revocation and PathUpdates | Partial | BeeKEM revocation and PathUpdate codec/handler suites | Delivery is best-effort, BeeKEM state is memory-only, ACL causal authorization is not wired, and a peer that missed the new epoch cannot recover it through an ordinary load encrypted under that epoch. Multi-peer partition/rejoin and explicit recovery remain unverified. |
+| Member revocation and PathUpdates | Partial | BeeKEM transition proofs, signed removal fork and pinned restart properties, and WebCrypto checks on post-restart wire ciphertext | Delivery is best effort. The default mode lacks causal authorization across ACL partitions. A peer that missed the epoch cannot recover the key through ordinary load. Group-wide exclusion, durable fork quarantine, and reconciliation on the old document path remain open. |
+| Opt-in document replacement | Partial | Checked one-successor publication policy, seeded concurrency and retry histories, and a new Yjs checkpoint after a signed fork | Applications must authorize content and recipients, stage fresh key state, and own an independently protected atomic locator. Automatic old-path reconciliation and browser storage durability remain open. |
+| GossipSub receive capacity | Partial | Proven reservation arithmetic with native properties and real receive-registration tests | Bound to 16 work items and 16 MiB of ciphertext per active subscription, and 64 items and 64 MiB per module. Native heap, end-to-end delivery under saturation, and browser latency remain separate measurements. |
 | History visibility key filters | Partial | Exported API, document implementation, and focused filter tests | The modes filter distributed epoch keys but do not redact retained CRDT operations or provide historical-content confidentiality; initial invitations therefore require explicit full-history sharing. |
 
 ## Query and framework integration

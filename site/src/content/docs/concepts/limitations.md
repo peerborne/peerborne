@@ -105,7 +105,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   causal cutover and does not protect against a malicious writer equivocating
   across partitions.
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
-- **BeeKEM rekey state is memory-only.** If the node restarts, all knowledge of key rotations is lost. Revoked readers may be able to decrypt content they previously had access to.
+- **BeeKEM restore depends on the application.** Checkpoints preserve the accepted generation. Rollback protection requires an independent current pin. Revoked readers retain access to content and keys they already received.
 - **PathUpdate is best-effort and has no automatic catch-up.** There is no
   acknowledgment or retry. A surviving reader that misses the new epoch cannot
   use an ordinary load response encrypted under that unknown epoch to recover;
@@ -115,7 +115,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   issue and verify capability tokens, but the document change path does not
   check them and capability metadata is not replicated. Revocation is not
   enforced across replicas through a shared, authenticated membership state.
-- **No automatic or restart-safe key rotation.** Document keys can be rotated on demand via `removeReader()`, which activates a new document key through BeeKEM, but rotation requires explicit application triggers, BeeKEM rekey state is memory-only, and PathUpdate delivery is best-effort.
+- **Recovery is explicit.** `removeReader()` rotates the current key and sends a best-effort PathUpdate. If a replica observes a competing signed epoch, it stops. An application can explicitly authorize a fresh replacement and persist that decision in its own locator. The default protocol has no automatic branch selection or old-path reconciliation.
 
 ## Convergence and verification
 
