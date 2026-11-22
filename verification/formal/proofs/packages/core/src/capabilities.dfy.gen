@@ -85,6 +85,32 @@ lemma parentGrantsCapability_ensures(parent: seq<DelegatedCapability>, resource:
 {
 }
 
+function isLineTerminator(code: int): bool
+{
+  ((((code == 10) || (code == 13)) || (code == 8232)) || (code == 8233))
+}
+
+lemma isLineTerminator_ensures(code: int)
+  ensures (isLineTerminator(code) <==> ((((code == 10) || (code == 13)) || (code == 8232)) || (code == 8233)))
+{
+}
+
+function isFieldMarkerAt(capability: string, index: int): bool
+  requires (0 <= index)
+  requires ((index + 7) <= |capability|)
+  requires (|capability| <= 4294967295)
+{
+  (capability[index..(index + 7)] == "/field/")
+}
+
+lemma isFieldMarkerAt_ensures(capability: string, index: int)
+  requires (0 <= index)
+  requires ((index + 7) <= |capability|)
+  requires (|capability| <= 4294967295)
+  ensures (isFieldMarkerAt(capability, index) <==> (capability[index..(index + 7)] == "/field/"))
+{
+}
+
 const CAP_DOC_ADMIN: string := "/doc/admin"
 
 const CAP_DOC_WRITE: string := "/doc/write"
@@ -113,6 +139,37 @@ method findUnauthorizedCapability(delegated: seq<DelegatedCapability>, parent: s
     var i_t0 := parentGrantsCapability(parent, grant.resource, grant.ability);
     if !(i_t0) {
       return index;
+    }
+    index := (index + 1);
+  }
+  return -1;
+}
+
+method fieldPathStart(capability: string) returns (res: int)
+  requires (|capability| <= 4294967295)
+  ensures ((res == -1) || ((7 <= res) && (res < |capability|)))
+  ensures ((res >= 0) ==> (isFieldMarkerAt(capability, (res - 7)) && forall j: int :: (((res - 7) <= j) ==> (j < |capability|) ==> !(isLineTerminator((capability[j] as int))))))
+  ensures forall i: int :: ((0 <= i) ==> ((i + 7) < |capability|) ==> ((res == -1) || ((i + 7) < res)) ==> isFieldMarkerAt(capability, i) ==> exists j: int :: (((i <= j) && (j < |capability|)) && isLineTerminator((capability[j] as int))))
+{
+  var boundary := |capability|;
+  while ((boundary > 0) && !(isLineTerminator((capability[(boundary - 1)] as int))))
+    invariant (0 <= boundary)
+    invariant (boundary <= |capability|)
+    invariant forall j: int :: ((boundary <= j) ==> (j < |capability|) ==> !(isLineTerminator((capability[j] as int))))
+    decreases boundary
+  {
+    boundary := (boundary - 1);
+  }
+  var index := boundary;
+  while ((index + 7) < |capability|)
+    invariant (boundary <= index)
+    invariant (index <= |capability|)
+    invariant forall i: int :: ((boundary <= i) ==> (i < index) ==> ((i + 7) < |capability|) ==> !(isFieldMarkerAt(capability, i)))
+    decreases (|capability| - index)
+  {
+    var i_t1 := isFieldMarkerAt(capability, index);
+    if i_t1 {
+      return (index + 7);
     }
     index := (index + 1);
   }

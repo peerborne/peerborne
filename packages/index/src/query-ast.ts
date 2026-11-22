@@ -11,6 +11,8 @@ import {
   QueryExpression,
 } from './types.js';
 import { extractField } from './field-extractor.js';
+import { hasSafeIndexFieldPathSegments } from './field-path.js';
+import { FieldProjection } from './field-projection.js';
 
 const MAX_FIELD_PATH_LENGTH = 512;
 const MAX_COLLECTION_PREFIX_LENGTH = 4096;
@@ -22,7 +24,6 @@ const MAX_FIRST = 10_000;
 const MAX_SORT_FIELDS = 8;
 const MAX_SELECT_FIELDS = 64;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export class InvalidIndexSchemaError extends TypeError {
   constructor(message: string) {
@@ -357,9 +358,9 @@ export function compareIndexScalars(a: IndexScalar | undefined, b: IndexScalar |
 
 export function projectFields(fields: Record<string, unknown>, select?: string[]): Record<string, unknown> {
   if (!select) return structuredClone(fields);
-  const projected: Record<string, unknown> = {};
-  for (const path of select) setNestedField(projected, path, extractField(fields, path));
-  return projected;
+  const projection = new FieldProjection();
+  for (const path of select) projection.set(path, extractField(fields, path));
+  return projection.fields;
 }
 
 export function canonicalJsonString(value: unknown): string {
@@ -494,10 +495,9 @@ function validateFieldPath(
   ErrorType: typeof InvalidIndexSchemaError | typeof InvalidQueryError,
 ): asserts value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_FIELD_PATH_LENGTH ||
-      value.startsWith('.') || value.endsWith('.') || value.includes('..') ||
       value.startsWith('__peerborne_internal_') ||
       /[\u0000-\u001f]/.test(value) ||
-      value.split('.').some((segment) => !segment || FORBIDDEN_PATH_SEGMENTS.has(segment))) {
+      !hasSafeIndexFieldPathSegments(value.split('.'))) {
     throw new ErrorType(`${label} is invalid`);
   }
 }
@@ -550,22 +550,6 @@ function requireOwnKeys(
       throw new ErrorType(`missing ${label} property: ${key}`);
     }
   }
-}
-
-function setNestedField(target: Record<string, unknown>, path: string, value: unknown): void {
-  const segments = path.split('.');
-  let cursor = target;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const existing = cursor[segments[i]];
-    if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
-      cursor = existing as Record<string, unknown>;
-    } else {
-      const next: Record<string, unknown> = {};
-      cursor[segments[i]] = next;
-      cursor = next;
-    }
-  }
-  cursor[segments[segments.length - 1]] = value;
 }
 
 function canonicalize(value: unknown): unknown {

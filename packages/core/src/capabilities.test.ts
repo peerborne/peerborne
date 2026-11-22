@@ -11,7 +11,7 @@ const field = fc
   )
   .map((units) => String.fromCharCode(...units));
 
-describe('field-path extraction outside the formal regex subset', () => {
+describe('field-path extraction at the native string boundary', () => {
   test('preserves arbitrary nonempty field suffixes and rejects document-only capabilities', () => {
     fc.assert(
       fc.property(
@@ -30,6 +30,47 @@ describe('field-path extraction outside the formal regex subset', () => {
         examples: [
           ['/doc/write', ''],
           ['/doc/read', 'items.0.name'],
+        ],
+      },
+    );
+  });
+
+  test('starts at the first complete marker in the final line and preserves UTF-16 code units', () => {
+    const input = fc
+      .array(
+        fc.oneof(
+          field,
+          fc.constantFrom(
+            '/field/',
+            '/field',
+            '\r\n',
+            '\n',
+            '\r',
+            '\u2028',
+            '\u2029',
+            '\ud800',
+            '\udfff',
+          ),
+        ),
+        { maxLength: 30 },
+      )
+      .map((parts) => parts.join(''));
+
+    fc.assert(
+      fc.property(input, (capability) => {
+        const lastLine = capability.split(/[\r\n\u2028\u2029]/).at(-1)!;
+        const marker = lastLine.indexOf('/field/');
+        const path = marker < 0 ? '' : lastLine.slice(marker + 7);
+        expect(getFieldPath(capability)).toBe(path || undefined);
+      }),
+      {
+        seed: 9547,
+        numRuns: 1000,
+        examples: [
+          ['/field/first/field/second'],
+          ['/field/first\n/field/second'],
+          ['/field/first\u2028'],
+          ['/field/\ud800'],
         ],
       },
     );

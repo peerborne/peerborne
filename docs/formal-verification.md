@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 161 production functions in 39 proof units. The runtime calls
+LemmaScript checks 166 production functions in 40 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -36,7 +36,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Document replacement](../packages/core/src/policy/document-recovery.ts) | 2 | Exact pinned-locator and staging gates. Finite histories permit at most one approved successor for the pinned base. |
 | [Quorum](../packages/core/src/policy/quorum.ts) | 7 | Strict-majority default and explicit trust floor; exact first-eligible peer selection, distinct identities, digest multiplicities, stable cohort projection and failure precedence. Distinct digests cannot both reach a strict majority of the counted votes; ambiguous threshold winners are rejected. |
 | [Authority votes](../packages/core/src/policy/authority-votes.ts)           |         2 | Exactly the first vote per authority is eligible; differing digests from that authority imply equivocation.                                                                                               |
-| [Capabilities](../packages/core/src/capabilities.ts)                        |         4 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation and rejection of the first unauthorized child capability.                      |
+| [Capabilities](../packages/core/src/capabilities.ts) | 7 | Exact hierarchy, reflexivity/transitivity, orthogonal history access, field-prefix recognition, resource-bound attenuation, first unauthorized child capability, and field-path marker and suffix recognition. |
 | [Membership collections](../packages/core/src/policy/string-collections.ts) |         5 | Duplicate detection, exact missing-frontier count, distinct membership equality, and exact success conditions for initial and accepted invitation roles.                                                  |
 | [Keychain order](../packages/core/src/policy/keychain-order.ts) | 5 | Entry equality, exact prefix recognition, prefix transitivity, first rewrite detection, safe operation-tail clocks and exact complete append-chain ordering with at most N+1 successor probes. |
 | [Maintenance admission](../packages/core/src/policy/maintenance.ts)         |         3 | Compaction eligibility, authenticated duplicate replacement and first unauthenticated eviction selection.                                                                                                 |
@@ -48,6 +48,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Field authorization](../packages/core/src/policy/field-authorization.ts) | 4 | Exact segment prefixes, grant membership, first unauthorized target and inspection budgets. Prefix order, grant attenuation and finite admission histories exclude operations overlapping a protected path disjoint from every grant. Native target extraction remains an explicit abstraction. |
 | [Base64 sizing](../packages/core/src/policy/encoded-size.ts)                |         2 | Exact block sizing and padding upper bounds in the uint32 input domain.                                                                                                                                   |
 | [Query expansion](../packages/index/src/query-budget.ts)                    |         1 | Exact bounded Cartesian size before allocation; rejection iff the product exceeds the limit.                                                                                                              |
+| [Index field paths](../packages/index/src/field-path.ts) | 2 | Exact admission of nonempty paths with no empty or reserved prototype segments. A native projection follows only branches allocated by its own writer. |
 | [UTF-16 and bounded UTF-8](../packages/core/src/internal/canonical-encoding.ts) | 6 | Exact surrogate pairing and UTF-8 prefix-byte counts; acceptance iff the paired string fits the byte cap; bounded scan without encoded buffers and immediate rejection of excessive code-unit length.                                                                                                                     |
 | [Bootstrap selection](../packages/core/src/bootstrap-config.ts)             |         1 | Bootstrap mode iff the configured peer list is nonempty.                                                                                                                                                  |
 | [React cache key](../packages/react/src/document-cache-key.ts)                     |         1 | Exact concatenation and path recovery; injectivity for a fixed namespace.                                                                                                                                 |
@@ -518,6 +519,14 @@ finite-history lemma excludes tokens introduced only by abandoned attempts.
 Token generation, native Map ownership, authenticated decoding and storage
 readback remain property/integration boundaries.
 
+Journal-backed documents expose recovered state only after activation commits
+under the checked local signing identity and current authority lease. A seeded
+[restart property](../packages/core/src/document-journal-properties.test.ts)
+holds that identity check pending and covers successful activation, a changed
+lease, a failed identity lookup, and closing before activation commits.
+The queue-order property covers change callbacks and publication access before
+activation, and confirms that work queued behind successful activation resumes.
+
 Yjs keychain history validation now indexes predecessor links and consumes each
 reachable item once. The actual ordering helper proves a distinct rooted prefix,
 rejects duplicate IDs and predecessor forks, and accepts exactly when a complete
@@ -617,7 +626,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 69 property-suite files containing 244 explicit
+The inventory audits 69 property-suite files containing 250 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
@@ -664,7 +673,7 @@ Generated histories exposed two runtime bugs during this expansion:
 
 The smallest reproductions remain explicit examples in the corresponding
 property suites. Bootstrap example tests and capability-hierarchy example
-tables were removed because their laws are now proved. Regex parsing,
+tables were removed because their laws are now proved. Native parsing,
 signature, rollback, serialization, browser and attack regressions remain
 where they check behavior outside the contracts.
 

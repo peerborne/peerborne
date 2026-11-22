@@ -5,6 +5,7 @@ import { IndexManager } from './index-manager.js';
 import { MemoryIndexStorage } from './memory-index-storage.js';
 import { IDBIndexStorage } from './idb-index-storage.js';
 import { boundedCartesianSize } from './query-budget.js';
+import { FieldProjection } from './field-projection.js';
 import type {
   IndexDefinition,
   QueryAst,
@@ -140,6 +141,85 @@ function compare(
   return a < b ? -1 : 1;
 }
 let database = 0;
+
+describe('owned field projections', () => {
+  test.each(['memory', 'indexeddb'] as const)(
+    '%s stores and projects selected nested fields through updates and rebuilds',
+    async (backend) => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.constantFrom('profile', 'metrics', 'toString', 'valueOf'),
+          fc.string({ maxLength: 30 }),
+          fc.integer(),
+          async (branch, name, count) => {
+            const storage =
+              backend === 'memory'
+                ? new MemoryIndexStorage()
+                : new IDBIndexStorage('projection-' + database++);
+            const manager = new IndexManager<Record<string, unknown>>(
+              storage,
+              (document) => document,
+            );
+            const indexName = 'projected';
+            const documentPath = '/records/first';
+            const namePath = branch + '.name';
+            const countPath = branch + '.count';
+            const fields = Object.freeze({ name, count, private: 'unindexed' });
+            try {
+              await manager.defineIndex({
+                version: 2,
+                name: indexName,
+                collectionPrefix: '/records/',
+                storageMode: 'cleartext-local',
+                fields: [
+                  { path: namePath, type: 'string', required: true },
+                  { path: countPath, type: 'number', required: true },
+                ],
+              });
+              await manager.updateIndex(documentPath, { [branch]: fields });
+              const query: QueryAst = {
+                version: 2,
+                indexName,
+                allowScan: true,
+                select: [countPath, namePath],
+              };
+              const [row] = (await manager.query(query)).documents;
+              expect(row.snapshot).toStrictEqual({ [branch]: { count, name } });
+              expect(row.snapshot[branch]).not.toBe(fields);
+              await manager.rebuildIndex(indexName, new Map([
+                [documentPath, { [branch]: { name, count: count + 1 } }],
+              ]));
+              const [rebuilt] = (await manager.query({
+                ...query,
+                select: [countPath],
+              })).documents;
+              expect(rebuilt.snapshot).toStrictEqual({
+                [branch]: { count: count + 1 },
+              });
+            } finally {
+              if (storage instanceof IDBIndexStorage) await storage.close();
+            }
+          },
+        ),
+        { seed: 9547, numRuns: 32 },
+      );
+    },
+  );
+
+  test('never traverses objects previously stored as leaf values', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.string(), (original, updated) => {
+        const leaf = Object.freeze({ label: original });
+        const projection = new FieldProjection();
+        projection.set('details', leaf);
+        projection.set('details.label', updated);
+        expect(projection.fields).toStrictEqual({ details: { label: updated } });
+        expect(leaf.label).toBe(original);
+      }),
+      { seed: 9548, numRuns: 100 },
+    );
+  });
+});
 
 describe('generated index updates, planning and cursor histories', () => {
   test.each(['memory', 'indexeddb'] as const)(

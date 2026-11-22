@@ -494,7 +494,7 @@ describe('ordinary sync-message context confinement', () => {
     },
   );
 
-  test('pubsub handler rejects specialized bodies when validators are disabled', async () => {
+  test('pubsub handler confines ordinary sync when validators are disabled', async () => {
     const serializer = new JSONSerializer<any>();
     let messageHandler: ((event: any) => void) | undefined;
     const pubsub = {
@@ -508,7 +508,7 @@ describe('ordinary sync-message context confinement', () => {
       unsubscribe: jest.fn(),
       topicValidators: new Map(),
     };
-    const sync = jest.fn(async () => true);
+    const applySync = jest.fn(async () => true);
     const decryptBlock = jest.fn();
     const document = fakeDocument({
       _invitationBootstrapReady: true,
@@ -519,7 +519,7 @@ describe('ordinary sync-message context confinement', () => {
       _decryptBlock: decryptBlock,
       _syncMessageSerializer: serializer,
       _isSigningEnabled: () => false,
-      sync,
+      _syncUnlocked: applySync,
       swarm: {
         config: { enableSigning: false, enableTopicValidators: false },
         registerDocument: jest.fn(),
@@ -528,44 +528,39 @@ describe('ordinary sync-message context confinement', () => {
       },
     });
 
-    await document.open();
-    decryptBlock.mockResolvedValueOnce(
-      serializer.serializeSyncMessage({
-        documentId: documentPath,
-        signatureContext: 'ordinary-sync-v1',
-        keychainChanges: { delta: 1 },
-      }),
-    );
-    messageHandler!({
-      detail: {
-        data: encryptedPayload(),
-        topic: '/topic',
-        type: 'signed',
-        from: { toString: () => 'peer' },
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    decryptBlock.mockResolvedValueOnce(
-      serializer.serializeSyncMessage({
-        documentId: '/another-document',
-        signatureContext: 'ordinary-sync-v1',
-        changes: { kind: 'document' },
-      }),
-    );
-    messageHandler!({
-      detail: {
-        data: encryptedPayload(),
-        topic: '/topic',
-        type: 'signed',
-        from: { toString: () => 'peer' },
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
+    async function deliver(
+      message: Parameters<typeof serializer.serializeSyncMessage>[0],
+    ) {
+      decryptBlock.mockResolvedValueOnce(serializer.serializeSyncMessage(message));
+      messageHandler!({
+        detail: {
+          data: encryptedPayload(),
+          topic: '/topic',
+          type: 'signed',
+          from: { toString: () => 'peer' },
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
 
-    expect(sync).not.toHaveBeenCalled();
-    await document.close();
+    const ordinary = {
+      documentId: documentPath,
+      signatureContext: 'ordinary-sync-v1' as const,
+      changeId: 'root',
+      changes: { kind: crdtDocumentChangeNode, change: { value: 1 } },
+    };
+    await document.open();
+    try {
+      await deliver({ ...ordinary, keychainChanges: { delta: 1 } });
+      await deliver({ ...ordinary, documentId: '/another-document' });
+      expect(applySync).not.toHaveBeenCalled();
+
+      await deliver(ordinary);
+      expect(applySync).toHaveBeenCalledTimes(1);
+      expect(applySync).toHaveBeenCalledWith(ordinary, true, 'ordinary-sync-v1');
+    } finally {
+      await document.close();
+    }
   });
 
   test('pubsub handler ignores other topics before decryption or reload', async () => {

@@ -84,7 +84,10 @@
         "capabilityImplies",
         "isFieldCapability",
         "parentGrantsCapability",
-        "findUnauthorizedCapability"
+        "findUnauthorizedCapability",
+        "isLineTerminator",
+        "isFieldMarkerAt",
+        "fieldPathStart"
       ],
       "witness": "capabilities_domain",
       "consumers": [
@@ -96,7 +99,10 @@
         "isFieldCapability_ensures",
         "parentGrantsCapability_ensures",
         "findUnauthorizedCapability",
-        "capability_order"
+        "capability_order",
+        "isLineTerminator_ensures",
+        "isFieldMarkerAt_ensures",
+        "fieldPathStart"
       ]
     },
     {
@@ -314,6 +320,22 @@
       "witness": "queryBudget_domain",
       "consumers": ["packages/index/src/query-planner.ts"],
       "verifiedTargets": ["boundedCartesianSize_ensures"]
+    },
+    {
+      "path": "packages/index/src/field-path.ts",
+      "functions": [
+        "isIndexFieldPathSegment",
+        "hasSafeIndexFieldPathSegments"
+      ],
+      "witness": "indexFieldPath_domain",
+      "consumers": [
+        "packages/index/src/field-projection.ts",
+        "packages/index/src/query-ast.ts"
+      ],
+      "verifiedTargets": [
+        "isIndexFieldPathSegment_ensures",
+        "hasSafeIndexFieldPathSegments"
+      ]
     },
     {
       "path": "packages/core/src/internal/canonical-encoding.ts",

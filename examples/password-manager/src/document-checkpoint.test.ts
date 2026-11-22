@@ -133,6 +133,31 @@ function decryptBroadcast(frame: Uint8Array, key: CryptoKey) {
   );
 }
 
+async function signPathUpdateWithDifferentCommitment(
+  update: Uint8Array,
+  field: 'parentTreeHash' | 'treeHash',
+  signer: CryptoKey,
+) {
+  const serializer = new YjsJSONSerializer();
+  const { signature: _signature, ...message } =
+    serializer.deserializeSyncMessage(update);
+  const pathUpdate = message.pathUpdate!;
+  const differentHash = Buffer.from(pathUpdate[field], 'base64');
+  differentHash[0] ^= 1;
+  message.pathUpdate = {
+    ...pathUpdate,
+    [field]: differentHash.toString('base64'),
+  };
+  const signature = await new SubtleCrypto().sign(
+    serializer.serializeSyncMessage(message),
+    signer,
+  );
+  return serializer.serializeSyncMessage({
+    ...message,
+    signature: Buffer.from(signature).toString('base64'),
+  });
+}
+
 test('restores authenticated Yjs state, keys, history, and writer access before opening', async () => {
   const { document, created, kem } = await fixture();
   const checkpoint = await created.exportCheckpoint();
@@ -336,7 +361,7 @@ test('pinned restart preserves revocation of readers and former editors', async 
 
 test('same-predecessor signed removal forks stop either branch, including after pinned restore', async () => {
   for (const restartMask of [0, 1, 2, 3]) {
-    const { document, created, kem, traffic } = await fixture();
+    const { document, created, signing, kem, traffic } = await fixture();
     async function start(
       checkpoint: Awaited<ReturnType<typeof created.exportCheckpoint>>,
     ) {
@@ -371,13 +396,28 @@ test('same-predecessor signed removal forks stop either branch, including after 
     ];
     for (const [index, replica] of replicas.entries()) {
       const { keychain, broadcasts } = traffic.get(replica)!;
-      const [epochBefore] = await keychain.current();
-      const countBefore = broadcasts.length;
+      const [epochBefore, keyBefore] = await keychain.current();
       const ownUpdate = index === 0 ? firstUpdate : secondUpdate;
       const rivalUpdate = index === 0 ? secondUpdate : firstUpdate;
 
       await replica.handleBeeKEMPathUpdateRequestData(ownUpdate);
       assert.equal(replica.competingBeeKEMGeneration, undefined);
+      for (const field of ['parentTreeHash', 'treeHash'] as const) {
+        const inconsistentClaim = await signPathUpdateWithDifferentCommitment(
+          rivalUpdate,
+          field,
+          signing.privateKey,
+        );
+        await replica.handleBeeKEMPathUpdateRequestData(inconsistentClaim);
+        assert.equal(replica.competingBeeKEMGeneration, undefined);
+        assert.deepEqual((await keychain.current())[0], epochBefore);
+        const count = broadcasts.length;
+        await replica.change((doc) => doc.getText('fixture').insert(0, '+'));
+        assert.equal(broadcasts.length, count + 1);
+        await decryptBroadcast(broadcasts.at(-1)!, keyBefore);
+      }
+
+      const countBefore = broadcasts.length;
       await replica.handleBeeKEMPathUpdateRequestData(rivalUpdate);
       assert.equal(replica.competingBeeKEMGeneration, 2);
       assert.deepEqual((await keychain.current())[0], epochBefore);
