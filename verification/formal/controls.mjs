@@ -1176,6 +1176,20 @@ method mapOperand_domain()
       "if (incoming === current + 2) return 'next';",
     ],
     [
+      'beekem-competing-epoch-wrong-predecessor',
+      'beekem-transition.ts',
+      'return incoming === current && sameAcceptedParent && validatedDifferentTree;',
+      'return incoming === current && validatedDifferentTree;',
+      'isCompetingBeeKEMEpoch_ensures',
+    ],
+    [
+      'beekem-competing-epoch-unvalidated-tree',
+      'beekem-transition.ts',
+      'return incoming === current && sameAcceptedParent && validatedDifferentTree;',
+      'return incoming === current && sameAcceptedParent;',
+      'isCompetingBeeKEMEpoch_ensures',
+    ],
+    [
       'beekem-path-update-stale-parent',
       'beekem-transition.ts',
       "classifyBeeKEMGeneration(current, incoming, false) === 'next' &&\n    sameParent &&",
@@ -1707,6 +1721,20 @@ method mapOperand_domain()
     'sync-request.ts',
     'return issuedAt - now >= -60000 && issuedAt - now <= 30000;',
     'return issuedAt - now >= -60001 && issuedAt - now <= 30000;',
+  ]);
+  mutations.push([
+    'document-recovery-ignores-pinned-base',
+    'document-recovery.ts',
+    "if (observedRevision === baseRevision && baseMatches) return 'ready';",
+    "if (observedRevision === baseRevision) return 'ready';",
+    'classifyDocumentRecovery_ensures',
+  ]);
+  mutations.push([
+    'document-recovery-publishes-unstaged-artifact',
+    'document-recovery.ts',
+    "return disposition === 'ready' && staged;",
+    "return disposition === 'ready';",
+    'canPublishDocumentRecovery_ensures',
   ]);
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);

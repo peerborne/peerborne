@@ -37,6 +37,24 @@ lemma classifyBeeKEMGeneration_ensures(current: int, incoming: int, sameUpdateDi
 {
 }
 
+function isCompetingBeeKEMEpoch(current: int, incoming: int, sameAcceptedParent: bool, validatedDifferentTree: bool): bool
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+{
+  (((incoming == current) && sameAcceptedParent) && validatedDifferentTree)
+}
+
+lemma isCompetingBeeKEMEpoch_ensures(current: int, incoming: int, sameAcceptedParent: bool, validatedDifferentTree: bool)
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+  ensures (isCompetingBeeKEMEpoch(current, incoming, sameAcceptedParent, validatedDifferentTree) <==> (((incoming == current) && sameAcceptedParent) && validatedDifferentTree))
+{
+}
+
 function isAppendOnlyLeafCount(current: int, incoming: int, capacity: int): bool
   requires (1 <= current)
   requires (current <= capacity)

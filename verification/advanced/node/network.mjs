@@ -81,8 +81,8 @@ export async function echoStorm({ full }) {
       decryptions++;
       return decrypt(...args);
     };
-    const sync = target.document.sync.bind(target.document);
-    target.document.sync = async (...args) => {
+    const sync = target.document._syncUnlocked.bind(target.document);
+    target.document._syncUnlocked = async (...args) => {
       syncCalls++;
       return sync(...args);
     };

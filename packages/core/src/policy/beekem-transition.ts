@@ -21,6 +21,20 @@ export function classifyBeeKEMGeneration(
   return 'gap';
 }
 
+/** A matching predecessor and a validated distinct public successor identify a competing epoch. */
+export function isCompetingBeeKEMEpoch(
+  current: number,
+  incoming: number,
+  sameAcceptedParent: boolean,
+  validatedDifferentTree: boolean,
+): boolean {
+  //@ verify
+  //@ requires 0 <= current && current <= 4294967295
+  //@ requires 1 <= incoming && incoming <= 4294967295
+  //@ ensures \result <==> incoming === current && sameAcceptedParent && validatedDifferentTree
+  return incoming === current && sameAcceptedParent && validatedDifferentTree;
+}
+
 /** BeeKEM transitions preserve the lifetime leaf count or append one leaf. */
 export function isAppendOnlyLeafCount(
   current: number,

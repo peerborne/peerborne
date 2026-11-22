@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { BeeKEM } from './beekem.js';
+import { BeeKEM, BeeKEMCompetingEpochError } from './beekem.js';
 import {
   BeeKEMWelcomeV2,
   PathUpdateV2,
@@ -461,8 +461,12 @@ describe('BeeKEM multi-member churn', () => {
       treeHash: new Uint8Array(pathUpdate.treeHash),
     };
     conflicting.treeHash[0] ^= 0xff;
-    await expect(bob.processPathUpdate(conflicting)).rejects.toThrow(
-      /Conflicting/,
+    const malformedCommitment = bob.processPathUpdate(conflicting);
+    await expect(malformedCommitment).rejects.toThrow(
+      /Conflicting BeeKEM update at generation/,
+    );
+    await expect(malformedCommitment).rejects.not.toBeInstanceOf(
+      BeeKEMCompetingEpochError,
     );
 
     const { pathUpdate: nextUpdate } = await alice.update();

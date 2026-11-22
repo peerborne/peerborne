@@ -37,6 +37,24 @@ lemma classifyBeeKEMGeneration_ensures(current: int, incoming: int, sameUpdateDi
 {
 }
 
+function isCompetingBeeKEMEpoch(current: int, incoming: int, sameAcceptedParent: bool, validatedDifferentTree: bool): bool
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+{
+  (((incoming == current) && sameAcceptedParent) && validatedDifferentTree)
+}
+
+lemma isCompetingBeeKEMEpoch_ensures(current: int, incoming: int, sameAcceptedParent: bool, validatedDifferentTree: bool)
+  requires (0 <= current)
+  requires (current <= 4294967295)
+  requires (1 <= incoming)
+  requires (incoming <= 4294967295)
+  ensures (isCompetingBeeKEMEpoch(current, incoming, sameAcceptedParent, validatedDifferentTree) <==> (((incoming == current) && sameAcceptedParent) && validatedDifferentTree))
+{
+}
+
 function isAppendOnlyLeafCount(current: int, incoming: int, capacity: int): bool
   requires (1 <= current)
   requires (current <= capacity)
@@ -105,6 +123,11 @@ method beekemTransition_domain()
   assert classifyBeeKEMGeneration(1, 1, false).fork?;
   assert classifyBeeKEMGeneration(0, 2, false).gap?;
   assert classifyBeeKEMGeneration(4294967295, 4294967295, true).duplicate?;
+  assert isCompetingBeeKEMEpoch(2, 2, true, true);
+  assert !isCompetingBeeKEMEpoch(2, 1, true, true);
+  assert !isCompetingBeeKEMEpoch(2, 3, true, true);
+  assert !isCompetingBeeKEMEpoch(2, 2, false, true);
+  assert !isCompetingBeeKEMEpoch(2, 2, true, false);
   assert isAppendOnlyLeafCount(1, 2, 8192);
   assert isAppendOnlyLeafCount(8192, 8192, 8192);
   assert !isAppendOnlyLeafCount(8192, 8193, 8192);

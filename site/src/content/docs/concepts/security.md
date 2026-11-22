@@ -257,10 +257,10 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
 - **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
-- Both mechanisms are **incomplete**: BeeKEM rekey state is memory-only (lost on restart), and PathUpdate has no delivery guarantee
+- A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage.
+- PathUpdate delivery is best effort.
 
 ```ts
-// Be aware: BeeKEM state is memory-only
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
 `removeReader` generates and distributes BeeKEM PathUpdates internally as part
@@ -274,6 +274,20 @@ epoch. Recovery requires a separate recipient-bound re-invitation or explicit
 key-recovery flow; Peerborne does not automatically re-invite members or run
 a key-recovery flow. A Welcome must carry a generation-bearing BeeKEM tree;
 key-only Welcome payloads are rejected.
+
+A document stops when a current writer signs a different validated public tree
+for the same generation and last accepted predecessor. The application can read
+the stopped generation through `competingBeeKEMGeneration`. A signed checkpoint
+preserves the predecessor for detecting a conflict after restart. Persisting a
+decision to retire a forked document requires application-owned storage.
+
+Applications can opt into `activateDocumentReplacement`. An application
+authorizes a particular old locator, fresh destination and selected content
+digest. The SDK checks the content, asks the application to stage a private
+replacement, then uses the application’s durable compare-and-set to activate
+it. The application provisions fresh keys and enrolls approved recipients.
+The existing document stays stopped. An exact retry can confirm the accepted
+replacement after a restart or lost response.
 
 The bundled Yjs and Automerge providers compose the local reader-ACL removal,
 epoch-key append, BeeKEM tree replacement, and identity-cache cleanup through
@@ -292,7 +306,7 @@ unchanged. Discard that instance before continuing.
 ### Limitations of revocation
 
 - **No absolute guarantee.** A revoked reader with a copy of the encrypted blocks and the old document key can still decrypt them offline.
-- **BeeKEM state is lost on restart.** If the node restarts, it loses track of which keys have been invalidated.
+- **Rollback protection needs independent state.** Keep the current checkpoint commitment outside the rollback domain of the signed checkpoint itself.
 - **PathUpdate is not guaranteed.** There is no acknowledgment or retry mechanism.
 - **ACL authorization is not causally chained.** The standalone chain primitive is not connected to document sync, so concurrent stale-writer ACL operations remain order-dependent.
 - **Key reuse risk.** If the application reuses KEM key pairs across documents, revoking access to one document may not fully revoke it from another.

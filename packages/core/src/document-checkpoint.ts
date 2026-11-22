@@ -64,7 +64,7 @@ export async function documentCheckpointCommitment(
 
 /** @internal Current local checkpoint format; independent of network message formats. */
 export interface DocumentCheckpointState {
-  format: 'peerborne/local-document-checkpoint/1';
+  format: 'peerborne/local-document-checkpoint/2';
   documentPath: string;
   owner: string;
   document: string;
@@ -80,10 +80,12 @@ export interface DocumentCheckpointState {
   historyVisibility: 'full_history' | 'current_only' | 'since_invited';
   invitationEpoch: string | null;
   beekem: {
+    generation: number;
     leafPublicKey: string;
     sealedLeafPrivateKey: string | null;
     welcome: SerializedBeeKEMWelcomeV2 | null;
     digest: string | null;
+    parentTreeHash: string | null;
   } | null;
   readerLeaves: [string, number][];
   readerKemKeys: [string, string][];
@@ -163,7 +165,7 @@ export function decodeCheckpointState(
     Array.isArray(state) ||
     Object.keys(state).length !== fields.length ||
     fields.some((field) => !Object.hasOwn(state, field)) ||
-    state.format !== 'peerborne/local-document-checkpoint/1' ||
+    state.format !== 'peerborne/local-document-checkpoint/2' ||
     typeof state.documentPath !== 'string' ||
     state.documentPath.length === 0 ||
     state.documentPath.length > 4096 ||
@@ -253,9 +255,16 @@ export function decodeCheckpointState(
     if (
       typeof state.beekem !== 'object' ||
       Object.keys(state.beekem).sort().join() !==
-        'digest,leafPublicKey,sealedLeafPrivateKey,welcome'
+        'digest,generation,leafPublicKey,parentTreeHash,sealedLeafPrivateKey,welcome'
     )
       throw new TypeError('Invalid checkpoint BeeKEM state');
+    if (
+      !Number.isSafeInteger(state.beekem.generation) ||
+      Object.is(state.beekem.generation, -0) ||
+      state.beekem.generation < 0 ||
+      state.beekem.generation > 0xffff_ffff
+    )
+      throw new TypeError('Invalid checkpoint BeeKEM generation');
     if (checkpointDecode(state.beekem.leafPublicKey).length !== 65)
       throw new TypeError('Invalid checkpoint leaf key');
     if (state.beekem.sealedLeafPrivateKey !== null) {
@@ -268,6 +277,11 @@ export function decodeCheckpointState(
       checkpointDecode(state.beekem.digest).length !== 32
     )
       throw new TypeError('Invalid checkpoint replay digest');
+    if (
+      state.beekem.parentTreeHash !== null &&
+      checkpointDecode(state.beekem.parentTreeHash).length !== 32
+    )
+      throw new TypeError('Invalid checkpoint BeeKEM predecessor');
   }
   return state as DocumentCheckpointState;
 }

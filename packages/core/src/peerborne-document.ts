@@ -33,6 +33,8 @@ import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
+import { verifyMemberSignature } from './internal/signature-verification.js';
+import { GossipReceiveAdmission } from './gossip-receive-admission.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -55,7 +57,6 @@ import {
   assertSharedProtocolRequestSize,
   concatUint8Arrays,
   copyUnsharedUint8Array,
-  firstTrue,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,
@@ -133,7 +134,7 @@ import {
   invitationCatchUpV1,
   securityAdvertiseV1,
 } from './wire-protocols.js';
-import { BeeKEM } from './beekem/beekem.js';
+import { BeeKEM, BeeKEMCompetingEpochError } from './beekem/beekem.js';
 import { BeeKEMWelcomeV2, PathUpdateV2 } from './beekem/types.js';
 import {
   deserializePathUpdateV2FromWire,
@@ -956,6 +957,13 @@ export class PeerborneDocument<
     return this._coordinated?.document ?? this._document;
   }
 
+  /** Generation at which this instance stopped after observing an authenticated competing BeeKEM tree. */
+  get competingBeeKEMGeneration(): number | undefined {
+    return this._competingBeeKEMGeneration;
+  }
+
+  private _competingBeeKEMGeneration: number | undefined;
+
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
   >;
@@ -1409,6 +1417,7 @@ export class PeerborneDocument<
   // Handler for listening for sync messages on the document topic. Is `undefined` until
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
+  private _gossipReceiveAdmission?: GossipReceiveAdmission;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
@@ -3638,17 +3647,13 @@ export class PeerborneDocument<
     } catch {
       return false;
     }
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
-        this._authProvider.verify(
-          new Uint8Array(raw),
-          writerKey,
-          new Uint8Array(signatureBytes),
-        ),
-      );
-    }
-    return firstTrue(verificationTasks);
+    return verifyMemberSignature(writerKeys, (writerKey) =>
+      this._authProvider.verify(
+        new Uint8Array(raw),
+        writerKey,
+        new Uint8Array(signatureBytes),
+      ),
+    );
   }
 
   /**
@@ -3660,13 +3665,9 @@ export class PeerborneDocument<
     }
 
     const writerKeys = await this._getWriterKeys();
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
-        this._authProvider.verify(payload, writerKey, signature),
-      );
-    }
-    return firstTrue(verificationTasks);
+    return verifyMemberSignature(writerKeys, (writerKey) =>
+      this._authProvider.verify(payload, writerKey, signature),
+    );
   }
 
   private async _signAsWriter(
@@ -3733,17 +3734,13 @@ export class PeerborneDocument<
     } catch {
       return false;
     }
-    const verificationTasks: Promise<boolean>[] = [];
-    for (const writerKey of writerKeys) {
-      verificationTasks.push(
-        this._authProvider.verify(
-          new Uint8Array(raw),
-          writerKey,
-          new Uint8Array(signatureBytes),
-        ),
-      );
-    }
-    return firstTrue(verificationTasks);
+    return verifyMemberSignature(writerKeys, (writerKey) =>
+      this._authProvider.verify(
+        new Uint8Array(raw),
+        writerKey,
+        new Uint8Array(signatureBytes),
+      ),
+    );
   }
 
   /**
@@ -6490,9 +6487,12 @@ export class PeerborneDocument<
     return false;
   }
 
-  private async _handleSyncRequest(request: SyncRequest): Promise<void> {
+  private async _handleSyncRequest(
+    request: SyncRequest,
+    isCurrent: () => boolean = () => this._subscribed,
+  ): Promise<void> {
     await this._runStateMutation(async () => {
-      if (!this._subscribed) return;
+      if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
       const previous = this._lastSyncMessage,
         snapshot = this._latestSnapshot;
@@ -6525,6 +6525,7 @@ export class PeerborneDocument<
         );
       now = this._observeSyncRequestClock();
       if (
+        !isCurrent() ||
         now === undefined ||
         !this._syncRequestCanBeAdmitted(request, now) ||
         !syncResponseAllowed(
@@ -6559,7 +6560,7 @@ export class PeerborneDocument<
           () => {
             const dispatch = this._observeSyncRequestClock();
             return (
-              this._subscribed &&
+              isCurrent() &&
               dispatch !== undefined &&
               isSyncRequestFresh(request, dispatch)
             );
@@ -6622,7 +6623,7 @@ export class PeerborneDocument<
           ? await this._beekem.exportLocalState(this._kemKeyPair!.publicKey)
           : null;
       const payload = encodeCheckpointState({
-        format: 'peerborne/local-document-checkpoint/1',
+        format: 'peerborne/local-document-checkpoint/2',
         documentPath: this.documentPath,
         owner: await requireSerializePublicKey(
           this._authProvider,
@@ -6659,6 +6660,7 @@ export class PeerborneDocument<
           beekem === null
             ? null
             : {
+                generation: beekem.generation,
                 leafPublicKey: checkpointEncode(beekem.leafPublicKey),
                 sealedLeafPrivateKey:
                   beekem.sealedLeafPrivateKey === null
@@ -6672,6 +6674,10 @@ export class PeerborneDocument<
                   beekem.lastAppliedUpdateDigest === null
                     ? null
                     : checkpointEncode(beekem.lastAppliedUpdateDigest),
+                parentTreeHash:
+                  beekem.lastAppliedParentTreeHash === null
+                    ? null
+                    : checkpointEncode(beekem.lastAppliedParentTreeHash),
               },
         readerLeaves: [...this._readerLeafIndices],
         readerKemKeys: [...this._readerKemPublicKeys].map(
@@ -6814,6 +6820,7 @@ export class PeerborneDocument<
           );
         await beekem.restoreLocalState(
           {
+            generation: state.beekem.generation,
             leafPublicKey: checkpointDecode(state.beekem.leafPublicKey),
             sealedLeafPrivateKey:
               state.beekem.sealedLeafPrivateKey === null
@@ -6827,6 +6834,10 @@ export class PeerborneDocument<
               state.beekem.digest === null
                 ? null
                 : checkpointDecode(state.beekem.digest),
+            lastAppliedParentTreeHash:
+              state.beekem.parentTreeHash === null
+                ? null
+                : checkpointDecode(state.beekem.parentTreeHash),
           },
           this._kemKeyPair,
         );
@@ -7008,10 +7019,22 @@ export class PeerborneDocument<
     }
   }
 
+  private _decryptGossipFrame(frame: Uint8Array) {
+    const keyEnd = this._keychainProvider.keyIDLength;
+    const nonceEnd = keyEnd + this._authProvider.nonceBytes;
+    if (frame.byteLength <= nonceEnd) return undefined;
+    return this._decryptBlock(
+      frame.subarray(0, keyEnd),
+      frame.subarray(keyEnd, nonceEnd),
+      frame.subarray(nonceEnd),
+    );
+  }
+
   private async _open(
     bootstrapContinuation?: InvitationBootstrapContinuation,
     createLocally = false,
   ): Promise<boolean> {
+    if (this._subscribed) throw new Error('Document is already open');
     const continuingInvitationBootstrap =
       this._isActiveInvitationBootstrapContinuation(bootstrapContinuation);
     const assertCanOpen = (): void => {
@@ -7077,43 +7100,54 @@ export class PeerborneDocument<
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
+    const receiveAdmission = new GossipReceiveAdmission();
+    this._gossipReceiveAdmission = receiveAdmission;
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
-      // Decrypt sync message.
-      const blockKeyID = rawMessage.detail.data.slice(
-        0,
-        this._keychainProvider.keyIDLength,
-      );
-      const blockNonce = rawMessage.detail.data.slice(
-        this._keychainProvider.keyIDLength,
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
-      );
-      const blockData = rawMessage.detail.data.slice(
-        this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
-      );
-      void this._decryptBlock(blockKeyID, blockNonce, blockData)
-        .then(async (rawContent) => {
-          if (!rawContent) {
-            // Unauthenticated packets must not trigger network load amplification.
-            return;
-          }
+      void receiveAdmission
+        .run(rawMessage.detail.data, async (frame) => {
+          const rawContent = await this._decryptGossipFrame(frame);
+          if (!rawContent || !receiveAdmission.active) return;
 
           if (isSyncRequest(rawContent)) {
             const request = decodeSyncRequest(rawContent);
-            return request ? this._handleSyncRequest(request) : undefined;
+            if (request) {
+              await this._handleSyncRequest(
+                request,
+                () => this._subscribed && receiveAdmission.active,
+              );
+            }
+            return;
           }
 
           const message = snapshotSyncMessageForContext<ChangesType>(
             this._syncMessageSerializer.deserializeSyncMessage(rawContent),
             'ordinary-sync-v1',
-          ) as OrdinarySyncMessage<ChangesType>;
+          );
           if (message.documentId !== this.documentPath) return;
 
-          return this.sync(message);
+          await this._runStateMutation(async () => {
+            if (!receiveAdmission.active) return;
+            await this._syncUnlocked(
+              message,
+              true,
+              'ordinary-sync-v1',
+              undefined,
+              false,
+              undefined,
+              {
+                assertStillActive: () => {
+                  if (!receiveAdmission.active)
+                    throw new Error('GossipSub receive subscription closed');
+                },
+              },
+            );
+          });
         })
         .catch(() => {
-          console.error('Inbound sync message handling failed');
+          if (receiveAdmission.active)
+            console.error('Inbound sync message handling failed');
         });
     };
 
@@ -7144,106 +7178,106 @@ export class PeerborneDocument<
       if (this.swarm.config?.enableTopicValidators && this._isSigningEnabled()) {
         if (typeof pubsub.topicValidators?.set === 'function') {
           const topicValidator: TopicValidatorFn = async (
-              _peerId: PeerId,
-              message: Message,
-            ): Promise<TopicValidatorResult> => {
-              try {
-                // Keep attacker-controlled decryption and decoding outside the
-                // shared state queue. Only the final health and current-writer
-                // authorization decision must be serialized with mutations.
-                const blockKeyID = message.data.slice(
-                  0,
-                  this._keychainProvider.keyIDLength,
-                );
-                const blockNonce = message.data.slice(
-                  this._keychainProvider.keyIDLength,
-                  this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBytes,
-                );
-                const blockData = message.data.slice(
-                  this._keychainProvider.keyIDLength +
-                    this._authProvider.nonceBytes,
-                );
-                const rawContent = await this._decryptBlock(
-                  blockKeyID,
-                  blockNonce,
-                  blockData,
-                );
-                if (!rawContent) {
-                  // Unknown-key and forged packets are ignored without a
-                  // per-packet log so untrusted peers cannot amplify logging.
-                  return TopicValidatorResult.Ignore;
-                }
+            _peerId: PeerId,
+            message: Message,
+          ): Promise<TopicValidatorResult> => {
+            try {
+              const result = await receiveAdmission.run(
+                message.data,
+                async (frame) => {
+                  // Keep attacker-controlled decryption and decoding outside the
+                  // shared state queue. Only the final health and current-writer
+                  // authorization decision must be serialized with mutations.
+                  const rawContent = await this._decryptGossipFrame(frame);
+                  if (!rawContent || !receiveAdmission.active) {
+                    // Unknown-key and forged packets are ignored without a
+                    // per-packet log so untrusted peers cannot amplify logging.
+                    return TopicValidatorResult.Ignore;
+                  }
 
-                if (isSyncRequest(rawContent)) {
-                  const request = decodeSyncRequest(rawContent);
-                  if (!request) return TopicValidatorResult.Reject;
-                  return await this._runStateMutation(async () => {
-                    const now = this._observeSyncRequestClock();
-                    if (
-                      now === undefined ||
-                      !isSyncRequestFresh(request, now)
-                    )
-                      return TopicValidatorResult.Ignore;
-                    if (!(await this._verifySyncRequest(request)))
-                      return TopicValidatorResult.Reject;
-                    const verified = this._observeSyncRequestClock();
-                    return verified !== undefined &&
-                      isSyncRequestFresh(request, verified)
-                      ? TopicValidatorResult.Accept
-                      : TopicValidatorResult.Ignore;
-                  });
-                }
+                  if (isSyncRequest(rawContent)) {
+                    const request = decodeSyncRequest(rawContent);
+                    if (!request) return TopicValidatorResult.Reject;
+                    return await this._runStateMutation(async () => {
+                      if (!receiveAdmission.active)
+                        return TopicValidatorResult.Ignore;
+                      const now = this._observeSyncRequestClock();
+                      if (
+                        now === undefined ||
+                        !isSyncRequestFresh(request, now)
+                      )
+                        return TopicValidatorResult.Ignore;
+                      const signatureValid =
+                        await this._verifySyncRequest(request);
+                      if (!receiveAdmission.active)
+                        return TopicValidatorResult.Ignore;
+                      if (!signatureValid) return TopicValidatorResult.Reject;
+                      const verified = this._observeSyncRequestClock();
+                      return verified !== undefined &&
+                        isSyncRequestFresh(request, verified)
+                        ? TopicValidatorResult.Accept
+                        : TopicValidatorResult.Ignore;
+                    });
+                  }
 
-                let syncMessage: CRDTSyncMessage<ChangesType>;
-                try {
-                  syncMessage = snapshotSyncMessageForContext<ChangesType>(
-                    this._syncMessageSerializer.deserializeSyncMessage(
-                      rawContent,
-                    ),
+                  let syncMessage: CRDTSyncMessage<ChangesType>;
+                  try {
+                    syncMessage = snapshotSyncMessageForContext<ChangesType>(
+                      this._syncMessageSerializer.deserializeSyncMessage(
+                        rawContent,
+                      ),
+                      'ordinary-sync-v1',
+                    );
+                  } catch {
+                    return TopicValidatorResult.Reject;
+                  }
+
+                  if (syncMessage.documentId !== this.documentPath) {
+                    return TopicValidatorResult.Reject;
+                  }
+
+                  if (!syncMessage.signature) {
+                    return TopicValidatorResult.Reject;
+                  }
+
+                  const unsigned = this._serializeUnsignedForVerification(
+                    syncMessage,
                     'ordinary-sync-v1',
+                    MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   );
-                } catch {
-                  return TopicValidatorResult.Reject;
-                }
+                  if (unsigned === undefined) {
+                    return TopicValidatorResult.Reject;
+                  }
+                  const signature = syncMessage.signature;
 
-                if (syncMessage.documentId !== this.documentPath) {
-                  return TopicValidatorResult.Reject;
-                }
-
-                if (!syncMessage.signature) {
-                  return TopicValidatorResult.Reject;
-                }
-
-                const unsigned = this._serializeUnsignedForVerification(
-                  syncMessage,
-                  'ordinary-sync-v1',
-                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-                );
-                if (unsigned === undefined) {
-                  return TopicValidatorResult.Reject;
-                }
-                const signature = syncMessage.signature;
-
-                return await this._runStateMutation(async () => {
-                  // Verify against the writer set in the same queue slot as
-                  // the bootstrap-health check performed by _runStateMutation.
-                  if (
-                    (await this._verifyWriterSignature(
+                  return await this._runStateMutation(async () => {
+                    // Verify against the writer set in the same queue slot as
+                    // the bootstrap-health check performed by _runStateMutation.
+                    if (!receiveAdmission.active)
+                      return TopicValidatorResult.Ignore;
+                    const signatureValid = await this._verifyWriterSignature(
                       unsigned.raw,
                       signature,
-                    )) === true &&
-                    unsigned.unchanged()
-                  ) {
-                    return TopicValidatorResult.Accept;
-                  }
-                  return TopicValidatorResult.Reject;
-                });
-              } catch {
-                console.warn('Topic validator: unexpected error, ignoring message');
-                return TopicValidatorResult.Ignore;
-              }
-            };
+                    );
+                    if (!receiveAdmission.active)
+                      return TopicValidatorResult.Ignore;
+                    return signatureValid === true && unsigned.unchanged()
+                      ? TopicValidatorResult.Accept
+                      : TopicValidatorResult.Reject;
+                  });
+                },
+              );
+              return receiveAdmission.active
+                ? (result ?? TopicValidatorResult.Ignore)
+                : TopicValidatorResult.Ignore;
+            } catch {
+              if (receiveAdmission.active)
+                console.warn(
+                  'Topic validator: unexpected error, ignoring message',
+                );
+              return TopicValidatorResult.Ignore;
+            }
+          };
           this._topicValidator = topicValidator;
           pubsub.topicValidators.set(this._topic, topicValidator);
         }
@@ -7301,6 +7335,8 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public async close() {
+    this._gossipReceiveAdmission?.close();
+    this._gossipReceiveAdmission = undefined;
     this._gcClosed = true;
     this._gcLifecycle = {};
     await this._gcInProgress?.catch(() => {});
@@ -7593,6 +7629,7 @@ export class PeerborneDocument<
         return false;
       }
     }
+    assertStillActive();
 
     // Validate and collect the complete ACL pre-pass before any keychain, ACL,
     // snapshot, or document mutation. This makes malformed/over-budget change
@@ -7808,6 +7845,7 @@ export class PeerborneDocument<
       );
     }
     if (receivedSnapshotHint) {
+      assertStillActive();
       this._knownSyncSnapshots.add(receivedSnapshotHint);
       if (this._knownSyncSnapshots.size > 32) this._knownSyncSnapshots.delete(this._knownSyncSnapshots.values().next().value!);
     }
@@ -11080,6 +11118,7 @@ export class PeerborneDocument<
     admission?: SharedProtocolHandlerAdmission,
   ): Promise<void> {
     try {
+      if (this._isStateApplicationBlocked()) return;
       let message: CRDTSyncMessage<ChangesType>;
       try {
         const stablePayload = copyUnsharedUint8Array(
@@ -11187,10 +11226,26 @@ export class PeerborneDocument<
               disposition: appliedDisposition,
             }),
           ));
-      } catch {
-        console.warn(
-          'Failed to apply BeeKEM PathUpdateV2; recovering the new epoch requires a recipient-bound re-invitation',
-        );
+      } catch (error) {
+        if (error instanceof BeeKEMCompetingEpochError) {
+          await runSharedProtocolMutation(admission, () => {
+            if (
+              this._isStateApplicationBlocked() ||
+              this._beekem !== parentBeeKEM ||
+              parentBeeKEM.generation !== parentGeneration ||
+              this._writerKeysVersion !== writerKeysVersion
+            ) {
+              return;
+            }
+            this._competingBeeKEMGeneration = error.generation;
+            this._markDocumentStatePoisoned();
+            console.warn(
+              'Stopped document after an authenticated competing BeeKEM epoch',
+            );
+          });
+        } else {
+          console.warn('Failed to apply BeeKEM PathUpdateV2');
+        }
         return;
       }
       if (this._writerKeysVersion !== writerKeysVersion) {

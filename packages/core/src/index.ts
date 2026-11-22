@@ -444,6 +444,7 @@ export {
   MAX_DOCUMENT_CHECKPOINT_BYTES,
 } from './document-checkpoint.js';
 export type { DocumentCheckpoint } from './document-checkpoint.js';
+export * from './document-recovery.js';
 
 export * from './coordinated-document.js';
 export { DocumentOperationTargets, assertDocumentOperationsAllowed } from './document-field-authorization.js';

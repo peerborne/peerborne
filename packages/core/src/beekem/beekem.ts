@@ -25,6 +25,7 @@ import {
   beeKEMLeafTransitionAllowed,
   classifyBeeKEMGeneration,
   isAppendOnlyLeafCount,
+  isCompetingBeeKEMEpoch,
 } from '../policy/beekem-transition.js';
 
 /** ECDH curve used for tree key pairs. */
@@ -116,6 +117,14 @@ function snapshotBeeKEMRuntimeInput<T extends object>(
   return snapshot;
 }
 
+/** A competing public successor for the last accepted predecessor. */
+export class BeeKEMCompetingEpochError extends Error {
+  constructor(readonly generation: number) {
+    super(`Conflicting BeeKEM update at generation ${generation}`);
+    this.name = 'BeeKEMCompetingEpochError';
+  }
+}
+
 /**
  * BeeKEM: Binary ratchet tree for decentralized group key agreement.
  *
@@ -137,6 +146,7 @@ export class BeeKEM {
   private _myLeafIndex: number = -1;
   private _generation: number | null = null;
   private _lastAppliedV2UpdateDigest: Uint8Array | null = null;
+  private _lastAppliedParentTreeHash: Uint8Array | null = null;
   private _transitionTail: Promise<void> = Promise.resolve();
   private _pendingTransitionCount = 0;
 
@@ -168,6 +178,7 @@ export class BeeKEM {
       leafPublicKey.length === recoveryRaw.length &&
       leafPublicKey.every((byte, index) => byte === recoveryRaw[index]);
     return {
+      generation: this._generation,
       leafPublicKey,
       sealedLeafPrivateKey: sameLeaf
         ? null
@@ -180,6 +191,10 @@ export class BeeKEM {
         this._lastAppliedV2UpdateDigest === null
           ? null
           : new Uint8Array(this._lastAppliedV2UpdateDigest),
+      lastAppliedParentTreeHash:
+        this._lastAppliedParentTreeHash === null
+          ? null
+          : new Uint8Array(this._lastAppliedParentTreeHash),
     };
   }
 
@@ -194,12 +209,51 @@ export class BeeKEM {
       async (staged) => {
         if (!staged._isFresh())
           throw new Error('Local recovery requires a fresh BeeKEM tree');
+        const { generation, welcome } = stable;
+        if (
+          !Number.isSafeInteger(generation) ||
+          generation < 0 ||
+          generation > 0xffffffff
+        ) {
+          throw new Error('Invalid BeeKEM checkpoint generation');
+        }
+        if (welcome !== null && welcome.generation !== generation) {
+          throw new Error(
+            'BeeKEM checkpoint generation does not match its Welcome',
+          );
+        }
         const digest =
           stable.lastAppliedUpdateDigest === null
             ? null
-            : new Uint8Array(stable.lastAppliedUpdateDigest);
-        if (digest !== null && digest.length !== 32)
-          throw new Error('Invalid BeeKEM replay digest');
+            : copyUnsharedUint8Array(
+                stable.lastAppliedUpdateDigest,
+                32,
+                32,
+                'BeeKEM replay digest',
+              );
+        const parentTreeHash =
+          stable.lastAppliedParentTreeHash === null
+            ? null
+            : copyUnsharedUint8Array(
+                stable.lastAppliedParentTreeHash,
+                32,
+                32,
+                'BeeKEM accepted parent tree hash',
+              );
+        if (welcome === null) {
+          if (digest !== null) {
+            throw new Error('Single-member BeeKEM state has a replay digest');
+          }
+          if ((generation === 0) !== (parentTreeHash === null)) {
+            throw new Error(
+              'Single-member BeeKEM checkpoint generation does not match its parent tree hash',
+            );
+          }
+        } else if (digest !== null && parentTreeHash === null) {
+          throw new Error(
+            'BeeKEM replay digest requires an accepted parent tree hash',
+          );
+        }
         const publicKey = await crypto.subtle.importKey(
           'raw',
           toBuffer(stable.leafPublicKey),
@@ -216,19 +270,19 @@ export class BeeKEM {
               );
         if (!(await staged._privateKeyMatchesPublicKey(privateKey, publicKey)))
           throw new Error('Recovery leaf key pair does not match');
-        if (stable.welcome === null) {
-          if (digest !== null)
-            throw new Error('Single-member BeeKEM state has a replay digest');
+        if (welcome === null) {
           await staged.initialize(privateKey, publicKey);
+          staged._generation = generation;
         } else {
           await staged._processWelcome(
-            stable.welcome,
+            welcome,
             privateKey,
             publicKey,
             true,
           );
         }
         staged._lastAppliedV2UpdateDigest = digest;
+        staged._lastAppliedParentTreeHash = parentTreeHash;
       },
       () => {
         stable = snapshotBeeKEMRuntimeInput(state, 'BeeKEM local recovery');
@@ -252,6 +306,7 @@ export class BeeKEM {
     copy._myLeafIndex = state.myLeafIndex;
     copy._generation = state.generation;
     copy._lastAppliedV2UpdateDigest = state.lastAppliedV2UpdateDigest;
+    copy._lastAppliedParentTreeHash = state.lastAppliedParentTreeHash;
     return copy;
   }
 
@@ -269,6 +324,7 @@ export class BeeKEM {
       staged._myLeafIndex = 0;
       staged._generation = 0;
       staged._lastAppliedV2UpdateDigest = null;
+      staged._lastAppliedParentTreeHash = null;
 
       const leaf: LeafNode = {
         type: 'leaf',
@@ -545,10 +601,6 @@ export class BeeKEM {
     this._validatePathUpdateV2(update);
     const updateDigest = await this._computePathUpdateDigest(update);
 
-    if (update.senderLeafIndex === this._myLeafIndex) {
-      throw new Error('Cannot process our own BeeKEM path update');
-    }
-
     if (this._generation === null) {
       throw new Error(
         'Cannot apply a v2 BeeKEM PathUpdate without generation-bearing parent state',
@@ -561,6 +613,18 @@ export class BeeKEM {
         !!this._lastAppliedV2UpdateDigest &&
         bytesEqual(this._lastAppliedV2UpdateDigest, updateDigest),
     );
+    // Another device may have advanced the same leaf. Observe a public
+    // sibling claim but still disallow applying any update from our own leaf.
+    if (
+      disposition === 'fork' &&
+      await this._hasCompetingEpoch(this._generation, update)
+    ) {
+      throw new BeeKEMCompetingEpochError(update.generation);
+    }
+    if (update.senderLeafIndex === this._myLeafIndex) {
+      throw new Error('Cannot process our own BeeKEM path update');
+    }
+
     if (disposition === 'stale') {
       throw new Error(
         `Cannot process stale BeeKEM generation ${update.generation}; current generation is ${this._generation}`,
@@ -603,28 +667,8 @@ export class BeeKEM {
     await this._validatePathUpdateLeafTransition(update);
     await this._validatePathUpdateInternalTransition(update);
 
-    const senderPath = TreeMath.directPath(
-      update.senderLeafIndex,
-      update.numLeaves,
-    );
-    if (
-      senderPath.length !== update.nodes.length ||
-      senderPath.some((nodeIndex, i) => nodeIndex !== update.nodes[i].nodeIndex)
-    ) {
-      throw new Error('Invalid BeeKEM v2 update path for sender and tree size');
-    }
-
-    const nextNodes = await this._importTreeSnapshot(
-      update.treeNodePublicKeys,
-      update.numLeaves,
-    );
-    const snapshotHash = await this._computeTreeHashV2(
-      nextNodes,
-      update.numLeaves,
-    );
-    if (!bytesEqual(snapshotHash, update.treeHash)) {
-      throw new Error('BeeKEM v2 tree snapshot hash mismatch');
-    }
+    const { nextNodes } =
+      await this._importValidatedPathUpdateSnapshot(update);
 
     // Keep unchanged private state below the sender/local-path intersection.
     // The update only delivers fresh private keys from that intersection to
@@ -648,56 +692,6 @@ export class BeeKEM {
         ...snapshotNode,
         privateKey: currentNode.privateKey,
       });
-    }
-
-    const snapshotSender = nextNodes.get(update.senderLeafIndex);
-    if (
-      !snapshotSender?.publicKey ||
-      !(await this._publicKeyEqualsBytes(
-        snapshotSender.publicKey,
-        update.senderLeafPublicKey,
-      ))
-    ) {
-      throw new Error('BeeKEM v2 sender leaf does not match tree snapshot');
-    }
-
-    const senderCopath = TreeMath.copath(
-      update.senderLeafIndex,
-      update.numLeaves,
-    );
-    for (let i = 0; i < update.nodes.length; i++) {
-      const updateNode = update.nodes[i];
-      const snapshotNode = nextNodes.get(updateNode.nodeIndex);
-      if (
-        !snapshotNode?.publicKey ||
-        !(await this._publicKeyEqualsBytes(
-          snapshotNode.publicKey,
-          updateNode.publicKey,
-        ))
-      ) {
-        throw new Error(
-          `BeeKEM v2 path node ${updateNode.nodeIndex} does not match tree snapshot`,
-        );
-      }
-
-      const expectedRecipients = this._resolvePublicKeys(
-        senderCopath[i],
-        update.numLeaves,
-        nextNodes,
-      ).map((entry) => entry.nodeIndex);
-      const actualRecipients = updateNode.encryptedPathKeyBundles.map(
-        (bundle) => bundle.recipientNodeIndex,
-      );
-      if (
-        expectedRecipients.length !== actualRecipients.length ||
-        expectedRecipients.some(
-          (nodeIndex) => !actualRecipients.includes(nodeIndex),
-        )
-      ) {
-        throw new Error(
-          `BeeKEM v2 path node ${updateNode.nodeIndex} has an invalid copath bundle set`,
-        );
-      }
     }
 
     const currentLeaf = this._nodes.get(this._myLeafIndex);
@@ -790,7 +784,118 @@ export class BeeKEM {
     this._numLeaves = update.numLeaves;
     this._generation = update.generation;
     this._lastAppliedV2UpdateDigest = updateDigest;
+    this._lastAppliedParentTreeHash = new Uint8Array(update.parentTreeHash);
     return { rootSecret, disposition: 'applied' };
+  }
+
+  private async _hasCompetingEpoch(
+    currentGeneration: number,
+    update: PathUpdateV2,
+  ): Promise<boolean> {
+    const sameAcceptedParent =
+      this._lastAppliedParentTreeHash !== null &&
+      bytesEqual(this._lastAppliedParentTreeHash, update.parentTreeHash);
+    if (!sameAcceptedParent) return false;
+    const currentTreeHash = await this._computeTreeHashV2(
+      this._nodes,
+      this._numLeaves,
+    );
+    if (bytesEqual(currentTreeHash, update.treeHash)) return false;
+
+    // This checks only the public successor. Authenticating the document
+    // writer is the caller's job, and no predecessor private keys are kept.
+    try {
+      const { snapshotHash } =
+        await this._importValidatedPathUpdateSnapshot(update);
+      return isCompetingBeeKEMEpoch(
+        currentGeneration,
+        update.generation,
+        sameAcceptedParent,
+        !bytesEqual(currentTreeHash, snapshotHash),
+      );
+    } catch {
+      // This update still receives the generic same-generation rejection.
+      return false;
+    }
+  }
+
+  private async _importValidatedPathUpdateSnapshot(
+    update: PathUpdateV2,
+  ): Promise<{ nextNodes: Map<number, TreeNode>; snapshotHash: Uint8Array }> {
+    const senderPath = TreeMath.directPath(
+      update.senderLeafIndex,
+      update.numLeaves,
+    );
+    if (
+      senderPath.length !== update.nodes.length ||
+      senderPath.some((nodeIndex, i) => nodeIndex !== update.nodes[i].nodeIndex)
+    ) {
+      throw new Error('Invalid BeeKEM v2 update path for sender and tree size');
+    }
+
+    const nextNodes = await this._importTreeSnapshot(
+      update.treeNodePublicKeys,
+      update.numLeaves,
+    );
+    const snapshotHash = await this._computeTreeHashV2(
+      nextNodes,
+      update.numLeaves,
+    );
+    if (!bytesEqual(snapshotHash, update.treeHash)) {
+      throw new Error('BeeKEM v2 tree snapshot hash mismatch');
+    }
+
+    const snapshotSender = nextNodes.get(update.senderLeafIndex);
+    if (
+      !snapshotSender?.publicKey ||
+      !(await this._publicKeyEqualsBytes(
+        snapshotSender.publicKey,
+        update.senderLeafPublicKey,
+      ))
+    ) {
+      throw new Error('BeeKEM v2 sender leaf does not match tree snapshot');
+    }
+
+    const senderCopath = TreeMath.copath(
+      update.senderLeafIndex,
+      update.numLeaves,
+    );
+    for (let i = 0; i < update.nodes.length; i++) {
+      const updateNode = update.nodes[i];
+      const snapshotNode = nextNodes.get(updateNode.nodeIndex);
+      if (
+        !snapshotNode?.publicKey ||
+        !(await this._publicKeyEqualsBytes(
+          snapshotNode.publicKey,
+          updateNode.publicKey,
+        ))
+      ) {
+        throw new Error(
+          `BeeKEM v2 path node ${updateNode.nodeIndex} does not match tree snapshot`,
+        );
+      }
+
+      const expectedRecipients = this._resolvePublicKeys(
+        senderCopath[i],
+        update.numLeaves,
+        nextNodes,
+      ).map((entry) => entry.nodeIndex);
+      const actualRecipients = updateNode.encryptedPathKeyBundles.map(
+        (bundle) => bundle.recipientNodeIndex,
+      );
+      if (
+        expectedRecipients.length !== actualRecipients.length ||
+        expectedRecipients.some(
+          (nodeIndex) => !actualRecipients.includes(nodeIndex),
+        )
+      ) {
+        throw new Error(
+          `BeeKEM v2 path node ${updateNode.nodeIndex} has an invalid copath bundle set`,
+        );
+      }
+    }
+
+    return { nextNodes, snapshotHash };
   }
 
   /**
@@ -919,6 +1024,7 @@ export class BeeKEM {
 
         staged._generation = stableWelcome.generation;
         staged._lastAppliedV2UpdateDigest = null;
+        staged._lastAppliedParentTreeHash = null;
         return staged.getRootSecret();
       },
       () => {
@@ -1241,6 +1347,7 @@ export class BeeKEM {
       this._myLeafIndex = staged._myLeafIndex;
       this._generation = staged._generation;
       this._lastAppliedV2UpdateDigest = staged._lastAppliedV2UpdateDigest;
+      this._lastAppliedParentTreeHash = staged._lastAppliedParentTreeHash;
       return result;
     } finally {
       this._pendingTransitionCount--;
@@ -1254,6 +1361,7 @@ export class BeeKEM {
     myLeafIndex: number;
     generation: number | null;
     lastAppliedV2UpdateDigest: Uint8Array | null;
+    lastAppliedParentTreeHash: Uint8Array | null;
   } {
     const nodes = new Map<number, TreeNode>();
     for (const [index, node] of this._nodes) {
@@ -1278,6 +1386,10 @@ export class BeeKEM {
         this._lastAppliedV2UpdateDigest === null
           ? null
           : new Uint8Array(this._lastAppliedV2UpdateDigest),
+      lastAppliedParentTreeHash:
+        this._lastAppliedParentTreeHash === null
+          ? null
+          : new Uint8Array(this._lastAppliedParentTreeHash),
     };
   }
 
@@ -1391,6 +1503,7 @@ export class BeeKEM {
     this._nodes = nextNodes;
     this._generation = nextGeneration;
     this._lastAppliedV2UpdateDigest = null;
+    this._lastAppliedParentTreeHash = new Uint8Array(parentTreeHash);
     return { pathUpdate, rootSecret };
   }
 
