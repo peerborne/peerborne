@@ -557,7 +557,15 @@ describe('ordinary sync-message context confinement', () => {
 
       await deliver(ordinary);
       expect(applySync).toHaveBeenCalledTimes(1);
-      expect(applySync).toHaveBeenCalledWith(ordinary, true, 'ordinary-sync-v1');
+      expect(applySync).toHaveBeenCalledWith(
+        ordinary,
+        true,
+        'ordinary-sync-v1',
+        undefined,
+        false,
+        undefined,
+        { assertStillActive: expect.any(Function) },
+      );
     } finally {
       await document.close();
     }

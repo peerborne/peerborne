@@ -7129,7 +7129,20 @@ export class PeerborneDocument<
 
           await this._runStateMutation(async () => {
             if (!receiveAdmission.active) return;
-            await this._syncUnlocked(message, true, 'ordinary-sync-v1');
+            await this._syncUnlocked(
+              message,
+              true,
+              'ordinary-sync-v1',
+              undefined,
+              false,
+              undefined,
+              {
+                assertStillActive: () => {
+                  if (!receiveAdmission.active)
+                    throw new Error('GossipSub receive subscription closed');
+                },
+              },
+            );
           });
         })
         .catch(() => {
@@ -7616,6 +7629,7 @@ export class PeerborneDocument<
         return false;
       }
     }
+    assertStillActive();
 
     // Validate and collect the complete ACL pre-pass before any keychain, ACL,
     // snapshot, or document mutation. This makes malformed/over-budget change
@@ -7831,6 +7845,7 @@ export class PeerborneDocument<
       );
     }
     if (receivedSnapshotHint) {
+      assertStillActive();
       this._knownSyncSnapshots.add(receivedSnapshotHint);
       if (this._knownSyncSnapshots.size > 32) this._knownSyncSnapshots.delete(this._knownSyncSnapshots.values().next().value!);
     }

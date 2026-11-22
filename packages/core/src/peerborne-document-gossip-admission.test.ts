@@ -176,10 +176,59 @@ test('closing and reopening skips old queued receive work and applies fresh fram
       expect.objectContaining({ changeId: '7' }),
       true,
       'ordinary-sync-v1',
+      undefined,
+      false,
+      undefined,
+      { assertStillActive: expect.any(Function) },
     );
   } finally {
     unblock.resolve();
     await queued;
+    await fixture.document.close();
+  }
+});
+
+test('a closing subscriber stops an authenticated frame whose verification is still running', async () => {
+  const fixture = documentFixture(
+    '/document',
+    async (_key, _nonce, data) => data,
+  );
+  const started = Promise.withResolvers<void>();
+  const verification = Promise.withResolvers<boolean>();
+  const verify = jest
+    .fn(async () => true)
+    .mockImplementationOnce(() => {
+      started.resolve();
+      return verification.promise;
+    });
+  const applyChanges = jest.fn(async (_changeId: string) => {});
+  Object.assign(fixture.document, {
+    _syncUnlocked: Object.getPrototypeOf(fixture.document)._syncUnlocked,
+    _verifyWriterSignature: verify,
+    _collectACLFromTree: (changes: unknown) => ({ changes, aclEntries: [] }),
+    _syncDocumentChanges: applyChanges,
+  });
+  fixture.deserialize.mockImplementation((data) => ({
+    documentId: '/document',
+    signatureContext: 'ordinary-sync-v1',
+    changeId: String(data[0]),
+    signature: 'AQ==',
+    changes: { kind: 'document', change: data[0] },
+  }));
+  try {
+    await fixture.document.open();
+    fixture.deliver(frame(3));
+    await started.promise;
+    await fixture.document.close();
+    await fixture.document.open();
+    fixture.deliver(frame(7));
+    verification.resolve(true);
+    await turn();
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(applyChanges).toHaveBeenCalledTimes(1);
+    expect(applyChanges.mock.calls[0]![0]).toBe('7');
+  } finally {
+    verification.resolve(true);
     await fixture.document.close();
   }
 });
