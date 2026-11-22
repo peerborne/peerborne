@@ -230,7 +230,7 @@ export const claims = [
     id: 'journal-restart',
     label: 'Journal recovery',
     title: 'Restore coordinated state against a durable anchor',
-    rule: 'Authenticate the checkpoint and replay admissible entries. Recheck the independent rollback anchor before publishing recovered state.',
+    rule: 'Authenticate the checkpoint, replay admissible entries, and recheck the independent rollback anchor. Expose the recovered document after activation verifies its signing identity and current authority.',
     checked:
       'The exposure guard checks freshness at the final anchor observation and requires an authenticated current checkpoint or exact next checkpoint with a matching parent. Built-in IndexedDB recovery uses at most 147 logical journal row reads, excluding anchor-provider I/O.',
     limit:

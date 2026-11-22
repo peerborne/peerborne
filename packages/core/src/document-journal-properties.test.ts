@@ -240,6 +240,84 @@ function engine(
 }
 
 describe('accepted document WAL and replay persistence', () => {
+  test('keeps recovered data private until coordinated activation commits', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom('accepted', 'authority-changed', 'identity-error', 'closed'),
+        fc.integer(),
+        async (outcome, value) => {
+          const f = await documentFixture(),
+            key = await deviceKey(),
+            store = new InMemoryDocumentJournalStore(),
+            anchor = new InMemoryDocumentJournalRollbackAnchor();
+          const original = engine(f, key, store, anchor);
+          try {
+            await original.activate();
+            await original.change((document) => {
+              document.push(value);
+            });
+          } finally {
+            await original.close();
+          }
+
+          const reopened = engine(f, key, store, anchor);
+          let enterIdentityCheck!: () => void;
+          let releaseIdentityCheck!: () => void;
+          const entered = new Promise<void>((resolve) => {
+            enterIdentityCheck = resolve;
+          });
+          const waiting = new Promise<void>((resolve) => {
+            releaseIdentityCheck = resolve;
+          });
+          const serializePublicKey = f.auth.serializePublicKey;
+          f.auth.serializePublicKey = async (key) => {
+            enterIdentityCheck();
+            await waiting;
+            if (outcome === 'identity-error')
+              throw new Error('Identity validation did not complete');
+            return serializePublicKey(key);
+          };
+
+          const activating = reopened.activate();
+          const settled = activating.then(
+            () => true,
+            () => false,
+          );
+          let closing: Promise<void> | undefined;
+          try {
+            await Promise.race([
+              entered,
+              settled.then(() => {
+                throw new Error('Activation finished before identity validation');
+              }),
+            ]);
+            expect(() => reopened.document).toThrow();
+            if (outcome === 'authority-changed') f.authority.version++;
+            if (outcome === 'closed') closing = reopened.close();
+            releaseIdentityCheck();
+            expect(await settled).toBe(outcome === 'accepted');
+            if (outcome === 'accepted') expect(reopened.document).toEqual([value]);
+            else expect(() => reopened.document).toThrow();
+          } finally {
+            releaseIdentityCheck();
+            await settled;
+            await (closing ?? reopened.close());
+          }
+        },
+      ),
+      {
+        seed: 2011620,
+        numRuns: 12,
+        examples: [
+          ['accepted', 1],
+          ['authority-changed', 2],
+          ['identity-error', 3],
+          ['closed', 4],
+        ],
+      },
+    );
+  });
+
   test.each(['memory', 'indexeddb'] as const)(
     'preserves accepted state and replay floors over generated %s restarts',
     async (backend) => {

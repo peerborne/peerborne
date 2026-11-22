@@ -9,6 +9,7 @@ import {
 } from './types.js';
 import { IndexStorage } from './index-storage.js';
 import { extractField } from './field-extractor.js';
+import { FieldProjection } from './field-projection.js';
 import {
   hashIndexDefinition,
   hashQuery,
@@ -242,7 +243,7 @@ export class IndexManager<DocType> {
         continue;
       }
 
-      const fields: Record<string, unknown> = {};
+      const projection = new FieldProjection();
       let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
       for (const fieldDef of definition.fields) {
         const value = extractField(snapshot, fieldDef.path);
@@ -251,7 +252,7 @@ export class IndexManager<DocType> {
           invalid = { fieldPath: fieldDef.path, reason };
           break;
         }
-        this._setNestedField(fields, fieldDef.path, value);
+        projection.set(fieldDef.path, value);
       }
       if (invalid && resolvedInvalidValuePolicy(definition) === 'reject') {
         throw new InvalidIndexedDocumentError(
@@ -261,7 +262,11 @@ export class IndexManager<DocType> {
           invalid.reason,
         );
       }
-      entries.push({ indexName, generation, ...(invalid ? { invalid } : { fields }) });
+      entries.push({
+        indexName,
+        generation,
+        ...(invalid ? { invalid } : { fields: projection.fields }),
+      });
     }
 
     await this._enqueueDocumentOperation(documentPath, async () => {
@@ -440,7 +445,7 @@ export class IndexManager<DocType> {
       validateDocumentPath(documentPath);
       if (!documentPath.startsWith(definition.collectionPrefix)) continue;
       const snapshot = this._extractor(document);
-      const fields: Record<string, unknown> = {};
+      const projection = new FieldProjection();
       let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
       for (const fieldDef of definition.fields) {
         const value = extractField(snapshot, fieldDef.path);
@@ -449,7 +454,7 @@ export class IndexManager<DocType> {
           invalid = { fieldPath: fieldDef.path, reason };
           break;
         }
-        this._setNestedField(fields, fieldDef.path, value);
+        projection.set(fieldDef.path, value);
       }
       if (invalid) {
         if (resolvedInvalidValuePolicy(definition) === 'reject') {
@@ -463,7 +468,7 @@ export class IndexManager<DocType> {
         this._recordDiagnostic(indexName, documentPath, invalid.fieldPath, invalid.reason);
         continue;
       }
-      rows.push({ documentPath, fields });
+      rows.push({ documentPath, fields: projection.fields });
     }
 
     await this._runExclusiveIndexOperation(indexName, generation, async () => {
@@ -635,36 +640,6 @@ export class IndexManager<DocType> {
     });
 
     return current;
-  }
-
-  /**
-   * Set a value in a nested object structure using a dot-notation path.
-   * e.g. _setNestedField(obj, 'a.b', 42) creates { a: { b: 42 } }
-   */
-  private _setNestedField(obj: Record<string, unknown>, path: string, value: unknown): void {
-    const segments = path.split('.');
-    let current: Record<string, unknown> = obj;
-    for (let i = 0; i < segments.length - 1; i++) {
-      const seg = segments[i];
-      const existing = Object.prototype.hasOwnProperty.call(current, seg)
-        ? current[seg]
-        : undefined;
-      if (typeof existing !== 'object' || existing === null) {
-        Object.defineProperty(current, seg, {
-          value: {},
-          configurable: true,
-          enumerable: true,
-          writable: true,
-        });
-      }
-      current = current[seg] as Record<string, unknown>;
-    }
-    Object.defineProperty(current, segments[segments.length - 1], {
-      value,
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
   }
 
   private _recordDiagnostic(

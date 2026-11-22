@@ -111,7 +111,46 @@ export function findUnauthorizedCapability(
   return -1;
 }
 
+function isLineTerminator(code: number): boolean {
+  //@ verify
+  //@ ensures \result <==> code === 10 || code === 13 || code === 8232 || code === 8233
+  return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+}
+
+function isFieldMarkerAt(capability: string, index: number): boolean {
+  //@ verify
+  //@ requires 0 <= index && index + 7 <= capability.length && capability.length <= 4294967295
+  //@ ensures \result <==> capability.slice(index, index + 7) === "/field/"
+  return capability.slice(index, index + 7) === '/field/';
+}
+
+function fieldPathStart(capability: string): number {
+  //@ verify
+  //@ requires capability.length <= 4294967295
+  //@ ensures \result === -1 || 7 <= \result && \result < capability.length
+  //@ ensures \result >= 0 ==> isFieldMarkerAt(capability, \result - 7) && forall(j: int, \result - 7 <= j && j < capability.length ==> !isLineTerminator(capability.charCodeAt(j)))
+  //@ ensures forall(i: int, 0 <= i && i + 7 < capability.length && (\result === -1 || i + 7 < \result) && isFieldMarkerAt(capability, i) ==> exists(j: int, i <= j && j < capability.length && isLineTerminator(capability.charCodeAt(j))))
+  let boundary = capability.length;
+  while (
+    boundary > 0 &&
+    !isLineTerminator(capability.charCodeAt(boundary - 1))
+  ) {
+    //@ invariant 0 <= boundary && boundary <= capability.length
+    //@ invariant forall(j: int, boundary <= j && j < capability.length ==> !isLineTerminator(capability.charCodeAt(j)))
+    //@ decreases boundary
+    boundary--;
+  }
+
+  for (let index = boundary; index + 7 < capability.length; index++) {
+    //@ invariant boundary <= index && index <= capability.length
+    //@ invariant forall(i: int, boundary <= i && i < index && i + 7 < capability.length ==> !isFieldMarkerAt(capability, i))
+    //@ decreases capability.length - index
+    if (isFieldMarkerAt(capability, index)) return index + 7;
+  }
+  return -1;
+}
+
 export function getFieldPath(capability: string): string | undefined {
-  const match = capability.match(/\/field\/(.+)$/);
-  return match ? match[1] : undefined;
+  const start = fieldPathStart(capability);
+  return start < 0 ? undefined : capability.slice(start);
 }

@@ -113,7 +113,7 @@
     },
     {
       "id": "wire-and-reflection",
-      "formalBoundary": "JSON, regex, object descriptors, typed arrays, aliases and chunked async input require native boundary checks.",
+      "formalBoundary": "The field-path selector finds the first complete marker in the final line with a nonempty suffix. Its backward and forward scans each visit at most the input length. Native UTF-16 code units, JSON and reflection, typed arrays, aliases and chunked async input require runtime calibration.",
       "evidence": [
         "packages/core/src/fuzz-path-update-wire.test.ts",
         "packages/core/src/fuzz-beekem-welcome-wire.test.ts",
@@ -209,7 +209,7 @@
     },
     {
       "id": "query-and-index-state",
-      "formalBoundary": "Scalar order, lexicographic order composition and prefix-page reconstruction are proved within the model. Native IEEE-754/UTF-16 correspondence, field extraction, JSON cursors, index planning and IndexedDB still require independent full-scan and bitwise ordering oracles.",
+      "formalBoundary": "Scalar order, lexicographic order composition, prefix-page reconstruction and reserved field segment exclusion are proved within the model. Native IEEE-754/UTF-16 correspondence, own-data field extraction, projection branch ownership, JSON cursors, index planning and IndexedDB require runtime properties.",
       "evidence": [
         "packages/index/src/query-properties.test.ts",
         "packages/index/src/field-extractor.test.ts",
@@ -221,6 +221,8 @@
         "packages/index/src/idb-index-storage.ts",
         "packages/index/src/query-planner.ts",
         "packages/index/src/query-ast.ts",
+        "packages/index/src/field-path.ts",
+        "packages/index/src/field-projection.ts",
         "packages/index/src/query-cursor.ts",
         "packages/index/src/query-execution.ts",
         "packages/index/src/field-extractor.ts"
@@ -349,7 +351,7 @@
     },
     {
       "id": "coordinated-document-security",
-      "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection and finite-history provenance are proved. The Map model uses immutable values, so native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance require native properties. These checks do not prove cryptographic primitives, network liveness or secure hardware storage.",
+      "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection and finite-history provenance are proved. Native properties exercise journal-backed reads across delayed identity checks, changed authority and close during activation. Native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance also require runtime checks. Cryptographic primitives, network liveness and secure hardware storage remain outside these checks.",
       "evidence": [
         "packages/core/src/coordinated-document-properties.test.ts",
         "packages/core/src/document-journal-properties.test.ts",

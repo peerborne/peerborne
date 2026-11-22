@@ -800,6 +800,20 @@ method mapOperand_domain()
       '',
     ],
     [
+      'field-path-missing-terminator',
+      'packages/core/src/capabilities.ts',
+      'return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;',
+      'return code === 10 || code === 13 || code === 0x2029;',
+      'isLineTerminator_ensures',
+    ],
+    [
+      'field-path-empty-suffix',
+      'packages/core/src/capabilities.ts',
+      'index + 7 < capability.length;',
+      'index + 7 <= capability.length;',
+      'fieldPathStart',
+    ],
+    [
       'duplicate-identity',
       'string-collections.ts',
       'if (seen.has(values[index])) return index;',
@@ -1142,6 +1156,12 @@ method mapOperand_domain()
       'packages/index/src/query-budget.ts',
       'return count > limit ? -1 : count;',
       'return count;',
+    ],
+    [
+      'index-path-skips-validation',
+      'packages/index/src/field-path.ts',
+      'if (!isIndexFieldPathSegment(segments[i])) return false;',
+      'if (false) return false;',
     ],
     [
       'budget-overrun',

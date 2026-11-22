@@ -13,6 +13,7 @@ packages/core/src/policy/anchor-advance.ts
 packages/core/src/policy/retention.ts
 packages/core/src/policy/encoded-size.ts
 packages/index/src/query-budget.ts
+packages/index/src/field-path.ts
 packages/core/src/internal/canonical-encoding.ts
 packages/core/src/bootstrap-config.ts
 packages/react/src/document-cache-key.ts

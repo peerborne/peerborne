@@ -110,6 +110,7 @@ export class CoordinatedDocument<
   private receipts = new Map<string, Receipt>();
   private receiptsContext?: GroupSecurityDocumentContext;
   private recovered = false;
+  private activated = false;
   private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
   private material?: {
@@ -160,8 +161,8 @@ export class CoordinatedDocument<
 
   get document(): Document {
     this.assertUsable();
-    if (this.options.journal && !this.recovered)
-      throw new Error('Document recovery is not complete');
+    if (this.options.journal && !this.activated)
+      throw new Error('Document activation is not complete');
     return this.session.document;
   }
 
@@ -218,6 +219,7 @@ export class CoordinatedDocument<
 
   async activate(): Promise<void> {
     await this.enqueue(0, () => async () => {
+      this.activated = false;
       await this.recover();
       const context = this.options.coordinator.documentContext;
       await this.options.coordinator.runDocumentOperation(
@@ -234,7 +236,13 @@ export class CoordinatedDocument<
           );
           if (typeof value !== 'string' || value !== own.publicKey)
             throw new Error('Document signing identity mismatch');
-          return { isAuthorizationCurrent: lease.isCurrent, commit: () => {} };
+          return {
+            isAuthorizationCurrent: () =>
+              !this.closed && !this.failed && lease.isCurrent(),
+            commit: () => {
+              this.activated = true;
+            },
+          };
         },
       );
     });
@@ -804,6 +812,7 @@ export class CoordinatedDocument<
 
   close(): Promise<void> {
     this.closed = true;
+    this.activated = false;
     this.material = undefined;
     return this.tail.then(() => this.session.close());
   }
