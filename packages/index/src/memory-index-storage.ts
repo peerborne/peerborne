@@ -9,11 +9,12 @@ import {
   StorageQueryRequest,
   StorageQueryResult,
   StorageSchemaIdentity,
+  sameStorageSchemaIdentity,
 } from './index-storage.js';
 import { compareCodeUnits, compareIndexScalars, normalizeIndexScalar } from './query-ast.js';
 import { extractField } from './field-extractor.js';
 import { PhysicalQueryPlan, QueryIndexLookup } from './query-planner.js';
-import { finalizeQueryCandidates } from './query-execution.js';
+import { finalizeQueryCandidates, matchIndexLookup } from './query-execution.js';
 
 interface PhysicalRow {
   key: IndexScalar[];
@@ -45,7 +46,7 @@ export class MemoryIndexStorage implements IndexStorage {
     if (!store) {
       store = { entries: new Map(), fields: [...fields], physical: new Map(), identity: { ...identity } };
       this._stores.set(indexName, store);
-    } else if (!sameIdentity(store.identity, identity)) {
+    } else if (!sameStorageSchemaIdentity(store.identity, identity)) {
       store.entries.clear();
       store.identity = { ...identity };
     }
@@ -92,7 +93,7 @@ export class MemoryIndexStorage implements IndexStorage {
         for (let i = start; i < physical.rows.length; i++) {
           const row = physical.rows[i];
           rowsVisited++;
-          const decision = matchesLookup(row.key, lookup);
+          const decision = matchIndexLookup(row.key, lookup, compareIndexScalars);
           if (decision === 'past') break;
           if (decision === 'match') {
             const fields = store.entries.get(row.documentPath);
@@ -164,31 +165,6 @@ function lookupStart(lookup: QueryIndexLookup): IndexScalar[] {
   return lookup.equals;
 }
 
-function matchesLookup(key: IndexScalar[], lookup: QueryIndexLookup): 'before' | 'match' | 'past' {
-  for (let i = 0; i < lookup.equals.length; i++) {
-    const compared = compareIndexScalars(key[i], lookup.equals[i]);
-    if (compared < 0) return 'before';
-    if (compared > 0) return 'past';
-  }
-  const range = lookup.range;
-  if (!range) return 'match';
-  const value = key[range.position];
-  if (range.prefix !== undefined) {
-    if (typeof value !== 'string') return 'past';
-    if (value.startsWith(range.prefix)) return 'match';
-    return compareCodeUnits(value, range.prefix) < 0 ? 'before' : 'past';
-  }
-  if (range.lower !== undefined) {
-    const compared = compareIndexScalars(value, range.lower);
-    if (compared < 0 || (compared === 0 && !range.lowerInclusive)) return 'before';
-  }
-  if (range.upper !== undefined) {
-    const compared = compareIndexScalars(value, range.upper);
-    if (compared > 0 || (compared === 0 && !range.upperInclusive)) return 'past';
-  }
-  return 'match';
-}
-
 function lowerBound(rows: PhysicalRow[], target: IndexScalar[]): number {
   let low = 0;
   let high = rows.length;
@@ -222,10 +198,4 @@ function compareKeyPrefix(left: IndexScalar[], right: IndexScalar[]): number {
     if (compared !== 0) return compared;
   }
   return 0;
-}
-
-function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity): boolean {
-  return left.schemaHash === right.schemaHash && left.generation === right.generation &&
-    left.collectionPrefix === right.collectionPrefix &&
-    left.invalidValuePolicy === right.invalidValuePolicy;
 }

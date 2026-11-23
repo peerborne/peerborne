@@ -91,6 +91,32 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     return task;
   }
 
+  async function finishCleanup(
+    shouldClose: boolean,
+    errors: unknown[],
+    message: string,
+  ): Promise<void> {
+    try {
+      document.unsubscribe(id);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (shouldClose) {
+      try {
+        await document.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      const error =
+        errors.length === 1 ? errors[0] : new AggregateError(errors, message);
+      publish({ ...initial, status: 'error', error });
+      throw error;
+    }
+    publish({ ...initial, status: 'closed' });
+  }
+
   function start(): Promise<void> {
     return enqueue(async () => {
       if (opened) return;
@@ -124,25 +150,11 @@ export function createDocumentStore<Doc, Change, PublicKey>(
         });
       } catch (cause) {
         opened = false;
-        const errors = [cause];
-        try {
-          document.unsubscribe(id);
-        } catch (cleanupError) {
-          errors.push(cleanupError);
-        }
-        if (manageLifecycle) {
-          try {
-            await document.close();
-          } catch (cleanupError) {
-            errors.push(cleanupError);
-          }
-        }
-        const error =
-          errors.length === 1
-            ? cause
-            : new AggregateError(errors, 'Document open and cleanup failed');
-        publish({ ...initial, status: 'error', error });
-        throw error;
+        return finishCleanup(
+          manageLifecycle,
+          [cause],
+          'Document open and cleanup failed',
+        );
       }
     });
   }
@@ -151,28 +163,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     return enqueue(async () => {
       const shouldClose = opened && manageLifecycle;
       opened = false;
-      const errors: unknown[] = [];
-      try {
-        document.unsubscribe(id);
-      } catch (error) {
-        errors.push(error);
-      }
-      if (shouldClose) {
-        try {
-          await document.close();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length > 0) {
-        const error =
-          errors.length === 1
-            ? errors[0]
-            : new AggregateError(errors, 'Document cleanup failed');
-        publish({ ...initial, status: 'error', error });
-        throw error;
-      }
-      publish({ ...initial, status: 'closed' });
+      return finishCleanup(shouldClose, [], 'Document cleanup failed');
     });
   }
 

@@ -10,6 +10,9 @@ export interface BufferListLike {
   slice(start?: number, end?: number): Uint8Array;
 }
 
+/** Maximum document path length in path-prefixed shared protocol headers. */
+export const MAX_DOCUMENT_PATH_LENGTH = 4096;
+
 /** Maximum complete request accepted by shared protocol handlers. */
 export const MAX_SHARED_PROTOCOL_REQUEST_BYTES = 10 * 1024 * 1024;
 

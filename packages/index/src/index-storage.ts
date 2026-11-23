@@ -1,10 +1,10 @@
-import {
+import type {
   IndexDefinition,
   IndexFieldDefinition,
   IndexKeyDefinition,
   QueryAst,
 } from './types.js';
-import { QueryPlan } from './query-planner.js';
+import type { QueryPlan } from './query-planner.js';
 
 /**
  * A single stored index entry: document path mapped to its indexed field values.
@@ -19,6 +19,18 @@ export interface StorageSchemaIdentity {
   generation: string;
   collectionPrefix: string;
   invalidValuePolicy: 'skip-document' | 'reject';
+}
+
+export function sameStorageSchemaIdentity(
+  left: StorageSchemaIdentity,
+  right: StorageSchemaIdentity,
+): boolean {
+  return (
+    left.schemaHash === right.schemaHash &&
+    left.generation === right.generation &&
+    left.collectionPrefix === right.collectionPrefix &&
+    left.invalidValuePolicy === right.invalidValuePolicy
+  );
 }
 
 export interface StorageQueryRequest {
