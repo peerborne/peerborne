@@ -51,12 +51,12 @@ import {
 
 import { pipe } from 'it-pipe';
 import { Libp2p } from 'libp2p';
-import { Peerborne, MAX_DOCUMENT_PATH_LENGTH } from './peerborne.js';
-import type { CreateInvitationOptions } from './peerborne.js';
+import type { CreateInvitationOptions, Peerborne } from './peerborne.js';
 import {
   assertSharedProtocolRequestSize,
   concatUint8Arrays,
   copyUnsharedUint8Array,
+  MAX_DOCUMENT_PATH_LENGTH,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readUint8Iterable,
   shuffleArray,

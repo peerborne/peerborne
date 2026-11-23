@@ -175,4 +175,43 @@ describe('framework-independent document store', () => {
     expect(store.getSnapshot().status).toBe('error');
     expect(store.getSnapshot().data).toBeUndefined();
   });
+
+  test.each(['start', 'stop'] as const)(
+    'reports %s cleanup failures in operation order',
+    async (operation) => {
+      const source = new TestDocument();
+      const store = createDocumentStore(source);
+      const openError = new Error('Open failed');
+      const unsubscribeError = new Error('Unsubscribe failed');
+      const closeError = new Error('Close failed');
+      if (operation === 'stop') await store.start();
+      else source.openError = openError;
+
+      const calls: string[] = [];
+      source.unsubscribe = () => {
+        calls.push('unsubscribe');
+        throw unsubscribeError;
+      };
+      source.close = async () => {
+        calls.push('close');
+        throw closeError;
+      };
+
+      await expect(store[operation]()).rejects.toBeInstanceOf(AggregateError);
+      expect(calls).toEqual(['unsubscribe', 'close']);
+      expect(store.getSnapshot()).toMatchObject({
+        status: 'error',
+        error: {
+          message:
+            operation === 'start'
+              ? 'Document open and cleanup failed'
+              : 'Document cleanup failed',
+          errors:
+            operation === 'start'
+              ? [openError, unsubscribeError, closeError]
+              : [unsubscribeError, closeError],
+        },
+      });
+    },
+  );
 });

@@ -62,6 +62,7 @@ import {
   securityAdvertiseV1,
 } from './wire-protocols.js';
 import {
+  MAX_DOCUMENT_PATH_LENGTH,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   readFirstDeserializable,
   readPathPrefixedProtocolHeader,
@@ -120,8 +121,7 @@ import type {
   SharedProtocolMutationResult,
 } from './shared-protocol-admission.js';
 
-/** Maximum document path length in path-prefixed shared protocol headers. */
-export const MAX_DOCUMENT_PATH_LENGTH = 4096;
+export { MAX_DOCUMENT_PATH_LENGTH } from './utils.js';
 
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_SHARED_PROTOCOL_REQUEST_TIMEOUT_MS = 5000;

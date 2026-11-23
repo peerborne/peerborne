@@ -32,6 +32,10 @@ interface IndexGeneration {
   schemaHash: string;
 }
 
+type IndexedDocumentProjection =
+  | { fields: Record<string, unknown>; invalid?: never }
+  | { fields?: never; invalid: { fieldPath: string; reason: InvalidIndexedValueReason } };
+
 function validateDocumentPath(documentPath: string): void {
   if (typeof documentPath !== 'string' || documentPath.length === 0 ||
       documentPath.length > MAX_DOCUMENT_PATH_LENGTH || /[\u0000-\u001f]/.test(documentPath)) {
@@ -74,6 +78,28 @@ export class QueryRequiresScanError extends Error {
     super(`query on index ${indexName} requires a full scan; set allowScan to opt in`);
     this.name = 'QueryRequiresScanError';
   }
+}
+
+function projectIndexedDocument(
+  indexName: string,
+  documentPath: string,
+  definition: IndexDefinition,
+  snapshot: Record<string, unknown>,
+): IndexedDocumentProjection {
+  const projection = new FieldProjection();
+  for (const field of definition.fields) {
+    const value = extractField(snapshot, field.path);
+    const reason = invalidIndexedValueReason(value, field);
+    if (reason) {
+      const invalid = { fieldPath: field.path, reason };
+      if (resolvedInvalidValuePolicy(definition) === 'reject') {
+        throw new InvalidIndexedDocumentError(indexName, documentPath, invalid.fieldPath, reason);
+      }
+      return { invalid };
+    }
+    projection.set(field.path, value);
+  }
+  return { fields: projection.fields };
 }
 
 /**
@@ -227,12 +253,9 @@ export class IndexManager<DocType> {
   async updateIndex(documentPath: string, document: DocType): Promise<void> {
     validateDocumentPath(documentPath);
     const snapshot = this._extractor(document);
-    const entries: Array<{
-      indexName: string;
-      generation: IndexGeneration;
-      fields?: Record<string, unknown>;
-      invalid?: { fieldPath: string; reason: InvalidIndexedValueReason };
-    }> = [];
+    const entries: Array<
+      { indexName: string; generation: IndexGeneration } & IndexedDocumentProjection
+    > = [];
 
     for (const [indexName, definition] of this._definitions) {
       if (!documentPath.startsWith(definition.collectionPrefix)) {
@@ -243,29 +266,10 @@ export class IndexManager<DocType> {
         continue;
       }
 
-      const projection = new FieldProjection();
-      let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
-      for (const fieldDef of definition.fields) {
-        const value = extractField(snapshot, fieldDef.path);
-        const reason = invalidIndexedValueReason(value, fieldDef);
-        if (reason) {
-          invalid = { fieldPath: fieldDef.path, reason };
-          break;
-        }
-        projection.set(fieldDef.path, value);
-      }
-      if (invalid && resolvedInvalidValuePolicy(definition) === 'reject') {
-        throw new InvalidIndexedDocumentError(
-          indexName,
-          documentPath,
-          invalid.fieldPath,
-          invalid.reason,
-        );
-      }
       entries.push({
         indexName,
         generation,
-        ...(invalid ? { invalid } : { fields: projection.fields }),
+        ...projectIndexedDocument(indexName, documentPath, definition, snapshot),
       });
     }
 
@@ -286,11 +290,11 @@ export class IndexManager<DocType> {
           }
           // Diff against previous entry -- skip write if unchanged
           const existing = await this._storage.get(indexName, documentPath);
-          if (existing && this._fieldsEqual(existing, fields!)) {
+          if (existing && this._fieldsEqual(existing, fields)) {
             return;
           }
 
-          await this._storage.put(indexName, documentPath, fields!);
+          await this._storage.put(indexName, documentPath, fields);
           changed = true;
         });
       }
@@ -445,30 +449,14 @@ export class IndexManager<DocType> {
       validateDocumentPath(documentPath);
       if (!documentPath.startsWith(definition.collectionPrefix)) continue;
       const snapshot = this._extractor(document);
-      const projection = new FieldProjection();
-      let invalid: { fieldPath: string; reason: InvalidIndexedValueReason } | undefined;
-      for (const fieldDef of definition.fields) {
-        const value = extractField(snapshot, fieldDef.path);
-        const reason = invalidIndexedValueReason(value, fieldDef);
-        if (reason) {
-          invalid = { fieldPath: fieldDef.path, reason };
-          break;
-        }
-        projection.set(fieldDef.path, value);
-      }
+      const { fields, invalid } = projectIndexedDocument(
+        indexName, documentPath, definition, snapshot,
+      );
       if (invalid) {
-        if (resolvedInvalidValuePolicy(definition) === 'reject') {
-          throw new InvalidIndexedDocumentError(
-            indexName,
-            documentPath,
-            invalid.fieldPath,
-            invalid.reason,
-          );
-        }
         this._recordDiagnostic(indexName, documentPath, invalid.fieldPath, invalid.reason);
         continue;
       }
-      rows.push({ documentPath, fields: projection.fields });
+      rows.push({ documentPath, fields });
     }
 
     await this._runExclusiveIndexOperation(indexName, generation, async () => {

@@ -11,11 +11,12 @@ import {
   StorageQueryRequest,
   StorageQueryResult,
   StorageSchemaIdentity,
+  sameStorageSchemaIdentity,
 } from './index-storage.js';
 import { extractField } from './field-extractor.js';
 import { compareCodeUnits, invalidIndexedValueReason, normalizeIndexScalar } from './query-ast.js';
 import { PhysicalQueryPlan, QueryIndexLookup } from './query-planner.js';
-import { finalizeQueryCandidates } from './query-execution.js';
+import { finalizeQueryCandidates, matchIndexLookup } from './query-execution.js';
 
 const METADATA_STORE = '__peerborne_internal_index_schema_v2__';
 const PHYSICAL_INDEX_PREFIX = '__peerborne_internal_v2__';
@@ -106,48 +107,14 @@ function encodeLookup(
   return { equals, start, ...(range ? { range } : {}) };
 }
 
-function matchesEncodedLookup(
-  key: IDBValidKey[],
-  lookup: EncodedLookup,
-): 'before' | 'match' | 'past' {
-  for (let i = 0; i < lookup.equals.length; i++) {
-    const compared = compareEncoded(key[i], lookup.equals[i]);
-    if (compared < 0) return 'before';
-    if (compared > 0) return 'past';
-  }
-  const range = lookup.range;
-  if (!range) return 'match';
-  const value = key[range.position];
-  if (range.prefix !== undefined) {
-    if (typeof value !== 'string') return 'past';
-    if (value.startsWith(range.prefix)) return 'match';
-    return compareCodeUnits(value, range.prefix) < 0 ? 'before' : 'past';
-  }
-  if (range.lower !== undefined) {
-    const compared = compareEncoded(value, range.lower);
-    if (compared < 0 || (compared === 0 && !range.lowerInclusive)) return 'before';
-  }
-  if (range.upper !== undefined) {
-    const compared = compareEncoded(value, range.upper);
-    if (compared > 0 || (compared === 0 && !range.upperInclusive)) return 'past';
-  }
-  return 'match';
-}
-
 function encodeScalar(value: IndexScalar, field: IndexFieldDefinition): EncodedScalar {
   return field.type === 'boolean' ? Number(value) : value as EncodedScalar;
 }
 
-function compareEncoded(left: IDBValidKey | undefined, right: EncodedScalar): number {
+function compareEncoded(left: IDBValidKey | undefined, right: IndexScalar): number {
   if (left === right) return 0;
   if (typeof left === 'number' && typeof right === 'number') return left - right;
   return compareCodeUnits(String(left), String(right));
-}
-
-function sameIdentity(left: StorageSchemaIdentity, right: StorageSchemaIdentity): boolean {
-  return left.schemaHash === right.schemaHash && left.generation === right.generation &&
-    left.collectionPrefix === right.collectionPrefix &&
-    left.invalidValuePolicy === right.invalidValuePolicy;
 }
 
 /**
@@ -313,7 +280,7 @@ export class IDBIndexStorage implements IndexStorage {
           while (cursor) {
             rowsVisited++;
             const key = (cursor.key as IDBValidKey[]).slice(0, plan.fields.length);
-            const decision = matchesEncodedLookup(key, encoded);
+            const decision = matchIndexLookup(key, encoded, compareEncoded);
             if (decision === 'past') break;
             if (decision === 'match') {
               const record = cursor.value;
@@ -370,7 +337,7 @@ export class IDBIndexStorage implements IndexStorage {
     const metadata = tx.objectStore(METADATA_STORE);
     const store = tx.objectStore(indexName);
     const previous = await metadata.get(indexName) as (StorageSchemaIdentity & { indexName: string }) | undefined;
-    if (!previous || !sameIdentity(previous, identity)) {
+    if (!previous || !sameStorageSchemaIdentity(previous, identity)) {
       await store.clear();
       await metadata.put({ indexName, ...identity });
       await tx.done;
