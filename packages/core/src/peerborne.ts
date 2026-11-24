@@ -504,11 +504,13 @@ export class Peerborne<
   // configs for the swarm, thus passing its config to all documents opened in a swarm
   protected _config: PeerborneConfig | null = null;
   private _loadTrustPolicy: Pick<PeerborneConfig,
-    'resolveTrustedDocumentWriters' | 'resolveLoadSecurityCommitments' | 'validateDocumentPath'> = {};
+    'resolveTrustedDocumentWriters' | 'resolveLoadSecurityCommitments' | 'validateDocumentPath' | 'beekemForkStore'> = {};
 
   get resolveTrustedDocumentWriters() { return this._loadTrustPolicy.resolveTrustedDocumentWriters; }
   get resolveLoadSecurityCommitments() { return this._loadTrustPolicy.resolveLoadSecurityCommitments; }
   get validateDocumentPath() { return this._loadTrustPolicy.validateDocumentPath; }
+  /** @internal */
+  get beekemForkStore() { return this._loadTrustPolicy.beekemForkStore; }
 
   private _heliaNode: PeerborneHeliaNode | undefined;
   private _peerId: PeerId | undefined;
@@ -700,6 +702,7 @@ export class Peerborne<
       resolveTrustedDocumentWriters: config.resolveTrustedDocumentWriters,
       resolveLoadSecurityCommitments: config.resolveLoadSecurityCommitments,
       validateDocumentPath: config.validateDocumentPath,
+      beekemForkStore: config.beekemForkStore,
     });
     this._config = config;
 
@@ -841,6 +844,7 @@ export class Peerborne<
         }
         throw new Error('Invitation offer is unavailable');
       }
+      if (this.beekemForkStore) registration.document.assertBeeKEMForkAdmission();
     };
     assertRegistrationAvailable();
     assertInvitationOfferUsable(offer);
@@ -1269,6 +1273,13 @@ export class Peerborne<
               request,
               signal,
             );
+            if (this.beekemForkStore) {
+              const registration = this._invitationRegistry.get(bytesToHex(request.offerDigest));
+              if (!registration || this._documentRegistry.get(registration.document.documentPath) !== registration.document) {
+                throw new Error('Invitation offer is unavailable');
+              }
+              registration.document.assertBeeKEMForkAdmission();
+            }
             await writeStream(stream, [
               encodeInvitationProtocolFrame(
                 encodeInvitationAcceptance(acceptance),
@@ -1425,6 +1436,7 @@ export class Peerborne<
     if (this._documentRegistry.get(document.documentPath) !== document) {
       throw new Error('Invitation document closed before offer registration');
     }
+    if (this.beekemForkStore) document.assertBeeKEMForkAdmission();
     if (this._invitationRegistry.size >= MAX_ACTIVE_INVITATION_OFFERS) {
       throw new Error(
         `Cannot create more than ${MAX_ACTIVE_INVITATION_OFFERS} active invitations`,
@@ -1501,6 +1513,9 @@ export class Peerborne<
         frozenKemKeyPair,
         document,
       );
+    } catch (error) {
+      if (this.beekemForkStore) await document.close().catch(() => {});
+      throw error;
     } finally {
       if (
         this._pendingInvitationDocuments.get(documentId) === document
