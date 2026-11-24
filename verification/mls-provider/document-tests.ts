@@ -45,6 +45,27 @@ async function rejects(action: () => Promise<unknown>, expected?: RegExp) {
   check(rejected, 'expected document boundary rejection');
 }
 
+function pauseNotificationWriters<T>(document: { getWriters(): Promise<T> }) {
+  const getWriters = document.getWriters;
+  let observed!: () => void;
+  let resume!: () => void;
+  const ready = new Promise<void>((resolve) => { observed = resolve; });
+  const paused = new Promise<void>((resolve) => { resume = resolve; });
+  document.getWriters = async () => {
+    const writers = await getWriters.call(document);
+    observed();
+    await paused;
+    return writers;
+  };
+  return {
+    ready,
+    release() {
+      document.getWriters = getWriters;
+      resume();
+    },
+  };
+}
+
 async function collect(coordinator: GroupSecurityCoordinator) {
   const values: GroupSecurityDelivery[] = [];
   await coordinator.flushOutbox(async (value) => {
@@ -541,30 +562,87 @@ export async function runProductionDocumentChecks() {
     check(read(docs[1]).retry === 7, 'restarted publication converges');
 
     const [controller, recipient] = f.coordinators;
-    await controller.createCommit({ changes: [] }, {
-      operationId: random(),
-      requestDigest: random(),
-      action: 'update',
-      subjectId: f.members[0],
-    });
-    const renewal = await collect(controller);
-    await recipient.applyCommit(renewal.commit!, renewal.controlRecord, []);
-    const oldHead = f.logs[0].headId;
     const survivorRoster = f.roster.slice(0, 1);
-    const roleOnlyRemoval = await f.logs[0].signUpdate(
-      controller.documentContext,
-      survivorRoster,
-      f.signing[0].privateKey,
-    );
-    await rejects(() => docs[0].applySecurityAuthorityUpdate(roleOnlyRemoval));
-    check(equal(oldHead, f.logs[0].headId), 'a roster mismatch leaves signed authority unchanged');
-    const matchingRenewal = await f.logs[0].signUpdate(
-      controller.documentContext,
-      f.roster,
-      f.signing[0].privateKey,
-    );
-    await docs[0].applySecurityAuthorityUpdate(matchingRenewal);
-    await docs[1].applySecurityAuthorityUpdate(matchingRenewal);
+    let staleNotifications = 0;
+    const countNotification = () => { staleNotifications++; };
+    docs[0].subscribe('delayed-notification', countNotification, 'local');
+    docs[1].subscribe('delayed-notification', countNotification, 'remote');
+    const [localNotice, remoteNotice] = docs.map(pauseNotificationWriters);
+    let receivingNotification: Promise<boolean> | undefined;
+    let matchingRenewal: Uint8Array;
+    try {
+      await docs[0].change(change('beforeRenewal', 11));
+      const published = publications.shift()!;
+      check(published?.sender === 0, 'the local change emitted its frame');
+      const receiving = docs[1].receiveSecurityFrame(published.data);
+      receivingNotification = receiving;
+      await Promise.race([
+        Promise.all([localNotice.ready, remoteNotice.ready]),
+        receiving.then(() => {
+          throw new Error('Remote receive finished before collecting notification metadata');
+        }),
+      ]);
+
+      await controller.createCommit({ changes: [] }, {
+        operationId: random(),
+        requestDigest: random(),
+        action: 'update',
+        subjectId: f.members[0],
+      });
+      const renewal = await collect(controller);
+      await recipient.applyCommit(renewal.commit!, renewal.controlRecord, []);
+      const oldHead = f.logs[0].headId;
+      const roleOnlyRemoval = await f.logs[0].signUpdate(
+        controller.documentContext,
+        survivorRoster,
+        f.signing[0].privateKey,
+      );
+      await rejects(() => docs[0].applySecurityAuthorityUpdate(roleOnlyRemoval));
+      check(equal(oldHead, f.logs[0].headId), 'a roster mismatch leaves signed authority unchanged');
+      matchingRenewal = await f.logs[0].signUpdate(
+        controller.documentContext,
+        f.roster,
+        f.signing[0].privateKey,
+      );
+      await docs[0].applySecurityAuthorityUpdate(matchingRenewal);
+      await docs[1].applySecurityAuthorityUpdate(matchingRenewal);
+    } finally {
+      localNotice.release();
+      remoteNotice.release();
+      docs[0].unsubscribe('delayed-notification');
+      docs[1].unsubscribe('delayed-notification');
+    }
+    check(await receivingNotification, 'a suppressed notification preserves receive success');
+    check(staleNotifications === 0, 'renewal fences both delayed notification origins');
+    check(read(docs[1]).beforeRenewal === 11, 'a suppressed notification retains accepted content');
+
+    let notify!: () => void;
+    const notified = new Promise<void>((resolve) => { notify = resolve; });
+    docs[0].subscribe('current-notification', notify, 'local');
+    await docs[0].change(change('beforeHandlerClose', 12));
+    await notified;
+    docs[0].unsubscribe('current-notification');
+    const beforeHandlerClose = publications.shift()!;
+    check(beforeHandlerClose?.sender === 0, 'one publication reaches the close fixture');
+    let closing: Promise<void> | undefined;
+    let closedContentStillReadable = false;
+    let notificationsAfterClose = 0;
+    docs[1].subscribe('close-on-notification', () => {
+      closing = docs[1].close();
+      try {
+        read(docs[1]);
+        closedContentStillReadable = true;
+      } catch {}
+    }, 'remote');
+    docs[1].subscribe('notify-after-close', () => { notificationsAfterClose++; }, 'remote');
+    check(await docs[1].receiveSecurityFrame(beforeHandlerClose.data), 'close fixture applied');
+    check(closing, 'the first admitted handler starts close');
+    await closing;
+    check(!closedContentStillReadable, 'close immediately fences direct content access');
+    check(notificationsAfterClose === 0, 'close prevents the next handler from receiving content');
+    docs[1] = makeDocument(1);
+    await docs[1].open();
+    check(read(docs[1]).beforeHandlerClose === 12, 'the accepted change survives callback close');
 
     // Hold a legitimate earlier-epoch publication until the writer reconnects.
     await docs[1].change(change('offlineDraft', 9));
@@ -687,6 +765,7 @@ export async function runProductionDocumentChecks() {
       abortedPublicationBranchRejected: true,
       roleHistoryCopiedOnlyAtCheckpoints: true,
       authenticatedRosterMatchesRoles: true,
+      staleNotificationsSuppressed: true,
       delayedRevocationBlocksOldEpoch: true,
       revokedDocumentCannotReopen: true,
       authorityRecoveryBeforeOpen: backend === 'automerge',

@@ -946,6 +946,21 @@ export class CoordinatedDocument<
     this.assertCurrentGroupRoster(binding);
   }
 
+  /** Capture the installed strict roster for a delayed application notification. */
+  captureStrictNotificationGuard(): (() => boolean) | undefined {
+    if (!this.options.requireGroupRosterMatch) return undefined;
+    const binding = this.rosterBinding;
+    return () => {
+      if (!binding || this.rosterBinding !== binding) return false;
+      try {
+        this.assertPublicationDispatchAllowed(binding);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  }
+
   pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
     return this.enqueue(0, () => async () => {
       this.assertActivated();
