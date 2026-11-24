@@ -66,6 +66,8 @@ rejects recovery, it closes that instance and releases the path for a fresh one.
 Use the document’s authority update APIs for strict transitions so they go
 through this journal. Publication retries pause during a roster mismatch and
 check current authority again before dispatching each frame.
+Change handlers receive updates only while their captured roster stays current
+and the document stays open.
 
 This option relies on the provider reporting its actual decrypting membership.
 An offline replica retains its earlier keys and roles until it learns the
