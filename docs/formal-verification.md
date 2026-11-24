@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 167 production functions in 40 proof units. The runtime calls
+LemmaScript checks 168 production functions in 41 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -103,6 +103,16 @@ application must store any durable decision independently of that instance.
 The proof does not cover private-key recovery from a competing claim, branch
 selection, agreement across partitioned writer ACLs, or cryptographic secrecy
 across every distribution path.
+
+The opt-in [durable quarantine policy](../packages/core/src/policy/beekem-fork-anchor.ts)
+requires the exact session lease for release or quarantine. The [finite-history proof](../verification/formal/proofs/packages/core/src/policy/beekem-fork-anchor.dfy)
+preserves the quarantined record and rejects changes by stale or foreign leases.
+An active lease is persisted before guarded state becomes available. A fork
+stops the live instance, and an interrupted marker write leaves the durable
+lease blocking restart. Tests exercise both the native checkpoint path and a
+separate process reopening an independently persisted anchor. The application
+owns the atomic store and preserves its provisioned rows. An unclean shutdown
+can require explicitly recovering the document on a fresh path.
 
 The opt-in [replacement API](../packages/core/src/document-recovery.ts) stages
 approved content on a fresh document path. A durable application compare-and-set
@@ -635,7 +645,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 69 property-suite files containing 252 explicit
+The inventory audits 70 property-suite files containing 256 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

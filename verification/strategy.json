@@ -112,6 +112,18 @@
       ]
     },
     {
+      "id": "beekem-durable-fork-quarantine",
+      "formalBoundary": "The production phase, revision, owner and stop guard is exact. Finite histories keep quarantine absorbing, prevent stale or foreign release and keep an active record fenced after an interrupted stop. Seeded runtime schedules check competing acquisitions, scope separation, close during acquisition and before/after-write interruptions. Process and Yjs fixtures check restart and refusal to restore a valid pinned checkpoint after a local authenticated fork. The guarantees depend on an independent exact durable CAS, a fresh lease and authenticated local fork detection. An application store's durability and group-wide fork resolution remain outside this evidence.",
+      "evidence": [
+        "packages/core/src/beekem-fork-quarantine-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/policy/beekem-fork-anchor.ts",
+        "packages/core/src/beekem-fork-quarantine.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "gossip-receive-admission",
       "formalBoundary": "Proved document admission budgets bound count and byte reservations across finite histories. The runtime applies one budget to the PubSub listener and validator per subscription and a second budget across the module. Native properties check detached ownership, admission across multiple scopes, pending work at close, and signature batching. The accounting covers admitted ciphertext bytes and work items. Heap overhead, peer scheduling, native CPU and recovery of locally skipped messages remain outside the proof.",
       "evidence": ["packages/core/src/gossip-receive-admission-properties.test.ts"],
@@ -469,6 +481,13 @@
     }
   ],
   "integrationBoundaries": [
+    {
+      "boundary": "Local BeeKEM fork quarantine with persistence, process restart and native pinned checkpoint admission",
+      "evidence": [
+        "packages/core/src/beekem-fork-quarantine-process.test.ts",
+        "examples/password-manager/src/document-checkpoint.test.ts"
+      ]
+    },
     {
       "boundary": "Explicit application recovery through a staged fresh document, pinned checkpoint and separate locator",
       "evidence": ["examples/password-manager/src/document-checkpoint.test.ts"]

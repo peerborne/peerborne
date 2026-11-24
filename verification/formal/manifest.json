@@ -841,6 +841,18 @@
         "documentRecovery_all_histories"
       ],
       "solverSeeds": [1, 2, 7, 19]
+    },
+    {
+      "path": "packages/core/src/policy/beekem-fork-anchor.ts",
+      "functions": ["canAdvanceBeeKEMForkAnchor"],
+      "witness": "beeKEMForkAnchor_domain",
+      "consumers": ["packages/core/src/beekem-fork-quarantine.ts"],
+      "verifiedTargets": [
+        "canAdvanceBeeKEMForkAnchor_ensures",
+        "beeKEMForkAnchor_allHistories",
+        "beeKEMForkAnchor_nonOwnerHistory"
+      ],
+      "solverSeeds": [1, 2, 7, 19]
     }
   ]
 }
