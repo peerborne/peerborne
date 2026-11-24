@@ -964,6 +964,7 @@ export class PeerborneDocument<
   private _competingBeeKEMGeneration: number | undefined;
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
+  private _oversizedEditClose?: Promise<void>;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1622,6 +1623,12 @@ export class PeerborneDocument<
   }
 
   private _assertDocumentStateNotPoisoned(): void {
+    if (this._oversizedEditClose) {
+      throw new Error(
+        `Document ${this.documentPath} was retired after an oversized edit; ` +
+          'open a fresh instance from accepted state before continuing',
+      );
+    }
     if (this._bootstrapLoadApplicationState === 'poisoned') {
       throw new Error(
         `Document ${this.documentPath} has indeterminate authorization state; ` +
@@ -1660,6 +1667,7 @@ export class PeerborneDocument<
 
   /** @internal Recheck an invitation response at its dispatch boundary. */
   public assertBeeKEMForkAdmission(): void {
+    this._assertDocumentStateNotPoisoned();
     this._beekemForkGuard?.assertAcceptsWork();
   }
 
@@ -1677,6 +1685,7 @@ export class PeerborneDocument<
 
   private _isStateApplicationBlocked(): boolean {
     return (
+      this._oversizedEditClose !== undefined ||
       this._bootstrapLoadApplicationState === 'pending' ||
       this._bootstrapLoadApplicationState === 'poisoned' ||
       (this._beekemForkGuard !== undefined && !this._beekemForkGuard.acceptsWork)
@@ -1932,7 +1941,10 @@ export class PeerborneDocument<
     );
   }
 
-  private async _putBlock(block: ChangesType): Promise<string> {
+  private async _putBlock(
+    block: ChangesType,
+    kind?: CRDTChangeNodeKind,
+  ): Promise<string> {
     const [documentKeyID, documentKey] = await this._keychain.current();
     if (!documentKey) {
       throw new Error(`Document ${this.documentPath} has an empty keychain!`);
@@ -1945,8 +1957,21 @@ export class PeerborneDocument<
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
     }
-    if (documentKeyID.byteLength + nonce.byteLength + data.byteLength > MAX_DOCUMENT_BLOCK_BYTES) {
-      throw new DocumentBlockReadLimitError('Encrypted document block exceeds the byte limit');
+    const encryptedBytes =
+      documentKeyID.byteLength + nonce.byteLength + data.byteLength;
+    if (encryptedBytes > MAX_DOCUMENT_BLOCK_BYTES) {
+      if (kind === crdtDocumentChangeNode) {
+        // Legacy providers may already have advanced their live causal state.
+        // Fence it before any further edit or checkpoint can retain that gap.
+        this._bootstrapLoadApplicationRevision++;
+        this._oversizedEditClose = Promise.resolve().then(() =>
+          this._closeDocument(),
+        );
+        void this._oversizedEditClose.catch(() => {});
+      }
+      throw new DocumentBlockReadLimitError(
+        'Encrypted document block exceeds the byte limit',
+      );
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
     const newFileResult = await this.heliaFs.addBytes(blockData);
@@ -1982,6 +2007,7 @@ export class PeerborneDocument<
   ): void {
     for (const handler of notification.handlers) {
       if (
+        this._oversizedEditClose ||
         (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) ||
         notification.canDispatch?.() === false
       ) {
@@ -3882,7 +3908,7 @@ export class PeerborneDocument<
     let commitResolved = false;
     try {
       // Store changes in blockstore.
-      hash = await this._putBlock(changes);
+      hash = await this._putBlock(changes, kind);
       hashWasKnown = this._hashes.has(hash);
       this._hashes.add(hash);
 
@@ -7469,6 +7495,10 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public close(): Promise<void> {
+    return this._oversizedEditClose ?? this._closeDocument();
+  }
+
+  private _closeDocument(): Promise<void> {
     const guard = this._beekemForkGuard;
     if (!guard) return this._closeResources();
     guard.beginClose();
@@ -8103,6 +8133,8 @@ export class PeerborneDocument<
    * Y.Doc. Callers using Yjs should treat a failed transaction as leaving
    * the local document in a potentially inconsistent state and consider
    * re-syncing from peers.
+   * An oversized encrypted block retires the instance before publication.
+   * Reopen from accepted state before retrying the edit in smaller changes.
    *
    * **Known limitation -- concurrent remote changes during rollback:** The
    * rollback sets `_document` back to the snapshot captured when
@@ -8296,6 +8328,7 @@ export class PeerborneDocument<
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
+   * An oversized encrypted block retires the legacy instance before publication.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.

@@ -24,6 +24,34 @@ function chunkAt(width) {
   };
 }
 
+async function unixfsFile(bytes, width) {
+  const blockstore = new MemoryBlockstore();
+  const hash = await unixfs({ blockstore }).addBytes(bytes, {
+    chunker: chunkAt(width),
+  });
+  assert.notEqual(hash.code, raw.code);
+  return { blockstore, hash };
+}
+
+function readOnlyStore(blockstore, get) {
+  return {
+    get,
+    has: blockstore.has.bind(blockstore),
+    put() {
+      assert.fail('Document read tried to persist a block');
+    },
+  };
+}
+
+function rejectionOnlyDocument(blockstore) {
+  return Object.assign(Object.create(PeerborneDocument.prototype), {
+    swarm: { heliaNode: { blockstore } },
+    _decodeBlock() {
+      assert.fail('Rejected UnixFS input reached decryption');
+    },
+  });
+}
+
 test('the document reader reconstructs native UnixFS ciphertext and authenticates before decoding', async () => {
   const generateKey = () => crypto.subtle.generateKey(
     { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
@@ -179,6 +207,140 @@ test('empty fragments consume the same chunk budget as nonempty fragments', asyn
     readDocumentBlock(source(65_536), hash),
     DocumentBlockReadLimitError,
   );
+});
+
+test('UnixFS traversal admits the exact physical byte limit before checking logical output', async () => {
+  const leafBytes = 8 * 1024 * 1024;
+  const bytes = new Uint8Array(leafBytes + 1);
+  bytes[leafBytes] = 1;
+  const { blockstore, hash } = await unixfsFile(bytes, leafBytes);
+  let rootBytes = 0;
+  for await (const chunk of blockstore.get(hash)) rootBytes += chunk.length;
+
+  for (const limitReduction of [0, 1]) {
+    const seen = [];
+    let admitted = 0;
+    const document = rejectionOnlyDocument(
+      readOnlyStore(blockstore, async function* (cid, options) {
+        seen.push(cid);
+        yield* blockstore.get(cid, options);
+      }),
+    );
+    const budget = limitReduction === 0 ? 'output' : 'traversal input';
+    await assert.rejects(
+      document._getBlock(hash, {
+        maxBlockBytes: rootBytes - limitReduction,
+        consumeBytes: (length) => {
+          admitted += length;
+        },
+      }),
+      (error) =>
+        error instanceof DocumentBlockReadLimitError &&
+        error.message.includes(`${budget} budget exceeded`),
+    );
+    assert.ok(seen[0].equals(hash));
+    if (limitReduction === 0) {
+      // The exporter can start the next child before yielding the first.
+      assert.ok(seen.length <= 3);
+    } else {
+      assert.equal(seen.length, 2);
+    }
+    assert.equal(admitted, rootBytes + (limitReduction === 0 ? leafBytes : 0));
+  }
+});
+
+test('UnixFS traversal counts physical segments across metadata and child reads', async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+  const { blockstore, hash } = await unixfsFile(bytes, 3);
+  const segmentBudget = 65_536;
+  for (const excess of [0, 1]) {
+    let reads = 0;
+    let emitted = 0;
+    let admitted = 0;
+    const store = readOnlyStore(blockstore, async function* (cid, options) {
+      reads++;
+      if (cid.equals(hash)) {
+        const empty = new Uint8Array();
+        const emptyCount = segmentBudget - 3 + excess; // Root and two raw children.
+        for (let index = 0; index < emptyCount; index++) {
+          emitted++;
+          yield empty;
+        }
+      }
+      for await (const chunk of blockstore.get(cid, options)) {
+        emitted++;
+        yield chunk;
+      }
+    });
+    const readOptions = {
+      maxBlockBytes: bytes.length,
+      consumeBytes: () => {
+        admitted++;
+      },
+    };
+    if (excess === 0) {
+      assert.deepEqual(await readDocumentBlock(store, hash, readOptions), bytes);
+    } else {
+      await assert.rejects(
+        rejectionOnlyDocument(store)._getBlock(hash, readOptions),
+        /UnixFS traversal input budget exceeded/,
+      );
+    }
+    assert.equal(admitted, segmentBudget);
+    assert.equal(emitted, segmentBudget + excess);
+    assert.equal(reads, 3);
+  }
+});
+
+test('UnixFS cancellation closes an in-flight child before opening its siblings', async () => {
+  const { blockstore, hash } = await unixfsFile(
+    new Uint8Array([1, 2, 3, 4, 5]),
+    3,
+  );
+  const seen = [];
+  let childSignal;
+  let childStarted;
+  let childClosed;
+  const started = new Promise((resolve) => {
+    childStarted = resolve;
+  });
+  const closed = new Promise((resolve) => {
+    childClosed = resolve;
+  });
+  const document = rejectionOnlyDocument(
+    readOnlyStore(blockstore, async function* (cid, { signal }) {
+      seen.push(cid);
+      if (!cid.equals(hash)) {
+        childSignal = signal;
+        try {
+          await new Promise((_resolve, reject) => {
+            signal.throwIfAborted();
+            signal.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            });
+            childStarted();
+          });
+        } finally {
+          childClosed();
+        }
+      }
+      yield* blockstore.get(cid, { signal });
+    }),
+  );
+  const controller = new AbortController();
+  const cancelled = new Error('Stopped reading encrypted history');
+  const read = document._getBlock(hash, { signal: controller.signal });
+  await Promise.race([
+    started,
+    read.then(() => assert.fail('The deferred child was not fetched')),
+  ]);
+  controller.abort(cancelled);
+  await assert.rejects(read, { message: cancelled.message });
+  await closed;
+  assert.equal(seen.length, 2);
+  assert.ok(seen[0].equals(hash));
+  assert.ok(!seen[1].equals(hash));
+  assert.equal(childSignal.reason, cancelled);
 });
 
 test('the writer does not persist a ciphertext file larger than the reader can open', async () => {

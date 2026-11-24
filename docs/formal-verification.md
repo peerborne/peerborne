@@ -78,7 +78,9 @@ accounts exactly for the admitted prefix of any finite stream and identifies
 the first byte- or count-limit rejection. The reader admits up to 64 MiB of
 ciphertext per file, with tighter caller limits, and charges traversal bytes
 against the caller's aggregate fetch budget. Writes enforce the same file limit
-before persistence. Native properties cover real UnixFS
+before persistence. If a legacy edit has already advanced a provider's live
+causal state, the oversized-write check retires that handle. Reopen from accepted
+state before splitting and retrying the edit. Native properties cover real UnixFS
 chunking, tighter caller budgets and cancellation. A Chromium profile relaunch
 exercises restore, authenticated sync and an edit with at least 50 MiB of
 encoded history. Renderer memory, long tasks and latency are measured at
