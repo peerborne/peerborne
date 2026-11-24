@@ -1486,6 +1486,138 @@ describe('document load response boundaries', () => {
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    ['applied', true],
+    ['unapplied', false],
+  ])(
+    'requires the agreed snapshot on a quorum-bound first load when it is %s',
+    async (_label, snapshotApplied) => {
+      const message = {
+        documentId: '/load-race',
+        signatureContext: 'load-response-v4',
+        signature: 'AAAA',
+        changeId: 'HEAD',
+        changes: {
+          kind: crdtDocumentChangeNode,
+          change: { inline: 'head' },
+          children: {
+            BOUNDARY: {
+              kind: crdtDocumentChangeNode,
+              change: { inline: 'boundary' },
+              children: {
+                WRITER: {
+                  kind: crdtWriterChangeNode,
+                  change: { inline: 'writer' },
+                },
+              },
+            },
+          },
+        },
+        snapshot: {
+          state: { compacted: 'pruned-history' },
+          lastChangeNodeCID: 'BOUNDARY',
+          compactedCount: 120,
+          signature: new Uint8Array([4]),
+          timestamp: 1,
+        },
+      };
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async () => true,
+        message,
+      );
+      document._writers = {
+        users: jest.fn(async () => []),
+        check: async () => false,
+      };
+      const applied: Array<{ snapshot: unknown; afterChanges: unknown }> = [];
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _context: string,
+          onStateApplicationStart?: () => void,
+          _continuePending?: boolean,
+          _onLogicalKeychainChange?: () => void,
+          options?: { applySnapshotAfterChanges?: boolean },
+        ) => {
+          onStateApplicationStart?.();
+          applied.push({
+            snapshot: appliedMessage.snapshot,
+            afterChanges: options?.applySnapshotAfterChanges,
+          });
+          for (const cid of ['HEAD', 'BOUNDARY', 'WRITER']) {
+            document._hashes.add(cid);
+          }
+          if (snapshotApplied) {
+            document._latestSnapshot = appliedMessage.snapshot;
+            document._latestSnapshotSource = appliedMessage.snapshot;
+          }
+          return true;
+        },
+      );
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+
+      const load = document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      );
+      if (snapshotApplied) {
+        await expect(load).resolves.toBe(true);
+      } else {
+        await expect(load).rejects.toMatchObject({
+          name: '_QuorumBindCheckFailedError',
+          message: expect.stringMatching(/did not apply its agreed snapshot/),
+        });
+      }
+      expect(applied).toEqual([
+        {
+          snapshot: expect.objectContaining({ lastChangeNodeCID: 'BOUNDARY' }),
+          afterChanges: true,
+        },
+      ]);
+    },
+  );
+
+  test('rejects a snapshot-only quorum-bound first load before state application', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      snapshot: {
+        state: { compacted: 'unverifiable' },
+        lastChangeNodeCID: 'BOUNDARY',
+        compactedCount: 120,
+        signature: new Uint8Array([4]),
+        timestamp: 1,
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._writers = {
+      users: jest.fn(async () => []),
+      check: async () => false,
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+    const expectedTipsHash = await fixtureLoadDigest(document, ['BOUNDARY']);
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
   test('reuses a validated prefetched block under one aggregate byte budget', async () => {
     const message = {
       documentId: '/prefetch-cache',

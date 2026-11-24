@@ -774,4 +774,58 @@ describe('snapshot-bearing invitation sync', () => {
     await expect(document.sync(message)).resolves.toBe(true);
     expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
   });
+
+  test.each([
+    ['before', undefined, false],
+    ['after', true, true],
+  ] as const)(
+    'verifies a first-load snapshot %s block-only ACL history establishes its writers',
+    async (_label, applySnapshotAfterChanges, expectedApplied) => {
+      const document = snapshotDocument();
+      let writersEstablished = false;
+      let boundarySeenByChangeSync: boolean | undefined;
+      Object.assign(document, {
+        _isSigningEnabled: () => true,
+        _encoder: new TextEncoder(),
+        _changesSerializer: { serializeChanges: () => new Uint8Array([1]) },
+        _verifySnapshotSignature: jest.fn(async () => writersEstablished),
+        _syncDocumentChanges: async () => {
+          boundarySeenByChangeSync = document._hashes.has('boundary-cid');
+          for (const cid of [
+            'head-cid',
+            'recent-cid',
+            'boundary-cid',
+            'old-cid',
+          ]) {
+            document._hashes.add(cid);
+          }
+          writersEstablished = true;
+        },
+      });
+      const message = snapshotMessage('load-response-v4');
+      message.signature = 'AAAA';
+
+      await expect(
+        document._syncUnlocked(
+          message,
+          false,
+          'load-response-v4',
+          undefined,
+          false,
+          undefined,
+          { applySnapshotAfterChanges },
+        ),
+      ).resolves.toBe(true);
+
+      expect(document._verifySnapshotSignature).toHaveBeenCalledTimes(1);
+      expect(boundarySeenByChangeSync).toBe(false);
+      expect(document._isLatestSnapshotFrom(message)).toBe(expectedApplied);
+      expect(document._document).toEqual(
+        expectedApplied ? message.snapshot.state : undefined,
+      );
+      expect(document._fireOrDeferRemoteUpdateHandlers).toHaveBeenCalledTimes(
+        expectedApplied ? 1 : 0,
+      );
+    },
+  );
 });

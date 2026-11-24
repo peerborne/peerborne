@@ -117,4 +117,46 @@ describe('Automerge provider generated delivery histories', () => {
       { seed: 9430, numRuns: 150, examples: [[[], []]] },
     );
   });
+
+  test('recovers pruned history when the retained tail arrives before its snapshot', () => {
+    const provider = new AutomergeProvider<PropertyDocument>();
+    const serializer = new AutomergeJSONSerializer();
+    const wire = (changes: Change[]) =>
+      serializer.deserializeChanges(serializer.serializeChanges(changes));
+    fc.assert(
+      fc.property(
+        program,
+        fc.nat(),
+        fc.nat(),
+        (edits, snapshotSeed, tailSeed) => {
+          const genesis = from<PropertyDocument>(
+            { values: {} },
+            { actor: '01' },
+          );
+          let source = clone(genesis, { actor: '02' });
+          const packets: Change[][] = [provider.getHistory(genesis)];
+          const covered = 1 + (snapshotSeed % (edits.length + 1));
+          let snapshot =
+            covered === 1 ? provider.getSnapshot(source) : undefined;
+          for (const operation of edits) {
+            let changes: Change[];
+            [source, changes] = provider.localChange(source, '', (draft) => {
+              if (operation.remove) delete draft.values[operation.key];
+              else draft.values[operation.key] = operation.value;
+            });
+            packets.push(changes);
+            if (packets.length === covered)
+              snapshot = provider.getSnapshot(source);
+          }
+          let recovered = init<PropertyDocument>({ actor: '03' });
+          for (const changes of packets.slice(tailSeed % (covered + 1))) {
+            recovered = provider.remoteChange(recovered, wire(changes));
+          }
+          recovered = provider.applySnapshot(recovered, wire(snapshot!));
+          expect(recovered).toEqual(source);
+        },
+      ),
+      { seed: 9432, numRuns: 150, examples: [[[], 0, 0]] },
+    );
+  });
 });

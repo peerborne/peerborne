@@ -152,6 +152,7 @@ Snapshots can reduce replay work, but:
 - With pruning enabled, in-memory pruning does not delete Helia blocks unless `gcAfterPrune` is also enabled
 - A locally deleted block may still be fetchable from another provider, but there is no replication guarantee
 - A quorum-bound first load rejects a snapshot-only response because it has no prior writer set with which to authenticate the snapshot
+- When a first-load response carries a snapshot with its change tree, the snapshot is verified after the CID-addressed ACL blocks establish the writer set. If the agreed snapshot is not applied, the load fails instead of applying only the retained change tail
 
 ### Garbage collection
 
