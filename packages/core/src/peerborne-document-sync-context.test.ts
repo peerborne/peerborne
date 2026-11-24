@@ -828,4 +828,52 @@ describe('snapshot-bearing invitation sync', () => {
       );
     },
   );
+
+  test.each([
+    ['before', undefined],
+    ['after', true],
+  ] as const)(
+    'counts only changes newer than a snapshot applied %s change sync',
+    async (_label, applySnapshotAfterChanges) => {
+      const document = snapshotDocument();
+      Object.assign(document, {
+        _isSigningEnabled: () => true,
+        _encoder: new TextEncoder(),
+        _changesSerializer: { serializeChanges: () => new Uint8Array([1]) },
+        _verifySnapshotSignature: jest.fn(async () => true),
+        _changesSinceSnapshot: 0,
+        _syncDocumentChanges: async () => {
+          for (const cid of [
+            'head-cid',
+            'recent-cid',
+            'boundary-cid',
+            'old-cid',
+          ]) {
+            if (document._hashes.has(cid)) break;
+            document._hashes.add(cid);
+            document._documentChangeCount++;
+            document._changesSinceSnapshot++;
+          }
+        },
+      });
+      const message = snapshotMessage('load-response-v4');
+      message.signature = 'AAAA';
+
+      await expect(
+        document._syncUnlocked(
+          message,
+          false,
+          'load-response-v4',
+          undefined,
+          false,
+          undefined,
+          { applySnapshotAfterChanges },
+        ),
+      ).resolves.toBe(true);
+
+      expect(document._isLatestSnapshotFrom(message)).toBe(true);
+      expect(document._documentChangeCount).toBe(12);
+      expect(document._changesSinceSnapshot).toBe(2);
+    },
+  );
 });

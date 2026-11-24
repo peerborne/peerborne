@@ -948,10 +948,22 @@ describe('load connection handling', () => {
   describe('identified load protocol support', () => {
     const relay = '/ip4/10.0.0.9/tcp/1/p2p/relay';
     const carol = '/ip4/10.0.0.4/tcp/1/p2p/carol';
-    const identified: Record<string, string[]> = {
-      relay: ['/libp2p/circuit/relay/0.2.0/hop', '/ipfs/id/1.0.0'],
-      alice: ['/ipfs/id/1.0.0', '/peerborne/doc-load/4.0.0'],
-      bob: ['/peerborne/doc-load/4.0.0'],
+    const dave = '/ip4/10.0.0.5/tcp/1/p2p/dave';
+    const completed = new Map([['AgentVersion', new Uint8Array([1])]]);
+    const stored: Record<
+      string,
+      { protocols: string[]; metadata: Map<string, Uint8Array> }
+    > = {
+      relay: {
+        protocols: ['/libp2p/circuit/relay/0.2.0/hop', '/ipfs/id/1.0.0'],
+        metadata: completed,
+      },
+      alice: {
+        protocols: ['/ipfs/id/1.0.0', '/peerborne/doc-load/4.0.0'],
+        metadata: completed,
+      },
+      bob: { protocols: ['/peerborne/doc-load/4.0.0'], metadata: completed },
+      dave: { protocols: ['/ipfs/id/1.0.0'], metadata: new Map() },
     };
 
     function identifiedHarness(
@@ -969,13 +981,13 @@ describe('load connection handling', () => {
         }));
       libp2p.peerStore = {
         get: jest.fn(async (peerId: { toString(): string }) => {
-          const protocols = identified[peerId.toString()];
-          if (protocols === undefined) {
+          const peer = stored[peerId.toString()];
+          if (peer === undefined) {
             throw Object.assign(new Error('Not found'), {
               name: 'NotFoundError',
             });
           }
-          return { protocols };
+          return peer;
         }),
       };
       const probed: string[] = [];
@@ -1012,6 +1024,16 @@ describe('load connection handling', () => {
 
       await expect(document.load()).resolves.toBe(true);
       expect(probed).toEqual(['alice']);
+    });
+
+    test('keeps a peer whose stored protocols precede completed identify', async () => {
+      const { document, probed } = identifiedHarness(
+        [relay, aliceDirect, dave],
+        {},
+      );
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed.sort()).toEqual(['alice', 'dave']);
     });
 
     test('keeps a connected peer whose protocols are not yet identified', async () => {

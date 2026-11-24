@@ -1633,21 +1633,25 @@ export class PeerborneDocument<
   }
 
   /**
-   * Exclude only peers whose identify record omits document loading, such as
-   * relays. Peers without a completed identify exchange remain candidates.
+   * Exclude only peers whose completed identify record omits document
+   * loading, such as relays. libp2p also records individually negotiated
+   * stream protocols, so only identify's version metadata, written after its
+   * protocol list, shows that the list is complete.
    */
   private async _mayServeDocumentLoad(
     remotePeer: PeerId | undefined,
   ): Promise<boolean> {
     const peerStore = this.swarm.heliaNode.libp2p.peerStore;
     if (peerStore === undefined || remotePeer === undefined) return true;
-    let protocols: readonly string[];
+    let peer: Awaited<ReturnType<typeof peerStore.get>>;
     try {
-      ({ protocols } = await peerStore.get(remotePeer));
+      peer = await peerStore.get(remotePeer);
     } catch {
       return true;
     }
-    return protocols.length === 0 || protocols.includes(documentLoadV4);
+    const identified =
+      peer.metadata.has('AgentVersion') || peer.metadata.has('ProtocolVersion');
+    return !identified || peer.protocols.includes(documentLoadV4);
   }
 
   private _assertDocumentStateNotPoisoned(): void {
@@ -7772,6 +7776,31 @@ export class PeerborneDocument<
   }
 
   /** Apply a sync message after any required membership-queue admission. */
+  private _countChangesAppliedAboveSnapshot(
+    message: CRDTSyncMessage<ChangesType>,
+    hashesBefore: ReadonlySet<string>,
+  ): number {
+    if (message.changes === undefined) return 0;
+    const boundary = message.snapshot?.lastChangeNodeCID;
+    const counted = new Set<string>();
+    for (const { nodeId, kind } of collectBoundedChangeTree(
+      message.changeId,
+      message.changes,
+      { stopBelowNodeIds: new Set(boundary === undefined ? [] : [boundary]) },
+    )) {
+      if (
+        nodeId !== undefined &&
+        nodeId !== boundary &&
+        kind === crdtDocumentChangeNode &&
+        this._hashes.has(nodeId) &&
+        !hashesBefore.has(nodeId)
+      ) {
+        counted.add(nodeId);
+      }
+    }
+    return counted.size;
+  }
+
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType>,
     verifySignature: boolean,
@@ -8054,6 +8083,10 @@ export class PeerborneDocument<
     if (message.snapshot && !snapshotAfterChanges) {
       await applyIncomingSnapshot(message.snapshot);
     }
+    const hashesBeforeChanges = snapshotAfterChanges
+      ? new Set(this._hashes)
+      : undefined;
+    const documentChangeCountBeforeChanges = this._documentChangeCount;
 
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
@@ -8070,6 +8103,20 @@ export class PeerborneDocument<
     if (message.snapshot && snapshotAfterChanges) {
       await applyIncomingSnapshot(message.snapshot);
       assertStillActive();
+      if (appliedSnapshot) {
+        // Count only changes the snapshot does not cover, as if it had been
+        // applied before the change sync.
+        const newerChanges = this._countChangesAppliedAboveSnapshot(
+          message,
+          hashesBeforeChanges!,
+        );
+        this._documentChangeCount =
+          Math.max(
+            documentChangeCountBeforeChanges,
+            message.snapshot.compactedCount,
+          ) + newerChanges;
+        this._changesSinceSnapshot = newerChanges;
+      }
     }
 
     assertStillActive();
