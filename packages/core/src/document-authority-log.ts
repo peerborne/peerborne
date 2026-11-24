@@ -1,5 +1,6 @@
 import {
   isDocumentAuthorityRosterValid,
+  exactDocumentMemberRoster,
   canBindDocumentController,
   bindDocumentController,
 } from './policy/document-authority.js';
@@ -46,6 +47,34 @@ const DOMAIN = Uint8Array.from('peerborne/document-authority/v2\0', (value) =>
 const MAX_RECORDS = 1024,
   MAX_HISTORY_BYTES = 16 * 1024 * 1024;
 const ZERO = new Uint8Array(32);
+
+/** @internal Compare signed member IDs with a detached, sorted provider roster. */
+export function assertDocumentGroupRoster(
+  authorityIds: Iterable<string>,
+  groupIds: readonly string[],
+): void {
+  if (!exactDocumentMemberRoster([...authorityIds].sort(), groupIds)) {
+    throw new Error(
+      'Document authority does not match the authenticated group roster',
+    );
+  }
+}
+
+/** @internal Detached strict role record reserved until its checkpoint is durable. */
+export interface PreparedDocumentRosterUpdate {
+  readonly context: GroupSecurityDocumentContext;
+  readonly authorityHead: Uint8Array;
+  readonly authorityRecords: readonly Uint8Array[];
+  isReserved(): boolean;
+  isInstalled(): boolean;
+  commit(): void;
+  discard(): void;
+}
+
+interface DocumentRosterUpdateAdmission {
+  readLocalPublicKey(): Promise<string>;
+  isCurrent(): boolean;
+}
 
 interface AuthorityRecord {
   documentId: string;
@@ -202,6 +231,7 @@ export class DocumentAuthorityLog<
   private controllers = new Map<string, Uint8Array>();
   private readonly verifiedHeads = new Set<string>();
   private controlAuthority?: DocumentGroupControlAuthority;
+  private reservedRosterUpdate?: object;
 
   private constructor(
     root: Uint8Array,
@@ -392,37 +422,111 @@ export class DocumentAuthorityLog<
     coordinator: GroupSecurityCoordinator,
     encoded: Uint8Array,
   ): Promise<void> {
+    await this.admitUpdate(coordinator, encoded);
+  }
+
+  /** @internal Validate an exact roster and reserve its detached role update. */
+  async prepareRosterUpdate(
+    coordinator: GroupSecurityCoordinator,
+    encoded: Uint8Array,
+    admission: DocumentRosterUpdateAdmission,
+  ): Promise<PreparedDocumentRosterUpdate> {
+    const prepared = await this.admitUpdate(coordinator, encoded, admission);
+    if (!prepared) throw new Error('Authenticated role update was not reserved');
+    return prepared;
+  }
+
+  private async admitUpdate(
+    coordinator: GroupSecurityCoordinator,
+    encoded: Uint8Array,
+    admission?: DocumentRosterUpdateAdmission,
+  ): Promise<PreparedDocumentRosterUpdate | undefined> {
     this.assertCoordinator(coordinator);
+    if (this.reservedRosterUpdate)
+      throw new Error('An authenticated role update is already reserved');
     const context = coordinator.documentContext;
     const revision = this.revision;
+    let prepared: PreparedDocumentRosterUpdate | undefined;
     await coordinator.runDocumentOperation(
       context,
       encoded,
-      async (captured, input, _signal, work) => {
-        const signed = decodeSignedDocumentContent(input),
-          next = decode(signed.unsigned);
+      async (captured, input, signal, work) => {
+        const signed = decodeSignedDocumentContent(input);
+        const next = decode(signed.unsigned);
         this.validateNext(next);
         if (this.historyBytes + input.length > MAX_HISTORY_BYTES)
           throw new Error('Authority history byte bound exceeded');
-        if (!documentContextsMatch(next.context, captured))
+        if (!documentContextsMatch(next.context, captured)) {
           throw new Error(
             'Authority update names an unauthenticated group state',
           );
+        }
         await this.verify(
           this.current,
           signed.unsigned,
           signed.signature,
           work,
         );
+        if (admission) {
+          assertDocumentGroupRoster(
+            next.members.map((member) => documentBytesId(member.memberId)),
+            await work.readAuthenticatedMemberIds(),
+          );
+          if (signal.aborted || !admission.isCurrent())
+            throw new Error('Document authority preparation is no longer current');
+          const localId = coordinator.localMemberId;
+          const local = next.members.find((member) =>
+            documentBytesEqual(member.memberId, localId),
+          );
+          const { value: publicKey } = await work.observe<string>(
+            admission.readLocalPublicKey(),
+          );
+          if (!local || publicKey !== local.publicKey)
+            throw new Error('Document signing identity mismatch');
+        }
         const { value: hash } = await work.observe<Uint8Array>(
           digest(signed.unsigned),
         );
+        const current = () =>
+          revision === this.revision &&
+          this.reservedRosterUpdate === undefined &&
+          (admission === undefined || admission.isCurrent());
+        const install = this.prepareInstall(next, input, hash);
+        if (!admission) {
+          return { isAuthorizationCurrent: current, commit: install };
+        }
+
+        const token = {};
+        const isReserved = () =>
+          this.reservedRosterUpdate === token && revision === this.revision;
+        const proposal: PreparedDocumentRosterUpdate = {
+          context: captured,
+          authorityHead: hash.slice(),
+          authorityRecords: [...this.exportRecords(), input.slice()],
+          isReserved,
+          isInstalled: () =>
+            this.revision === next.sequence && documentBytesEqual(this.head, hash),
+          commit: () => {
+            if (!isReserved())
+              throw new Error('Authenticated role update reservation was lost');
+            install();
+            this.reservedRosterUpdate = undefined;
+          },
+          discard: () => {
+            if (this.reservedRosterUpdate === token)
+              this.reservedRosterUpdate = undefined;
+          },
+        };
         return {
-          isAuthorizationCurrent: () => revision === this.revision,
-          commit: () => this.install(next, input, hash),
+          isAuthorizationCurrent: current,
+          commit: () => {
+            this.reservedRosterUpdate = token;
+            prepared = proposal;
+          },
         };
       },
     );
+    return prepared;
   }
 
   private validateNext(next: AuthorityRecord): void {
@@ -497,6 +601,14 @@ export class DocumentAuthorityLog<
     encoded: Uint8Array,
     hash: Uint8Array,
   ): void {
+    this.prepareInstall(next, encoded, hash)();
+  }
+
+  private prepareInstall(
+    next: AuthorityRecord,
+    encoded: Uint8Array,
+    hash: Uint8Array,
+  ): () => void {
     if (this.historyBytes + encoded.length > MAX_HISTORY_BYTES)
       throw new Error('Authority history byte bound exceeded');
     const controllers = bindDocumentController(
@@ -505,13 +617,18 @@ export class DocumentAuthorityLog<
       next.members.find((member) => member.role === 3)!.memberId.slice(),
       MAX_RECORDS,
     );
-    this.records.push(encoded.slice());
-    this.historyBytes += encoded.length;
-    this.revision = next.sequence;
-    this.current = next;
-    this.head = hash.slice();
-    this.verifiedHeads.add(documentBytesId(this.head));
-    this.controllers = controllers;
+    const record = encoded.slice();
+    const head = hash.slice();
+    const id = documentBytesId(head);
+    return () => {
+      this.records.push(record);
+      this.historyBytes += record.length;
+      this.revision = next.sequence;
+      this.current = next;
+      this.head = head;
+      this.verifiedHeads.add(id);
+      this.controllers = controllers;
+    };
   }
 }
 

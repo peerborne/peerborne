@@ -25,6 +25,30 @@ const create = (
   );
 
 describe('coordinated document runtime boundaries', () => {
+  test('rejects malformed strict roster configuration before creating a session', async () => {
+    const f = await documentFixture();
+    const createDocumentSession = jest.fn(testCRDT.createDocumentSession!);
+    const createWithFlag = (flag: unknown) =>
+      new CoordinatedDocument(
+        f.authority.documentId,
+        [],
+        { ...testCRDT, createDocumentSession },
+        testChanges,
+        f.auth,
+        f.identity,
+        f.identity,
+        {
+          coordinator: f.coordinator,
+          authority: f.authority,
+          requireGroupRosterMatch: flag as boolean,
+        },
+      );
+    expect(() => createWithFlag(0)).toThrow('flag must be boolean');
+    expect(() => createWithFlag('true')).toThrow('flag must be boolean');
+    expect(() => createWithFlag(true)).toThrow('signed document authority log');
+    expect(createDocumentSession).not.toHaveBeenCalled();
+  });
+
   test.each([0, 1, 2, 3, 4])(
     'authenticates exact prefixes, suppresses replay, and rejects damaged or cross-document ciphertext (batch %i)',
     async (batch) => {

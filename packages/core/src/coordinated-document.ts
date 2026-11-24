@@ -23,6 +23,11 @@ import {
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import { captureDocumentAuthorityLease } from './captured-document-authority.js';
 import {
+  assertDocumentGroupRoster,
+  DocumentAuthorityLog,
+  type PreparedDocumentRosterUpdate,
+} from './document-authority-log.js';
+import {
   assertDocumentOperationsAllowed,
   type DocumentWritePaths,
 } from './document-field-authorization.js';
@@ -83,6 +88,14 @@ export interface CoordinatedDocumentOptions {
   readonly authority: DocumentAuthority;
   readonly journal?: DocumentReplayJournal;
   readonly persistPublications?: boolean;
+  /** Require the signed roles to enumerate the provider's exact decrypting roster. */
+  readonly requireGroupRosterMatch?: boolean;
+}
+
+interface DocumentGroupRosterBinding {
+  readonly context: GroupSecurityDocumentContext;
+  readonly authorityHead: Uint8Array;
+  readonly isCurrent: () => boolean;
 }
 
 interface Receipt {
@@ -111,6 +124,7 @@ export class CoordinatedDocument<
   private receiptsContext?: GroupSecurityDocumentContext;
   private recovered = false;
   private activated = false;
+  private rosterBinding?: DocumentGroupRosterBinding;
   private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
   private material?: {
@@ -131,37 +145,56 @@ export class CoordinatedDocument<
     private readonly publicKey: PublicKey,
     private readonly options: CoordinatedDocumentOptions,
   ) {
+    const {
+      authority,
+      coordinator,
+      journal,
+      persistPublications,
+      requireGroupRosterMatch,
+    } = options;
     if (
       !documentId ||
       documentId.length > 4096 ||
       !isWellFormedUtf16(documentId) ||
-      options.authority.documentId !== documentId
+      authority.documentId !== documentId
     )
       throw new TypeError('Invalid coordinated document identity');
     if (typeof crdt.createDocumentSession !== 'function')
       throw new TypeError(
         'Coordinated documents require detached CRDT preparation',
       );
+    if (
+      requireGroupRosterMatch !== undefined &&
+      typeof requireGroupRosterMatch !== 'boolean'
+    )
+      throw new TypeError('Group roster matching flag must be boolean');
+    if (requireGroupRosterMatch && !(authority instanceof DocumentAuthorityLog))
+      throw new Error(
+        'Strict group roster matching requires a signed document authority log',
+      );
+
     this.options = {
-      coordinator: options.coordinator,
-      authority: options.authority,
-      journal: options.journal,
-      persistPublications: options.persistPublications,
+      coordinator,
+      authority,
+      journal,
+      persistPublications,
+      requireGroupRosterMatch,
     };
     this.genesisId = copyUnsharedUint8Array(
-      options.authority.genesisId,
+      authority.genesisId,
       32,
       32,
       'document authority root',
     );
-    options.authority.assertCoordinator?.(options.coordinator);
-    options.journal?.assertBinding(documentId, this.genesisId);
+    authority.assertCoordinator?.(coordinator);
+    journal?.assertBinding(documentId, this.genesisId);
     this.session = crdt.createDocumentSession(initial);
   }
 
   get document(): Document {
     this.assertUsable();
     this.assertActivated();
+    this.assertCurrentGroupRoster();
     return this.session.document;
   }
 
@@ -171,13 +204,23 @@ export class CoordinatedDocument<
 
   async publicKeys(writersOnly: boolean): Promise<PublicKey[]> {
     this.assertUsable();
+    const binding = this.rosterBinding;
+    if (this.options.requireGroupRosterMatch) this.assertActivated();
+    this.assertCurrentGroupRoster(binding);
     const lease = this.authority(this.options.coordinator.documentContext);
     const result: PublicKey[] = [];
     for (const member of lease.members.values()) {
-      if (!writersOnly || contentRolePermits(member.role, false))
+      if (!writersOnly || contentRolePermits(member.role, false)) {
         result.push(await this.auth.deserializePublicKey(member.publicKey));
+        this.assertCurrentGroupRoster(binding);
+      }
     }
     if (!lease.isCurrent()) throw new Error('Document authority changed');
+    if (this.options.requireGroupRosterMatch) {
+      this.assertUsable();
+      this.assertActivated();
+      this.assertCurrentGroupRoster(binding);
+    }
     return result;
   }
 
@@ -187,8 +230,45 @@ export class CoordinatedDocument<
   }
 
   private assertActivated(): void {
-    if (this.options.journal && !this.activated)
+    if (
+      (this.options.journal || this.options.requireGroupRosterMatch) &&
+      !this.activated
+    )
       throw new Error('Document activation is not complete');
+  }
+
+  private assertCurrentGroupRoster(binding = this.rosterBinding): void {
+    if (
+      this.options.requireGroupRosterMatch &&
+      (!binding ||
+        !binding.isCurrent() ||
+        !documentContextsMatch(
+          binding.context,
+          this.options.coordinator.documentContext,
+        ))
+    ) {
+      throw new Error('Authenticated group roster is not current');
+    }
+  }
+
+  private async prepareGroupRoster(
+    context: GroupSecurityDocumentContext,
+    lease: ReturnType<typeof captureDocumentAuthorityLease>,
+    work: GroupSecurityDocumentPreparation,
+  ): Promise<DocumentGroupRosterBinding> {
+    const current = this.rosterBinding;
+    if (
+      current?.isCurrent() &&
+      documentContextsMatch(current.context, context) &&
+      documentBytesEqual(current.authorityHead, lease.headId)
+    ) {
+      return current;
+    }
+    assertDocumentGroupRoster(
+      lease.members.keys(),
+      await work.readAuthenticatedMemberIds(),
+    );
+    return { context, authorityHead: lease.headId, isCurrent: lease.isCurrent };
   }
 
   private enqueue<T>(
@@ -229,8 +309,8 @@ export class CoordinatedDocument<
       await this.options.coordinator.runDocumentOperation(
         context,
         new Uint8Array(),
-        async (_context, _input, _signal, work) => {
-          const lease = this.authority(context);
+        async (captured, _input, _signal, work) => {
+          const lease = this.authority(captured);
           const own = lease.members.get(
             documentBytesId(this.options.coordinator.localMemberId),
           );
@@ -240,10 +320,14 @@ export class CoordinatedDocument<
           );
           if (typeof value !== 'string' || value !== own.publicKey)
             throw new Error('Document signing identity mismatch');
+          const roster = this.options.requireGroupRosterMatch
+            ? await this.prepareGroupRoster(captured, lease, work)
+            : undefined;
           return {
             isAuthorizationCurrent: () =>
               !this.closed && !this.failed && lease.isCurrent(),
             commit: () => {
+              this.rosterBinding = roster;
               this.activated = true;
             },
           };
@@ -343,6 +427,9 @@ export class CoordinatedDocument<
         (captured, owned, signal, work) => {
           const task = async () => {
             const lease = this.authority(captured);
+            const roster = this.options.requireGroupRosterMatch
+              ? await this.prepareGroupRoster(captured, lease, work)
+              : undefined;
             const material = await this.key(captured, work);
             const aad = documentContentAAD(
               this.documentId,
@@ -422,7 +509,8 @@ export class CoordinatedDocument<
               if (admission === 'replay') replay = true;
               else if (admission !== 'apply')
                 throw new Error('Document causal prefix is missing or forked');
-              if (!replay)
+              if (!replay) {
+                this.assertCurrentGroupRoster(roster);
                 plan = this.session.prepareRemote(
                   this.serializer.deserializeChanges(frame.changes),
                   {
@@ -430,6 +518,7 @@ export class CoordinatedDocument<
                       lease.writePaths.get(member.id) !== undefined,
                   },
                 );
+              }
             } else {
               memberId = this.options.coordinator.localMemberId;
               const found = lease.members.get(documentBytesId(memberId));
@@ -446,6 +535,7 @@ export class CoordinatedDocument<
                 throw new Error('Document sequence is exhausted');
               sequence = nextContentSequence(accepted?.sequence ?? 0);
               parent = accepted?.hash ?? ZERO_HASH;
+              this.assertCurrentGroupRoster(roster);
               plan = this.session.prepareLocal(message, change!, {
                 inspectOperations:
                   lease.writePaths.get(member.id) !== undefined,
@@ -577,6 +667,7 @@ export class CoordinatedDocument<
                 lease.isCurrent() &&
                 (replay || plan!.isCurrent()),
               commit: () => {
+                this.rosterBinding = roster;
                 if (replay) return;
                 commitAttempted = true;
                 plan!.commit();
@@ -687,6 +778,18 @@ export class CoordinatedDocument<
 
   /** A role transition is acknowledged only after its checkpoint is durable. */
   applyAuthorityUpdate(encoded: Uint8Array): Promise<void> {
+    return this.queueAuthorityUpdate(encoded, false);
+  }
+
+  /** Install an authenticated strict role record while leaving activation fenced. */
+  applyAuthorityUpdateBeforeOpen(encoded: Uint8Array): Promise<void> {
+    return this.queueAuthorityUpdate(encoded, true);
+  }
+
+  private queueAuthorityUpdate(
+    encoded: Uint8Array,
+    beforeOpen: boolean,
+  ): Promise<void> {
     try {
       const length = unsharedUint8ArrayByteLength(
         encoded,
@@ -696,77 +799,36 @@ export class CoordinatedDocument<
       );
       return this.enqueue(length, () => {
         const owned = copyUnsharedUint8Array(
-          encoded,
-          length,
-          length,
-          'authority update',
+          encoded, length, length, 'authority update',
         );
         return async () => {
-          this.assertActivated();
-          if (!this.options.authority.applyUpdate)
-            throw new Error(
-              'Document authority does not support signed transitions',
-            );
-          await this.options.authority.applyUpdate(
-            this.options.coordinator,
-            owned,
-          );
-          if (!this.options.journal) return;
-          let prepared: PreparedDocumentJournal | undefined;
-          let authorityLease: (() => boolean) | undefined;
-          let preparation: Promise<unknown> | undefined;
-          try {
-            const context = this.options.coordinator.documentContext;
-            await this.options.coordinator.runDocumentOperation(
-              context,
-              new Uint8Array(),
-              (captured, _input, _signal, work) => {
-                preparation = (async () => {
-                  const lease = this.authority(captured);
-                  authorityLease = lease.isCurrent;
-                  if (!this.crdt.getSnapshot)
-                    throw new Error(
-                      'CRDT provider cannot checkpoint role transitions',
-                    );
-                  const changes = this.serializer.serializeChanges(
-                    this.crdt.getSnapshot(this.session.document),
-                  );
-                  const { value } = await work.observe<PreparedDocumentJournal>(
-                    this.options.journal!.prepare({
-                      checkpoint: true,
-                      context: captured,
-                      changes,
-                      receipts: [],
-                      authorityHead: lease.headId,
-                      authorityRecords:
-                        this.options.authority.exportRecords?.() ?? [],
-                    }),
-                  );
-                  prepared = value;
-                  return {
-                    isAuthorizationCurrent: lease.isCurrent,
-                    commit: () => {
-                      this.receipts = new Map();
-                      this.receiptsContext = captured;
-                    },
-                  };
-                })();
-                return preparation as Promise<
-                  import('./group-document-operation.js').PreparedGroupDocumentOperation
-                >;
-              },
-            );
-            await prepared!.commit();
-            this.persistedAuthorityLease = authorityLease;
-          } catch (error) {
-            this.failed = true;
-            throw error;
-          } finally {
-            await preparation?.then(
-              () => {},
-              () => {},
-            );
-            await prepared?.discard();
+          if (beforeOpen) {
+            if (!this.options.requireGroupRosterMatch || this.activated)
+              throw new Error('Only an unopened strict document can recover authority');
+            await this.recover();
+          } else {
+            this.assertActivated();
+          }
+          const authority = this.options.authority;
+          if (this.options.requireGroupRosterMatch) {
+            if (!(authority instanceof DocumentAuthorityLog)) {
+              throw new Error(
+                'Strict group roster matching requires a signed document authority log',
+              );
+            }
+            await this.applyStrictAuthorityUpdate(authority, owned);
+            return;
+          }
+          if (!authority.applyUpdate)
+            throw new Error('Document authority does not support signed transitions');
+          await authority.applyUpdate(this.options.coordinator, owned);
+          if (this.options.journal) {
+            try {
+              await this.checkpointAuthority(this.options.coordinator.documentContext);
+            } catch (error) {
+              this.failed = true;
+              throw error;
+            }
           }
         };
       });
@@ -775,12 +837,125 @@ export class CoordinatedDocument<
     }
   }
 
+  private async applyStrictAuthorityUpdate(
+    authority: DocumentAuthorityLog<PrivateKey, PublicKey, DocumentKey>,
+    encoded: Uint8Array,
+  ): Promise<void> {
+    const proposal = await authority.prepareRosterUpdate(
+      this.options.coordinator,
+      encoded,
+      {
+        readLocalPublicKey: () => this.auth.serializePublicKey(this.publicKey),
+        isCurrent: () => !this.closed && !this.failed,
+      },
+    );
+    const binding: DocumentGroupRosterBinding = {
+      context: proposal.context,
+      authorityHead: proposal.authorityHead,
+      isCurrent: proposal.isInstalled,
+    };
+    try {
+      if (this.options.journal)
+        await this.checkpointAuthority(proposal.context, proposal);
+
+      // A durable result that became stale is recovered from the accepted journal.
+      this.assertUsable();
+      if (
+        !proposal.isReserved() ||
+        !documentContextsMatch(
+          proposal.context,
+          this.options.coordinator.documentContext,
+        )
+      ) {
+        throw new Error('Document authority changed before live installation');
+      }
+      proposal.commit();
+      this.rosterBinding = binding;
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    } finally {
+      proposal.discard();
+    }
+  }
+
+  private async checkpointAuthority(
+    context: GroupSecurityDocumentContext,
+    proposal?: PreparedDocumentRosterUpdate,
+  ): Promise<void> {
+    let prepared: PreparedDocumentJournal | undefined;
+    let authorityLease: (() => boolean) | undefined;
+    let preparation: Promise<unknown> | undefined;
+    try {
+      await this.options.coordinator.runDocumentOperation(
+        context,
+        new Uint8Array(),
+        (captured, _input, _signal, work) => {
+          preparation = (async () => {
+            const lease = proposal ? undefined : this.authority(captured);
+            authorityLease = proposal?.isInstalled ?? lease!.isCurrent;
+            const isAuthorizationCurrent = proposal?.isReserved ?? lease!.isCurrent;
+            if (!this.crdt.getSnapshot)
+              throw new Error('CRDT provider cannot checkpoint role transitions');
+            const changes = this.serializer.serializeChanges(
+              this.crdt.getSnapshot(this.session.document),
+            );
+            const { value } = await work.observe<PreparedDocumentJournal>(
+              this.options.journal!.prepare({
+                checkpoint: true,
+                context: captured,
+                changes,
+                receipts: [],
+                authorityHead: proposal?.authorityHead ?? lease!.headId,
+                authorityRecords:
+                  proposal?.authorityRecords ??
+                  this.options.authority.exportRecords?.() ??
+                  [],
+              }),
+            );
+            prepared = value;
+            return {
+              isAuthorizationCurrent: () =>
+                !this.closed && !this.failed && isAuthorizationCurrent(),
+              commit: () => {
+                this.receipts = new Map();
+                this.receiptsContext = captured;
+              },
+            };
+          })();
+          return preparation as Promise<
+            import('./group-document-operation.js').PreparedGroupDocumentOperation
+          >;
+        },
+      );
+      await prepared!.commit();
+      this.persistedAuthorityLease = authorityLease;
+    } finally {
+      await preparation?.then(
+        () => {},
+        () => {},
+      );
+      await prepared?.discard();
+    }
+  }
+
+  assertPublicationDispatchAllowed(binding = this.rosterBinding): void {
+    if (!this.options.requireGroupRosterMatch) return;
+    this.assertUsable();
+    this.assertActivated();
+    this.assertCurrentGroupRoster(binding);
+  }
+
   pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
     return this.enqueue(0, () => async () => {
       this.assertActivated();
-      return this.options.journal
-        ? this.options.journal.pendingPublications()
-        : this.publications.map((frame) => frame.slice());
+      const binding = this.rosterBinding;
+      this.assertPublicationDispatchAllowed(binding);
+      if (!this.options.journal)
+        return this.publications.map((frame) => frame.slice());
+      const frames = await this.options.journal.pendingPublications();
+      this.assertPublicationDispatchAllowed(binding);
+      return frames;
     });
   }
 
@@ -817,6 +992,7 @@ export class CoordinatedDocument<
   close(): Promise<void> {
     this.closed = true;
     this.activated = false;
+    this.rosterBinding = undefined;
     this.material = undefined;
     return this.tail.then(() => this.session.close());
   }

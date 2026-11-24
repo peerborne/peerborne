@@ -380,6 +380,13 @@ export interface GroupSecurityProvider {
   applyCommit(commit: GroupSecurityCommit): Promise<GroupSecurityApplyResult>;
   exportSecret(input: ExportGroupSecretInput): Promise<Uint8Array>;
   getPublicState(): Promise<GroupSecurityPublicState>;
+  /**
+   * Return every live member ID from protocol-authenticated credentials in
+   * the current decrypting group. The same provider exclusively serves the
+   * coordinator so this read describes the state reported by getPublicState.
+   * Strict coordinated documents require this read-only capability.
+   */
+  getAuthenticatedMemberIds?(): Promise<readonly Uint8Array[]>;
   exportEncryptedState(
     protector: GroupStateProtector,
   ): Promise<EncryptedGroupState>;

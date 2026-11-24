@@ -66,6 +66,28 @@ export function isDocumentAuthorityRosterValid(
   return true;
 }
 
+/** Exact equality of two sorted member lists after decoding their authenticated sources. */
+export function exactDocumentMemberRoster(
+  authority: readonly string[],
+  group: readonly string[],
+): boolean {
+  //@ verify
+  //@ requires authority.length <= 4294967295 && group.length <= 4294967295
+  //@ ensures \result <==> 1 <= authority.length && authority.length <= 256 && authority.length === group.length && forall(i: int, 0 <= i && i < authority.length ==> authority[i] === group[i])
+  if (
+    authority.length === 0 ||
+    authority.length > 256 ||
+    authority.length !== group.length
+  ) return false;
+  for (let index = 0; index < authority.length; index++) {
+    //@ invariant 0 <= index && index <= authority.length
+    //@ invariant forall(i: int, 0 <= i && i < index ==> authority[i] === group[i])
+    //@ decreases authority.length - index
+    if (authority[index] !== group[index]) return false;
+  }
+  return true;
+}
+
 export function canBindDocumentController<Controller>(
   controllers: Map<string, Controller>,
   head: string,

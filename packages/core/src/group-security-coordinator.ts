@@ -253,6 +253,8 @@ export interface GroupDocumentEncryptionMaterial {
 export interface GroupSecurityDocumentPreparation {
   observe<T>(work: unknown): Promise<{ readonly value: T }>;
   deriveEncryptionMaterial(documentId: string): Promise<GroupDocumentEncryptionMaterial>;
+  /** Read bounded canonical member IDs at the captured authenticated group head. */
+  readAuthenticatedMemberIds(): Promise<readonly string[]>;
 }
 
 /**
@@ -610,6 +612,12 @@ export class GroupSecurityCoordinator {
         prepare: (captured, payload, signal, work) =>
           prepare(snapshotDocumentContext(captured), payload, signal, {
             observe: <T,>(value: unknown) => work.observe<T>(value),
+            readAuthenticatedMemberIds: async () => {
+              if (!work.isActive())
+                throw new GroupDocumentOperationError('invalid-preparation');
+              const pending = this.readAuthenticatedMemberIds(captured, work);
+              return (await work.observe<readonly string[]>(pending)).value;
+            },
             deriveEncryptionMaterial: (documentId) => {
               if (!work.isActive())
                 return Promise.reject(
@@ -651,6 +659,52 @@ export class GroupSecurityCoordinator {
     if (!groupSecurityRollbackAnchorsEqual(actual, expected))
       fail('rollback-detected', 'document operation anchor is not current');
     return this.documentContext;
+  }
+
+  private async readAuthenticatedMemberIds(
+    expected: GroupSecurityDocumentContext,
+    work: GroupDocumentPreparationWork,
+  ): Promise<readonly string[]> {
+    return this.runExclusive(async () => {
+      const assertActive = () => {
+        if (!work.isActive())
+          throw new GroupDocumentOperationError('invalid-preparation');
+      };
+      assertActive();
+      const anchored = await this.anchoredDocumentContext();
+      assertActive();
+      if (!documentContextsEqual(anchored, expected))
+        throw new GroupDocumentOperationError('stale-context');
+      const getMemberIds = this.provider.getAuthenticatedMemberIds;
+      if (typeof getMemberIds !== 'function')
+        throw new Error('Group provider cannot authenticate the document roster');
+      const checkState = async () => {
+        const { value } = await work.observe<GroupSecurityPublicState>(
+          this.providerPublicStateSnapshot(),
+        );
+        assertActive();
+        assertSamePublicState(value, expected.state);
+      };
+      await checkState();
+      assertActive();
+      const { value } = await work.observe<readonly Uint8Array[]>(
+        getMemberIds.call(this.provider),
+      );
+      assertActive();
+      const ids = snapshotExactArray(value, 'authenticated group members', 1, 256)
+        .map((id) =>
+          toHex(copyControlRecordBytes(
+            id as Uint8Array,
+            'authenticated document member',
+            32,
+            32,
+          )),
+        )
+        .sort();
+      await checkState();
+      assertActive();
+      return ids;
+    });
   }
 
   private async deriveDocumentEncryptionMaterial(

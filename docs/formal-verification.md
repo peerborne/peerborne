@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 166 production functions in 40 proof units. The runtime calls
+LemmaScript checks 167 production functions in 40 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -228,8 +228,7 @@ so this is a logical work/storage bound, not a main-thread latency, cryptographi
 secrecy or eventual-delivery proof.
 
 The [document-authority policy](../packages/core/src/policy/document-authority.ts)
-adds five verified production functions, with a shared bounded field validator
-checked in the same unit. A valid detached roster has 1–256
+checks roster fields and controller bindings. A valid detached roster has 1–256
 members, distinct member IDs and public keys, valid roles and exactly one
 controller. Controller bindings accept only fresh heads within the 1,024-record
 history bound. A checked finite-history method preserves every old head/controller
@@ -243,6 +242,16 @@ properties check these boundaries, including races between signed updates and
 signed restoration attempts that reuse an older control head. The latter was
 accepted by the previous implementation and could replace its historical
 controller binding; restoration and live validation now reject it.
+
+The strict coordinated profile checks exact equality between signed roles and
+the provider’s authenticated roster. The comparator admits equal nonempty lists
+of at most 256 members. A closed exclusion lemma shows that any member ID
+absent from the admitted role list is also absent from the matched provider list.
+The runtime binds that result to the current control and signed authority heads.
+Native MLS scenarios exercise delayed removal and restart, and seeded tests
+exercise pre-open recovery and journal ordering. The proof assumes the provider
+truthfully reports its decrypting roster and replicas learn the authenticated
+updates.
 
 The shared bounded UTF-8 preflight now counts bytes without constructing an
 encoded buffer. Checked prefix sums strengthen the generated method's contract:
@@ -626,7 +635,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 69 property-suite files containing 250 explicit
+The inventory audits 69 property-suite files containing 251 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

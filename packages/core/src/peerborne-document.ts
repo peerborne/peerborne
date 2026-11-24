@@ -1,4 +1,5 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
+import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -6966,13 +6967,52 @@ export class PeerborneDocument<
     await this._coordinated.applyAuthorityUpdate(encoded);
   }
 
+  /**
+   * Apply a controller-signed role update matching the authenticated group
+   * state before opening a fresh strict coordinated document.
+   */
+  public async applySecurityAuthorityUpdateBeforeOpen(
+    encoded: Uint8Array,
+  ): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine)
+      throw new Error('Document does not use coordinated security');
+    if (this._activationInProgress || this._subscribed || this._gcClosed)
+      throw new Error('Authority recovery requires a fresh unopened document');
+    const owned = copyUnsharedUint8Array(
+      encoded, 1, MAX_DOCUMENT_SECURITY_FRAME_BYTES, 'authority update',
+    );
+    this._activationInProgress = true;
+    try {
+      if (
+        this.swarm.validateDocumentPath &&
+        (await this.swarm.validateDocumentPath(
+          this.documentPath,
+          this._userPublicKey,
+        )) !== true
+      )
+        throw new Error('Document path is not authorized');
+      if (this._gcClosed)
+        throw new Error('Authority recovery requires a fresh unopened document');
+      this.swarm.registerDocument(this.documentPath, this);
+      try {
+        await engine.applyAuthorityUpdateBeforeOpen(owned);
+      } finally {
+        this.swarm.unregisterDocument(this.documentPath, this);
+      }
+    } finally {
+      this._activationInProgress = false;
+    }
+  }
+
   private _securityPublicationTask?: Promise<void>;
   private _securityPublicationQueued?: Promise<void>;
 
 
   /** Retry durable encrypted publications without running local change callbacks again. */
   public async retrySecurityPublications(): Promise<void> {
-    if (!this._coordinated || !this._subscribed)
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed)
       throw new Error('Coordinated document is not open');
     if (this._securityPublicationQueued) return this._securityPublicationQueued;
     const previous = this._securityPublicationTask ?? Promise.resolve();
@@ -6981,12 +7021,13 @@ export class PeerborneDocument<
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
-        for (const frame of await this._coordinated!.pendingPublications()) {
+        for (const frame of await engine.pendingPublications()) {
+          engine.assertPublicationDispatchAllowed();
           await this.swarm.heliaNode.libp2p.services.pubsub.publish(
             this._topic,
             frame,
           );
-          await this._coordinated!.publicationSent(frame);
+          await engine.publicationSent(frame);
         }
       })
       .finally(() => {
