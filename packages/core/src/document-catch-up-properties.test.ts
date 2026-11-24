@@ -12,7 +12,21 @@ import {
   InMemoryDocumentJournalRollbackAnchor,
 } from './document-replay-journal.js';
 import { InMemoryDocumentJournalStore } from './document-journal-store.js';
-import { documentBytesId } from './internal/document-binary.js';
+import {
+  DocumentBinaryWriter,
+  documentBytesEqual,
+  documentBytesId,
+} from './internal/document-binary.js';
+import {
+  decodeDocumentCatchUpCheckpoint,
+  decodeDocumentCatchUpRequest,
+  documentCatchUpAAD,
+  encodeDocumentCatchUpCheckpoint,
+  encodeDocumentCatchUpRequest,
+  type DocumentCatchUpCheckpoint,
+  type DocumentCatchUpRequest,
+} from './document-catch-up-wire.js';
+import { MAX_DOCUMENT_CONTENT_BYTES } from './document-security-wire.js';
 import {
   testAuth,
   testCRDT,
@@ -27,7 +41,245 @@ import {
   groupId,
   id,
   protocol,
+  publicState,
 } from './__testutils__/group-security-coordinator.js';
+
+function catchUpRequest(
+  documentId: string,
+  epoch: bigint,
+): DocumentCatchUpRequest {
+  return {
+    documentId,
+    context: { state: publicState(epoch), controlHead: id(1) },
+    genesisId: id(2),
+    authorityHead: id(3),
+    requesterId: id(4),
+    challenge: id(5),
+  };
+}
+
+function uncheckedCheckpoint(
+  request: DocumentCatchUpRequest,
+  receipts: readonly {
+    memberId: Uint8Array;
+    sequence: bigint;
+    hash: Uint8Array;
+  }[],
+  snapshot: Uint8Array,
+): Uint8Array {
+  const writer = new DocumentBinaryWriter()
+    .fixed(documentCatchUpAAD('checkpoint', request))
+    .fixed(request.requesterId)
+    .fixed(request.challenge)
+    .fixed(id(6))
+    .integer(receipts.length, 2);
+  for (const receipt of receipts) {
+    writer
+      .fixed(receipt.memberId)
+      .integer(receipt.sequence, 8)
+      .fixed(receipt.hash);
+  }
+  return writer.bytes(snapshot, MAX_DOCUMENT_CONTENT_BYTES + 1).finish();
+}
+
+function withTrailer(frame: Uint8Array, byte: number): Uint8Array {
+  const result = new Uint8Array(frame.length + 1);
+  result.set(frame);
+  result[frame.length] = byte;
+  return result;
+}
+
+test('round trips owned canonical catch-up frames and rejects partial or extended encodings', () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(
+        fc.string({ minLength: 1, maxLength: 60 }),
+        fc.constant('\ufeffdocument'),
+      ),
+      fc.bigInt({ min: 0n, max: (1n << 64n) - 1n }),
+      fc.uniqueArray(
+        fc.record({
+          member: fc.integer({ min: 0, max: 255 }),
+          sequence: fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }),
+          hash: fc.uint8Array({ minLength: 32, maxLength: 32 }),
+        }),
+        { selector: ({ member }) => member, maxLength: 8 },
+      ),
+      fc.uint8Array({ maxLength: 2048 }),
+      fc.nat(65_535),
+      fc.integer({ min: 0, max: 255 }),
+      (documentId, epoch, heads, snapshot, cut, trailing) => {
+        const request = catchUpRequest(documentId, epoch);
+        const checkpoint: DocumentCatchUpCheckpoint = {
+          ...request,
+          controllerId: id(6),
+          receipts: [...heads]
+            .sort((a, b) => a.member - b.member)
+            .map(({ member, sequence, hash }) => ({
+              memberId: id(member),
+              sequence,
+              hash,
+            })),
+          snapshot,
+        };
+        const requestBytes = encodeDocumentCatchUpRequest(request);
+        const checkpointBytes = encodeDocumentCatchUpCheckpoint(checkpoint);
+        const decodedRequest = decodeDocumentCatchUpRequest(requestBytes);
+        const decodedCheckpoint =
+          decodeDocumentCatchUpCheckpoint(checkpointBytes);
+        expect(decodedRequest).toEqual(request);
+        expect(decodedCheckpoint).toEqual(checkpoint);
+        expect(encodeDocumentCatchUpRequest(decodedRequest)).toEqual(
+          requestBytes,
+        );
+        expect(encodeDocumentCatchUpCheckpoint(decodedCheckpoint)).toEqual(
+          checkpointBytes,
+        );
+        decodedRequest.challenge[0] ^= 1;
+        decodedCheckpoint.snapshot.fill(0xff);
+        decodedCheckpoint.receipts[0]?.hash.fill(0xff);
+        expect(decodeDocumentCatchUpRequest(requestBytes)).toEqual(request);
+        expect(decodeDocumentCatchUpCheckpoint(checkpointBytes)).toEqual(
+          checkpoint,
+        );
+        expect(() =>
+          decodeDocumentCatchUpRequest(
+            requestBytes.subarray(0, cut % requestBytes.length),
+          ),
+        ).toThrow();
+        expect(() =>
+          decodeDocumentCatchUpCheckpoint(
+            checkpointBytes.subarray(0, cut % checkpointBytes.length),
+          ),
+        ).toThrow();
+        expect(() =>
+          decodeDocumentCatchUpRequest(withTrailer(requestBytes, trailing)),
+        ).toThrow('trailing');
+        expect(() =>
+          decodeDocumentCatchUpCheckpoint(
+            withTrailer(checkpointBytes, trailing),
+          ),
+        ).toThrow('trailing');
+        expect(() => decodeDocumentCatchUpCheckpoint(requestBytes)).toThrow(
+          'domain',
+        );
+        expect(() => decodeDocumentCatchUpRequest(checkpointBytes)).toThrow(
+          'domain',
+        );
+      },
+    ),
+    { seed: 202611242, numRuns: 80 },
+  );
+});
+
+test('rejects noncanonical receipt order and unusable sequences at the codec boundary', () => {
+  fc.assert(
+    fc.property(
+      fc.integer({ min: 0, max: 254 }),
+      fc.bigInt({ min: 1n, max: BigInt(Number.MAX_SAFE_INTEGER) }),
+      (member, sequence) => {
+        const request = catchUpRequest('/catch-up-boundary', 12n);
+        const first = { memberId: id(member), sequence, hash: id(7) };
+        const next = { ...first, memberId: id(member + 1) };
+        const aboveSafe = {
+          ...next,
+          sequence: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+        };
+        const zero = { ...next, sequence: 0n };
+        const snapshot = new Uint8Array();
+        expect(
+          decodeDocumentCatchUpCheckpoint(
+            uncheckedCheckpoint(request, [first, next], snapshot),
+          ).receipts,
+        ).toHaveLength(2);
+        for (const receipts of [
+          [next, first],
+          [first, first],
+          [first, aboveSafe],
+          [first, zero],
+        ]) {
+          expect(() =>
+            decodeDocumentCatchUpCheckpoint(
+              uncheckedCheckpoint(request, receipts, snapshot),
+            ),
+          ).toThrow();
+          expect(() =>
+            encodeDocumentCatchUpCheckpoint({
+              ...request,
+              controllerId: id(6),
+              snapshot,
+              receipts: receipts.map((receipt) => ({
+                ...receipt,
+                sequence: Number(receipt.sequence),
+              })),
+            }),
+          ).toThrow();
+        }
+        expect(() =>
+          encodeDocumentCatchUpCheckpoint({
+            ...request,
+            controllerId: id(6),
+            snapshot,
+            receipts: [{ ...first, sequence: sequence as unknown as number }],
+          }),
+        ).toThrow('receipt');
+      },
+    ),
+    { seed: 202611243, numRuns: 50 },
+  );
+});
+
+test('enforces the exact receipt and snapshot caps for encoding and decoding', () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom(255, 256, 257),
+      fc.constantFrom(
+        MAX_DOCUMENT_CONTENT_BYTES - 1,
+        MAX_DOCUMENT_CONTENT_BYTES,
+        MAX_DOCUMENT_CONTENT_BYTES + 1,
+      ),
+      (count, snapshotLength) => {
+        const request = catchUpRequest('/catch-up-limits', 0n);
+        const receipts = Array.from({ length: count }, (_, index) => {
+          const memberId = new Uint8Array(32);
+          new DataView(memberId.buffer).setUint16(0, index);
+          return { memberId, sequence: 1, hash: id(8) };
+        });
+        const snapshot = new Uint8Array(snapshotLength).fill(9);
+        const checkpoint = {
+          ...request,
+          controllerId: id(6),
+          receipts,
+          snapshot,
+        };
+        const independent = uncheckedCheckpoint(
+          request,
+          receipts.map((receipt) => ({ ...receipt, sequence: 1n })),
+          snapshot,
+        );
+        if (count > 256 || snapshotLength > MAX_DOCUMENT_CONTENT_BYTES) {
+          expect(() => encodeDocumentCatchUpCheckpoint(checkpoint)).toThrow();
+          expect(() => decodeDocumentCatchUpCheckpoint(independent)).toThrow();
+        } else {
+          const encoded = encodeDocumentCatchUpCheckpoint(checkpoint);
+          const decoded = decodeDocumentCatchUpCheckpoint(encoded);
+          expect(documentBytesEqual(encoded, independent)).toBe(true);
+          expect(decoded.receipts).toEqual(receipts);
+          expect(documentBytesEqual(decoded.snapshot, snapshot)).toBe(true);
+        }
+      },
+    ),
+    {
+      seed: 202611244,
+      numRuns: 8,
+      examples: [
+        [256, MAX_DOCUMENT_CONTENT_BYTES],
+        [257, MAX_DOCUMENT_CONTENT_BYTES],
+        [256, MAX_DOCUMENT_CONTENT_BYTES + 1],
+      ],
+    },
+  );
+});
 
 const mergeCRDT: typeof testCRDT = {
   ...testCRDT,

@@ -13,7 +13,9 @@ import {
 } from './document-security-wire.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
-const MAGIC = new TextEncoder().encode('peerborne/document-catch-up/v1\0');
+const MAGIC = Uint8Array.from('peerborne/document-catch-up/v1\0', (character) =>
+  character.charCodeAt(0),
+);
 const MAX_RECEIPTS = 256;
 export const MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES = 32 * 1024;
 
@@ -120,7 +122,11 @@ export function encodeDocumentCatchUpCheckpoint(
   for (const receipt of value.receipts) {
     const memberId = fixed32(receipt.memberId);
     const id = documentBytesId(memberId);
-    if (id <= previous || receipt.sequence < 1)
+    if (
+      id <= previous ||
+      !Number.isSafeInteger(receipt.sequence) ||
+      receipt.sequence < 1
+    )
       throw new TypeError('Noncanonical document catch-up receipt');
     writer
       .fixed(memberId)

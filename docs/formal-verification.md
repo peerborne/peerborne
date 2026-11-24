@@ -646,7 +646,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 71 property-suite files containing 257 explicit
+The inventory audits 71 property-suite files containing 260 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
