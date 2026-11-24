@@ -348,6 +348,7 @@ export async function runProductionDocumentChecks() {
           coordinator: f.coordinators[index],
           authority: f.logs[index],
           requireGroupRosterMatch: true,
+          enableAuthenticatedCatchUp: true,
           journal: new DocumentReplayJournal(
             path,
             f.logs[index].genesisId,
@@ -561,7 +562,8 @@ export async function runProductionDocumentChecks() {
     await docs[1].receiveSecurityFrame(retried[0].data);
     check(read(docs[1]).retry === 7, 'restarted publication converges');
 
-    const [controller, recipient] = f.coordinators;
+    const [controller] = f.coordinators;
+    let recipient = f.coordinators[1];
     const survivorRoster = f.roster.slice(0, 1);
     let staleNotifications = 0;
     const countNotification = () => { staleNotifications++; };
@@ -644,6 +646,102 @@ export async function runProductionDocumentChecks() {
     await docs[1].open();
     check(read(docs[1]).beforeHandlerClose === 12, 'the accepted change survives callback close');
 
+    const oldRequest = await docs[1].createSecurityCatchUpRequest();
+    const oldCheckpoint =
+      await docs[0].createSecurityCatchUpCheckpoint(oldRequest);
+    await docs[0].change(change('missedBeforeCatchUp', 20));
+    await docs[1].change(change('acceptedOfflineEdit', 21));
+    check(
+      publications.splice(0).length === 2,
+      'a partition withholds both accepted publications',
+    );
+    await docs[1].close();
+    await controller.createCommit(
+      { changes: [] },
+      {
+        operationId: random(),
+        requestDigest: random(),
+        action: 'update',
+        subjectId: f.members[0],
+      },
+    );
+    const catchUpRenewal = await collect(controller);
+    await recipient.applyCommit(
+      catchUpRenewal.commit!,
+      catchUpRenewal.controlRecord,
+      [],
+    );
+    const catchUpRoles = await f.logs[0].signUpdate(
+      controller.documentContext,
+      f.roster,
+      f.signing[0].privateKey,
+    );
+    await docs[0].applySecurityAuthorityUpdate(catchUpRoles);
+    const restoredReceipt = (
+      await new DocumentReplayJournal(
+        path,
+        f.logs[1].genesisId,
+        keys[1],
+        journalStores[1],
+        journalAnchors[1],
+      ).restore()
+    ).findLast((record) => record.authorityRecords.length > 0);
+    check(
+      restoredReceipt,
+      'the returning member has its accepted role history',
+    );
+    const restoredPeer = await f.restoreReplica(
+      1,
+      restoredReceipt.authorityRecords,
+    );
+    recipient = f.coordinators[1] = restoredPeer.coordinator;
+    f.logs[1] = restoredPeer.authority;
+    docs[1] = makeDocument(1);
+    await docs[1].applySecurityAuthorityUpdateBeforeOpen(catchUpRoles);
+    await docs[1].open();
+    check(
+      read(docs[1]).acceptedOfflineEdit === 21 &&
+        read(docs[1]).missedBeforeCatchUp === undefined,
+      'restart retains accepted local content while missing the peer suffix',
+    );
+    await docs[0].change(change('missedInCurrentEpoch', 22));
+    check(
+      publications.splice(0).length === 1,
+      'withhold the first accepted current-epoch change',
+    );
+    const request = await docs[1].createSecurityCatchUpRequest();
+    await rejects(() => docs[0].createSecurityCatchUpCheckpoint(oldRequest));
+    await rejects(() => docs[1].applySecurityCatchUpCheckpoint(oldCheckpoint));
+    const checkpoint = await docs[0].createSecurityCatchUpCheckpoint(request);
+    await docs[1].applySecurityCatchUpCheckpoint(checkpoint);
+    await rejects(
+      () => docs[1].applySecurityCatchUpCheckpoint(checkpoint),
+      /pending/,
+    );
+    await docs[1].close();
+    docs[1] = makeDocument(1);
+    await docs[1].open();
+    check(
+      read(docs[1]).missedBeforeCatchUp === 20 &&
+        read(docs[1]).acceptedOfflineEdit === 21 &&
+        read(docs[1]).missedInCurrentEpoch === 22,
+      'catch-up and independent accepted local changes survive restart',
+    );
+    await docs[0].change(change('ordinaryAfterCatchUp', 23));
+    const following = publications.shift()!;
+    check(
+      following?.sender === 0 &&
+        (await docs[1].receiveSecurityFrame(following.data)),
+      'the next writer sequence uses the adopted checkpoint receipt',
+    );
+    check(
+      read(docs[1]).ordinaryAfterCatchUp === 23,
+      'ordinary synchronization continues after catch-up',
+    );
+    const removalRequest = await docs[1].createSecurityCatchUpRequest();
+    const removalCheckpoint =
+      await docs[0].createSecurityCatchUpCheckpoint(removalRequest);
+
     // Hold a legitimate earlier-epoch publication until the writer reconnects.
     await docs[1].change(change('offlineDraft', 9));
     const partitioned = publications.shift()!;
@@ -724,6 +822,9 @@ export async function runProductionDocumentChecks() {
     await docs[0].open();
     await docs[0].change(change('afterRemoval', 10));
     check(read(docs[0]).afterRemoval === 10, 'the surviving roster activates after restart');
+    await rejects(() =>
+      docs[0].createSecurityCatchUpCheckpoint(removalRequest),
+    );
     const nextEpoch = publications.shift()!;
     check(nextEpoch.sender === 0, 'the survivor emitted a fresh epoch frame');
     await rejects(() => docs[1].receiveSecurityFrame(nextEpoch.data));
@@ -746,6 +847,10 @@ export async function runProductionDocumentChecks() {
     await rejects(async () => read(docs[1]));
     check(blockedCallbacks === 0, 'the removed replica cannot begin another mutation');
     await rejects(() => docs[1].receiveSecurityFrame(nextEpoch.data));
+    await rejects(() => docs[1].createSecurityCatchUpRequest());
+    await rejects(() =>
+      docs[1].applySecurityCatchUpCheckpoint(removalCheckpoint),
+    );
     await docs[1].close();
     await rejects(() => makeDocument(1).open());
     await docs[0].close();
@@ -766,6 +871,8 @@ export async function runProductionDocumentChecks() {
       roleHistoryCopiedOnlyAtCheckpoints: true,
       authenticatedRosterMatchesRoles: true,
       staleNotificationsSuppressed: true,
+      authenticatedCatchUpAfterRestart: true,
+      revokedCatchUpDenied: true,
       delayedRevocationBlocksOldEpoch: true,
       revokedDocumentCannotReopen: true,
       authorityRecoveryBeforeOpen: backend === 'automerge',

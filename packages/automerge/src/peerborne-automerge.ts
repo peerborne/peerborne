@@ -168,6 +168,17 @@ export class AutomergeProvider<T = any>
         preparing = false;
       }
     };
+    const prepareSnapshot = (snapshot: BinaryChange[]) =>
+      stage((base) => {
+        if (!Array.isArray(snapshot) || snapshot.length !== 1)
+          throw new TypeError(
+            'Document checkpoint must contain exactly one Automerge save',
+          );
+        const owned = snapshot.map(
+          (bytes) => new Uint8Array(bytes) as BinaryChange,
+        );
+        return [this.applySnapshot(base, owned), owned];
+      });
     return {
       get document() {
         return document;
@@ -182,18 +193,8 @@ export class AutomergeProvider<T = any>
           return [this.remoteChange(base, owned), owned];
         }, options);
       },
-      prepareSnapshot: (snapshot) => {
-        return stage((base) => {
-          if (!Array.isArray(snapshot) || snapshot.length !== 1)
-            throw new TypeError(
-              'Document checkpoint must contain exactly one Automerge save',
-            );
-          const owned = snapshot.map(
-            (bytes) => new Uint8Array(bytes) as BinaryChange,
-          );
-          return [this.applySnapshot(base, owned), owned];
-        });
-      },
+      prepareSnapshot,
+      prepareMergeSnapshot: prepareSnapshot,
       close: () => {
         active?.discard();
         closed = true;
