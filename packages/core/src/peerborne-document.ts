@@ -1612,9 +1612,15 @@ export class PeerborneDocument<
   }
 
   private async _shuffledPeers() {
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
+    const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+    const loadable = await Promise.all(
+      connections.map((connection) =>
+        this._mayServeDocumentLoad(connection.remotePeer),
+      ),
+    );
+    const peers = connections
+      .filter((_connection, index) => loadable[index])
+      .map((connection) => connection.remoteAddr);
     if (peers.length === 0) {
       return peers;
     }
@@ -1623,6 +1629,24 @@ export class PeerborneDocument<
     const shuffledPeers = [...peers];
     shuffleArray(shuffledPeers);
     return shuffledPeers;
+  }
+
+  /**
+   * Exclude only peers whose identify record omits document loading, such as
+   * relays. Peers without a completed identify exchange remain candidates.
+   */
+  private async _mayServeDocumentLoad(
+    remotePeer: PeerId | undefined,
+  ): Promise<boolean> {
+    const peerStore = this.swarm.heliaNode.libp2p.peerStore;
+    if (peerStore === undefined || remotePeer === undefined) return true;
+    let protocols: readonly string[];
+    try {
+      ({ protocols } = await peerStore.get(remotePeer));
+    } catch {
+      return true;
+    }
+    return protocols.length === 0 || protocols.includes(documentLoadV4);
   }
 
   private _assertDocumentStateNotPoisoned(): void {

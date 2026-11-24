@@ -944,4 +944,84 @@ describe('load connection handling', () => {
     await expect(document.load()).resolves.toBe(true);
     expect(probed.sort()).toEqual(['alice', 'bob']);
   });
+
+  describe('identified load protocol support', () => {
+    const relay = '/ip4/10.0.0.9/tcp/1/p2p/relay';
+    const carol = '/ip4/10.0.0.4/tcp/1/p2p/carol';
+    const identified: Record<string, string[]> = {
+      relay: ['/libp2p/circuit/relay/0.2.0/hop', '/ipfs/id/1.0.0'],
+      alice: ['/ipfs/id/1.0.0', '/peerborne/doc-load/4.0.0'],
+      bob: ['/peerborne/doc-load/4.0.0'],
+    };
+
+    function identifiedHarness(
+      peers: string[],
+      config: Record<string, unknown>,
+    ) {
+      const document = connectionHarness(peers, config);
+      const libp2p = document.swarm.heliaNode.libp2p;
+      libp2p.getConnections = () =>
+        peers.map((peer) => ({
+          remoteAddr: { toString: () => peer },
+          remotePeer: {
+            toString: () => document._peerIdOf({ toString: () => peer }),
+          },
+        }));
+      libp2p.peerStore = {
+        get: jest.fn(async (peerId: { toString(): string }) => {
+          const protocols = identified[peerId.toString()];
+          if (protocols === undefined) {
+            throw Object.assign(new Error('Not found'), {
+              name: 'NotFoundError',
+            });
+          }
+          return { protocols };
+        }),
+      };
+      const probed: string[] = [];
+      document._raceSecurityAdvertiseProbe = jest.fn(
+        async (_session: unknown, peer: { toString(): string }) => {
+          const peerId = document._peerIdOf(peer);
+          probed.push(peerId);
+          return peerId === 'relay'
+            ? null
+            : {
+                hash: new Uint8Array(32).fill(5),
+                signerAuthority: `writer:${peerId}`,
+              };
+        },
+      );
+      document._sendLoadRequestAndSync = jest.fn(async () => true);
+      return { document, probed };
+    }
+
+    test('does not probe or count a peer identified without document loading', async () => {
+      const { document, probed } = identifiedHarness(
+        [relay, aliceDirect, bob],
+        {},
+      );
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed.sort()).toEqual(['alice', 'bob']);
+    });
+
+    test('lets one holder behind a relay satisfy an opted-in single-peer load', async () => {
+      const { document, probed } = identifiedHarness([relay, aliceRelayed], {
+        loadQuorumAllowSinglePeer: true,
+      });
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed).toEqual(['alice']);
+    });
+
+    test('keeps a connected peer whose protocols are not yet identified', async () => {
+      const { document, probed } = identifiedHarness(
+        [relay, aliceDirect, carol],
+        {},
+      );
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed.sort()).toEqual(['alice', 'carol']);
+    });
+  });
 });

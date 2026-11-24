@@ -221,8 +221,10 @@ ACL; when it is empty, as on a first load,
 `resolveTrustedDocumentWriters(documentPath)` must supply them. The runtime
 compares this tuple but does not yet replay an MLS control log.
 
-`loadQuorumK` bounds queried transport peers. `loadQuorumQ` requires that many
-independent trusted signing authorities to agree on one complete response
+`loadQuorumK` bounds queried transport peers. A connected peer whose identify
+record omits the document-load protocol, such as a relay, is not a candidate;
+a peer that has not completed identify remains one. `loadQuorumQ` requires
+that many independent trusted signing authorities to agree on one complete response
 manifest and security-state digest. One credential contributes only one vote,
 even through multiple PeerIds. An explicit Q is never lowered when fewer peers
 are available. Distinct compromised authorities can still collude; independent
