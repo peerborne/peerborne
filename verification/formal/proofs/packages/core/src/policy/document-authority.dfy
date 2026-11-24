@@ -106,6 +106,29 @@ method isDocumentAuthorityRosterValid(memberIds: seq<string>, publicKeys: seq<st
   return true;
 }
 
+method exactDocumentMemberRoster(authority: seq<string>, group: seq<string>) returns (res: bool)
+  requires (|authority| <= 4294967295)
+  requires (|group| <= 4294967295)
+  ensures (res <==> ((((1 <= |authority|) && (|authority| <= 256)) && (|authority| == |group|)) && forall i: int :: ((0 <= i) ==> (i < |authority|) ==> (authority[i] == group[i]))))
+{
+  if (((|authority| == 0) || (|authority| > 256)) || (|authority| != |group|)) {
+    return false;
+  }
+  var index := 0;
+  while (index < |authority|)
+    invariant (0 <= index)
+    invariant (index <= |authority|)
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> (authority[i] == group[i]))
+    decreases (|authority| - index)
+  {
+    if (authority[index] != group[index]) {
+      return false;
+    }
+    index := (index + 1);
+  }
+  return true;
+}
+
 method bindDocumentController<Controller(==)>(controllers: map<string, Controller>, head: string, controller: Controller, limit: int) returns (res: map<string, Controller>)
   requires (0 <= limit)
   requires (limit <= 9007199254740991)
@@ -187,8 +210,33 @@ method controllerBindings_all_histories(bindings: map<string, string>, attempts:
   }
 }
 
+method exactRoster_excludesUnlisted(
+  authority: seq<string>, group: seq<string>, excluded: string
+) returns (matches: bool)
+  requires |authority| <= 4294967295 && |group| <= 4294967295
+  requires excluded !in authority
+  ensures matches ==> excluded !in group
+{
+  matches := exactDocumentMemberRoster(authority, group);
+  if matches && excluded in group {
+    var index :| 0 <= index < |group| && group[index] == excluded;
+    assert authority[index] == excluded;
+    assert excluded in authority;
+  }
+}
+
 method documentAuthority_domain()
 {
+  var matching := exactDocumentMemberRoster(["controller", "reader"], ["controller", "reader"]);
+  assert matching;
+  var retained := exactDocumentMemberRoster(["controller"], ["controller", "revoked"]);
+  assert !retained;
+  var signed := ["controller", "reader"];
+  var provider := ["controller", "revoked"];
+  assert signed[1][2] != provider[1][2];
+  assert signed[1] != provider[1];
+  var substituted := exactDocumentMemberRoster(signed, provider);
+  assert !substituted;
   var a := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   var b := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   var validRoles := [1, 3, 2];

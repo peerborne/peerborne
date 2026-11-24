@@ -182,6 +182,26 @@ export const claims = [
     state: 'open',
   },
   {
+    id: 'coordinated-roster',
+    label: 'Revocation membership',
+    title: 'Bind signed document roles to decrypting membership',
+    rule: 'In the strict coordinated profile, verify that the signed roles and the provider’s authenticated member list match before exposing the document or accepting new content.',
+    checked:
+      'The roster policy accepts equal lists within the size bound. An ID absent from an admitted authority roster is also absent from the matched provider roster.',
+    limit:
+      'The provider reports its actual decrypting membership. Replicas enforce the new roles after they receive both authenticated updates. Offline replicas can retain earlier keys and content.',
+    proof: [
+      'packages/core/src/policy/document-authority.ts',
+      'exactDocumentMemberRoster',
+      'exactRoster_excludesUnlisted',
+    ],
+    source: 'packages/core/src/coordinated-document.ts',
+    tests: [
+      'packages/core/src/document-authority-properties.test.ts',
+      'verification/mls-provider/document-tests.ts',
+    ],
+  },
+  {
     id: 'key-secrecy',
     label: 'Key secrecy',
     title: 'Limit exposure across key epochs',
@@ -511,6 +531,7 @@ export const flows = [
         'trust',
         'control',
         'authority',
+        'coordinated-roster',
       ],
       [
         'Client device',

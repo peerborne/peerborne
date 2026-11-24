@@ -1,4 +1,5 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
+import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -751,12 +752,13 @@ export class LastWriterRemovalError extends Error {
   }
 }
 
-interface RemoteUpdateNotification<DocType, PublicKey> {
+interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[];
   readonly document: DocType;
   readonly readers: PublicKey[];
   readonly writers: PublicKey[];
   readonly hashes: string[];
+  readonly canDispatch?: () => boolean;
 }
 
 interface MissingBlockFetchOptions {
@@ -1857,7 +1859,7 @@ export class PeerborneDocument<
     this._markBootstrapStateApplicationComplete();
     if (deferredNotification) {
       this._pendingBootstrapRemoteUpdateHashes.clear();
-      this._dispatchRemoteUpdateHandlers(deferredNotification);
+      this._dispatchUpdateHandlers(deferredNotification);
     }
   }
 
@@ -2010,11 +2012,18 @@ export class PeerborneDocument<
     );
   }
 
-  private _dispatchRemoteUpdateHandlers(
-    notification: RemoteUpdateNotification<DocType, PublicKey>,
+  private _dispatchUpdateHandlers(
+    notification: DocumentUpdateNotification<DocType, PublicKey>,
+    onFailure = () =>
+      console.error(`Remote update handler failed for ${this.documentPath}`),
   ): void {
     for (const handler of notification.handlers) {
-      if (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) return;
+      if (
+        (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) ||
+        notification.canDispatch?.() === false
+      ) {
+        return;
+      }
       try {
         void Promise.resolve(
           handler(
@@ -2023,13 +2032,9 @@ export class PeerborneDocument<
             [...notification.writers],
             [...notification.hashes],
           ) as void | Promise<void>,
-        ).catch(() => {
-          console.error(
-            `Remote update handler failed for ${this.documentPath}`,
-          );
-        });
+        ).catch(onFailure);
       } catch {
-        console.error(`Remote update handler failed for ${this.documentPath}`);
+        onFailure();
       }
     }
   }
@@ -2037,7 +2042,7 @@ export class PeerborneDocument<
   private async _prepareRemoteUpdateNotification(
     hashes: string[],
     handlers = Object.values(this._remoteHandlers),
-  ): Promise<RemoteUpdateNotification<DocType, PublicKey>> {
+  ): Promise<DocumentUpdateNotification<DocType, PublicKey>> {
     if (handlers.length === 0) {
       return {
         handlers,
@@ -2109,7 +2114,7 @@ export class PeerborneDocument<
               capturedHashes,
               capturedHandlers,
             );
-            this._dispatchRemoteUpdateHandlers(notification);
+            this._dispatchUpdateHandlers(notification);
           });
           return;
         } catch (error) {
@@ -2132,7 +2137,7 @@ export class PeerborneDocument<
         hashes,
         handlers,
       );
-      this._dispatchRemoteUpdateHandlers(notification);
+      this._dispatchUpdateHandlers(notification);
     } catch (error) {
       if (error instanceof ACLOperationInProgressError) {
         this._enqueueRemoteUpdateNotification(hashes, handlers, error);
@@ -2159,7 +2164,7 @@ export class PeerborneDocument<
   }
 
   private async _prepareDeferredBootstrapRemoteUpdateNotification(): Promise<
-    RemoteUpdateNotification<DocType, PublicKey> | undefined
+    DocumentUpdateNotification<DocType, PublicKey> | undefined
   > {
     if (this._pendingBootstrapRemoteUpdateHashes.size === 0) return undefined;
     return this._prepareRemoteUpdateNotification([
@@ -6411,6 +6416,7 @@ export class PeerborneDocument<
   }
 
   private _activationInProgress = false;
+  private _preOpenAuthorityPathReserved = false;
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
@@ -6964,20 +6970,26 @@ export class PeerborneDocument<
   private async _openCoordinated(): Promise<boolean> {
     if (this._subscribed) throw new Error('Document is already open');
     const engine = this._coordinated!;
-    if (
-      this.swarm.validateDocumentPath &&
-      (await this.swarm.validateDocumentPath(
-        this.documentPath,
-        this._userPublicKey,
-      )) !== true
-    )
-      throw new Error('Document path is not authorized');
-    const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
-    let registered = false;
+    let registered = this._preOpenAuthorityPathReserved;
+    let registering = false;
     try {
-      this.swarm.registerDocument(this.documentPath, this);
-      registered = true;
+      if (
+        this.swarm.validateDocumentPath &&
+        (await this.swarm.validateDocumentPath(
+          this.documentPath,
+          this._userPublicKey,
+        )) !== true
+      )
+        throw new Error('Document path is not authorized');
+      if (this._gcClosed) throw new Error('Coordinated document is closed');
+      const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
+      if (!registered) {
+        registering = true;
+        this.swarm.registerDocument(this.documentPath, this);
+        registered = true;
+      }
       await engine.activate();
+      if (this._gcClosed) throw new Error('Coordinated document is closed');
       this._pubsubHandler = (event) => {
         if (event.detail.topic !== this._topic) return;
         void this.receiveSecurityFrame(event.detail.data).catch(() => {});
@@ -6988,22 +7000,31 @@ export class PeerborneDocument<
       return true;
     } catch (error) {
       if (registered) await this.close();
-      else await engine.close();
+      else if (registering) await engine.close();
       throw error;
     }
   }
 
   /** Accept only the encrypted, signed coordinator document format. */
   public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
-    if (!this._coordinated)
+    const engine = this._coordinated;
+    if (!engine)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    const applied = await this._coordinated.receive(frame);
+    const applied = await engine.receive(frame);
     if (applied) {
-      this._document = this._coordinated.document;
+      const rosterIsCurrent = engine.captureStrictNotificationGuard();
+      if (rosterIsCurrent) {
+        await this._fireStrictCoordinatedUpdateHandlers(
+          Object.values(this._remoteHandlers),
+          rosterIsCurrent,
+        );
+        return true;
+      }
+      this._document = engine.document;
       const readers = await this.getReaders(),
         writers = await this.getWriters();
-      this._dispatchRemoteUpdateHandlers({
+      this._dispatchUpdateHandlers({
         handlers: Object.values(this._remoteHandlers),
         document: this._document,
         readers,
@@ -7012,6 +7033,30 @@ export class PeerborneDocument<
       });
     }
     return applied;
+  }
+
+  private async _fireStrictCoordinatedUpdateHandlers(
+    handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[],
+    rosterIsCurrent: () => boolean,
+    onFailure?: () => void,
+  ): Promise<void> {
+    const canDispatch = () =>
+      this._subscribed && !this._gcClosed && rosterIsCurrent();
+    if (!canDispatch()) return;
+    const document = this._coordinated!.document;
+    this._document = document;
+    if (handlers.length === 0) return;
+    try {
+      const readers = await this.getReaders();
+      if (!canDispatch()) return;
+      const writers = await this.getWriters();
+      this._dispatchUpdateHandlers(
+        { handlers, document, readers, writers, hashes: [], canDispatch },
+        onFailure,
+      );
+    } catch (error) {
+      if (canDispatch()) throw error;
+    }
   }
 
   public async applySecurityAuthorityUpdate(
@@ -7023,13 +7068,59 @@ export class PeerborneDocument<
     await this._coordinated.applyAuthorityUpdate(encoded);
   }
 
+  /**
+   * Apply a controller-signed role update matching the authenticated group
+   * state before opening a fresh strict coordinated document. The instance
+   * reserves its local document path until it closes.
+   */
+  public async applySecurityAuthorityUpdateBeforeOpen(
+    encoded: Uint8Array,
+  ): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine)
+      throw new Error('Document does not use coordinated security');
+    if (this._activationInProgress || this._subscribed || this._gcClosed)
+      throw new Error('Authority recovery requires a fresh unopened document');
+    const owned = copyUnsharedUint8Array(
+      encoded, 1, MAX_DOCUMENT_SECURITY_FRAME_BYTES, 'authority update',
+    );
+    this._activationInProgress = true;
+    try {
+      if (
+        this.swarm.validateDocumentPath &&
+        (await this.swarm.validateDocumentPath(
+          this.documentPath,
+          this._userPublicKey,
+        )) !== true
+      )
+        throw new Error('Document path is not authorized');
+      if (this._gcClosed)
+        throw new Error('Authority recovery requires a fresh unopened document');
+      if (!this._preOpenAuthorityPathReserved) {
+        this.swarm.registerDocument(this.documentPath, this);
+        this._preOpenAuthorityPathReserved = true;
+      }
+      try {
+        await engine.applyAuthorityUpdateBeforeOpen(owned);
+        if (this._gcClosed) throw new Error('Coordinated document is closed');
+      } catch (error) {
+        // A failed role check can still leave restored state in this session.
+        await this.close().catch(() => {});
+        throw error;
+      }
+    } finally {
+      this._activationInProgress = false;
+    }
+  }
+
   private _securityPublicationTask?: Promise<void>;
   private _securityPublicationQueued?: Promise<void>;
 
 
   /** Retry durable encrypted publications without running local change callbacks again. */
   public async retrySecurityPublications(): Promise<void> {
-    if (!this._coordinated || !this._subscribed)
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed)
       throw new Error('Coordinated document is not open');
     if (this._securityPublicationQueued) return this._securityPublicationQueued;
     const previous = this._securityPublicationTask ?? Promise.resolve();
@@ -7038,12 +7129,13 @@ export class PeerborneDocument<
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
-        for (const frame of await this._coordinated!.pendingPublications()) {
+        for (const frame of await engine.pendingPublications()) {
+          engine.assertPublicationDispatchAllowed();
           await this.swarm.heliaNode.libp2p.services.pubsub.publish(
             this._topic,
             frame,
           );
-          await this._coordinated!.publicationSent(frame);
+          await engine.publicationSent(frame);
         }
       })
       .finally(() => {
@@ -7062,11 +7154,21 @@ export class PeerborneDocument<
     message?: string,
   ): Promise<void> {
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    await this._coordinated!.change(change, message);
-    this._document = this._coordinated!.document;
-    void this._fireLocalUpdateHandlers([]).catch(() =>
-      this._reportLocalUpdateHandlerFailure(),
-    );
+    const engine = this._coordinated!;
+    await engine.change(change, message);
+    const rosterIsCurrent = engine.captureStrictNotificationGuard();
+    if (rosterIsCurrent) {
+      void this._fireStrictCoordinatedUpdateHandlers(
+        Object.values(this._localHandlers),
+        rosterIsCurrent,
+        () => this._reportLocalUpdateHandlerFailure(undefined, true),
+      ).catch(() => this._reportLocalUpdateHandlerFailure());
+    } else {
+      this._document = engine.document;
+      void this._fireLocalUpdateHandlers([]).catch(() =>
+        this._reportLocalUpdateHandlerFailure(),
+      );
+    }
     try {
       await this.retrySecurityPublications();
     } catch {
@@ -7427,8 +7529,9 @@ export class PeerborneDocument<
     this._gossipReceiveAdmission = undefined;
     this._gcClosed = true;
     this._gcLifecycle = {};
+    const coordinatedClose = this._coordinated?.close();
     await this._gcInProgress?.catch(() => {});
-    await this._coordinated?.close();
+    await coordinatedClose;
     // Use the cached topic for cleanup; it is initialized in the constructor.
     const topic = this._topic;
 
@@ -7459,6 +7562,7 @@ export class PeerborneDocument<
     // Unregister this document from the shared V2 protocol handler registry.
     // Pass `this` so only this instance is removed (instance-safe).
     this.swarm.unregisterDocument(this.documentPath, this);
+    this._preOpenAuthorityPathReserved = false;
   }
 
   /**

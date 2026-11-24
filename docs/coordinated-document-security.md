@@ -47,11 +47,32 @@ Optional signed `writePaths` restrict a member's native operations inside
 application data. These write scopes do not restrict what a decrypting group
 member can read.
 
-Applications provision and validate the actual cryptographic group membership.
-The role log does not independently enumerate the provider's decrypting members.
-Removing a reader therefore requires the real group removal/key transition as
-well as the signed role update. A role change alone cannot erase keys or
-plaintext already learned by a member.
+Removing a reader uses both a cryptographic group removal and a signed role
+update. With `requireGroupRosterMatch: true` in the coordinated document’s
+security options, the provider reports member IDs from its authenticated group
+state. The SDK requires those IDs to match the built-in signed role log before
+exposing content or accepting changes. A survivor pauses protected document use
+until both authenticated updates arrive.
+
+If a survivor restarts between the two updates, create a fresh document
+instance. When the signed role record arrives, call
+`applySecurityAuthorityUpdateBeforeOpen(signedRoleRecord)` and then `open()`.
+The first operation installs matching authority without exposing recovered
+content. With a configured document journal, the new controller binding becomes
+visible after the journal accepts the checkpoint.
+The recovered instance reserves its local path until it closes. If the engine
+rejects recovery, it closes that instance and releases the path for a fresh one.
+
+Use the document’s authority update APIs for strict transitions so they go
+through this journal. Publication retries pause during a roster mismatch and
+check current authority again before dispatching each frame.
+Change handlers receive updates only while their captured roster stays current
+and the document stays open.
+
+This option relies on the provider reporting its actual decrypting membership.
+An offline replica retains its earlier keys and roles until it learns the
+transition. The outbox can retry historical ciphertext that the local replica
+committed before it learned of the removal.
 
 ## Native field write scopes
 

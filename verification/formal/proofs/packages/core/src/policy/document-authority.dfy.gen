@@ -106,6 +106,29 @@ method isDocumentAuthorityRosterValid(memberIds: seq<string>, publicKeys: seq<st
   return true;
 }
 
+method exactDocumentMemberRoster(authority: seq<string>, group: seq<string>) returns (res: bool)
+  requires (|authority| <= 4294967295)
+  requires (|group| <= 4294967295)
+  ensures (res <==> ((((1 <= |authority|) && (|authority| <= 256)) && (|authority| == |group|)) && forall i: int :: ((0 <= i) ==> (i < |authority|) ==> (authority[i] == group[i]))))
+{
+  if (((|authority| == 0) || (|authority| > 256)) || (|authority| != |group|)) {
+    return false;
+  }
+  var index := 0;
+  while (index < |authority|)
+    invariant (0 <= index)
+    invariant (index <= |authority|)
+    invariant forall i: int :: ((0 <= i) ==> (i < index) ==> (authority[i] == group[i]))
+    decreases (|authority| - index)
+  {
+    if (authority[index] != group[index]) {
+      return false;
+    }
+    index := (index + 1);
+  }
+  return true;
+}
+
 method bindDocumentController<Controller(==)>(controllers: map<string, Controller>, head: string, controller: Controller, limit: int) returns (res: map<string, Controller>)
   requires (0 <= limit)
   requires (limit <= 9007199254740991)

@@ -32,14 +32,38 @@ const random = () => crypto.getRandomValues(new Uint8Array(32));
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-async function rejects(action: () => Promise<unknown>) {
+async function rejects(action: () => Promise<unknown>, expected?: RegExp) {
   let rejected = false;
   try {
     await action();
-  } catch {
+  } catch (error) {
+    if (expected) {
+      check(error instanceof Error && expected.test(error.message), 'unexpected document boundary rejection');
+    }
     rejected = true;
   }
   check(rejected, 'expected document boundary rejection');
+}
+
+function pauseNotificationWriters<T>(document: { getWriters(): Promise<T> }) {
+  const getWriters = document.getWriters;
+  let observed!: () => void;
+  let resume!: () => void;
+  const ready = new Promise<void>((resolve) => { observed = resolve; });
+  const paused = new Promise<void>((resolve) => { resume = resolve; });
+  document.getWriters = async () => {
+    const writers = await getWriters.call(document);
+    observed();
+    await paused;
+    return writers;
+  };
+  return {
+    ready,
+    release() {
+      document.getWriters = getWriters;
+      resume();
+    },
+  };
 }
 
 async function collect(coordinator: GroupSecurityCoordinator) {
@@ -212,9 +236,43 @@ async function setup(documentId: string) {
       welcome: addition.welcomes[0],
     },
   );
+  const pinnedGenesis = log.genesisId;
+  const restoreReplica = async (
+    index: number,
+    authorityRecords: readonly Uint8Array[],
+  ) => {
+    const config = configuration(index);
+    const engine = await MlsProviderSpike.initialize(
+      members[index],
+      members[0],
+      policy,
+    );
+    const control = new DocumentGroupControlAuthority(
+      engine.protocol,
+      groupId,
+      members[0],
+    );
+    const authority = await DocumentAuthorityLog.restore(
+      authorityRecords,
+      pinnedGenesis,
+      auth,
+      control,
+    );
+    await engines[index].clearGroupState();
+    const coordinator = await GroupSecurityCoordinator.restore({
+      ...config,
+      provider: engine,
+      authorizeControl: control.authorize,
+    });
+    engines[index] = engine;
+    controls[index] = control;
+    return { coordinator, authority };
+  };
+
   return {
     coordinators: [controller, recipient],
     logs: [log, recipientLog],
+    restoreReplica,
     members,
     signing,
     auth,
@@ -289,6 +347,7 @@ export async function runProductionDocumentChecks() {
         security: {
           coordinator: f.coordinators[index],
           authority: f.logs[index],
+          requireGroupRosterMatch: true,
           journal: new DocumentReplayJournal(
             path,
             f.logs[index].genesisId,
@@ -501,8 +560,195 @@ export async function runProductionDocumentChecks() {
     );
     await docs[1].receiveSecurityFrame(retried[0].data);
     check(read(docs[1]).retry === 7, 'restarted publication converges');
+
+    const [controller, recipient] = f.coordinators;
+    const survivorRoster = f.roster.slice(0, 1);
+    let staleNotifications = 0;
+    const countNotification = () => { staleNotifications++; };
+    docs[0].subscribe('delayed-notification', countNotification, 'local');
+    docs[1].subscribe('delayed-notification', countNotification, 'remote');
+    const [localNotice, remoteNotice] = docs.map(pauseNotificationWriters);
+    let receivingNotification: Promise<boolean> | undefined;
+    let matchingRenewal: Uint8Array;
+    try {
+      await docs[0].change(change('beforeRenewal', 11));
+      const published = publications.shift()!;
+      check(published?.sender === 0, 'the local change emitted its frame');
+      const receiving = docs[1].receiveSecurityFrame(published.data);
+      receivingNotification = receiving;
+      await Promise.race([
+        Promise.all([localNotice.ready, remoteNotice.ready]),
+        receiving.then(() => {
+          throw new Error('Remote receive finished before collecting notification metadata');
+        }),
+      ]);
+
+      await controller.createCommit({ changes: [] }, {
+        operationId: random(),
+        requestDigest: random(),
+        action: 'update',
+        subjectId: f.members[0],
+      });
+      const renewal = await collect(controller);
+      await recipient.applyCommit(renewal.commit!, renewal.controlRecord, []);
+      const oldHead = f.logs[0].headId;
+      const roleOnlyRemoval = await f.logs[0].signUpdate(
+        controller.documentContext,
+        survivorRoster,
+        f.signing[0].privateKey,
+      );
+      await rejects(() => docs[0].applySecurityAuthorityUpdate(roleOnlyRemoval));
+      check(equal(oldHead, f.logs[0].headId), 'a roster mismatch leaves signed authority unchanged');
+      matchingRenewal = await f.logs[0].signUpdate(
+        controller.documentContext,
+        f.roster,
+        f.signing[0].privateKey,
+      );
+      await docs[0].applySecurityAuthorityUpdate(matchingRenewal);
+      await docs[1].applySecurityAuthorityUpdate(matchingRenewal);
+    } finally {
+      localNotice.release();
+      remoteNotice.release();
+      docs[0].unsubscribe('delayed-notification');
+      docs[1].unsubscribe('delayed-notification');
+    }
+    check(await receivingNotification, 'a suppressed notification preserves receive success');
+    check(staleNotifications === 0, 'renewal fences both delayed notification origins');
+    check(read(docs[1]).beforeRenewal === 11, 'a suppressed notification retains accepted content');
+
+    let notify!: () => void;
+    const notified = new Promise<void>((resolve) => { notify = resolve; });
+    docs[0].subscribe('current-notification', notify, 'local');
+    await docs[0].change(change('beforeHandlerClose', 12));
+    await notified;
+    docs[0].unsubscribe('current-notification');
+    const beforeHandlerClose = publications.shift()!;
+    check(beforeHandlerClose?.sender === 0, 'one publication reaches the close fixture');
+    let closing: Promise<void> | undefined;
+    let closedContentStillReadable = false;
+    let notificationsAfterClose = 0;
+    docs[1].subscribe('close-on-notification', () => {
+      closing = docs[1].close();
+      try {
+        read(docs[1]);
+        closedContentStillReadable = true;
+      } catch {}
+    }, 'remote');
+    docs[1].subscribe('notify-after-close', () => { notificationsAfterClose++; }, 'remote');
+    check(await docs[1].receiveSecurityFrame(beforeHandlerClose.data), 'close fixture applied');
+    check(closing, 'the first admitted handler starts close');
+    await closing;
+    check(!closedContentStillReadable, 'close immediately fences direct content access');
+    check(notificationsAfterClose === 0, 'close prevents the next handler from receiving content');
+    docs[1] = makeDocument(1);
+    await docs[1].open();
+    check(read(docs[1]).beforeHandlerClose === 12, 'the accepted change survives callback close');
+
+    // Hold a legitimate earlier-epoch publication until the writer reconnects.
+    await docs[1].change(change('offlineDraft', 9));
+    const partitioned = publications.shift()!;
+    check(partitioned.sender === 1 && publications.length === 0, 'one old-epoch publication');
+    await controller.createCommit(
+      { changes: [{ kind: 'remove', memberId: f.members[1] }] },
+      {
+        operationId: random(),
+        requestDigest: random(),
+        action: 'remove',
+        subjectId: f.members[1],
+      },
+    );
+    const removal = await collect(controller);
+    let blockedCallbacks = 0;
+    const observeCallback = () => { blockedCallbacks++; };
+    await rejects(() => docs[0].change(observeCallback));
+    await rejects(async () => read(docs[0]));
+    check(blockedCallbacks === 0, 'the old role set cannot expose the new epoch');
+    const revokeRole = await f.logs[0].signUpdate(
+      controller.documentContext,
+      survivorRoster,
+      f.signing[0].privateKey,
+    );
+    if (backend === 'automerge') {
+      await rejects(() =>
+        makeDocument(0).applySecurityAuthorityUpdateBeforeOpen(revokeRole),
+      );
+      await docs[0].close();
+      const groupHead = controller.documentContext.controlHead;
+      const oldAuthorityHead = f.logs[0].headId;
+      const acceptedRoleCheckpoint = (
+        await new DocumentReplayJournal(
+          path,
+          f.logs[0].genesisId,
+          keys[0],
+          journalStores[0],
+          journalAnchors[0],
+        ).restore()
+      ).findLast((record) => record.authorityRecords.length > 0);
+      check(acceptedRoleCheckpoint, 'prior signed role checkpoint was durable');
+      const restored = await f.restoreReplica(
+        0,
+        acceptedRoleCheckpoint.authorityRecords,
+      );
+      f.coordinators[0] = restored.coordinator;
+      f.logs[0] = restored.authority;
+      check(
+        equal(restored.coordinator.documentContext.controlHead, groupHead) &&
+          equal(restored.authority.headId, oldAuthorityHead),
+        'restart restores the newer provider state and older accepted authority',
+      );
+      await rejects(() => makeDocument(0).open());
+      const rejectedRecovery = makeDocument(0);
+      await rejects(() =>
+        rejectedRecovery.applySecurityAuthorityUpdateBeforeOpen(matchingRenewal),
+      );
+      await rejects(() => rejectedRecovery.open(), /closed/);
+      docs[0] = makeDocument(0);
+      await rejects(async () => read(docs[0]));
+      await docs[0].applySecurityAuthorityUpdateBeforeOpen(revokeRole);
+      await rejects(() => makeDocument(0).open(), /already registered/);
+      await rejects(async () => read(docs[0]));
+      await rejects(() => docs[0].change(observeCallback));
+      await rejects(() => docs[0].getWriters());
+      await rejects(() => docs[0].retrySecurityPublications());
+      check(blockedCallbacks === 0, 'authority recovery retains the activation fence');
+      await docs[0].open();
+      check(read(docs[0]).retry === 7, 'authority recovery retains accepted local content');
+    } else {
+      await docs[0].applySecurityAuthorityUpdate(revokeRole);
+    }
+    await rejects(() => docs[0].receiveSecurityFrame(partitioned.data));
+    check(read(docs[0]).offlineDraft === undefined, 'the current epoch excludes old-epoch edits');
+
     await docs[0].close();
+    docs[0] = makeDocument(0);
+    await docs[0].open();
+    await docs[0].change(change('afterRemoval', 10));
+    check(read(docs[0]).afterRemoval === 10, 'the surviving roster activates after restart');
+    const nextEpoch = publications.shift()!;
+    check(nextEpoch.sender === 0, 'the survivor emitted a fresh epoch frame');
+    await rejects(() => docs[1].receiveSecurityFrame(nextEpoch.data));
+    check(
+      read(docs[1]).afterRemoval === undefined,
+      'a disconnected prior-epoch replica cannot read fresh survivor content',
+    );
+
+    if (backend === 'automerge') {
+      await docs[1].close();
+      docs[1] = makeDocument(1);
+      await docs[1].open();
+      check(read(docs[1]).offlineDraft === 9, 'an offline replica can reopen its earlier history');
+    }
+    const removed = await recipient.applyCommit(
+      removal.commit!, removal.controlRecord, [],
+    );
+    check(removed.status === 'removed', 'the delayed authenticated commit stops the removed replica');
+    await rejects(() => docs[1].change(observeCallback));
+    await rejects(async () => read(docs[1]));
+    check(blockedCallbacks === 0, 'the removed replica cannot begin another mutation');
+    await rejects(() => docs[1].receiveSecurityFrame(nextEpoch.data));
     await docs[1].close();
+    await rejects(() => makeDocument(1).open());
+    await docs[0].close();
     for (const store of journalStores)
       if (store instanceof IndexedDBDocumentJournalStore) await store.close();
     results[backend] = {
@@ -518,6 +764,11 @@ export async function runProductionDocumentChecks() {
       duplicateActivationIsolated: true,
       abortedPublicationBranchRejected: true,
       roleHistoryCopiedOnlyAtCheckpoints: true,
+      authenticatedRosterMatchesRoles: true,
+      staleNotificationsSuppressed: true,
+      delayedRevocationBlocksOldEpoch: true,
+      revokedDocumentCannotReopen: true,
+      authorityRecoveryBeforeOpen: backend === 'automerge',
       indexedDB: typeof indexedDB !== 'undefined',
     };
   }

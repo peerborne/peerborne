@@ -1170,6 +1170,13 @@ method mapOperand_domain()
       'if (false) return -1;',
     ],
     [
+      'coordinated-roster-ignores-member-identity',
+      'document-authority.ts',
+      'if (authority[index] !== group[index]) return false;',
+      'if (false) return false;',
+      'exactDocumentMemberRoster',
+    ],
+    [
       'epoch-gap',
       'beekem-transition.ts',
       "if (incoming === current + 1) return 'next';",

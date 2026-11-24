@@ -747,6 +747,18 @@ export class MlsProviderSpike {
       return this.#public(this.#state);
     });
   }
+  getAuthenticatedMemberIds(): Promise<readonly Uint8Array[]> {
+    return this.#run(async () => {
+      requireValue(this.#state);
+      const members: Uint8Array[] = [];
+      for (const node of this.#state.ratchetTree) {
+        if (!node || node.nodeType !== 'leaf') continue;
+        requireValue(node.leaf.credential.credentialType === 'basic');
+        members.push(this.#binding(node.leaf.credential.identity).member.slice());
+      }
+      return members;
+    });
+  }
   createCommit(
     input: CreateGroupCommitInput,
   ): Promise<GroupSecurityCommitResult> {
