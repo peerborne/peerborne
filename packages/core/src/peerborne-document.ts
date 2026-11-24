@@ -135,6 +135,7 @@ import {
   securityAdvertiseV1,
 } from './wire-protocols.js';
 import { BeeKEM, BeeKEMCompetingEpochError } from './beekem/beekem.js';
+import { BeeKEMForkQuarantine } from './beekem-fork-quarantine.js';
 import { BeeKEMWelcomeV2, PathUpdateV2 } from './beekem/types.js';
 import {
   deserializePathUpdateV2FromWire,
@@ -959,10 +960,12 @@ export class PeerborneDocument<
 
   /** Generation at which this instance stopped after observing an authenticated competing BeeKEM tree. */
   get competingBeeKEMGeneration(): number | undefined {
-    return this._competingBeeKEMGeneration;
+    return this._competingBeeKEMGeneration ?? this._beekemForkGuard?.competingGeneration;
   }
 
   private _competingBeeKEMGeneration: number | undefined;
+  private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
+  private _guardedClose?: Promise<void>;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1300,10 +1303,12 @@ export class PeerborneDocument<
    * operations or provide a historical-content confidentiality boundary.
    */
   public set historyVisibility(value: HistoryVisibility) {
+    this._assertBeeKEMForkSetup();
     this._historyVisibility = value;
   }
 
   public get historyVisibility(): HistoryVisibility {
+    this._assertBeeKEMForkSetup();
     return this._historyVisibility;
   }
 
@@ -1579,6 +1584,14 @@ export class PeerborneDocument<
         { ...options.security, persistPublications: true },
       );
       this._topic = `peerborne/coordinated/v1/${this._coordinated.routingId}`;
+    } else if (this.swarm.beekemForkStore) {
+      this._beekemForkGuard = new BeeKEMForkQuarantine(
+        this.swarm.beekemForkStore,
+        documentPath,
+        () => requireSerializePublicKey(this._authProvider, 'Durable BeeKEM fork guard')(
+          this._userPublicKey,
+        ),
+      );
     }
   }
 
@@ -1619,7 +1632,9 @@ export class PeerborneDocument<
     }
   }
 
-  private _assertNoIncompleteBootstrapLoad(): void {
+  private _assertNoIncompleteBootstrapLoad(allowSetup = false): void {
+    if (allowSetup) this._assertBeeKEMForkSetup();
+    else this._beekemForkGuard?.assertAcceptsWork();
     this._assertDocumentStateNotPoisoned();
     if (this._activeInvitationBootstrapContinuation !== undefined) {
       throw new Error(
@@ -1632,6 +1647,22 @@ export class PeerborneDocument<
           `discard this document instance before continuing`,
       );
     }
+  }
+
+  private _assertBeeKEMForkSetup(): void {
+    const guard = this._beekemForkGuard;
+    if (guard && !guard.acceptsSetup) guard.assertAcceptsWork();
+  }
+
+  /** Explicitly enroll a new local BeeKEM scope before any use of this path. */
+  public async provisionBeeKEMForkStore(): Promise<boolean> {
+    if (!this._beekemForkGuard) throw new Error('Durable BeeKEM fork store is unavailable');
+    return this._beekemForkGuard.provision();
+  }
+
+  /** @internal Recheck an invitation response at its dispatch boundary. */
+  public assertBeeKEMForkAdmission(): void {
+    this._beekemForkGuard?.assertAcceptsWork();
   }
 
   private _markBootstrapStateApplicationPending(): void {
@@ -1649,7 +1680,8 @@ export class PeerborneDocument<
   private _isStateApplicationBlocked(): boolean {
     return (
       this._bootstrapLoadApplicationState === 'pending' ||
-      this._bootstrapLoadApplicationState === 'poisoned'
+      this._bootstrapLoadApplicationState === 'poisoned' ||
+      (this._beekemForkGuard !== undefined && !this._beekemForkGuard.acceptsWork)
     );
   }
 
@@ -1690,6 +1722,13 @@ export class PeerborneDocument<
   private _runStateMutation<T>(operation: () => Promise<T>): Promise<T> {
     if (this._coordinated) return Promise.reject(new Error('Legacy document operations are unavailable in coordinated mode'));
     return this._mutationQueue.run(() => {
+      const guard = this._beekemForkGuard;
+      if (guard && !guard.acceptsWork) {
+        return guard.acquire().then(() => {
+          this._assertNoIncompleteBootstrapLoad();
+          return operation();
+        });
+      }
       this._assertNoIncompleteBootstrapLoad();
       return operation();
     });
@@ -1704,6 +1743,7 @@ export class PeerborneDocument<
     activate?: (continuation: InvitationBootstrapContinuation) => Promise<void>,
   ): Promise<void> {
     return this._mutationQueue.run(async () => {
+      this._beekemForkGuard?.assertAcceptsWork();
       if (
         this._bootstrapLoadApplicationState !== 'pristine' ||
         this._hashes.size > 0 ||
@@ -1813,6 +1853,7 @@ export class PeerborneDocument<
     // this point the notification dispatch is deliberately synchronous and
     // cannot escape as late background work after a timed-out load rejected.
     throwIfLoadAborted(signal);
+    this._beekemForkGuard?.assertAcceptsWork();
     this._markBootstrapStateApplicationComplete();
     if (deferredNotification) {
       this._pendingBootstrapRemoteUpdateHashes.clear();
@@ -1973,6 +2014,7 @@ export class PeerborneDocument<
     notification: RemoteUpdateNotification<DocType, PublicKey>,
   ): void {
     for (const handler of notification.handlers) {
+      if (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) return;
       try {
         void Promise.resolve(
           handler(
@@ -4807,13 +4849,14 @@ export class PeerborneDocument<
       );
     }
     const canUseCurrentBootstrapState = (): boolean =>
-      continuingInvitationBootstrap
+      (!this._beekemForkGuard || this._beekemForkGuard.acceptsWork) &&
+      (continuingInvitationBootstrap
         ? this._bootstrapLoadApplicationState === 'pending' &&
           this._isActiveInvitationBootstrapContinuation(
             bootstrapContinuation,
           )
         : !this._isStateApplicationBlocked() &&
-          this._activeInvitationBootstrapContinuation === undefined;
+          this._activeInvitationBootstrapContinuation === undefined);
     const responseLimit = Math.min(
       assertPositiveSafeByteLimit(
         maxResponseBytes ?? MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
@@ -5860,6 +5903,7 @@ export class PeerborneDocument<
     let rawStream: import('@libp2p/interface').Stream;
     let stream: Stream;
     try {
+      this._beekemForkGuard?.assertAcceptsWork();
       rawStream = await this.libp2p.dialProtocol(peer, [securityAdvertiseV1], {
         runOnLimitedConnection: true,
         signal,
@@ -5892,11 +5936,13 @@ export class PeerborneDocument<
       signal.addEventListener('abort', onAbort, { once: true });
     }
     try {
+      this._beekemForkGuard?.assertAcceptsWork();
       await writeStream(stream, [serializedRequest]);
       const assembled = await readUint8Iterable(
         stream,
         MAX_SECURITY_ADVERTISE_RESPONSE_SIZE,
       );
+      this._beekemForkGuard?.assertAcceptsWork();
       if (assembled.length === 0) {
         return null;
       }
@@ -5982,6 +6028,7 @@ export class PeerborneDocument<
         verify: (payload, key, sig) => this._authProvider.verify(payload, key, sig),
       });
       this._assertLoadWriterVersion(session.writerVersion);
+      this._beekemForkGuard?.assertAcceptsWork();
       if (!signer || !unsigned.unchanged()) return null;
       return {
         hash: stableTipsHash,
@@ -6164,6 +6211,7 @@ export class PeerborneDocument<
   public async load(preferredPeer?: PeerId | string): Promise<boolean> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
+    if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
     this._assertNoIncompleteBootstrapLoad();
 
     const shuffledPeers = await this._shuffledPeers();
@@ -6172,6 +6220,7 @@ export class PeerborneDocument<
       return false;
     }
 
+    this._beekemForkGuard?.assertAcceptsWork();
     const session = await this._captureLoadSession();
 
     const orderedPeers = [...shuffledPeers];
@@ -6236,6 +6285,7 @@ export class PeerborneDocument<
       let peerBindFailed = false;
       if (this._compactionConfig.enabled) {
         try {
+          this._beekemForkGuard?.assertAcceptsWork();
           console.log('Trying snapshot-load from peer:', peer.toString());
           const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV4,
@@ -6271,6 +6321,7 @@ export class PeerborneDocument<
       }
 
       try {
+        this._beekemForkGuard?.assertAcceptsWork();
         console.log('Trying doc-load from peer:', peer.toString());
         const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV4,
@@ -6352,7 +6403,10 @@ export class PeerborneDocument<
   public async open(): Promise<boolean> {
     if (this._activationInProgress) throw new Error('Document activation is in progress');
     this._activationInProgress = true;
-    try { return this._coordinated ? await this._openCoordinated() : await this._open(); }
+    try {
+      if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
+      return this._coordinated ? await this._openCoordinated() : await this._open();
+    }
     finally { this._activationInProgress = false; }
   }
 
@@ -6895,12 +6949,15 @@ export class PeerborneDocument<
 
   /** Create a new document under an application-owned path without querying peers. */
   public async create(): Promise<boolean> {
-    this._assertNoIncompleteBootstrapLoad();
+    this._assertNoIncompleteBootstrapLoad(true);
     if (this._activationInProgress || this._subscribed || this._hashes.size > 0 || this._createdLocally) {
       throw new Error('Cannot create a document with existing local state');
     }
     this._activationInProgress = true;
-    try { return this._coordinated ? await this._openCoordinated() : await this._open(undefined, true); }
+    try {
+      if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
+      return this._coordinated ? await this._openCoordinated() : await this._open(undefined, true);
+    }
     finally { this._activationInProgress = false; }
   }
 
@@ -7038,6 +7095,7 @@ export class PeerborneDocument<
     const continuingInvitationBootstrap =
       this._isActiveInvitationBootstrapContinuation(bootstrapContinuation);
     const assertCanOpen = (): void => {
+      this._beekemForkGuard?.assertAcceptsWork();
       if (continuingInvitationBootstrap) {
         if (this._bootstrapLoadApplicationState !== 'pending') {
           throw new Error(
@@ -7319,11 +7377,22 @@ export class PeerborneDocument<
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
       // subscriptions, or registry entries.
-      await this.close().catch(() => {});
+      await this._cleanupFailedOpen(continuingInvitationBootstrap);
       throw err;
     }
 
+    this._beekemForkGuard?.assertAcceptsWork();
     return isExisting;
+  }
+
+  private async _cleanupFailedOpen(insideInvitationQueue: boolean): Promise<void> {
+    if (insideInvitationQueue && this._beekemForkGuard) {
+      // The outer invitation call drains and releases after leaving this queue slot.
+      this._beekemForkGuard.beginClose();
+      await this._closeResources().catch(() => {});
+      return;
+    }
+    await this.close().catch(() => {});
   }
 
   /**
@@ -7334,7 +7403,26 @@ export class PeerborneDocument<
    * `documentPath` are not supported. Cleanup is instance-safe, so a failed or
    * stale instance does not unregister a newer live document.
    */
-  public async close() {
+  public close(): Promise<void> {
+    const guard = this._beekemForkGuard;
+    if (!guard) return this._closeResources();
+    guard.beginClose();
+    return this._guardedClose ??= this._closeGuarded(guard);
+  }
+
+  private async _closeGuarded(guard: BeeKEMForkQuarantine): Promise<void> {
+    await this._closeResources();
+    await this._mutationQueue.run(async () => {
+      if (
+        this._bootstrapLoadApplicationState !== 'pending' &&
+        this._bootstrapLoadApplicationState !== 'poisoned'
+      ) {
+        await guard.release();
+      }
+    });
+  }
+
+  private async _closeResources(): Promise<void> {
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
     this._gcClosed = true;
@@ -7868,7 +7956,7 @@ export class PeerborneDocument<
     handler: PeerborneDocumentChangeHandler<DocType, PublicKey>,
     originFilter: 'all' | 'remote' | 'local' = 'all',
   ) {
-    this._assertNoIncompleteBootstrapLoad();
+    this._assertNoIncompleteBootstrapLoad(true);
     switch (originFilter) {
       case 'all': {
         this._remoteHandlers[id] = handler;
@@ -9332,7 +9420,7 @@ export class PeerborneDocument<
       if (this._bootstrapLoadApplicationState !== 'pending') {
         this._markBootstrapStateApplicationPending();
       }
-      await this.close().catch(() => {});
+      await this._cleanupFailedOpen(true);
       throw error;
     }
   }
@@ -10409,6 +10497,7 @@ export class PeerborneDocument<
    * @internal exposed only for unit tests.
    */
   public get pendingWelcomesCount(): number {
+    this._assertBeeKEMForkSetup();
     return this._pendingWelcomes.size;
   }
 
@@ -10419,6 +10508,7 @@ export class PeerborneDocument<
    * @internal exposed only for unit tests.
    */
   public get pendingWelcomesRetainedBytes(): number {
+    this._assertBeeKEMForkSetup();
     return this._pendingWelcomes.retainedBytes;
   }
 
@@ -11228,9 +11318,10 @@ export class PeerborneDocument<
           ));
       } catch (error) {
         if (error instanceof BeeKEMCompetingEpochError) {
-          await runSharedProtocolMutation(admission, () => {
+          const stop = () => {
             if (
-              this._isStateApplicationBlocked() ||
+              this._bootstrapLoadApplicationState === 'pending' ||
+              this._bootstrapLoadApplicationState === 'poisoned' ||
               this._beekem !== parentBeeKEM ||
               parentBeeKEM.generation !== parentGeneration ||
               this._writerKeysVersion !== writerKeysVersion
@@ -11242,7 +11333,22 @@ export class PeerborneDocument<
             console.warn(
               'Stopped document after an authenticated competing BeeKEM epoch',
             );
-          });
+            if (this._beekemForkGuard) {
+              const persisted = this._beekemForkGuard.quarantine(error.generation);
+              // Close drains this queue and therefore must run outside its slot.
+              void this.close().catch(() => {});
+              return persisted.catch(() => {
+                console.warn('Unable to confirm the durable BeeKEM fork stop');
+              });
+            }
+          };
+          if (this._beekemForkGuard) {
+            // This frame entered the queue while the stream was active. Its
+            // authenticated local safety stop survives later stream expiry.
+            await stop();
+          } else {
+            await runSharedProtocolMutation(admission, stop);
+          }
         } else {
           console.warn('Failed to apply BeeKEM PathUpdateV2');
         }

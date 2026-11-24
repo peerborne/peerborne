@@ -1,4 +1,5 @@
 import type { LoadSecurityCommitments } from './load-security-state.js';
+import type { DurableBeeKEMForkStore } from './beekem-fork-quarantine.js';
 import type { HeliaInit } from 'helia';
 import type { BitswapOptions } from '@helia/bitswap';
 import type { CreateLibp2pOptions } from '@helia/libp2p';
@@ -255,6 +256,9 @@ export const defaultConfig = (
  * PeerborneConfig is a settings object for peerborne.
  */
 export interface PeerborneConfig {
+  /** Opt-in independent durable admission for legacy BeeKEM documents. */
+  beekemForkStore?: DurableBeeKEMForkStore;
+
   /** Writer identities trusted out of band for a first network load. */
   resolveTrustedDocumentWriters?: (
     documentPath: string,

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { MemoryBlockstore } from 'blockstore-core/memory';
 import {
   beekemPathUpdateV2,
+  Peerborne,
   PeerborneDocument,
   SubtleCrypto,
   generateEciesKeyPair,
@@ -11,6 +12,8 @@ import {
   documentCheckpointCommitment,
   activateDocumentReplacement,
   documentRecoveryContentDigest,
+  type BeeKEMForkRecord,
+  type DurableBeeKEMForkStore,
   type DocumentRecoveryApproval,
   type DocumentRecoveryLocator,
 } from '@peerborne/core';
@@ -21,13 +24,17 @@ import {
   YjsJSONSerializer,
   type YjsKeychain,
 } from '@peerborne/yjs';
+import {
+  INVITATION_ID_LENGTH,
+  signInvitationOffer,
+} from '../../../packages/core/src/invitation-wire.js';
 
 Object.defineProperty(globalThis, 'crypto', {
   value: webcrypto,
   configurable: true,
 });
 
-async function fixture() {
+async function fixture(forkStore?: DurableBeeKEMForkStore) {
   const signing = await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-384' },
     false,
@@ -39,7 +46,11 @@ async function fixture() {
     object,
     { broadcasts: Uint8Array[]; updates: Uint8Array[]; keychain: YjsKeychain }
   >();
-  function document(path = '/checkpoint-fixture', identity = signing) {
+  function document(
+    path = '/checkpoint-fixture',
+    identity = signing,
+    scopeStore: DurableBeeKEMForkStore | null = forkStore ?? null,
+  ) {
     const serializer = new YjsJSONSerializer();
     const registry = new Map();
     const broadcasts: Uint8Array[] = [];
@@ -48,6 +59,7 @@ async function fixture() {
     let keychain: YjsKeychain;
     const swarm = {
       config: { enableSigning: true, enableTopicValidators: false },
+      beekemForkStore: scopeStore ?? undefined,
       heliaNode: {
         blockstore: blocks,
         libp2p: {
@@ -114,6 +126,7 @@ async function fixture() {
     return doc;
   }
   const created = document();
+  if (forkStore) assert.equal(await created.provisionBeeKEMForkStore(), true);
   await created.setKemKeyPair(kem);
   await created.create();
   await created.change((doc) => {
@@ -434,6 +447,225 @@ test('same-predecessor signed removal forks stop either branch, including after 
     }
   }
 });
+
+function forkAnchorFixture(
+  interrupt: 'none' | 'before-write' | 'after-write' = 'none',
+) {
+  const records = new Map<string, BeeKEMForkRecord>();
+  const store: DurableBeeKEMForkStore = {
+    async load(scope) {
+      return records.get(JSON.stringify(scope));
+    },
+    async compareAndSwap(scope, expected, next) {
+      const key = JSON.stringify(scope);
+      if (JSON.stringify(records.get(key)) !== JSON.stringify(expected))
+        return false;
+      if (next.phase === 'quarantined' && interrupt === 'before-write') {
+        throw new Error('Interrupted before fork stop was persisted');
+      }
+      records.set(key, next);
+      if (next.phase === 'quarantined' && interrupt === 'after-write') {
+        throw new Error('Interrupted before fork stop acknowledgment');
+      }
+      return true;
+    },
+  };
+  return { records, store };
+}
+
+test('guarded clean close permits pinned restore on a fresh document handle', async () => {
+  const { records, store } = forkAnchorFixture();
+  const { created, document, kem } = await fixture(store);
+  const checkpoint = await created.exportCheckpoint();
+  const pin = await documentCheckpointCommitment(checkpoint);
+  const concurrent = document();
+  await assert.rejects(
+    concurrent.restoreCheckpoint(checkpoint, pin),
+    /fork anchor blocks/,
+  );
+  await assert.rejects(document('/missing-scope').open(), /not provisioned/);
+  await created.close();
+  assert.throws(() => created.document, /fork guard blocks/);
+  assert.deepEqual(
+    [...records.values()],
+    [{ phase: 'available', revision: 2 }],
+  );
+  const restarted = document();
+  await restarted.setKemKeyPair(kem);
+  await restarted.restoreCheckpoint(checkpoint, pin);
+  assert.equal(await restarted.open(), true);
+  assert.equal(
+    restarted.document.getText('fixture').toString(),
+    'before restart',
+  );
+  await restarted.close();
+});
+
+test('guarded invitation acceptance acquires an enrolled scope before dialing', async () => {
+  const { records, store } = forkAnchorFixture();
+  const auth = new SubtleCrypto();
+  let dials = 0;
+  async function swarm(forkStore?: DurableBeeKEMForkStore) {
+    const signing = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      false,
+      ['sign', 'verify'],
+    );
+    const serializer = new YjsJSONSerializer();
+    const node = new Peerborne(
+      signing.privateKey,
+      signing.publicKey,
+      new YjsProvider(),
+      serializer,
+      serializer,
+      serializer,
+      auth,
+      new YjsACLProvider(),
+      new YjsKeychainProvider(),
+    );
+    Object.defineProperties(node, {
+      beekemForkStore: { value: forkStore },
+      heliaNode: {
+        value: {
+          blockstore: new MemoryBlockstore(),
+          libp2p: {
+            services: {
+              pubsub: {
+                addEventListener() {},
+                removeEventListener() {},
+                subscribe() {},
+                unsubscribe() {},
+                async publish() {},
+              },
+            },
+            async dialProtocol() {
+              dials++;
+              assert.deepEqual(
+                [...records.values()].map((record) => record.phase),
+                ['active'],
+              );
+              throw new Error('Fixture stopped before remote onboarding');
+            },
+          },
+        },
+      },
+    });
+    return node;
+  }
+
+  const founder = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-384' },
+    false,
+    ['sign', 'verify'],
+  );
+  const now = Date.now();
+  const offer = await signInvitationOffer(
+    {
+      version: 1,
+      invitationId: crypto.getRandomValues(new Uint8Array(INVITATION_ID_LENGTH)),
+      documentId: '/guarded-invitation',
+      issuer: await auth.serializePublicKey(founder.publicKey),
+      role: 'reader',
+      issuedAtMs: now,
+      expiresAtMs: now + 120_000,
+      rendezvous: ['/ip4/127.0.0.1/tcp/14444'],
+    },
+    founder.privateKey,
+    founder.publicKey,
+    auth,
+  );
+  const recipient = await swarm(store);
+  const recipientKem = await generateEciesKeyPair();
+  await assert.rejects(
+    recipient.acceptInvitation(offer, recipientKem),
+    /not provisioned/,
+  );
+  assert.equal(dials, 0);
+  assert.equal(
+    await recipient.doc(offer.documentId).provisionBeeKEMForkStore(),
+    true,
+  );
+  await assert.rejects(
+    recipient.acceptInvitation(offer, recipientKem),
+    /fixture stopped/i,
+  );
+  assert.equal(dials, 1);
+  assert.deepEqual(
+    [...records.values()],
+    [{ phase: 'available', revision: 2 }],
+  );
+});
+
+for (const interrupt of ['none', 'before-write', 'after-write'] as const) {
+  test(`an authenticated BeeKEM fork fences pinned restore after restart (${interrupt})`, async () => {
+    const { records, store } = forkAnchorFixture(interrupt);
+    const { created, document, kem, traffic } = await fixture(store);
+    const member = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      false,
+      ['sign', 'verify'],
+    );
+    const memberKem = await generateEciesKeyPair();
+    await created.addReader(
+      member.publicKey,
+      new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
+    );
+    const common = await created.exportCheckpoint();
+    const otherDevice = document(undefined, undefined, null);
+    await otherDevice.setKemKeyPair(kem);
+    await otherDevice.restoreCheckpoint(
+      common,
+      await documentCheckpointCommitment(common),
+    );
+    await otherDevice.open();
+    await created.removeReader(member.publicKey);
+    await otherDevice.removeReader(member.publicKey);
+    const checkpoint = await created.exportCheckpoint();
+    const pin = await documentCheckpointCommitment(checkpoint);
+
+    let streamActive = true;
+    let closing: Promise<void> | undefined;
+    await created.handleBeeKEMPathUpdateRequestData(
+      traffic.get(otherDevice)!.updates.at(-1)!,
+      {
+        isActive() {
+          queueMicrotask(() => {
+            streamActive = false;
+            closing ??= created.close();
+          });
+          return streamActive;
+        },
+        async runMutation(operation) {
+          if (!streamActive) return { admitted: false };
+          return { admitted: true, value: await operation() };
+        },
+      },
+    );
+    assert.equal(streamActive, false);
+    assert.equal(created.competingBeeKEMGeneration, 2);
+    await closing;
+    assert.throws(() => created.document, /fork guard blocks/);
+    assert.equal(
+      [...records.values()][0]?.phase,
+      interrupt === 'before-write' ? 'active' : 'quarantined',
+    );
+
+    const restarted = document();
+    assert.equal(await restarted.provisionBeeKEMForkStore(), false);
+    await assert.rejects(
+      restarted.restoreCheckpoint(checkpoint, pin),
+      /fork anchor blocks/,
+    );
+    assert.equal(
+      restarted.competingBeeKEMGeneration,
+      interrupt === 'before-write' ? undefined : 2,
+    );
+    assert.throws(() => restarted.document, /fork guard blocks/);
+    await assert.rejects(document().open(), /fork anchor blocks/);
+    await assert.rejects(document().create(), /fork anchor blocks/);
+    await otherDevice.close();
+  });
+}
 
 test('provider decoding failures do not install staged ACLs or document keys', async () => {
   const { document, created, signing } = await fixture();

@@ -281,6 +281,20 @@ the stopped generation through `competingBeeKEMGeneration`. A signed checkpoint
 preserves the predecessor for detecting a conflict after restart. Persisting a
 decision to retire a forked document requires application-owned storage.
 
+To retain quarantine across restart, configure `beekemForkStore` with storage
+that is protected independently of checkpoint rollback. Provision the scope
+for a new local enrollment with `doc.provisionBeeKEMForkStore()`. For a guarded
+invitation, provision the recipient's scope through `peerborne.doc(path)` before
+accepting. Keep the provisioned row and compare the complete expected record
+atomically on every update.
+
+The SDK records a session lease before exposing the document. An authenticated
+fork stops the document and permanently quarantines its scope. A clean close
+releases the exact healthy lease. If the process stops before the quarantine
+write completes or the lease is released, the outstanding lease still blocks
+restart. Use explicit recovery onto a fresh path if the old scope stays fenced.
+Keep a current independent checkpoint pin to reject rollback after a clean close.
+
 Applications can opt into `activateDocumentReplacement`. An application
 authorizes a particular old locator, fresh destination and selected content
 digest. The SDK checks the content, asks the application to stage a private

@@ -113,7 +113,7 @@ export const claims = [
     checked:
       'The competing-epoch predicate requires all three conditions. Runtime properties exercise independently generated successors, signed competing removals, and a restored predecessor commitment.',
     limit:
-      'Each document instance stops on observed evidence. A signed public tree does not establish that its private epoch is usable. Automatic branch selection, old-document convergence, and durable fork quarantine require further evidence.',
+      'Each document instance stops on observed evidence. The signed public tree alone gives no guarantee that the competing private epoch is usable. Automatic branch selection and old-document convergence remain open.',
     proof: [
       'packages/core/src/policy/beekem-transition.ts',
       'isCompetingBeeKEMEpoch_ensures',
@@ -121,6 +121,28 @@ export const claims = [
     source: 'packages/core/src/peerborne-document.ts',
     tests: [
       'packages/core/src/beekem/local-state.test.ts',
+      'examples/password-manager/src/document-checkpoint.test.ts',
+    ],
+  },
+  {
+    id: 'beekem-durable-fork',
+    label: 'Durable quarantine',
+    title: 'Keep a stopped BeeKEM document fenced across restart',
+    rule: 'When configured, persist a session lease before exposing the document. Quarantine after an authenticated fork. A remaining lease blocks restart if the write is interrupted.',
+    checked:
+      'Finite histories preserve a quarantined record and prevent release by a stale or foreign lease. Runtime tests exercise restart after acknowledged and interrupted writes.',
+    limit:
+      'The application provides independent durable storage and an exact atomic compare-and-swap. An unclean shutdown can require explicit recovery onto a fresh path.',
+    proof: [
+      'packages/core/src/policy/beekem-fork-anchor.ts',
+      'canAdvanceBeeKEMForkAnchor_ensures',
+      'beeKEMForkAnchor_allHistories',
+      'beeKEMForkAnchor_nonOwnerHistory',
+    ],
+    source: 'packages/core/src/beekem-fork-quarantine.ts',
+    tests: [
+      'packages/core/src/beekem-fork-quarantine-properties.test.ts',
+      'packages/core/src/beekem-fork-quarantine-process.test.ts',
       'examples/password-manager/src/document-checkpoint.test.ts',
     ],
   },
@@ -544,6 +566,7 @@ export const flows = [
         'Authenticate checkpoint and compare pin',
         'beekem-continuation',
         'beekem-fork',
+        'beekem-durable-fork',
       ],
       [
         'Across replicas',

@@ -1736,6 +1736,20 @@ method mapOperand_domain()
     "return disposition === 'ready';",
     'canPublishDocumentRecovery_ensures',
   ]);
+  mutations.push([
+    'beekem-fork-anchor-ignores-lease',
+    'beekem-fork-anchor.ts',
+    "if (phase !== 'active' || !leaseMatches) return false;",
+    "if (phase !== 'active') return false;",
+    'canAdvanceBeeKEMForkAnchor_ensures',
+  ]);
+  mutations.push([
+    'beekem-fork-anchor-releases-after-observation',
+    'beekem-fork-anchor.ts',
+    "return action === 'quarantine' ? stopObserved : !stopObserved;",
+    "return action === 'quarantine' ? stopObserved : true;",
+    'canAdvanceBeeKEMForkAnchor_ensures',
+  ]);
   for (const [name, file, before, after, targetFunction] of mutations) {
     const root = copyProject(name);
     const source = file.startsWith('packages/')
