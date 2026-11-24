@@ -634,7 +634,8 @@
       "witness": "documentAdmission_domain",
       "consumers": [
         "packages/core/src/group-document-operation.ts",
-        "packages/core/src/document-crdt-session.ts"
+        "packages/core/src/document-crdt-session.ts",
+        "packages/core/src/document-block-reader.ts"
       ],
       "verifiedTargets": [
         "canReserveDocumentOperation_ensures",
@@ -644,6 +645,8 @@
         "documentAdmission_all_histories",
         "DocumentBudgetStep",
         "DocumentBudgetHistory",
+        "AdmittedBlockChunks",
+        "blockStreamBudget_domain",
         "advancePreparedDocumentChange_ensures",
         "PreparedChangeCompletions",
         "preparedChange_all_histories"

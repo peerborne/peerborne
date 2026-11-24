@@ -1,12 +1,12 @@
 import { IDBBlockstore } from 'blockstore-idb';
 import { IDBDatastore } from 'datastore-idb';
 import { CID } from 'multiformats/cid';
-import { unixfs } from '@helia/unixfs';
+import { code as rawCodec } from 'multiformats/codecs/raw';
+import { documentCheckpointCommitment } from '@peerborne/core';
+import { createBrowserCheckpointStorage } from '../../examples/shared/browser-checkpoint-store.ts';
 import {
-  Y,
   documentFixture,
   replicaOf,
-  providerFor,
   receiveEncrypted,
   syntheticText,
 } from '../fixtures.mjs';
@@ -19,10 +19,6 @@ const paint = () =>
   new Promise((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(resolve)),
   );
-let inputCount = 0;
-document.querySelector('#input').onclick = () => {
-  document.querySelector('#probe').textContent = String(++inputCount);
-};
 
 function distribution(values) {
   if (!values.length) return { count: 0, p50: null, p99: null, max: null };
@@ -35,9 +31,15 @@ function distribution(values) {
   };
 }
 
-async function measure(operation) {
+async function measure(operation, { sampleHeap = false } = {}) {
   const gaps = [];
   const tasks = [];
+  let peakSampledJSHeapBytes = null;
+  const observeHeap = () => {
+    const used = performance.memory?.usedJSHeapSize;
+    if (sampleHeap && Number.isFinite(used))
+      peakSampledJSHeapBytes = Math.max(peakSampledJSHeapBytes ?? 0, used);
+  };
   const observer = new PerformanceObserver((list) =>
     tasks.push(...list.getEntries().map(({ duration }) => duration)),
   );
@@ -47,17 +49,21 @@ async function measure(operation) {
     const now = performance.now();
     gaps.push(now - last);
     last = now;
+    if (sampleHeap) observeHeap();
   }, 1);
   const start = performance.now();
   try {
+    if (sampleHeap) observeHeap();
     const value = await operation();
     await turn();
+    if (sampleHeap) observeHeap();
     tasks.push(...observer.takeRecords().map(({ duration }) => duration));
     return {
       value,
       elapsedMs: performance.now() - start,
       timerGapMs: distribution(gaps),
       longTasksMs: distribution(tasks),
+      ...(sampleHeap ? { peakSampledJSHeapBytes } : {}),
     };
   } finally {
     clearInterval(timer);
@@ -101,12 +107,13 @@ function trackIDB() {
   };
 }
 
-async function storageFixture(name) {
+async function storageFixture(name, options = {}) {
   const blockstore = new IDBBlockstore(`/technical-${name}-blocks`);
   const datastore = new IDBDatastore(`/technical-${name}-data`);
   await blockstore.open();
   await datastore.open();
   const fixture = await documentFixture({
+    ...options,
     blockstore,
     datastore,
     compaction: {
@@ -198,7 +205,36 @@ async function batching({ full }) {
   }
 }
 
-async function metadata(mode, value) {
+const coldPath = '/technical-cold-recovery';
+const coldHistoryChunkSize = 64 * 1024;
+const coldCheckpoints = createBrowserCheckpointStorage(
+  '/technical-cold-checkpoints',
+  'peerborne/technical-cold-checkpoint/1',
+);
+
+async function coldStorageFixture(create) {
+  const identity = await coldCheckpoints.getIdentity();
+  const fixture = await storageFixture('cold', {
+    identity: identity.signing,
+    index: create ? 100 : 101,
+    path: coldPath,
+    open: create,
+  });
+  try {
+    const owner = await fixture.auth.serializePublicKey(
+      identity.signing.publicKey,
+    );
+    return {
+      ...fixture,
+      checkpoints: new coldCheckpoints.Store(identity, owner),
+    };
+  } catch (error) {
+    await fixture.close();
+    throw error;
+  }
+}
+
+async function coldManifest(mode, value) {
   const database = await new Promise((resolve, reject) => {
     const request = indexedDB.open('/technical-cold-metadata', 1);
     request.onupgradeneeded = () =>
@@ -224,164 +260,211 @@ async function metadata(mode, value) {
   }
 }
 
-async function seedCold({ full, seed }) {
-  const targetBytes = (full ? 50 : 1) * 1024 * 1024;
-  const provider = providerFor('yjs', 100, { gc: false });
-  let state = provider.newDocument();
-  const chunkSize = 64 * 1024;
-  const historyMutations = Math.ceil(targetBytes / chunkSize);
-  for (let i = 0; i < historyMutations; i++) {
-    [state] = provider.localChange(state, '', (doc) => {
-      doc
-        .getMap('root')
-        .set('historicalText', syntheticText(chunkSize, seed + i));
-      doc.getArray('edits').push([i]);
-      if (i > 0) doc.getArray('edits').delete(0, 1);
-    });
-    if (i % 32 === 0) await turn();
-  }
-  const fixture = await storageFixture('cold');
+async function seedCold({ seed }) {
+  const targetBytes = 50 * 1024 * 1024;
+  const historyMutations = Math.ceil(targetBytes / coldHistoryChunkSize);
+  const fixture = await coldStorageFixture(true);
+  const doc = fixture.document;
   try {
-    const snapshot = provider.getSnapshot(state);
+    // The reference checkpoint store encrypts the small base checkpoint. The
+    // large update is stored only as a production UnixFS change block.
+    const checkpoint = await doc.exportCheckpoint();
+    const checkpointPin = await documentCheckpointCommitment(checkpoint);
+    try {
+      await fixture.checkpoints.save(coldPath, false, checkpoint, 0);
+    } finally {
+      checkpoint.payload.fill(0);
+      checkpoint.signature.fill(0);
+    }
+
+    let cid;
+    doc.subscribe(
+      'cold-change-cid',
+      (_state, _readers, _writers, [hash]) => {
+        cid = hash;
+      },
+      'local',
+    );
+    doc.document.gc = false;
+    await doc.change((state) => {
+      const root = state.getMap('root');
+      const edits = state.getArray('edits');
+      state.transact(() => {
+        for (let i = 0; i < historyMutations; i++) {
+          root.set(
+            'historicalText',
+            syntheticText(coldHistoryChunkSize, seed + i),
+          );
+          edits.push([i]);
+          if (i > 0) edits.delete(0, 1);
+        }
+      });
+    });
+    doc.unsubscribe('cold-change-cid');
     assert(
-      snapshot.byteLength >= targetBytes,
+      cid && CID.parse(cid).code !== rawCodec,
+      'expected a chunked UnixFS change',
+    );
+    const encodedHistoryBytes = fixture.provider.getHistory(
+      doc.document,
+    ).byteLength;
+    assert(
+      encodedHistoryBytes >= targetBytes,
       'fixture must contain at least the requested encoded history bytes',
     );
-    // A real encrypted UnixFS block graph is persisted. A small test manifest
-    // supplies its CID and structured-cloned CryptoKey after process restart.
-    // This is a recovery fixture, not a Peerborne durable key-backup feature.
-    const cid = await fixture.document._putBlock(snapshot);
-    const [id, key] = await fixture.document._keychain.current();
-    await metadata('readwrite', {
-      cid,
-      id,
-      key,
-      encodedHistoryBytes: snapshot.byteLength,
+
+    // Normal sync supports signed deferred change nodes. The fixture supplies
+    // one such node after restart to replay the accepted local change by CID.
+    const deferred = {
+      documentId: coldPath,
+      signatureContext: 'ordinary-sync-v1',
+      changeId: cid,
+      changes: { kind: 'document' },
+    };
+    const signature = await fixture.auth.sign(
+      fixture.serializer.serializeSyncMessage(deferred),
+      fixture.identity.privateKey,
+    );
+    await coldManifest('readwrite', {
+      checkpointPin,
+      message: {
+        ...deferred,
+        signature: btoa(String.fromCharCode(...signature)),
+      },
+      encodedHistoryBytes,
       historyMutations,
-      targetBytes,
-      expectedLastEdit: historyMutations - 1,
+      seed,
     });
     return {
-      encodedHistoryBytes: snapshot.byteLength,
+      encodedHistoryBytes,
       historyMutations,
       targetBytes,
       encryption: 'AES-GCM',
       sourceGC: false,
+      chunkedUnixFS: true,
     };
   } finally {
-    state.destroy();
     await fixture.close();
   }
 }
 
 async function loadCold() {
-  const fixture = await storageFixture('cold');
   const timeline = {};
   const io = trackIDB();
+  const button = document.querySelector('#input');
+  let fixture;
   try {
     await paint();
     timeline.shellPaintMs = performance.now();
-    const timing = await measure(async () => {
-      timeline.startedMs = performance.now();
-      const manifest = await metadata('readonly');
-      assert(manifest, 'cold fixture not seeded');
-      await fixture.document._keychain.addEpochKey(manifest.id, manifest.key);
-      timeline.readStartedMs = performance.now();
-      let snapshot;
-      let productionReadFailed = false;
-      try {
-        snapshot = await fixture.document._getBlock(CID.parse(manifest.cid));
-      } catch {
-        productionReadFailed = true;
-        // Diagnostic continuation only. _getBlock reads the root block as if
-        // it were a whole encrypted file; large UnixFS files need reassembly.
-        const chunks = [];
-        let length = 0;
-        for await (const chunk of unixfs(fixture.helia).cat(
-          CID.parse(manifest.cid),
-        )) {
-          chunks.push(chunk);
-          length += chunk.byteLength;
+    const timing = await measure(
+      async () => {
+        timeline.startedMs = performance.now();
+        const manifest = await coldManifest('readonly');
+        assert(manifest, 'cold fixture not seeded');
+        fixture = await coldStorageFixture(false);
+        const doc = fixture.document;
+        const saved = await fixture.checkpoints.load(coldPath);
+        assert(saved, 'base checkpoint missing');
+        try {
+          await doc.restoreCheckpoint(saved.checkpoint, manifest.checkpointPin);
+        } finally {
+          saved.checkpoint.payload.fill(0);
+          saved.checkpoint.signature.fill(0);
         }
-        const bytes = new Uint8Array(length);
-        let offset = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        const plaintext = await fixture.document._decryptBlock(
-          bytes.slice(0, 32),
-          bytes.slice(32, 44),
-          bytes.slice(44),
+        await doc.open();
+        timeline.baseOpenedMs = performance.now();
+        assert(
+          doc.document.getArray('edits').length === 0,
+          'base already contains the tail',
         );
-        assert(plaintext, 'diagnostic UnixFS reassembly could not decrypt');
-        snapshot = fixture.serializer.deserializeChanges(plaintext);
-      }
-      timeline.readAndDecryptFinishedMs = performance.now();
-      timeline.historyStartedMs = performance.now();
-      fixture.document._document = fixture.provider.remoteChange(
-        fixture.document.document,
-        snapshot,
-      );
-      timeline.historyFinishedMs = performance.now();
-      const lastEdit = fixture.document.document.getArray('edits').get(0);
-      assert(
-        lastEdit === manifest.expectedLastEdit,
-        'cold history reconstruction lost edits',
-      );
-      assert(
-        fixture.document.document.getMap('root').get('historicalText')
-          .length ===
-          64 * 1024,
-        'cold initial document state is wrong',
-      );
-      document.querySelector('#document').textContent =
-        `Loaded ${lastEdit + 1} historical edits`;
-      await paint();
-      timeline.firstDocumentPaintMs = performance.now();
-      document.querySelector('#input').click();
-      assert(inputCount > 0, 'input probe did not execute');
-      timeline.inputHandledMs = performance.now();
-      return {
-        encodedHistoryBytes: manifest.encodedHistoryBytes,
-        historyMutations: manifest.historyMutations,
-        productionReadFailed,
-      };
-    });
+        assert(
+          !doc.hasChange(manifest.message.changeId),
+          'base already knows the tail',
+        );
+
+        timeline.replayStartedMs = performance.now();
+        assert(
+          await doc.sync(manifest.message),
+          'signed deferred sync was rejected',
+        );
+        timeline.historyFinishedMs = performance.now();
+        assert(
+          doc.hasChange(manifest.message.changeId),
+          'SDK did not apply the stored change',
+        );
+        const edits = doc.document.getArray('edits');
+        const lastEdit = edits.get(0);
+        assert(
+          edits.length === 1 && lastEdit === manifest.historyMutations - 1,
+          'cold history reconstruction lost edits',
+        );
+        assert(
+          doc.document.getMap('root').get('historicalText') ===
+            syntheticText(coldHistoryChunkSize, manifest.seed + lastEdit),
+          'cold initial document state is wrong',
+        );
+        document.querySelector('#document').textContent =
+          `Loaded ${lastEdit + 1} historical edits`;
+        await paint();
+        timeline.firstDocumentPaintMs = performance.now();
+        await new Promise((resolve, reject) => {
+          button.onclick = async () => {
+            button.disabled = true;
+            timeline.firstEditStartedMs = performance.now();
+            try {
+              await doc.change((state) =>
+                state.getMap('root').set('restartEdit', 1),
+              );
+              assert(
+                doc.document.getMap('root').get('restartEdit') === 1,
+                'first recovered-document edit did not commit',
+              );
+              timeline.firstEditCompletedMs = performance.now();
+              document.querySelector('#probe').textContent = 'Committed edit 1';
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          };
+          button.disabled = false;
+        });
+        return {
+          encodedHistoryBytes: manifest.encodedHistoryBytes,
+          historyMutations: manifest.historyMutations,
+        };
+      },
+      { sampleHeap: true },
+    );
     const { value, ...metrics } = timing;
     return {
       scope:
-        'Fresh Chromium process, real IndexedDB -> encrypted UnixFS -> Yjs hydration. Fixture manifest restores CID/key out of band; this is not full Peerborne document reopen or keychain recovery.',
+        'Fresh Chromium process with the same profile. Public SDK checkpoint restore, open, authenticated deferred sync from IndexedDB, and edit. Transport is substituted.',
       metrics: {
         ...value,
         ...metrics,
         io: io.snapshot(),
         timeline,
-        readAndDecryptMs:
-          timeline.readAndDecryptFinishedMs - timeline.readStartedMs,
-        reconstructionMs:
-          timeline.historyFinishedMs - timeline.historyStartedMs,
-        documentTTIms: value.productionReadFailed
-          ? null
-          : timeline.inputHandledMs - timeline.startedMs,
-        diagnosticDocumentTTIms: timeline.inputHandledMs - timeline.startedMs,
+        deferredReplayMs: timeline.historyFinishedMs - timeline.replayStartedMs,
+        documentTTIms: timeline.firstEditCompletedMs - timeline.startedMs,
+        navigationToFirstEditMs: timeline.firstEditCompletedMs,
+        firstEditCommitMs:
+          timeline.firstEditCompletedMs - timeline.firstEditStartedMs,
         initialDocumentPaintBeforeHistoryFinished:
           timeline.firstDocumentPaintMs < timeline.historyFinishedMs,
         ttiDefinition:
-          'First document paint followed by a synthetic input handler, measured from manifest read; shell paint is reported separately. This is a TTI proxy, not a Web Vitals measurement.',
+          'Time from recovery start through reconstructed document paint and a real click that commits an SDK edit. Includes Playwright input scheduling.',
       },
-      gaps: [
-        ...(value.productionReadFailed
-          ? [
-              'Production _getBlock() could not decrypt the large UnixFS file: it reads only the root block instead of reassembling the file. Reported diagnostic timings use explicit UnixFS.cat() reassembly, not a successful production cold boot.',
-            ]
-          : []),
-        'Yjs hydration reconstructs the full saved state synchronously before the fixture renders the initial document. Progressive initial-state rendering before history reconstruction is not implemented by this path.',
+      gaps: [],
+      limitations: [
+        'The fixture supplies the signed missing frontier. The checkpoint, commitment, browser identity, and Helia storage all survive in the same profile.',
+        'The initial document paints after replay. The test measures sampled JavaScript heap and observed long tasks, without imposing device-independent timing budgets.',
       ],
     };
   } finally {
+    button.disabled = true;
+    button.onclick = null;
     io.restore();
-    await fixture.close();
+    await fixture?.close();
   }
 }
 

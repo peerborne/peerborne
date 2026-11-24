@@ -1,5 +1,11 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
+import {
+  DocumentBlockReadLimitError,
+  MAX_DOCUMENT_BLOCK_BYTES,
+  readDocumentBlock,
+  type DocumentBlockReadOptions,
+} from './document-block-reader.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -292,10 +298,6 @@ async function retryLoadACLConflict<T>(
   }
 }
 
-const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
-
-class _LoadFetchLimitExceededError extends RangeError {}
-
 interface DocumentChangeFetchBudget {
   readonly maxBytes: number;
   consumedBytes: number;
@@ -307,7 +309,7 @@ function consumeDocumentChangeFetchBytes(
 ): void {
   const nextTotal = budget.consumedBytes + byteLength;
   if (!Number.isSafeInteger(nextTotal) || nextTotal > budget.maxBytes) {
-    throw new _LoadFetchLimitExceededError(
+    throw new DocumentBlockReadLimitError(
       'Missing change block byte budget exceeded',
     );
   }
@@ -759,12 +761,6 @@ interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly writers: PublicKey[];
   readonly hashes: string[];
   readonly canDispatch?: () => boolean;
-}
-
-interface MissingBlockFetchOptions {
-  readonly signal?: AbortSignal;
-  readonly maxBlockBytes?: number;
-  readonly consumeBytes?: (byteLength: number) => void;
 }
 
 interface DocumentChangeFetchOptions<DocumentKey> {
@@ -1885,49 +1881,13 @@ export class PeerborneDocument<
 
   private async _readBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
   ): Promise<Uint8Array> {
-    // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
-    // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
-    // rather than a single `Uint8Array`. Consume the generator into a
-    // contiguous buffer here before slicing the encryption header off.
     throwIfLoadAborted(options?.signal);
-    const signal = options?.signal;
-    const maxBlockBytes = options?.maxBlockBytes;
-    const consumeBytes = options?.consumeBytes;
-    const rawBlock = this.swarm.heliaNode.blockstore.get(
-      hash,
-      signal ? { signal } : undefined,
+    const block = await awaitLoadWork(
+      readDocumentBlock(this.swarm.heliaNode.blockstore, hash, options),
+      options?.signal,
     );
-    const boundedBlock =
-      maxBlockBytes !== undefined || consumeBytes !== undefined
-        ? (async function* () {
-            let byteLength = 0;
-            let chunkCount = 0;
-            for await (const chunk of rawBlock) {
-              throwIfLoadAborted(signal);
-              chunkCount += 1;
-              if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream chunk budget exceeded',
-                );
-              }
-              const nextByteLength = byteLength + chunk.byteLength;
-              if (
-                !Number.isSafeInteger(nextByteLength) ||
-                (maxBlockBytes !== undefined && nextByteLength > maxBlockBytes)
-              ) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream byte budget exceeded',
-                );
-              }
-              consumeBytes?.(chunk.byteLength);
-              byteLength = nextByteLength;
-              yield chunk;
-            }
-          })()
-        : rawBlock;
-    const block = await awaitLoadWork(readUint8Iterable(boundedBlock), signal);
     throwIfLoadAborted(options?.signal);
     return block;
   }
@@ -1961,7 +1921,7 @@ export class PeerborneDocument<
 
   private async _getBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
     getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
   ): Promise<ChangesType> {
     return this._decodeBlock(
@@ -1984,6 +1944,9 @@ export class PeerborneDocument<
     );
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
+    }
+    if (documentKeyID.byteLength + nonce.byteLength + data.byteLength > MAX_DOCUMENT_BLOCK_BYTES) {
+      throw new DocumentBlockReadLimitError('Encrypted document block exceeds the byte limit');
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
     const newFileResult = await this.heliaFs.addBytes(blockData);
@@ -2713,11 +2676,11 @@ export class PeerborneDocument<
               throw error;
             }
             if (fetchLimitExceeded && fetchController.signal.aborted) return;
-            if (error instanceof _LoadFetchLimitExceededError) {
+            if (error instanceof DocumentBlockReadLimitError) {
               fetchLimitExceeded = true;
               if (!fetchController.signal.aborted) {
                 fetchController.abort(
-                  new _LoadFetchLimitExceededError(
+                  new DocumentBlockReadLimitError(
                     'Missing change block fetch limits exceeded',
                   ),
                 );
@@ -2772,7 +2735,7 @@ export class PeerborneDocument<
       );
       if (workerFailure) throw workerFailure.reason;
       if (fetchLimitExceeded) {
-        throw new _LoadFetchLimitExceededError(
+        throw new DocumentBlockReadLimitError(
           'Missing change block fetch limits exceeded',
         );
       }
@@ -5465,10 +5428,10 @@ export class PeerborneDocument<
                 ) {
                   return;
                 }
-                if (error instanceof _LoadFetchLimitExceededError) {
+                if (error instanceof DocumentBlockReadLimitError) {
                   prefetchLimitExceeded = true;
                   prefetchController.abort(
-                    new _LoadFetchLimitExceededError(
+                    new DocumentBlockReadLimitError(
                       'Load pre-fetch limits exceeded',
                     ),
                   );

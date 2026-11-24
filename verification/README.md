@@ -112,7 +112,16 @@ thresholds. The renderer CPU metric is nullable when CDP does not expose it.
 ## CI
 
 The [CI workflow](../.github/workflows/ci.yml) runs the `smoke` Node and Chromium
-profiles on pull requests and pushes to `main`. The existing `peerborne-cross-nat`
+profiles on pull requests and pushes to `main`. The Chromium restart case
+always uses 50 MiB of history, including in the smoke profile. It fails CI if
+the restored document cannot apply the signed history or commit the first
+edit. Run the case after `yarn build` and `yarn exec playwright install chromium`.
+
+```sh
+yarn exec playwright test --config=verification/playwright.config.ts --grep 'cold browser process'
+```
+
+The existing `peerborne-cross-nat`
 job also runs the relay profiling scenario after its bounded readiness checks.
 Both jobs upload `verification/results/` as artifacts even on failure.
 
@@ -141,7 +150,7 @@ the unimplemented or unverified behavior listed below remain outstanding.
 | NAT / `relay`               | Two NAT-isolated Chromium processes, ICE servers removed, actual `/p2p-circuit/` connection required, 64 KiB document load verified, WebSocket bytes and load latency reported.                                                                                                                          | Circuit Relay v2, not TURN or a zero-knowledge proof. Isolation is not a symmetric NAT mapping/filtering emulator; automatic fallback and matched direct-versus-relay overhead remain gaps.                                                                                                                                                        |
 | Delta calculation / `delta` | Two partitions of two replicas each make 300 independent changes. Rejoin through signed production sync, assert convergence/replay safety, and verify exactly the missing CIDs are selected. Compare encrypted/JSON envelope, missing payload, snapshot and hypothetical deflate sizes.                  | Common ancestors are filtered on receipt but still serialized in the sender's envelope. Hypothetical deflate is not a shipped compressed cryptographic delta protocol.                                                                                                                                                                             |
 | IndexedDB / `idb`           | Paste 20,000 words; compare 2,000 sequential commits with 2,000 queued mutations in one explicit transaction. Instrument native IndexedDB transactions and `put/add` calls, verify text/state, and require fewer writes for batching.                                                                    | Real browser storage with substituted transport. Explicit batching works; no automatic WAL/coalescing guarantee is supplied.                                                                                                                                                                                                                       |
-| Cold boot / `cold`          | Persist at least 50 MiB of encoded Yjs historical updates (800 overwritten 64 KiB strings plus list insert/delete edits; source GC disabled). Close Chromium, restart using the same profile, then read/decrypt/reconstruct and measure initial document paint/input timing separately from shell paint. | Manifest restores a CID/CryptoKey out of band. Production `_getBlock()` fails on chunked UnixFS files; a labeled diagnostic `UnixFS.cat()` continuation measures hydration. Production TTI is `null` when that path fails. Hydration completes before document rendering. Not a full Peerborne/keychain reopen proof or a cold OS disk-cache test. |
+| Cold boot / `cold`          | Save a small encrypted checkpoint and at least 50 MiB of encoded Yjs history in a chunked UnixFS change. Fully relaunch Chromium with the same profile, restore the checkpoint, replay the signed change by CID and commit an edit after paint. Report time to edit, sampled JS heap, long tasks and IndexedDB I/O. | The browser profile keeps its identity and keys. The fixture supplies the signed missing frontier on substituted transport. Initial document paint follows replay. The measurements describe this browser and workload. |
 
 ## NAT topology lifecycle
 

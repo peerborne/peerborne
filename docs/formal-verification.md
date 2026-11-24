@@ -63,13 +63,26 @@ consumer, proof obligation and non-vacuity witness.
 | [Control-chain admission](../packages/core/src/policy/control-chain.ts)       |         4 | Exact genesis/update action, contiguous uint64 epoch and parent/head admission, operation-reuse rejection, authenticated self-update admission and error priority; valid epoch sequences do not wrap.                                                                                                    |
 | [Journal revision index](../packages/core/src/policy/journal-index.ts) | 1 | Exact retained suffix validity: at most 128 positive contiguous revisions ending at the head, minimum retained-byte accounting and an empty zero-revision/zero-byte index. |
 | [Binary frame layout](../packages/core/src/policy/frame-layout.ts) | 3 | Whole-field write admission and finite-history retained-byte/part bounds; field acceptance iff its length and reserved trailer fit, ordered disjoint ranges, bounded chunk copies with positive progress when input and capacity remain, and exact saturation across finite chunk sequences. |
-| [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked recursive models establish counter bounds and at most one context- and authorization-matching commit across arbitrary finite event histories. |
+| [Document admission](../packages/core/src/policy/document-admission.ts)       |         4 | Exact count/byte reservation, safe release, terminal preparation phases and success/failure application states. Checked finite histories establish counter bounds, the exact admitted prefix of a block read, and at most one context- and authorization-matching commit. |
 | [Connection retry](../packages/core/src/policy/connection-retry.ts) | 1 | A retry is admitted exactly when the failure is retryable, cancellation has not occurred and another attempt remains within the configured bound. |
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
 | [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
 | [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 11 | Exact bounded full/recovery read plans, authenticated recovery with a final anchor match, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 | [Journal store transitions](../packages/core/src/policy/journal-store.ts) | 3 | Exact revision/count/byte admission, token/checkpoint-bound commit eligibility, unique bounded outbox append/removal, exact byte totals and retained-index projection. Checked finite histories preserve metadata bounds and accepted prefixes when no checkpoint commits occur. |
+
+The [encrypted block reader](../packages/core/src/document-block-reader.ts)
+uses the same reservation decision for ciphertext output and UnixFS traversal.
+The [block-stream proof](../verification/formal/proofs/packages/core/src/policy/document-admission.dfy)
+accounts exactly for the admitted prefix of any finite stream and identifies
+the first byte- or count-limit rejection. The reader admits up to 64 MiB of
+ciphertext per file, with tighter caller limits, and charges traversal bytes
+against the caller's aggregate fetch budget. Writes enforce the same file limit
+before persistence. Native properties cover real UnixFS
+chunking, tighter caller budgets and cancellation. A Chromium profile relaunch
+exercises restore, authenticated sync and an edit with at least 50 MiB of
+encoded history. Renderer memory, long tasks and latency are measured at
+runtime because the proof covers logical counts and bytes.
 
 ### BeeKEM revocation and pinned restart
 
@@ -645,7 +658,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 70 property-suite files containing 256 explicit
+The inventory audits 71 property-suite files containing 258 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
