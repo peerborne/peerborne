@@ -6358,6 +6358,7 @@ export class PeerborneDocument<
   }
 
   private _activationInProgress = false;
+  private _preOpenAuthorityPathReserved = false;
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
@@ -6908,20 +6909,26 @@ export class PeerborneDocument<
   private async _openCoordinated(): Promise<boolean> {
     if (this._subscribed) throw new Error('Document is already open');
     const engine = this._coordinated!;
-    if (
-      this.swarm.validateDocumentPath &&
-      (await this.swarm.validateDocumentPath(
-        this.documentPath,
-        this._userPublicKey,
-      )) !== true
-    )
-      throw new Error('Document path is not authorized');
-    const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
-    let registered = false;
+    let registered = this._preOpenAuthorityPathReserved;
+    let registering = false;
     try {
-      this.swarm.registerDocument(this.documentPath, this);
-      registered = true;
+      if (
+        this.swarm.validateDocumentPath &&
+        (await this.swarm.validateDocumentPath(
+          this.documentPath,
+          this._userPublicKey,
+        )) !== true
+      )
+        throw new Error('Document path is not authorized');
+      if (this._gcClosed) throw new Error('Coordinated document is closed');
+      const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
+      if (!registered) {
+        registering = true;
+        this.swarm.registerDocument(this.documentPath, this);
+        registered = true;
+      }
       await engine.activate();
+      if (this._gcClosed) throw new Error('Coordinated document is closed');
       this._pubsubHandler = (event) => {
         if (event.detail.topic !== this._topic) return;
         void this.receiveSecurityFrame(event.detail.data).catch(() => {});
@@ -6932,7 +6939,7 @@ export class PeerborneDocument<
       return true;
     } catch (error) {
       if (registered) await this.close();
-      else await engine.close();
+      else if (registering) await engine.close();
       throw error;
     }
   }
@@ -6969,7 +6976,8 @@ export class PeerborneDocument<
 
   /**
    * Apply a controller-signed role update matching the authenticated group
-   * state before opening a fresh strict coordinated document.
+   * state before opening a fresh strict coordinated document. The instance
+   * reserves its local document path until it closes.
    */
   public async applySecurityAuthorityUpdateBeforeOpen(
     encoded: Uint8Array,
@@ -6994,11 +7002,17 @@ export class PeerborneDocument<
         throw new Error('Document path is not authorized');
       if (this._gcClosed)
         throw new Error('Authority recovery requires a fresh unopened document');
-      this.swarm.registerDocument(this.documentPath, this);
+      if (!this._preOpenAuthorityPathReserved) {
+        this.swarm.registerDocument(this.documentPath, this);
+        this._preOpenAuthorityPathReserved = true;
+      }
       try {
         await engine.applyAuthorityUpdateBeforeOpen(owned);
-      } finally {
-        this.swarm.unregisterDocument(this.documentPath, this);
+        if (this._gcClosed) throw new Error('Coordinated document is closed');
+      } catch (error) {
+        // A failed role check can still leave restored state in this session.
+        await this.close().catch(() => {});
+        throw error;
       }
     } finally {
       this._activationInProgress = false;
@@ -7412,6 +7426,7 @@ export class PeerborneDocument<
     // Unregister this document from the shared V2 protocol handler registry.
     // Pass `this` so only this instance is removed (instance-safe).
     this.swarm.unregisterDocument(this.documentPath, this);
+    this._preOpenAuthorityPathReserved = false;
   }
 
   /**

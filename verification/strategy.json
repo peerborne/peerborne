@@ -362,7 +362,7 @@
     },
     {
       "id": "coordinated-document-security",
-      "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection, finite-history provenance and exact bounded roster equality are proved. Native checks exercise authority changes during journal reads, delayed identity checks, close during activation and authenticated group revocation across restart. Native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance also require runtime checks. Cryptographic primitives, network liveness and secure hardware storage remain outside these checks.",
+      "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection, finite-history provenance and exact bounded roster equality are proved. Native checks exercise authority changes during journal reads, delayed identity checks, malformed provider rosters, ownership of recovered paths and authenticated group revocation across restart. Native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance also require runtime checks. Cryptographic primitives, network liveness and secure hardware storage remain outside these checks.",
       "evidence": [
         "packages/core/src/coordinated-document-properties.test.ts",
         "packages/core/src/document-journal-properties.test.ts",

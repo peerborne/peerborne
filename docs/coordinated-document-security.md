@@ -60,6 +60,8 @@ instance. When the signed role record arrives, call
 The first operation installs matching authority without exposing recovered
 content. With a configured document journal, the new controller binding becomes
 visible after the journal accepts the checkpoint.
+The recovered instance reserves its local path until it closes. If the engine
+rejects recovery, it closes that instance and releases the path for a fresh one.
 
 Use the document’s authority update APIs for strict transitions so they go
 through this journal. Publication retries pause during a roster mismatch and

@@ -32,11 +32,14 @@ const random = () => crypto.getRandomValues(new Uint8Array(32));
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-async function rejects(action: () => Promise<unknown>) {
+async function rejects(action: () => Promise<unknown>, expected?: RegExp) {
   let rejected = false;
   try {
     await action();
-  } catch {
+  } catch (error) {
+    if (expected) {
+      check(error instanceof Error && expected.test(error.message), 'unexpected document boundary rejection');
+    }
     rejected = true;
   }
   check(rejected, 'expected document boundary rejection');
@@ -616,15 +619,22 @@ export async function runProductionDocumentChecks() {
         'restart restores the newer provider state and older accepted authority',
       );
       await rejects(() => makeDocument(0).open());
+      const rejectedRecovery = makeDocument(0);
+      await rejects(() =>
+        rejectedRecovery.applySecurityAuthorityUpdateBeforeOpen(matchingRenewal),
+      );
+      await rejects(() => rejectedRecovery.open(), /closed/);
       docs[0] = makeDocument(0);
       await rejects(async () => read(docs[0]));
       await docs[0].applySecurityAuthorityUpdateBeforeOpen(revokeRole);
+      await rejects(() => makeDocument(0).open(), /already registered/);
       await rejects(async () => read(docs[0]));
       await rejects(() => docs[0].change(observeCallback));
       await rejects(() => docs[0].getWriters());
       await rejects(() => docs[0].retrySecurityPublications());
       check(blockedCallbacks === 0, 'authority recovery retains the activation fence');
       await docs[0].open();
+      check(read(docs[0]).retry === 7, 'authority recovery retains accepted local content');
     } else {
       await docs[0].applySecurityAuthorityUpdate(revokeRole);
     }

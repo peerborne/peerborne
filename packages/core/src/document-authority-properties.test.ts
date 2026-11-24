@@ -5,6 +5,7 @@ import {
   DocumentGroupControlAuthority,
 } from './document-authority-log.js';
 import { GroupSecurityCoordinator } from './group-security-coordinator.js';
+import type { GroupSecurityProvider } from './group-security-provider.js';
 import { CoordinatedDocument } from './coordinated-document.js';
 import {
   context,
@@ -22,33 +23,42 @@ import {
   testCRDT,
   testChanges,
 } from './__testutils__/coordinated-document.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { documentBytesEqual, documentBytesId } from './internal/document-binary.js';
 import {
   DocumentReplayJournal,
   InMemoryDocumentJournalRollbackAnchor,
 } from './document-replay-journal.js';
 import { InMemoryDocumentJournalStore } from './document-journal-store.js';
 
-async function strictRosterFixture(persistPublications = false) {
+async function strictRosterFixture(persistPublications = false, includeReader = false) {
   const f = await context();
   const auth = testAuth(f);
   const own = f.identities.actorId;
+  const reader = f.identities.attackerId;
   const controller = new DocumentGroupControlAuthority(protocol, groupId, own);
+  const provider: GroupSecurityProvider = f.provider;
+  const roster: Array<{ memberId: Uint8Array; publicKey: string; role: 1 | 3 }> = [
+    { memberId: own, publicKey: documentBytesId(own), role: 3 },
+  ];
+  if (includeReader) {
+    roster.push({ memberId: reader, publicKey: documentBytesId(reader), role: 1 });
+  }
   let providerReads = 0;
-  Object.assign(f.provider, {
-    async getAuthenticatedMemberIds() {
+  const useExpectedMemberIds = () => {
+    provider.getAuthenticatedMemberIds = async () => {
       providerReads++;
-      return [own.slice()];
-    },
-  });
+      return roster.map(({ memberId }) => memberId.slice());
+    };
+  };
+  const reportMemberIds = (ids?: readonly Uint8Array[]) => {
+    provider.getAuthenticatedMemberIds = ids && (async () => ids);
+  };
+  useExpectedMemberIds();
   const coordinator = await GroupSecurityCoordinator.bootstrap(
     { ...config(f), authorizeControl: controller.authorize },
     createGroupInput,
     { operationId: id(1), subjectId: own },
   );
-  const roster = [
-    { memberId: own, publicKey: documentBytesId(own), role: 3 as const },
-  ];
   const path = '/strict-roster-schedule';
   const log = await DocumentAuthorityLog.create(
     path,
@@ -83,7 +93,10 @@ async function strictRosterFixture(persistPublications = false) {
     await flushAndCollect(coordinator);
     return log.signUpdate(coordinator.documentContext, roster, own);
   };
-  return { auth, own, coordinator, log, reopen, advance, store, reads: () => providerReads };
+  return {
+    auth, own, reader, coordinator, log, reopen, advance, store,
+    reportMemberIds, useExpectedMemberIds, reads: () => providerReads,
+  };
 }
 
 describe('causal document controller authority', () => {
@@ -301,6 +314,70 @@ describe('causal document controller authority', () => {
           { restart: 'before-role', value: 1 },
           { restart: 'after-role', value: 2 },
         ]]],
+      },
+    );
+  });
+
+  test('rejects invalid provider rosters before activation or a controller update', async () => {
+    const rosterKinds = ['unsupported', 'malformed', 'duplicate', 'substitution'] as const;
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom(...rosterKinds),
+        fc.oneof(fc.integer({ min: 0, max: 31 }), fc.integer({ min: 33, max: 48 })),
+        fc.integer({ min: 0, max: 31 }),
+        async (kind, invalidLength, changedByte) => {
+          const f = await strictRosterFixture(false, true);
+          const substitute = f.reader.slice();
+          substitute[changedByte] ^= 1;
+          if (documentBytesEqual(substitute, f.own)) {
+            substitute[(changedByte + 1) % substitute.length] ^= 1;
+          }
+          const invalid = {
+            unsupported: undefined,
+            malformed: [f.own, new Uint8Array(invalidLength)],
+            duplicate: [f.own, f.own],
+            substitution: [f.own, substitute],
+          }[kind];
+          const closedCandidate = f.reopen();
+          let callbackCalls = 0;
+          const change = (draft: number[]) => { callbackCalls++; draft.push(7); };
+          const oldRoleHead = f.log.headId;
+          try {
+            f.reportMemberIds(invalid);
+            await expect(closedCandidate.activate()).rejects.toThrow();
+            expect(() => closedCandidate.document).toThrow();
+            await expect(closedCandidate.change(change)).rejects.toThrow();
+          } finally {
+            await closedCandidate.close();
+          }
+
+          f.useExpectedMemberIds();
+          const doc = f.reopen();
+          try {
+            await doc.activate();
+            const update = await f.advance(2);
+            const nextControlHead = f.coordinator.documentContext.controlHead;
+            f.reportMemberIds(invalid);
+            await expect(doc.applyAuthorityUpdate(update)).rejects.toThrow();
+            expect(f.log.headId).toEqual(oldRoleHead);
+            expect(f.log.controllerAtHead(nextControlHead)).toBeUndefined();
+            await expect(doc.change(change)).rejects.toThrow();
+            expect(callbackCalls).toBe(0);
+
+            f.useExpectedMemberIds();
+            await doc.applyAuthorityUpdate(update);
+            expect(f.log.controllerAtHead(nextControlHead)).toEqual(f.own);
+            await doc.change(change);
+            expect(callbackCalls).toBe(1);
+          } finally {
+            await doc.close();
+          }
+        },
+      ),
+      {
+        seed: 20261124,
+        numRuns: 8,
+        examples: rosterKinds.map((kind) => [kind, 31, 0]),
       },
     );
   });
