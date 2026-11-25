@@ -217,11 +217,11 @@ the document path, a fresh 32-byte challenge, and the remote libp2p PeerId of
 the authenticated connection the request is sent on; invitation catch-up
 addresses its request the same way. A responder refuses a request that names
 another PeerId, and the loader accepts only a response that echoes the
-challenge it sent to that responder. A peer that speaks the
-load protocols but holds no document key therefore cannot forward a loader's
-request to a writer and return the writer's signed answer as its own vote. It
-can neither fill a probe slot that way nor pair a forwarded answer with the
-writer's later direct answer to abort the load as an equivocating authority.
+challenge it sent to that responder. A peer that speaks the load protocols but
+holds no document key therefore cannot forward a loader's request to a writer
+and return the writer's signed answer as its own vote. It can neither fill a
+probe slot that way nor pair a forwarded answer with the writer's later direct
+answer to abort the load as an equivocating authority.
 
 V4 loading also requires trusted writer identities and locally resolved
 control/group commitments. Configure
