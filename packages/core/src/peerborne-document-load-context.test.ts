@@ -949,6 +949,8 @@ describe('load connection handling', () => {
     const relay = '/ip4/10.0.0.9/tcp/1/p2p/relay';
     const carol = '/ip4/10.0.0.4/tcp/1/p2p/carol';
     const dave = '/ip4/10.0.0.5/tcp/1/p2p/dave';
+    const erin = '/ip4/10.0.0.6/tcp/1/p2p/erin';
+    const frank = '/ip4/10.0.0.7/tcp/1/p2p/frank';
     const completed = new Map([['AgentVersion', new Uint8Array([1])]]);
     const stored: Record<
       string,
@@ -964,6 +966,12 @@ describe('load connection handling', () => {
       },
       bob: { protocols: ['/peerborne/doc-load/4.0.0'], metadata: completed },
       dave: { protocols: ['/ipfs/id/1.0.0'], metadata: new Map() },
+      erin: { protocols: ['/ipfs/id/1.0.0'], metadata: completed },
+      frank: { protocols: ['/ipfs/id/1.0.0'], metadata: completed },
+    };
+    const refreshed: Record<string, string[]> = {
+      relay: ['/libp2p/circuit/relay/0.2.0/hop', '/ipfs/id/1.0.0'],
+      erin: ['/ipfs/id/1.0.0', '/peerborne/doc-load/4.0.0'],
     };
 
     function identifiedHarness(
@@ -979,6 +987,19 @@ describe('load connection handling', () => {
             toString: () => document._peerIdOf({ toString: () => peer }),
           },
         }));
+      const identify = jest.fn(
+        async (
+          connection: { remotePeer: { toString(): string } },
+          options: { signal?: AbortSignal; runOnLimitedConnection?: boolean },
+        ) => {
+          expect(options.signal).toBeInstanceOf(AbortSignal);
+          expect(options.runOnLimitedConnection).toBe(true);
+          const protocols = refreshed[connection.remotePeer.toString()];
+          if (protocols === undefined) throw new Error('identify failed');
+          return { protocols };
+        },
+      );
+      libp2p.services = { ...libp2p.services, identify: { identify } };
       libp2p.peerStore = {
         get: jest.fn(async (peerId: { toString(): string }) => {
           const peer = stored[peerId.toString()];
@@ -1004,17 +1025,44 @@ describe('load connection handling', () => {
         },
       );
       document._sendLoadRequestAndSync = jest.fn(async () => true);
-      return { document, probed };
+      const identified = () =>
+        identify.mock.calls.map(([connection]) =>
+          connection.remotePeer.toString(),
+        );
+      return { document, probed, identified };
     }
 
     test('does not probe or count a peer identified without document loading', async () => {
-      const { document, probed } = identifiedHarness(
+      const { document, probed, identified } = identifiedHarness(
         [relay, aliceDirect, bob],
         {},
       );
 
       await expect(document.load()).resolves.toBe(true);
       expect(probed.sort()).toEqual(['alice', 'bob']);
+      expect(identified()).toEqual(['relay']);
+    });
+
+    test('keeps a holder identified before it registered document loading', async () => {
+      const { document, probed, identified } = identifiedHarness(
+        [relay, aliceDirect, erin],
+        {},
+      );
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed.sort()).toEqual(['alice', 'erin']);
+      expect(identified().sort()).toEqual(['erin', 'relay']);
+    });
+
+    test('excludes an identified peer whose protocol refresh fails', async () => {
+      const { document, probed, identified } = identifiedHarness(
+        [relay, aliceDirect, bob, frank],
+        {},
+      );
+
+      await expect(document.load()).resolves.toBe(true);
+      expect(probed.sort()).toEqual(['alice', 'bob']);
+      expect(identified().sort()).toEqual(['frank', 'relay']);
     });
 
     test('lets one holder behind a relay satisfy an opted-in single-peer load', async () => {

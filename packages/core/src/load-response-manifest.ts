@@ -39,6 +39,7 @@ const LOAD_RESPONSE_MANIFEST_SNAPSHOT_FIELDS = [
   'lastChangeNodeCID',
   'compactedCount',
   'timestamp',
+  'signature',
 ] as const;
 const arrayIsArray = Array.isArray;
 const objectCreate = Object.create;
@@ -52,6 +53,7 @@ export interface LoadResponseManifestSnapshot {
   readonly lastChangeNodeCID: string;
   readonly compactedCount: number;
   readonly timestamp: number;
+  readonly signature: Uint8Array;
 }
 
 export interface LoadResponseManifestInput<ChangesType> {
@@ -336,12 +338,12 @@ function snapshotPayloadBytes(name: string, value: unknown): Uint8Array {
  *
  * The canonical manifest binds root identity, every named node's CID and
  * classification, directed child edges, canonically serialized inline change
- * bytes, the canonical full representation of each CID, snapshot state plus
- * metadata, and keychain changes. Sparse cross-link aliases are reconciled
- * with that full representation. The response bytes are never trusted as a
- * precomputed manifest: advertisers and loaders using this protocol must
- * independently derive this digest from the actual plan they would serve or
- * apply.
+ * bytes, the canonical full representation of each CID, snapshot state,
+ * signature and metadata, and keychain changes. Sparse cross-link aliases are
+ * reconciled with that full representation. The response bytes are never
+ * trusted as a precomputed manifest: advertisers and loaders using this
+ * protocol must independently derive this digest from the actual plan they
+ * would serve or apply.
  */
 export async function loadResponseManifestHash<ChangesType>(
   input: LoadResponseManifestInput<ChangesType>,
@@ -409,6 +411,10 @@ export async function loadResponseManifestHash<ChangesType>(
       lastChangeNodeCID,
       compactedCount,
       timestamp,
+      signature: snapshotPayloadBytes(
+        'snapshot signature',
+        snapshotFields.signature,
+      ),
     };
   }
   const inputKeychainChangesBytes = inputFields.keychainChangesBytes;
@@ -624,6 +630,8 @@ export async function loadResponseManifestHash<ChangesType>(
       uint64(timestamp),
       uint32(snapshot.stateBytes.byteLength),
       await sha256(snapshot.stateBytes),
+      uint32(snapshot.signature.byteLength),
+      await sha256(snapshot.signature),
     );
   }
 

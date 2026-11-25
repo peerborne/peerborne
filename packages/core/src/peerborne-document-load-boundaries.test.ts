@@ -1660,6 +1660,60 @@ describe('document load response boundaries', () => {
     },
   );
 
+  test('rejects a re-signed snapshot outside the agreed manifest before state application', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+        children: {
+          BOUNDARY: {
+            kind: crdtDocumentChangeNode,
+            change: { inline: 'boundary' },
+          },
+        },
+      },
+      snapshot: {
+        state: { compacted: 'pruned-history' },
+        lastChangeNodeCID: 'BOUNDARY',
+        compactedCount: 120,
+        signature: new Uint8Array([4]),
+        timestamp: 1,
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._writers = {
+      users: jest.fn(async () => []),
+      check: async () => false,
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+      currentLoadResponse({
+        ...message,
+        snapshot: { ...message.snapshot, signature: new Uint8Array([5]) },
+      }),
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
   test('rejects a snapshot-only quorum-bound first load before state application', async () => {
     const message = {
       documentId: '/load-race',

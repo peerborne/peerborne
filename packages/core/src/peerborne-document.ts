@@ -69,7 +69,8 @@ import {
   shuffleArray,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import type { Stream } from '@libp2p/interface';
+import type { Connection, Stream } from '@libp2p/interface';
+import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
@@ -882,6 +883,7 @@ function documentLoadResponseTimeoutMs(configured: unknown): number {
  * loader.
  */
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
+const LOAD_PROTOCOL_REFRESH_TIMEOUT_MS = 5_000;
 
 /**
  * Module-private sentinel thrown by `_sendLoadRequestAndSync` when the
@@ -1612,9 +1614,7 @@ export class PeerborneDocument<
   private async _shuffledPeers() {
     const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
     const loadable = await Promise.all(
-      connections.map((connection) =>
-        this._mayServeDocumentLoad(connection.remotePeer),
-      ),
+      connections.map((connection) => this._mayServeDocumentLoad(connection)),
     );
     const peers = connections
       .filter((_connection, index) => loadable[index])
@@ -1633,12 +1633,16 @@ export class PeerborneDocument<
    * Exclude only peers whose completed identify record omits document
    * loading, such as relays. libp2p also records individually negotiated
    * stream protocols, so only identify's version metadata, written after its
-   * protocol list, shows that the list is complete.
+   * protocol list, shows that the list is complete. A holder can be identified
+   * before it registers its handlers, and identify-push is not configured, so
+   * such a peer is identified again before it is excluded.
    */
   private async _mayServeDocumentLoad(
-    remotePeer: PeerId | undefined,
+    connection: Pick<Connection, 'remotePeer'>,
   ): Promise<boolean> {
-    const peerStore = this.swarm.heliaNode.libp2p.peerStore;
+    const libp2p = this.swarm.heliaNode.libp2p;
+    const peerStore = libp2p.peerStore;
+    const remotePeer = connection.remotePeer as PeerId | undefined;
     if (peerStore === undefined || remotePeer === undefined) return true;
     let peer: Awaited<ReturnType<typeof peerStore.get>>;
     try {
@@ -1648,7 +1652,19 @@ export class PeerborneDocument<
     }
     const identified =
       peer.metadata.has('AgentVersion') || peer.metadata.has('ProtocolVersion');
-    return !identified || peer.protocols.includes(documentLoadV4);
+    if (!identified || peer.protocols.includes(documentLoadV4)) return true;
+    const identify = libp2p.services?.identify as
+      Pick<Identify, 'identify'> | undefined;
+    if (typeof identify?.identify !== 'function') return false;
+    try {
+      const refreshed = await identify.identify(connection as Connection, {
+        signal: AbortSignal.timeout(LOAD_PROTOCOL_REFRESH_TIMEOUT_MS),
+        runOnLimitedConnection: true,
+      });
+      return refreshed.protocols.includes(documentLoadV4);
+    } catch {
+      return false;
+    }
   }
 
   private _assertDocumentStateNotPoisoned(): void {
@@ -3190,6 +3206,7 @@ export class PeerborneDocument<
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
         compactedCount: message.snapshot.compactedCount,
         timestamp: message.snapshot.timestamp,
+        signature: message.snapshot.signature,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
         this._changesSerializer.serializeChanges(message.keychainChanges),
