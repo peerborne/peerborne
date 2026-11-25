@@ -11,6 +11,7 @@ const INITIAL_LOAD_REQUEST_DOMAIN = 'peerborne/initial-load-request/v4\0';
 
 export const INITIAL_LOAD_CHALLENGE_LENGTH = 32;
 export const MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES = 4096;
+export const MAX_INITIAL_LOAD_RESPONDER_BYTES = 128;
 const INITIAL_LOAD_CHALLENGE_BASE64_LENGTH =
   Math.ceil(INITIAL_LOAD_CHALLENGE_LENGTH / 3) * 4;
 const INITIAL_LOAD_CHALLENGE_BASE64_PATTERN = /^[A-Za-z0-9+/]{43}=$/;
@@ -37,6 +38,21 @@ function validateDocumentId(documentId: string): Uint8Array {
     'initial-load documentId',
   );
   return encodeUtf8(documentId);
+}
+
+function encodeResponder(responder: string): Uint8Array {
+  assertBoundedUtf8(
+    responder,
+    MAX_INITIAL_LOAD_RESPONDER_BYTES,
+    'initial-load responder',
+  );
+  return encodeUtf8(responder);
+}
+
+export function validateInitialLoadResponder(
+  responder: unknown,
+): asserts responder is string {
+  encodeResponder(responder as string);
 }
 
 export function validateInitialLoadChallenge(
@@ -72,18 +88,25 @@ export function initialLoadChallengeEquals(
   return difference === 0;
 }
 
-/** Canonical bytes signed by a V4 requester (document path + fresh nonce). */
+/**
+ * Canonical bytes signed by a V4 requester: the document path, a fresh nonce,
+ * and the libp2p PeerId of the one responder the request is addressed to.
+ */
 export function initialLoadRequestSignaturePayload(
   documentId: string,
   challenge: Uint8Array,
+  responder: string,
 ): Uint8Array {
   const documentIdBytes = validateDocumentId(documentId);
   const challengeSnapshot = snapshotInitialLoadChallenge(challenge);
+  const responderBytes = encodeResponder(responder);
   return concatenate([
     encodeUtf8(INITIAL_LOAD_REQUEST_DOMAIN),
     uint32(documentIdBytes.length),
     documentIdBytes,
     challengeSnapshot,
+    uint32(responderBytes.length),
+    responderBytes,
   ]);
 }
 

@@ -65,6 +65,7 @@ describe('YjsJSONSerializer load security state', () => {
           documentId: '/doc',
           signature: 'request-signature',
           loadChallenge,
+          responder: 'peer',
         }),
       ).loadChallenge,
     ).toEqual(loadChallenge);
@@ -75,6 +76,7 @@ describe('YjsJSONSerializer load security state', () => {
             documentId: '/doc',
             signature: 'request-signature',
             loadChallenge: 'AQ==',
+            responder: 'peer',
           }),
         ),
       ),

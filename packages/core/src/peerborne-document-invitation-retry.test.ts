@@ -3,6 +3,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import {
   PeerborneDocument,
 } from './peerborne-document.js';
+import { invitationCatchUpV1 } from './wire-protocols.js';
 
 jest.mock(
   'it-pipe',
@@ -65,7 +66,7 @@ function catchUpHarness(
   const sync = jest.fn(async () => true);
   const streams: any[] = [];
   const requests: any[] = [];
-  const dialProtocol = jest.fn(async () => {
+  const newStream = jest.fn(async (_protocols: string[], _options: unknown) => {
     const stream = {
       send: () => true,
       onDrain: async () => undefined,
@@ -77,9 +78,13 @@ function catchUpHarness(
     streams.push(stream);
     return stream;
   });
+  const dial = jest.fn(async (_address: unknown, _options: unknown) => ({
+    remotePeer: { toString: () => 'founder-peer' },
+    newStream,
+  }));
   const document = fakeDocument({
     documentPath: '/invitation-retry',
-    swarm: { config: {}, heliaNode: { libp2p: { dialProtocol } } },
+    swarm: { config: {}, heliaNode: { libp2p: { dial } } },
     _encoder: new TextEncoder(),
     _serializeSignature: () => 'AQ==',
     _deserializeSignature: () => new Uint8Array([1]),
@@ -122,15 +127,32 @@ function catchUpHarness(
   });
   const catchUp = () =>
     document._loadInvitationCatchUp('/founder', 'issuer', 'reader', continuation);
-  return { document, verify, sync, dialProtocol, streams, requests, catchUp };
+  return { document, verify, sync, dial, newStream, streams, requests, catchUp };
 }
 
 describe('invitation catch-up writer-version races', () => {
+  test('addresses each request to the dialed connection peer', async () => {
+    const { dial, newStream, requests, catchUp } = catchUpHarness(1);
+    await expect(catchUp()).resolves.toBe(true);
+    expect(requests.map((request) => request.responder)).toEqual([
+      'founder-peer',
+      'founder-peer',
+    ]);
+    expect(dial.mock.calls.map(([, options]) => (options as any).force)).toEqual([
+      false,
+      false,
+    ]);
+    expect(newStream).toHaveBeenCalledWith(
+      [invitationCatchUpV1],
+      expect.objectContaining({ runOnLimitedConnection: true }),
+    );
+  });
+
   test('retries a queued writer change with a fresh issuer-verified response', async () => {
-    const { verify, sync, dialProtocol, streams, requests, catchUp } =
+    const { verify, sync, dial, streams, requests, catchUp } =
       catchUpHarness(1);
     await expect(catchUp()).resolves.toBe(true);
-    expect(dialProtocol).toHaveBeenCalledTimes(2);
+    expect(dial).toHaveBeenCalledTimes(2);
     expect(requests[0].loadChallenge).not.toEqual(requests[1].loadChallenge);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(sync).toHaveBeenCalledTimes(1);
@@ -139,9 +161,9 @@ describe('invitation catch-up writer-version races', () => {
   });
 
   test('bounds repeated writer conflicts to three attempts without applying state', async () => {
-    const { sync, dialProtocol, catchUp } = catchUpHarness(Infinity);
+    const { sync, dial, catchUp } = catchUpHarness(Infinity);
     await expect(catchUp()).rejects.toThrow(/writer.*changed/i);
-    expect(dialProtocol).toHaveBeenCalledTimes(3);
+    expect(dial).toHaveBeenCalledTimes(3);
     expect(sync).not.toHaveBeenCalled();
   });
 
@@ -149,11 +171,11 @@ describe('invitation catch-up writer-version races', () => {
     let now = 100;
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
     try {
-      const { sync, dialProtocol, catchUp } = catchUpHarness(1, true, () => {
+      const { sync, dial, catchUp } = catchUpHarness(1, true, () => {
         now += 30_001;
       });
       await expect(catchUp()).rejects.toThrow(/deadline exceeded/);
-      expect(dialProtocol).toHaveBeenCalledTimes(1);
+      expect(dial).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
@@ -163,9 +185,9 @@ describe('invitation catch-up writer-version races', () => {
   test('does not retry a rejected issuer signature', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const { verify, sync, dialProtocol, catchUp } = catchUpHarness(0, false);
+      const { verify, sync, dial, catchUp } = catchUpHarness(0, false);
       await expect(catchUp()).resolves.toBe(false);
-      expect(dialProtocol).toHaveBeenCalledTimes(1);
+      expect(dial).toHaveBeenCalledTimes(1);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(sync).not.toHaveBeenCalled();
     } finally { warn.mockRestore(); }

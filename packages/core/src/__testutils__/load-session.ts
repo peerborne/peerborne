@@ -7,6 +7,19 @@ import { tipsHashToHex } from '../tips-hash.js';
 import { computeServedFrontier } from '../merkle-cross-links.js';
 
 export const fixtureLoadChallenge = () => new Uint8Array(32).fill(17);
+export const fixtureLoadResponder = 'fixture-responder';
+export function fixtureLoadResponderSwarm(swarm: any = {}): any {
+  return {
+    ...swarm,
+    heliaNode: {
+      ...swarm.heliaNode,
+      libp2p: {
+        ...swarm.heliaNode?.libp2p,
+        peerId: { toString: () => fixtureLoadResponder },
+      },
+    },
+  };
+}
 export const fixtureLoadCommitments = (): LoadSecurityCommitments => ({
   version: 1,
   controlHead: new Uint8Array(32).fill(1),
@@ -55,6 +68,7 @@ export function fixedLoadSession(
 ): InitialLoadSession<any> {
   const common = {
     challenge: fixtureLoadChallenge(),
+    responder: fixtureLoadResponder,
     authorities: [
       {
         authorityId: issuer ?? 'fixture-writer-0',

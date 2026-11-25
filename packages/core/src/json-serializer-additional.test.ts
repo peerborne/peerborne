@@ -55,18 +55,38 @@ describe('JSONSerializer additional coverage', () => {
 
   describe('serializeLoadRequest / deserializeLoadRequest', () => {
     test('round-trip load request', () => {
-      const msg = { documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32) };
+      const msg = {
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32), responder: 'writer',
+      };
       const encoded = serializer.serializeLoadRequest(msg);
       const decoded = serializer.deserializeLoadRequest(encoded);
       expect(decoded).toEqual(msg);
     });
 
     test('rejects an omitted challenge and unexpected request fields', () => {
-      expect(() => serializer.serializeLoadRequest({ documentId: '/test/doc', signature: 'AQ==' } as any)).toThrow();
+      expect(() => serializer.serializeLoadRequest({ documentId: '/test/doc', signature: 'AQ==', responder: 'writer' } as any)).toThrow();
       const wire = JSON.parse(new TextDecoder().decode(serializer.serializeLoadRequest({
-        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32),
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32), responder: 'writer',
       })));
       expect(() => serializer.deserializeLoadRequest(new TextEncoder().encode(JSON.stringify({ ...wire, extra: true })))).toThrow();
+    });
+
+    test.each([
+      ['an omitted responder', { responder: undefined }],
+      ['an empty responder', { responder: '' }],
+      ['a numeric responder', { responder: 7 }],
+      ['an array responder', { responder: ['writer'] }],
+      ['an oversized responder', { responder: 'p'.repeat(129) }],
+      ['a lone-surrogate responder', { responder: '\ud800' }],
+    ])('rejects a request with %s', (_label, replacement) => {
+      const wire = JSON.parse(new TextDecoder().decode(serializer.serializeLoadRequest({
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32), responder: 'writer',
+      })));
+      const malformed = new TextEncoder().encode(JSON.stringify({ ...wire, ...replacement }));
+      expect(() => serializer.deserializeLoadRequest(malformed)).toThrow();
+      expect(() => serializer.serializeLoadRequest({
+        documentId: '/test/doc', signature: 'AQ==', loadChallenge: new Uint8Array(32), ...replacement,
+      } as any)).toThrow();
     });
 
     test('deserializeLoadRequest rejects invalid JSON', () => {

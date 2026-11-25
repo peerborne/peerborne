@@ -1,4 +1,4 @@
-import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
+import { fixtureLoadChallenge, fixtureLoadCommitments, fixtureLoadResponder, fixtureLoadResponderSwarm } from './__testutils__/load-session.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { PeerborneDocument } from './peerborne-document.js';
 
@@ -263,13 +263,13 @@ describe('concrete inbound handler log redaction', () => {
       const current = jest.fn(async () => {
         throw new Error('authorization gate was bypassed');
       });
+      const verify = jest.fn(async () => ({ truthy: true }) as never);
       const document = fakeDocument({
+        swarm: fixtureLoadResponderSwarm(),
         _isSigningEnabled: () => true,
         _readers: { users: async () => [{}] },
         _writers: { users: async () => [] },
-        _authProvider: {
-          verify: async () => ({ truthy: true }) as never,
-        },
+        _authProvider: { verify },
         _keychain: { current },
       });
       const responseSend = jest.fn(() => true);
@@ -278,12 +278,13 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AA==' },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AA==', responder: fixtureLoadResponder },
           { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(responseClose).toHaveBeenCalledTimes(1);
         expect(responseSend).not.toHaveBeenCalled();
         expect(responseClose).toHaveBeenCalled();
+        expect(verify).toHaveBeenCalled();
         expect(current).not.toHaveBeenCalled();
       } finally {
         logs.restore();
@@ -334,6 +335,7 @@ describe('concrete inbound handler log redaction', () => {
     'redacts an internal provider failure in the real %s responder',
     async (_protocolName, methodName, classification) => {
       const document = fakeDocument({
+        swarm: fixtureLoadResponderSwarm(),
         _isSigningEnabled: () => true,
         _readers: {
           users: async () => {
@@ -348,7 +350,7 @@ describe('concrete inbound handler log redaction', () => {
 
       try {
         await document[methodName](
-          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AQ==' },
+          { loadChallenge: fixtureLoadChallenge(), documentId: privatePath, signature: 'AQ==', responder: fixtureLoadResponder },
           { send: responseSend, close: responseClose, onDrain: async () => {} },
         );
         expect(logs.error).toHaveBeenCalledWith(classification);
