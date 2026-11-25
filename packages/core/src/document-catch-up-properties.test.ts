@@ -5,7 +5,11 @@ import {
   DocumentAuthorityLog,
   DocumentGroupControlAuthority,
 } from './document-authority-log.js';
-import { GroupSecurityCoordinator } from './group-security-coordinator.js';
+import {
+  GroupSecurityCoordinator,
+  type GroupDocumentEncryptionMaterial,
+  type GroupSecurityDocumentContext,
+} from './group-security-coordinator.js';
 import type { GroupSecurityProvider } from './group-security-provider.js';
 import {
   DocumentReplayJournal,
@@ -26,7 +30,13 @@ import {
   type DocumentCatchUpCheckpoint,
   type DocumentCatchUpRequest,
 } from './document-catch-up-wire.js';
-import { MAX_DOCUMENT_CONTENT_BYTES } from './document-security-wire.js';
+import {
+  MAX_DOCUMENT_CONTENT_BYTES,
+  decodeEncryptedDocumentContent,
+  decodeSignedDocumentContent,
+  encodeEncryptedDocumentContent,
+  encodeSignedDocumentContent,
+} from './document-security-wire.js';
 import {
   testAuth,
   testCRDT,
@@ -387,6 +397,12 @@ async function setup() {
   const anchors = members.map(
     () => new InMemoryDocumentJournalRollbackAnchor(),
   );
+  let targetJournalWrites = 0;
+  const stageTarget = stores[1].stage.bind(stores[1]);
+  stores[1].stage = (...args) => {
+    targetJournalWrites += 1;
+    return stageTarget(...args);
+  };
   let beforeTargetAcceptance: (() => Promise<void>) | undefined;
   const journal = (index: number) =>
     new DocumentReplayJournal(
@@ -397,7 +413,10 @@ async function setup() {
       {
         load: (key) => anchors[index].load(key),
         compareAndSwap: async (key, expected, next) => {
-          if (index === 1) await beforeTargetAcceptance?.();
+          if (index === 1) {
+            targetJournalWrites += 1;
+            await beforeTargetAcceptance?.();
+          }
           return anchors[index].compareAndSwap(key, expected, next);
         },
       },
@@ -460,7 +479,62 @@ async function setup() {
       },
     };
   };
-  return { open, renew, pauseTargetAcceptance };
+  const forgeControllerCheckpoint = async (checkpoint: Uint8Array) => {
+    let material!: GroupDocumentEncryptionMaterial;
+    let captured!: GroupSecurityDocumentContext;
+    await targetCoordinator.runDocumentOperation(
+      targetCoordinator.documentContext,
+      new Uint8Array(),
+      async (documentContext, _input, _signal, work) => {
+        captured = documentContext;
+        material = await work.deriveEncryptionMaterial(path);
+        return { isAuthorizationCurrent: () => true, commit: () => {} };
+      },
+    );
+    const additionalData = documentCatchUpAAD('checkpoint', {
+      documentId: path,
+      genesisId: targetLog.genesisId,
+      authorityHead: targetLog.headId,
+      context: captured,
+    }) as Uint8Array<ArrayBuffer>;
+    const envelope = decodeEncryptedDocumentContent(checkpoint);
+    const signed = decodeSignedDocumentContent(
+      new Uint8Array(
+        await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+            additionalData,
+          },
+          material.key,
+          envelope.ciphertext as Uint8Array<ArrayBuffer>,
+        ),
+      ),
+    );
+    const claimed = decodeDocumentCatchUpCheckpoint(signed.unsigned);
+    expect(documentBytesEqual(claimed.controllerId, members[0])).toBe(true);
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce, additionalData },
+      material.key,
+      encodeSignedDocumentContent(
+        signed.unsigned,
+        await auth.sign(signed.unsigned, members[1]),
+      ) as Uint8Array<ArrayBuffer>,
+    );
+    return encodeEncryptedDocumentContent(
+      material.epochTag,
+      nonce,
+      new Uint8Array(ciphertext),
+    );
+  };
+  return {
+    open,
+    renew,
+    pauseTargetAcceptance,
+    forgeControllerCheckpoint,
+    targetJournalWrites: () => targetJournalWrites,
+  };
 }
 
 test('catch-up merges durably, keeps local receipts and rejects conflicting or stale responses', async () => {
@@ -527,6 +601,14 @@ test('catch-up merges durably, keeps local receipts and rejects conflicting or s
           }
           const checkpoint = await source.createCatchUpCheckpoint(request);
           await expect(target.receive(checkpoint)).rejects.toThrow();
+          const forged = await fixture.forgeControllerCheckpoint(checkpoint);
+          const unforged = [...target.document];
+          const writes = fixture.targetJournalWrites();
+          await expect(target.applyCatchUpCheckpoint(forged)).rejects.toThrow(
+            'Invalid document catch-up signature',
+          );
+          expect(target.document).toEqual(unforged);
+          expect(fixture.targetJournalWrites()).toBe(writes);
           const previous = [...target.document];
           const anchor = fixture.pauseTargetAcceptance();
           const merging = target.applyCatchUpCheckpoint(checkpoint);
