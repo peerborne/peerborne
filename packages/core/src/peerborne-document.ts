@@ -1,5 +1,11 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
+import {
+  DocumentBlockReadLimitError,
+  MAX_DOCUMENT_BLOCK_BYTES,
+  readDocumentBlock,
+  type DocumentBlockReadOptions,
+} from './document-block-reader.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -63,7 +69,8 @@ import {
   shuffleArray,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import type { Stream } from '@libp2p/interface';
+import type { Connection, Stream } from '@libp2p/interface';
+import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
@@ -292,10 +299,6 @@ async function retryLoadACLConflict<T>(
   }
 }
 
-const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
-
-class _LoadFetchLimitExceededError extends RangeError {}
-
 interface DocumentChangeFetchBudget {
   readonly maxBytes: number;
   consumedBytes: number;
@@ -307,7 +310,7 @@ function consumeDocumentChangeFetchBytes(
 ): void {
   const nextTotal = budget.consumedBytes + byteLength;
   if (!Number.isSafeInteger(nextTotal) || nextTotal > budget.maxBytes) {
-    throw new _LoadFetchLimitExceededError(
+    throw new DocumentBlockReadLimitError(
       'Missing change block byte budget exceeded',
     );
   }
@@ -761,12 +764,6 @@ interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly canDispatch?: () => boolean;
 }
 
-interface MissingBlockFetchOptions {
-  readonly signal?: AbortSignal;
-  readonly maxBlockBytes?: number;
-  readonly consumeBytes?: (byteLength: number) => void;
-}
-
 interface DocumentChangeFetchOptions<DocumentKey> {
   readonly signal?: AbortSignal;
   readonly maxBlockBytes?: number;
@@ -775,6 +772,7 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
+  readonly applySnapshotAfterChanges?: boolean;
 }
 
 /**
@@ -885,6 +883,7 @@ function documentLoadResponseTimeoutMs(configured: unknown): number {
  * loader.
  */
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
+const LOAD_PROTOCOL_REFRESH_TIMEOUT_MS = 5_000;
 
 /**
  * Module-private sentinel thrown by `_sendLoadRequestAndSync` when the
@@ -968,6 +967,7 @@ export class PeerborneDocument<
   private _competingBeeKEMGeneration: number | undefined;
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
+  private _oversizedEditClose?: Promise<void>;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1612,9 +1612,13 @@ export class PeerborneDocument<
   }
 
   private async _shuffledPeers() {
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
+    const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+    const loadable = await Promise.all(
+      connections.map((connection) => this._mayServeDocumentLoad(connection)),
+    );
+    const peers = connections
+      .filter((_connection, index) => loadable[index])
+      .map((connection) => connection.remoteAddr);
     if (peers.length === 0) {
       return peers;
     }
@@ -1625,7 +1629,51 @@ export class PeerborneDocument<
     return shuffledPeers;
   }
 
+  /**
+   * Exclude only peers whose completed identify record omits document
+   * loading, such as relays. libp2p also records individually negotiated
+   * stream protocols, so only identify's version metadata, written after its
+   * protocol list, shows that the list is complete. A holder can be identified
+   * before it registers its handlers, and identify-push is not configured, so
+   * such a peer is identified again before it is excluded.
+   */
+  private async _mayServeDocumentLoad(
+    connection: Pick<Connection, 'remotePeer'>,
+  ): Promise<boolean> {
+    const libp2p = this.swarm.heliaNode.libp2p;
+    const peerStore = libp2p.peerStore;
+    const remotePeer = connection.remotePeer as PeerId | undefined;
+    if (peerStore === undefined || remotePeer === undefined) return true;
+    let peer: Awaited<ReturnType<typeof peerStore.get>>;
+    try {
+      peer = await peerStore.get(remotePeer);
+    } catch {
+      return true;
+    }
+    const identified =
+      peer.metadata.has('AgentVersion') || peer.metadata.has('ProtocolVersion');
+    if (!identified || peer.protocols.includes(documentLoadV4)) return true;
+    const identify = libp2p.services?.identify as
+      Pick<Identify, 'identify'> | undefined;
+    if (typeof identify?.identify !== 'function') return false;
+    try {
+      const refreshed = await identify.identify(connection as Connection, {
+        signal: AbortSignal.timeout(LOAD_PROTOCOL_REFRESH_TIMEOUT_MS),
+        runOnLimitedConnection: true,
+      });
+      return refreshed.protocols.includes(documentLoadV4);
+    } catch {
+      return false;
+    }
+  }
+
   private _assertDocumentStateNotPoisoned(): void {
+    if (this._oversizedEditClose) {
+      throw new Error(
+        `Document ${this.documentPath} was retired after an oversized edit; ` +
+          'open a fresh instance from accepted state before continuing',
+      );
+    }
     if (this._bootstrapLoadApplicationState === 'poisoned') {
       throw new Error(
         `Document ${this.documentPath} has indeterminate authorization state; ` +
@@ -1664,6 +1712,7 @@ export class PeerborneDocument<
 
   /** @internal Recheck an invitation response at its dispatch boundary. */
   public assertBeeKEMForkAdmission(): void {
+    this._assertDocumentStateNotPoisoned();
     this._beekemForkGuard?.assertAcceptsWork();
   }
 
@@ -1681,6 +1730,7 @@ export class PeerborneDocument<
 
   private _isStateApplicationBlocked(): boolean {
     return (
+      this._oversizedEditClose !== undefined ||
       this._bootstrapLoadApplicationState === 'pending' ||
       this._bootstrapLoadApplicationState === 'poisoned' ||
       (this._beekemForkGuard !== undefined && !this._beekemForkGuard.acceptsWork)
@@ -1885,49 +1935,13 @@ export class PeerborneDocument<
 
   private async _readBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
   ): Promise<Uint8Array> {
-    // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
-    // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
-    // rather than a single `Uint8Array`. Consume the generator into a
-    // contiguous buffer here before slicing the encryption header off.
     throwIfLoadAborted(options?.signal);
-    const signal = options?.signal;
-    const maxBlockBytes = options?.maxBlockBytes;
-    const consumeBytes = options?.consumeBytes;
-    const rawBlock = this.swarm.heliaNode.blockstore.get(
-      hash,
-      signal ? { signal } : undefined,
+    const block = await awaitLoadWork(
+      readDocumentBlock(this.swarm.heliaNode.blockstore, hash, options),
+      options?.signal,
     );
-    const boundedBlock =
-      maxBlockBytes !== undefined || consumeBytes !== undefined
-        ? (async function* () {
-            let byteLength = 0;
-            let chunkCount = 0;
-            for await (const chunk of rawBlock) {
-              throwIfLoadAborted(signal);
-              chunkCount += 1;
-              if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream chunk budget exceeded',
-                );
-              }
-              const nextByteLength = byteLength + chunk.byteLength;
-              if (
-                !Number.isSafeInteger(nextByteLength) ||
-                (maxBlockBytes !== undefined && nextByteLength > maxBlockBytes)
-              ) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream byte budget exceeded',
-                );
-              }
-              consumeBytes?.(chunk.byteLength);
-              byteLength = nextByteLength;
-              yield chunk;
-            }
-          })()
-        : rawBlock;
-    const block = await awaitLoadWork(readUint8Iterable(boundedBlock), signal);
     throwIfLoadAborted(options?.signal);
     return block;
   }
@@ -1961,7 +1975,7 @@ export class PeerborneDocument<
 
   private async _getBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
     getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
   ): Promise<ChangesType> {
     return this._decodeBlock(
@@ -1972,7 +1986,10 @@ export class PeerborneDocument<
     );
   }
 
-  private async _putBlock(block: ChangesType): Promise<string> {
+  private async _putBlock(
+    block: ChangesType,
+    kind?: CRDTChangeNodeKind,
+  ): Promise<string> {
     const [documentKeyID, documentKey] = await this._keychain.current();
     if (!documentKey) {
       throw new Error(`Document ${this.documentPath} has an empty keychain!`);
@@ -1984,6 +2001,22 @@ export class PeerborneDocument<
     );
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
+    }
+    const encryptedBytes =
+      documentKeyID.byteLength + nonce.byteLength + data.byteLength;
+    if (encryptedBytes > MAX_DOCUMENT_BLOCK_BYTES) {
+      if (kind === crdtDocumentChangeNode) {
+        // Legacy providers may already have advanced their live causal state.
+        // Fence it before any further edit or checkpoint can retain that gap.
+        this._bootstrapLoadApplicationRevision++;
+        this._oversizedEditClose = Promise.resolve().then(() =>
+          this._closeDocument(),
+        );
+        void this._oversizedEditClose.catch(() => {});
+      }
+      throw new DocumentBlockReadLimitError(
+        'Encrypted document block exceeds the byte limit',
+      );
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
     const newFileResult = await this.heliaFs.addBytes(blockData);
@@ -2019,6 +2052,7 @@ export class PeerborneDocument<
   ): void {
     for (const handler of notification.handlers) {
       if (
+        this._oversizedEditClose ||
         (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) ||
         notification.canDispatch?.() === false
       ) {
@@ -2713,11 +2747,11 @@ export class PeerborneDocument<
               throw error;
             }
             if (fetchLimitExceeded && fetchController.signal.aborted) return;
-            if (error instanceof _LoadFetchLimitExceededError) {
+            if (error instanceof DocumentBlockReadLimitError) {
               fetchLimitExceeded = true;
               if (!fetchController.signal.aborted) {
                 fetchController.abort(
-                  new _LoadFetchLimitExceededError(
+                  new DocumentBlockReadLimitError(
                     'Missing change block fetch limits exceeded',
                   ),
                 );
@@ -2772,7 +2806,7 @@ export class PeerborneDocument<
       );
       if (workerFailure) throw workerFailure.reason;
       if (fetchLimitExceeded) {
-        throw new _LoadFetchLimitExceededError(
+        throw new DocumentBlockReadLimitError(
           'Missing change block fetch limits exceeded',
         );
       }
@@ -3172,6 +3206,7 @@ export class PeerborneDocument<
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
         compactedCount: message.snapshot.compactedCount,
         timestamp: message.snapshot.timestamp,
+        signature: message.snapshot.signature,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
         this._changesSerializer.serializeChanges(message.keychainChanges),
@@ -3799,7 +3834,12 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType>,
     context: Extract<SyncMessageContext, 'beekem-path-update-v2'>,
   ): Promise<
-    | { kind: 'authenticated'; writerKeysVersion: number }
+    | {
+        kind: 'authenticated';
+        writerKeysVersion: number;
+        raw: Uint8Array;
+        signature: Uint8Array;
+      }
     | {
         kind: 'missing-signature' | 'malformed' | 'invalid-signature' | 'changed';
       }
@@ -3848,7 +3888,54 @@ export class PeerborneDocument<
     ) {
       return { kind: 'changed' };
     }
-    return { kind: 'authenticated', writerKeysVersion };
+    return {
+      kind: 'authenticated',
+      writerKeysVersion,
+      raw,
+      signature: this._deserializeSignature(signature),
+    };
+  }
+
+  /**
+   * Require a PathUpdate signer to own its sender leaf. Only the local leaf and
+   * readers registered by this replica have an authenticated owner.
+   */
+  private async _isSignedBySenderLeafOwner(
+    senderLeafIndex: number,
+    authentication: {
+      readonly writerKeysVersion: number;
+      readonly raw: Uint8Array;
+      readonly signature: Uint8Array;
+    },
+  ): Promise<boolean> {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'BeeKEM PathUpdateV2 sender',
+    );
+    let owner: string | undefined;
+    if (senderLeafIndex === this._beekem?.myLeafIndex) {
+      owner = await serializePublicKey(this._userPublicKey);
+    } else {
+      for (const [identity, leafIndex] of this._readerLeafIndices) {
+        if (leafIndex !== senderLeafIndex) continue;
+        if (owner !== undefined) return false;
+        owner = identity;
+      }
+    }
+    if (owner === undefined) return false;
+    for (const writer of await this._getWriterKeys()) {
+      if ((await serializePublicKey(writer)) !== owner) continue;
+      const verified = await this._authProvider.verify(
+        new Uint8Array(authentication.raw),
+        writer,
+        new Uint8Array(authentication.signature),
+      );
+      return (
+        verified === true &&
+        this._writerKeysVersion === authentication.writerKeysVersion
+      );
+    }
+    return false;
   }
 
   private _encoder = new TextEncoder();
@@ -3919,7 +4006,7 @@ export class PeerborneDocument<
     let commitResolved = false;
     try {
       // Store changes in blockstore.
-      hash = await this._putBlock(changes);
+      hash = await this._putBlock(changes, kind);
       hashWasKnown = this._hashes.has(hash);
       this._hashes.add(hash);
 
@@ -5465,10 +5552,10 @@ export class PeerborneDocument<
                 ) {
                   return;
                 }
-                if (error instanceof _LoadFetchLimitExceededError) {
+                if (error instanceof DocumentBlockReadLimitError) {
                   prefetchLimitExceeded = true;
                   prefetchController.abort(
-                    new _LoadFetchLimitExceededError(
+                    new DocumentBlockReadLimitError(
                       'Load pre-fetch limits exceeded',
                     ),
                   );
@@ -5607,14 +5694,12 @@ export class PeerborneDocument<
           // Snapshots: `CRDTSnapshotNode.state` is NOT CID-addressed --
           // the snapshot's `lastChangeNodeCID` only identifies the
           // boundary, not the snapshot bytes. Defense is the writer
-          // signature (`_verifySnapshotSignature`), which fails on
-          // first load (writers empty) and rejects the snapshot
-          // automatically. On subsequent loads writers are known and
-          // the signature is the source of truth. We drop the snapshot
-          // entirely on first load below so a malicious snapshot
-          // signature forged with an attacker-controlled key (which
-          // would be admitted if the inline ACL pre-pass were trusted)
-          // never reaches `applySnapshot`.
+          // signature (`_verifySnapshotSignature`). On a first load the
+          // writer set exists only in the CID-validated ACL blocks, so the
+          // snapshot is verified and applied after those blocks merge; the
+          // stripped inline ACL is never trusted. Pruning keeps history only
+          // in the snapshot, so a first load that does not apply the agreed
+          // snapshot is a bind failure rather than a partial success.
           // Capture every CID that appears in the served tree BEFORE
           // stripping. `_syncDocumentChanges` swallows per-block fetch
           // failures (logs + returns); without a post-sync verification
@@ -5638,43 +5723,37 @@ export class PeerborneDocument<
           const preLoadWriterCount = (
             await retryLoadACLConflict(() => this._writers.users(), signal)
           ).length;
-          if (preLoadWriterCount === 0 && message.snapshot) {
-            console.warn(
-              `[${this.documentPath}] Dropping snapshot from quorum-bound ` +
-                `first load: writers ACL is not yet populated so the ` +
-                `snapshot signature cannot be verified. The receiver will ` +
-                `rebuild state from individual change blocks via Helia ` +
-                `(each block content-validated against its CID).`,
-            );
-            message.snapshot = undefined;
+          const requiresServedSnapshot =
+            preLoadWriterCount === 0 && message.snapshot !== undefined;
+          if (requiresServedSnapshot) {
+            changeFetchOptions = {
+              ...changeFetchOptions,
+              applySnapshotAfterChanges: true,
+            };
           }
 
-          // Snapshot-only first-load detection: after the snapshot drop
-          // above, if the response now carries NO changes tree AND NO
-          // snapshot, the responder served us nothing usable. Without
-          // this guard the path falls through to the validated load-response
-          // sync boundary
-          // (which returns `true` for a vacuously-empty message because
-          // there is nothing to merge / reject) and this method reports
-          // success — `load()` then returns `true` with neither state
-          // applied nor an opportunity to retry. Treat as a per-peer
-          // bind failure so the agreeing-cohort load loop tries the
-          // next peer (which may serve a real changes tree).
+          // A response without a changes tree serves nothing usable when it
+          // also lacks a snapshot, and on a first load it has no
+          // CID-validated ACL that could authenticate one. Without this guard
+          // the path falls through to the validated load-response sync
+          // boundary (which returns `true` for a vacuously-empty message)
+          // and `load()` reports success with no state applied. Treat it as
+          // a per-peer bind failure so the agreeing-cohort load loop tries
+          // the next peer (which may serve a real changes tree).
           if (
             message.changes === undefined &&
-            message.snapshot === undefined
+            (message.snapshot === undefined || preLoadWriterCount === 0)
           ) {
             console.warn(
               `[${this.documentPath}] Quorum-bound first-load response ` +
-                `carries neither a changes tree nor a snapshot after the ` +
-                `defensive snapshot drop. Treating as bind failure so the ` +
-                `loader tries the next agreeing peer.`,
+                `carries no changes tree that can establish its writer ` +
+                `set. Treating as bind failure so the loader tries the next ` +
+                `agreeing peer.`,
             );
             throw new _QuorumBindCheckFailedError(
               '(snapshot-only first-load)',
-              `Quorum-bound first-load response had only a snapshot (now ` +
-                `dropped because writers are not yet populated) and no ` +
-                `changes tree; no state can be applied.`,
+              `Quorum-bound first-load response had no changes tree; no ` +
+                `authenticated state can be applied.`,
             );
           }
 
@@ -5784,6 +5863,18 @@ export class PeerborneDocument<
                 `of ${expectedCids.length} expected CIDs were not retrievable; ` +
                 `served tree had stripped inline content and bitswap could ` +
                 `not retrieve the missing blocks.`,
+            );
+          }
+          if (requiresServedSnapshot && !this._isLatestSnapshotFrom(message)) {
+            console.warn(
+              `[${this.documentPath}] Quorum-bound first load did not apply ` +
+                `its agreed snapshot. Recording peer as bind-failed so the ` +
+                `loader does not report a partial document.`,
+            );
+            throw new _QuorumBindCheckFailedError(
+              '(snapshot-not-applied)',
+              `Quorum-bound first load did not apply its agreed snapshot; ` +
+                `the served change tail alone can omit pruned history.`,
             );
           }
 
@@ -7539,6 +7630,10 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public close(): Promise<void> {
+    return this._oversizedEditClose ?? this._closeDocument();
+  }
+
+  private _closeDocument(): Promise<void> {
     const guard = this._beekemForkGuard;
     if (!guard) return this._closeResources();
     guard.beginClose();
@@ -7776,6 +7871,31 @@ export class PeerborneDocument<
   }
 
   /** Apply a sync message after any required membership-queue admission. */
+  private _countChangesAppliedAboveSnapshot(
+    message: CRDTSyncMessage<ChangesType>,
+    hashesBefore: ReadonlySet<string>,
+  ): number {
+    if (message.changes === undefined) return 0;
+    const boundary = message.snapshot?.lastChangeNodeCID;
+    const counted = new Set<string>();
+    for (const { nodeId, kind } of collectBoundedChangeTree(
+      message.changeId,
+      message.changes,
+      { stopBelowNodeIds: new Set(boundary === undefined ? [] : [boundary]) },
+    )) {
+      if (
+        nodeId !== undefined &&
+        nodeId !== boundary &&
+        kind === crdtDocumentChangeNode &&
+        this._hashes.has(nodeId) &&
+        !hashesBefore.has(nodeId)
+      ) {
+        counted.add(nodeId);
+      }
+    }
+    return counted.size;
+  }
+
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType>,
     verifySignature: boolean,
@@ -7968,12 +8088,9 @@ export class PeerborneDocument<
 
     let appliedSnapshot = false;
     let receivedSnapshotHint: string | undefined;
-    // Apply snapshot if present and more recent than ours.
-    // Happens before full change sync so document changes that are already
-    // covered by the snapshot don't need to be applied first (CRDTs handle
-    // duplicate application correctly, but this avoids unnecessary work).
-    if (message.snapshot) {
-      const incoming = message.snapshot;
+    const applyIncomingSnapshot = async (
+      incoming: NonNullable<CRDTSyncMessage<ChangesType>['snapshot']>,
+    ): Promise<void> => {
       if (context === 'ordinary-sync-v1' && signingEnabled) {
         try {
           const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
@@ -8049,7 +8166,22 @@ export class PeerborneDocument<
           );
         }
       }
+    };
+    // Apply snapshot if present and more recent than ours.
+    // Happens before full change sync so document changes that are already
+    // covered by the snapshot don't need to be applied first (CRDTs handle
+    // duplicate application correctly, but this avoids unnecessary work).
+    // A first load whose ACL arrives only in CID-addressed blocks verifies the
+    // snapshot after those blocks establish the writer set.
+    const snapshotAfterChanges =
+      changeFetchOptions.applySnapshotAfterChanges === true;
+    if (message.snapshot && !snapshotAfterChanges) {
+      await applyIncomingSnapshot(message.snapshot);
     }
+    const hashesBeforeChanges = snapshotAfterChanges
+      ? new Set(this._hashes)
+      : undefined;
+    const documentChangeCountBeforeChanges = this._documentChangeCount;
 
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
@@ -8061,6 +8193,25 @@ export class PeerborneDocument<
         changeFetchOptions,
       );
       assertStillActive();
+    }
+
+    if (message.snapshot && snapshotAfterChanges) {
+      await applyIncomingSnapshot(message.snapshot);
+      assertStillActive();
+      if (appliedSnapshot) {
+        // Count only changes the snapshot does not cover, as if it had been
+        // applied before the change sync.
+        const newerChanges = this._countChangesAppliedAboveSnapshot(
+          message,
+          hashesBeforeChanges!,
+        );
+        this._documentChangeCount =
+          Math.max(
+            documentChangeCountBeforeChanges,
+            message.snapshot.compactedCount,
+          ) + newerChanges;
+        this._changesSinceSnapshot = newerChanges;
+      }
     }
 
     assertStillActive();
@@ -8173,6 +8324,8 @@ export class PeerborneDocument<
    * Y.Doc. Callers using Yjs should treat a failed transaction as leaving
    * the local document in a potentially inconsistent state and consider
    * re-syncing from peers.
+   * An oversized encrypted block retires the instance before publication.
+   * Reopen from accepted state before retrying the edit in smaller changes.
    *
    * **Known limitation -- concurrent remote changes during rollback:** The
    * rollback sets `_document` back to the snapshot captured when
@@ -8366,6 +8519,7 @@ export class PeerborneDocument<
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
+   * An oversized encrypted block retires the legacy instance before publication.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -11436,6 +11590,21 @@ export class PeerborneDocument<
       if (!this._beekemInitialized || !this._beekem) {
         console.warn(
           'Dropping BeeKEM PathUpdateV2 without initialized local BeeKEM state',
+        );
+        return;
+      }
+      let signedBySenderLeafOwner: boolean;
+      try {
+        signedBySenderLeafOwner = await this._isSignedBySenderLeafOwner(
+          pathUpdate.senderLeafIndex,
+          authentication,
+        );
+      } catch {
+        signedBySenderLeafOwner = false;
+      }
+      if (!signedBySenderLeafOwner) {
+        console.warn(
+          'Dropping BeeKEM PathUpdateV2 not signed by its sender leaf owner',
         );
         return;
       }

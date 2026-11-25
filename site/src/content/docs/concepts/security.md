@@ -221,9 +221,14 @@ ACL; when it is empty, as on a first load,
 `resolveTrustedDocumentWriters(documentPath)` must supply them. The runtime
 compares this tuple but does not yet replay an MLS control log.
 
-`loadQuorumK` bounds queried transport peers. `loadQuorumQ` requires that many
-independent trusted signing authorities to agree on one complete response
-manifest and security-state digest. One credential contributes only one vote,
+`loadQuorumK` bounds queried transport peers. A connected peer whose identify
+record omits the document-load protocol, such as a relay, is identified once
+more and is not a candidate if it still omits it; a peer that has not completed
+identify remains one. `loadQuorumQ` requires
+that many independent trusted signing authorities to agree on one complete response
+manifest and security-state digest. The manifest binds the snapshot signature
+as well as its state, so a responder cannot substitute one after agreement.
+One credential contributes only one vote,
 even through multiple PeerIds. An explicit Q is never lowered when fewer peers
 are available. Distinct compromised authorities can still collude; independent
 trust configuration is essential.
@@ -256,7 +261,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
+- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation. A receiver applies one only when its signer is the current writer that owns the sender leaf. A replica knows the owners of its own leaf and of reader leaves it registered, so it rejects updates from any other leaf. A joiner therefore cannot apply the inviter's rotations; membership beyond founder plus one needs a replicated leaf-owner record first
 - A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage.
 - PathUpdate delivery is best effort.
 

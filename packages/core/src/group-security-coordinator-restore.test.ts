@@ -779,6 +779,92 @@ describe('GroupSecurityCoordinator restore', () => {
     });
   });
 
+  const postCommitCallbackFailures = {
+    'authorizer refuses': {
+      code: 'unauthorized-control',
+      apply: (value: TestContext) => {
+        value.authorization.allowed = false;
+      },
+    },
+    'authorizer throws': {
+      code: 'unauthorized-control',
+      apply: (value: TestContext) => {
+        value.authorization.failure = new Error('authorizer unavailable');
+      },
+    },
+    'signature verifier refuses': {
+      code: 'bad-signature',
+      apply: (value: TestContext) => {
+        value.identities.rejectSignatures = true;
+      },
+    },
+    'signature verifier throws': {
+      code: 'bad-signature',
+      apply: (value: TestContext) => {
+        value.identities.verifyFailure = new Error('verifier unavailable');
+      },
+    },
+  } as const;
+
+  test.each(
+    (['transition', 'outbox ACK'] as const).flatMap((operation) =>
+      (
+        Object.keys(postCommitCallbackFailures) as Array<
+          keyof typeof postCommitCallbackFailures
+        >
+      ).map((failure) => [operation, failure] as const),
+    ),
+  )(
+    'advances the anchor after a %s commit when the %s',
+    async (operation, failure) => {
+      const delegate = new InMemoryGroupStateStore();
+      const store = new AdversarialStore(delegate);
+      const value = await context(store);
+      const coordinator = await bootstrap(value);
+      await flushAndCollect(coordinator);
+      if (operation === 'outbox ACK') {
+        await createTransition(coordinator, control(2));
+      }
+      store.mutateNextTransactionResult = (result) => {
+        postCommitCallbackFailures[failure].apply(value);
+        return result;
+      };
+
+      if (operation === 'transition') {
+        const result = await createTransition(coordinator, control(2));
+        expect(result.status).toBe('committed');
+      } else {
+        expect(await flushAndCollect(coordinator)).toHaveLength(1);
+      }
+      const committed = (await delegate.load(storeKey))!;
+      expect(await value.rollbackAnchor.load(storeKey)).toEqual({
+        revision: committed.revision,
+        epoch: 1n,
+        controlHead: committed.replay.at(-1)!.recordId,
+        storeCommitment: await groupSecurityStoreSnapshotCommitment(
+          committed,
+          storeKey,
+        ),
+      });
+
+      await expect(
+        GroupSecurityCoordinator.restore(
+          config(cloneContextWithProvider(value)),
+        ),
+      ).rejects.toMatchObject({
+        code: postCommitCallbackFailures[failure].code,
+      });
+      value.authorization.allowed = true;
+      value.authorization.failure = undefined;
+      value.identities.rejectSignatures = false;
+      value.identities.verifyFailure = undefined;
+      const restored = await GroupSecurityCoordinator.restore(
+        config(cloneContextWithProvider(value)),
+      );
+      expect(restored.publicState.epoch).toBe(1n);
+    },
+  );
+
   test('poisons the coordinator when rollback-anchor CAS is rejected after commit', async () => {
     const value = await context();
     const rollbackAnchor = new ControlledRollbackAnchor();

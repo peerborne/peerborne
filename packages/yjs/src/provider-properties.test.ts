@@ -104,4 +104,53 @@ describe('Yjs provider generated delivery histories', () => {
       { seed: 9431, numRuns: 150, examples: [[[], []]] },
     );
   });
+
+  test('recovers pruned history when the retained tail arrives before its snapshot', () => {
+    const provider = new YjsProvider();
+    const serializer = new YjsJSONSerializer();
+    const wire = (changes: Uint8Array) =>
+      new Uint8Array(
+        serializer.deserializeChanges(serializer.serializeChanges(changes)),
+      );
+    fc.assert(
+      fc.property(
+        program,
+        fc.nat(),
+        fc.nat(),
+        (edits, snapshotSeed, tailSeed) => {
+          const source = provider.newDocument();
+          source.clientID = 1;
+          const recovered = provider.newDocument();
+          recovered.clientID = 2;
+          try {
+            const packets: Uint8Array[] = [];
+            const covered = snapshotSeed % (edits.length + 1);
+            let snapshot =
+              covered === 0 ? provider.getSnapshot(source) : undefined;
+            for (const operation of edits) {
+              const [, changes] = provider.localChange(source, '', (draft) => {
+                const values = draft.getMap<GeneratedValue>('values');
+                if (operation.remove) values.delete(operation.key);
+                else values.set(operation.key, operation.value);
+              });
+              packets.push(changes);
+              if (packets.length === covered)
+                snapshot = provider.getSnapshot(source);
+            }
+            for (const changes of packets.slice(tailSeed % (covered + 1))) {
+              provider.remoteChange(recovered, wire(changes));
+            }
+            provider.remoteChange(recovered, wire(snapshot!));
+            expect(recovered.getMap('values').toJSON()).toEqual(
+              source.getMap('values').toJSON(),
+            );
+          } finally {
+            source.destroy();
+            recovered.destroy();
+          }
+        },
+      ),
+      { seed: 9433, numRuns: 150, examples: [[[], 0, 0]] },
+    );
+  });
 });

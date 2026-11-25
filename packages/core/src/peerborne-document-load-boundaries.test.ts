@@ -19,6 +19,7 @@ import { eciesSeal, generateEciesKeyPair } from './ecies.js';
 import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import { BeeKEM } from './beekem/beekem.js';
+import { MAX_DOCUMENT_BLOCK_BYTES } from './document-block-reader.js';
 
 jest.mock(
   'it-pipe',
@@ -90,6 +91,84 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   expect(predicate()).toBe(true);
 }
+
+test.each(['single', 'batch'])(
+  'retires the handle before a rejected oversized %s edit can reach history',
+  async (mode) => {
+    const acceptedHead = { changeId: 'previously-accepted' };
+    const history = new Set([acceptedHead.changeId]);
+    const addBytes = jest.fn();
+    const publish = jest.fn();
+    const unregisterDocument = jest.fn();
+    const edited: number[] = [];
+    const document = fakeDocument({
+      documentPath: '/bounded-edit',
+      swarm: {
+        heliaNode: { libp2p: { services: { pubsub: { publish } } } },
+        unregisterDocument,
+      },
+      heliaFs: { addBytes },
+      _mutationQueue: new InvitationMembershipQueue(),
+      _bootstrapLoadApplicationState: 'complete',
+      _bootstrapLoadApplicationRevision: 9,
+      _document: edited,
+      _hashes: history,
+      _referencedAncestors: new Set(),
+      _recentTips: [],
+      _lastSyncMessage: acceptedHead,
+      _ensureCurrentUserCanWrite: async () => {},
+      _crdtProvider: {
+        localChange(value: number[], _message: unknown, fn: (value: number[]) => void) {
+          fn(value);
+          return [value, new Uint8Array([1])];
+        },
+      },
+      _changesSerializer: { serializeChanges: (value: Uint8Array) => value },
+      _keychain: { current: async () => [new Uint8Array(32), {}] },
+      _authProvider: {
+        encrypt: async () => ({
+          data: new Uint8Array(MAX_DOCUMENT_BLOCK_BYTES - 32 - 12 + 1),
+          nonce: new Uint8Array(12),
+        }),
+      },
+    });
+    const closeAdmission = jest.fn(() => {
+      expect(() => document.document).toThrow('retired after an oversized edit');
+      expect(() => document.assertBeeKEMForkAdmission()).toThrow('retired after an oversized edit');
+    });
+    document._gossipReceiveAdmission = { close: closeAdmission };
+    const edit = (value: number[]) => { value.push(1); };
+    let write: Promise<void>;
+    if (mode === 'single') {
+      write = document.change(edit);
+    } else {
+      document.startChange();
+      document.addChange(edit);
+      document.addChange(edit);
+      write = document.endChange();
+    }
+    const descendant = jest.fn();
+    const queued = document.change(descendant);
+    await Promise.all([
+      expect(write).rejects.toThrow('Encrypted document block exceeds the byte limit'),
+      expect(queued).rejects.toThrow('retired after an oversized edit'),
+    ]);
+
+    expect(edited).toEqual(mode === 'single' ? [1] : [1, 1]);
+    expect(descendant).not.toHaveBeenCalled();
+    expect(() => document.document).toThrow('retired after an oversized edit');
+    expect(() => document.startChange()).toThrow('retired after an oversized edit');
+    await expect(document.exportCheckpoint()).rejects.toThrow('retired after an oversized edit');
+    expect(document._bootstrapLoadApplicationRevision).toBe(10);
+    expect(document._lastSyncMessage).toBe(acceptedHead);
+    expect([...history]).toEqual([acceptedHead.changeId]);
+    expect(addBytes).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    await document.close();
+    expect(closeAdmission).toHaveBeenCalledTimes(1);
+    expect(unregisterDocument).toHaveBeenCalledTimes(1);
+  },
+);
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -1484,6 +1563,192 @@ describe('document load response boundaries', () => {
       });
     }
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['applied', true],
+    ['unapplied', false],
+  ])(
+    'requires the agreed snapshot on a quorum-bound first load when it is %s',
+    async (_label, snapshotApplied) => {
+      const message = {
+        documentId: '/load-race',
+        signatureContext: 'load-response-v4',
+        signature: 'AAAA',
+        changeId: 'HEAD',
+        changes: {
+          kind: crdtDocumentChangeNode,
+          change: { inline: 'head' },
+          children: {
+            BOUNDARY: {
+              kind: crdtDocumentChangeNode,
+              change: { inline: 'boundary' },
+              children: {
+                WRITER: {
+                  kind: crdtWriterChangeNode,
+                  change: { inline: 'writer' },
+                },
+              },
+            },
+          },
+        },
+        snapshot: {
+          state: { compacted: 'pruned-history' },
+          lastChangeNodeCID: 'BOUNDARY',
+          compactedCount: 120,
+          signature: new Uint8Array([4]),
+          timestamp: 1,
+        },
+      };
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async () => true,
+        message,
+      );
+      document._writers = {
+        users: jest.fn(async () => []),
+        check: async () => false,
+      };
+      const applied: Array<{ snapshot: unknown; afterChanges: unknown }> = [];
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _context: string,
+          onStateApplicationStart?: () => void,
+          _continuePending?: boolean,
+          _onLogicalKeychainChange?: () => void,
+          options?: { applySnapshotAfterChanges?: boolean },
+        ) => {
+          onStateApplicationStart?.();
+          applied.push({
+            snapshot: appliedMessage.snapshot,
+            afterChanges: options?.applySnapshotAfterChanges,
+          });
+          for (const cid of ['HEAD', 'BOUNDARY', 'WRITER']) {
+            document._hashes.add(cid);
+          }
+          if (snapshotApplied) {
+            document._latestSnapshot = appliedMessage.snapshot;
+            document._latestSnapshotSource = appliedMessage.snapshot;
+          }
+          return true;
+        },
+      );
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+
+      const load = document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      );
+      if (snapshotApplied) {
+        await expect(load).resolves.toBe(true);
+      } else {
+        await expect(load).rejects.toMatchObject({
+          name: '_QuorumBindCheckFailedError',
+          message: expect.stringMatching(/did not apply its agreed snapshot/),
+        });
+      }
+      expect(applied).toEqual([
+        {
+          snapshot: expect.objectContaining({ lastChangeNodeCID: 'BOUNDARY' }),
+          afterChanges: true,
+        },
+      ]);
+    },
+  );
+
+  test('rejects a re-signed snapshot outside the agreed manifest before state application', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+        children: {
+          BOUNDARY: {
+            kind: crdtDocumentChangeNode,
+            change: { inline: 'boundary' },
+          },
+        },
+      },
+      snapshot: {
+        state: { compacted: 'pruned-history' },
+        lastChangeNodeCID: 'BOUNDARY',
+        compactedCount: 120,
+        signature: new Uint8Array([4]),
+        timestamp: 1,
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._writers = {
+      users: jest.fn(async () => []),
+      check: async () => false,
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+      currentLoadResponse({
+        ...message,
+        snapshot: { ...message.snapshot, signature: new Uint8Array([5]) },
+      }),
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+  });
+
+  test('rejects a snapshot-only quorum-bound first load before state application', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      snapshot: {
+        state: { compacted: 'unverifiable' },
+        lastChangeNodeCID: 'BOUNDARY',
+        compactedCount: 120,
+        signature: new Uint8Array([4]),
+        timestamp: 1,
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => [],
+      async () => true,
+      message,
+    );
+    document._writers = {
+      users: jest.fn(async () => []),
+      check: async () => false,
+    };
+    document._syncUnlocked = jest.fn(async () => true);
+    const expectedTipsHash = await fixtureLoadDigest(document, ['BOUNDARY']);
+
+    await expect(
+      document._sendLoadRequestAndSync(
+        await loadSessionFixture(document, undefined),
+        stream,
+        new Uint8Array([1]),
+        expectedTipsHash,
+      ),
+    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
+    expect(document._syncUnlocked).not.toHaveBeenCalled();
+    expect(document._bootstrapLoadApplicationState).toBe('pristine');
   });
 
   test('reuses a validated prefetched block under one aggregate byte budget', async () => {

@@ -197,9 +197,47 @@ function DocumentBudgetHistory(s: DocumentBudgetState, reserves: seq<bool>, amou
       reserves[1..], amounts[1..], countLimit, byteLimit)
 }
 
+function BlockStreamBytes(chunks: seq<nat>): nat
+  decreases |chunks|
+{
+  if |chunks| == 0 then 0 else chunks[0] + BlockStreamBytes(chunks[1..])
+}
+
+// A single byte/count budget stops at the first rejected chunk. Instantiate
+// independently for logical ciphertext, blockstore reads and raw DAG input.
+function AdmittedBlockChunks(s: DocumentBudgetState, chunks: seq<nat>, countLimit: int, byteLimit: int): seq<nat>
+  requires ValidDocumentBudget(s, countLimit, byteLimit)
+  requires forall i :: 0 <= i < |chunks| ==> chunks[i] <= 9007199254740991
+  ensures AdmittedBlockChunks(s, chunks, countLimit, byteLimit) <= chunks
+  ensures ValidDocumentBudget(
+    DocumentBudgetState(s.count + |AdmittedBlockChunks(s, chunks, countLimit, byteLimit)|,
+      s.bytes + BlockStreamBytes(AdmittedBlockChunks(s, chunks, countLimit, byteLimit))),
+    countLimit, byteLimit)
+  ensures var prefix := AdmittedBlockChunks(s, chunks, countLimit, byteLimit);
+    |prefix| < |chunks| ==> !canReserveDocumentOperation(
+      s.count + |prefix|, s.bytes + BlockStreamBytes(prefix), chunks[|prefix|], countLimit, byteLimit)
+  decreases |chunks|
+{
+  if |chunks| == 0 || !canReserveDocumentOperation(s.count, s.bytes, chunks[0], countLimit, byteLimit) then []
+  else
+    var next := DocumentBudgetState(s.count + 1, s.bytes + chunks[0]);
+    var rest := AdmittedBlockChunks(next, chunks[1..], countLimit, byteLimit);
+    [chunks[0]] + rest
+}
+
+method blockStreamBudget_domain()
+{
+  var empty := DocumentBudgetState(0, 0);
+  assert AdmittedBlockChunks(empty, [4, 0, 4], 3, 8) == [4, 0, 4];
+  assert AdmittedBlockChunks(empty, [4, 5, 0], 3, 8) == [4];
+  assert AdmittedBlockChunks(empty, [0, 0, 0], 2, 1) == [0, 0];
+  assert AdmittedBlockChunks(DocumentBudgetState(1, 4), [4, 1], 3, 8) == [4];
+}
+
 method documentAdmission_domain()
 {
   preparedChange_domain();
+  blockStreamBudget_domain();
   assert canReserveDocumentOperation(0, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(1, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(0, 1, 1, 1, 1);

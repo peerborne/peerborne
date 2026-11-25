@@ -245,13 +245,14 @@ describe('loadResponseManifestHash', () => {
     expect(getterCalls).toBe(0);
   });
 
-  test('binds snapshot bytes and every applied snapshot metadata field', async () => {
+  test('binds snapshot bytes, signature and every applied metadata field', async () => {
     const baseline = {
       snapshot: {
         stateBytes: new Uint8Array([1, 2, 3]),
         lastChangeNodeCID: 'SNAP',
         compactedCount: 4,
         timestamp: 5,
+        signature: new Uint8Array([7]),
       },
     };
     const baselineHash = await hash(baseline);
@@ -260,11 +261,35 @@ describe('loadResponseManifestHash', () => {
       { ...baseline.snapshot, lastChangeNodeCID: 'OTHER' },
       { ...baseline.snapshot, compactedCount: 3 },
       { ...baseline.snapshot, timestamp: 6 },
+      { ...baseline.snapshot, signature: new Uint8Array([8]) },
+      { ...baseline.snapshot, signature: new Uint8Array([7, 0]) },
     ]) {
       await expect(hash({ snapshot: changed })).resolves.not.toEqual(
         baselineHash,
       );
     }
+  });
+
+  test('rejects a missing or non-byte snapshot signature', async () => {
+    const snapshot = {
+      stateBytes: new Uint8Array([1, 2, 3]),
+      lastChangeNodeCID: 'SNAP',
+      compactedCount: 4,
+      timestamp: 5,
+    };
+    await expect(
+      hash({
+        snapshot: snapshot as unknown as Parameters<typeof hash>[0]['snapshot'],
+      }),
+    ).rejects.toThrow(/signature must be an enumerable own data property/);
+    await expect(
+      hash({
+        snapshot: {
+          ...snapshot,
+          signature: 'signature' as unknown as Uint8Array,
+        },
+      }),
+    ).rejects.toThrow(/snapshot signature .* not an unshared Uint8Array/);
   });
 
   test('binds keychain presence and serialized bytes', async () => {
@@ -281,6 +306,7 @@ describe('loadResponseManifestHash', () => {
 
   test('snapshots snapshot and keychain bytes before the first digest yields', async () => {
     const stateBytes = new Uint8Array([1, 2, 3]);
+    const signature = new Uint8Array([7]);
     const keychainChangesBytes = new Uint8Array([4, 5, 6]);
     const pending = hash({
       snapshot: {
@@ -288,11 +314,13 @@ describe('loadResponseManifestHash', () => {
         lastChangeNodeCID: 'SNAP',
         compactedCount: 1,
         timestamp: 2,
+        signature,
       },
       keychainChangesBytes,
     });
 
     stateBytes.fill(9);
+    signature.fill(9);
     keychainChangesBytes.fill(9);
 
     await expect(pending).resolves.toEqual(
@@ -302,6 +330,7 @@ describe('loadResponseManifestHash', () => {
           lastChangeNodeCID: 'SNAP',
           compactedCount: 1,
           timestamp: 2,
+          signature: new Uint8Array([7]),
         },
         keychainChangesBytes: new Uint8Array([4, 5, 6]),
       }),
@@ -315,6 +344,7 @@ describe('loadResponseManifestHash', () => {
         lastChangeNodeCID: 'SNAP',
         compactedCount: 1,
         timestamp: 2,
+        signature: new Uint8Array([7]),
       },
       keychainChangesBytes: new Uint8Array([4, 5, 6]),
     };
@@ -348,6 +378,7 @@ describe('loadResponseManifestHash', () => {
         lastChangeNodeCID: 'SNAP',
         compactedCount: 1,
         timestamp: 2,
+        signature: new Uint8Array([7]),
       },
     };
     const descriptor = Object.getOwnPropertyDescriptor(
@@ -386,6 +417,7 @@ describe('loadResponseManifestHash', () => {
       stateBytes,
       compactedCount: 1,
       timestamp: 2,
+      signature: new Uint8Array([7]),
     } as Record<string, unknown>;
     Object.defineProperty(snapshot, 'lastChangeNodeCID', {
       enumerable: true,
@@ -435,6 +467,7 @@ describe('loadResponseManifestHash', () => {
           lastChangeNodeCID: 'SNAP',
           compactedCount: 1,
           timestamp: 2,
+          signature: new Uint8Array([7]),
         },
         keychainChangesBytes: bytes,
       })`,
@@ -738,6 +771,7 @@ describe('loadResponseManifestHash', () => {
           lastChangeNodeCID: 'SNAP',
           compactedCount: 1,
           timestamp: 1,
+          signature: new Uint8Array([7]),
         },
       }),
     ).rejects.toThrow(/snapshot state exceeds/);
