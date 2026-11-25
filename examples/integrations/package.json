@@ -34,7 +34,7 @@
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.33",
-    "zustand": "^5.0.16"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
