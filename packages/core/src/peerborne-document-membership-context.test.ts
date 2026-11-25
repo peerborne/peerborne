@@ -105,6 +105,12 @@ function pathHarness(
     _beekemInitialized: true,
     _beekem: { generation: 1, clone: () => stagedTree(processPathUpdate) },
     _keychain: { prepareEpochKey },
+    _readerLeafIndices: new Map([['remote-writer', 0]]),
+    _getWriterKeys: async () => [{ id: 'remote-writer' }],
+    _authProvider: {
+      serializePublicKey: async (key: { id: string }) => key.id,
+      verify: async () => true,
+    },
     ...fields,
   });
   return {

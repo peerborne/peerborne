@@ -254,9 +254,15 @@ An outbound transition is ordered as follows:
 
 An error before durability restores an active provider checkpoint. Authenticated
 terminal removal never reloads its erased private state. If rollback fails,
-the coordinator is poisoned and stops. In the target persistent
-implementation, restart recovery revalidates signed control state before the
-outbox resumes. That process/browser restart behavior is not currently tested.
+the coordinator is poisoned and stops. After durability, the coordinator
+reloads the snapshot and requires its commitment to equal the transaction it
+already authenticated and authorized, then advances the rollback anchor. It
+does not run the signature or authorization callbacks again at that point, so
+a callback that refuses or fails after commit cannot leave durable state ahead
+of its anchor. Restore runs both callbacks again over the retained window. In
+the target persistent implementation, restart recovery revalidates signed
+control state before the outbox resumes. That process/browser restart behavior
+is not currently tested.
 Partial or undecryptable state is a hard recovery error; it never silently
 creates a group or falls back to BeeKEM.
 

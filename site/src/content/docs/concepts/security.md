@@ -258,7 +258,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation
+- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation. A receiver applies one only when its signer is the current writer that owns the sender leaf. A replica knows the owners of its own leaf and of reader leaves it registered, so it rejects updates from any other leaf. A joiner therefore cannot apply the inviter's rotations; membership beyond founder plus one needs a replicated leaf-owner record first
 - A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage.
 - PathUpdate delivery is best effort.
 
