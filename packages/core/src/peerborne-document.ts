@@ -91,7 +91,10 @@ import {
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
 import {
+  CHANGE_TREE_COMPACTION_DEPTH,
+  CHANGE_TREE_COMPACTION_KEEP,
   MAX_CHANGE_TREE_NODES,
+  changeTreeDepth,
   collectBoundedChangeTree,
   snapshotBoundedChangeTree,
   type BoundedChangeTreeEntry,
@@ -4271,7 +4274,19 @@ export class PeerborneDocument<
    * Check if automatic compaction should be triggered based on the config.
    */
   private async _maybeCompact(signal?: AbortSignal) {
+    // Each local change nests the retained tree one level deeper, so a writer
+    // must compact before the tree reaches the serialization depth limit even
+    // when periodic compaction is disabled.
+    const depthBound =
+      !this._snapshotUnsupported &&
+      !this._compactionInProgress &&
+      this._lastSyncMessage?.changes !== undefined &&
+      changeTreeDepth(
+        this._lastSyncMessage.changes,
+        CHANGE_TREE_COMPACTION_DEPTH,
+      ) >= CHANGE_TREE_COMPACTION_DEPTH;
     if (
+      !depthBound &&
       !shouldCompact(
         this._compactionConfig.enabled,
         this._snapshotUnsupported,
@@ -4296,7 +4311,7 @@ export class PeerborneDocument<
     throwIfLoadAborted(signal);
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked(signal);
+      await this._snapshotUnlocked(signal, depthBound);
     } finally {
       this._compactionInProgress = false;
     }
@@ -8734,6 +8749,7 @@ export class PeerborneDocument<
 
   private async _snapshotUnlocked(
     signal?: AbortSignal,
+    depthBound = false,
   ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     const gcLifecycle = this._gcLifecycle;
     await this._ensureCurrentUserCanWrite();
@@ -8783,8 +8799,20 @@ export class PeerborneDocument<
     // The snapshot is NOT stored on _lastSyncMessage -- it is only included
     // in load/snapshot-load responses via _latestSnapshot, to avoid bloating
     // every incremental pubsub sync message with the full snapshot state.
-    if (this._lastSyncMessage && this._compactionConfig.pruneAfterSnapshot) {
-      const prunedCIDs = this._pruneChanges(this._compactionConfig.keepRecentNodes);
+    if (
+      this._lastSyncMessage &&
+      (this._compactionConfig.pruneAfterSnapshot || depthBound)
+    ) {
+      // A depth-bound prune must leave room for further changes, whatever the
+      // configured retention.
+      const prunedCIDs = this._pruneChanges(
+        depthBound
+          ? Math.min(
+              Math.max(this._compactionConfig.keepRecentNodes, 1),
+              CHANGE_TREE_COMPACTION_KEEP,
+            )
+          : this._compactionConfig.keepRecentNodes,
+      );
 
       // Delete pruned blocks from the Helia blockstore asynchronously, but only
       // when explicitly opted-in via `gcAfterPrune`. Filter out any CIDs that

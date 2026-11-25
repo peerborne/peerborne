@@ -16,6 +16,39 @@ export const MAX_CHANGE_TREE_EDGES = 131_072;
 // JSON representation. Keep enough headroom below native JSON serializer stack
 // limits that every accepted tree can be re-serialized for signature checks.
 export const MAX_CHANGE_TREE_DEPTH = 512;
+/**
+ * Each local change nests the previous retained tree as its primary parent, so
+ * a writer snapshots and prunes once its retained tree reaches this depth. The
+ * headroom below {@link MAX_CHANGE_TREE_DEPTH} absorbs a peer adopting a remote
+ * tree that is one level deeper before its own compaction runs.
+ */
+export const CHANGE_TREE_COMPACTION_DEPTH = MAX_CHANGE_TREE_DEPTH / 2;
+/** Upper bound on document nodes kept by a depth-triggered prune. */
+export const CHANGE_TREE_COMPACTION_KEEP = CHANGE_TREE_COMPACTION_DEPTH / 2;
+
+/**
+ * Depth of a locally retained change tree, counting the root as 1. Stops
+ * descending once `limit` is reached so the walk stays bounded.
+ */
+export function changeTreeDepth<ChangesType>(
+  root: CRDTChangeNode<ChangesType>,
+  limit: number = MAX_CHANGE_TREE_DEPTH + 1,
+): number {
+  let deepest = 0;
+  const pending: Array<readonly [CRDTChangeNode<ChangesType>, number]> = [
+    [root, 1],
+  ];
+  while (pending.length > 0) {
+    const [node, depth] = pending.pop()!;
+    if (depth > deepest) deepest = depth;
+    if (deepest >= limit) return deepest;
+    const children = node.children;
+    if (children === undefined || children === crdtChangeNodeDeferred) continue;
+    for (const child of Object.values(children))
+      pending.push([child, depth + 1]);
+  }
+  return deepest;
+}
 
 export interface BoundedChangeTreeEntry<ChangesType> {
   readonly nodeId: string | undefined;
