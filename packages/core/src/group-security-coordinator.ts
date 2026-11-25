@@ -152,6 +152,7 @@ type TrackControlWork = (
   observable: boolean,
   failure?: 'bad-signature' | 'unauthorized-control',
 ) => void;
+type ControlRecheck = 'none' | 'signatures' | 'authorization';
 const MAX_U64 = (1n << 64n) - 1n;
 const mapSizeGetterValue = Object.getOwnPropertyDescriptor(
   Map.prototype,
@@ -1603,7 +1604,7 @@ export class GroupSecurityCoordinator {
       encryptedState.state,
       projectedReplay,
       snapshot.outbox,
-      true,
+      'authorization',
     );
     if (!equalBytes(effectiveView.headRecordId, anchorValue.controlHead)) {
       fail(
@@ -2430,7 +2431,7 @@ export class GroupSecurityCoordinator {
         snapshot.encryptedState.state,
         snapshot.replay,
         snapshot.outbox,
-        true,
+        'authorization',
       );
       initial = rollbackAnchorValue(
         snapshot.revision,
@@ -3193,6 +3194,12 @@ export class GroupSecurityCoordinator {
       fail('bad-signature', 'control signature verifier failed', error);
     }
     if (valid !== true) fail('bad-signature', 'control signature is invalid');
+    await this.verifySelfUpdateBinding(record);
+  }
+
+  private async verifySelfUpdateBinding(
+    record: MembershipControlRecord,
+  ): Promise<void> {
     if (record.action !== 'create') {
       const binding = parseControlBinding(record);
       const [emptyMembershipHash, emptyWelcomesHash] =
@@ -3287,7 +3294,7 @@ export class GroupSecurityCoordinator {
     publicState: GroupSecurityPublicState,
     replayInput: ReadonlyArray<GroupStateReplayEntry>,
     outbox: ReadonlyArray<GroupStateOutboxEntry>,
-    reauthorize = false,
+    recheck: ControlRecheck = 'signatures',
   ): Promise<CoordinatorView> {
     assertPublicStateMatchesKey(publicState, this.storeKey);
     this.assertReplayBound(replayInput.length);
@@ -3387,7 +3394,8 @@ export class GroupSecurityCoordinator {
           error,
         );
       }
-      await this.verifyControlAuthenticity(record);
+      if (recheck === 'none') await this.verifySelfUpdateBinding(record);
+      else await this.verifyControlAuthenticity(record);
 
       const recordHex = toHex(entry.recordId);
       const operationHex = toHex(record.operationId);
@@ -3455,7 +3463,7 @@ export class GroupSecurityCoordinator {
       }
     }
 
-    if (reauthorize) {
+    if (recheck === 'authorization') {
       for (const entry of replay) {
         if (entry.epoch < authorizationFloor) continue;
         const record = recordsById.get(toHex(entry.recordId))!;
@@ -4584,7 +4592,7 @@ export class GroupSecurityCoordinator {
         snapshot.encryptedState.state,
         snapshot.replay,
         snapshot.outbox,
-        true,
+        'none',
       );
       assertSamePublicState(view.publicState, expectedState);
       if (!equalBytes(view.headRecordId, expectedHeadRecordId)) {
