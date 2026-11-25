@@ -328,6 +328,26 @@ export const claims = [
     ],
   },
   {
+    id: 'block-reassembly',
+    label: 'Bounded block recovery',
+    title: 'Reassemble encrypted UnixFS files within read limits',
+    rule: 'Bound traversal and accumulated ciphertext. Check the complete ciphertext before deserializing changes.',
+    checked:
+      'The reservation policy charges the exact admitted prefix and stops at the first byte or count rejection. A Chromium profile relaunch restores and edits a document with at least 50 MiB of encoded history.',
+    limit:
+      'The browser fixture restores an application-held checkpoint and supplies the signed missing history. Renderer memory and latency depend on the workload and device.',
+    proof: [
+      'packages/core/src/policy/document-admission.ts',
+      'canReserveDocumentOperation_ensures',
+      'AdmittedBlockChunks',
+    ],
+    source: 'packages/core/src/document-block-reader.ts',
+    tests: [
+      'packages/core/src/document-block-reader-properties.test.ts',
+      'verification/browser/technical.spec.ts',
+    ],
+  },
+  {
     id: 'journal-restart',
     label: 'Journal recovery',
     title: 'Restore coordinated state against a durable anchor',
@@ -452,7 +472,7 @@ export const claims = [
     title: 'Measure usable latency under load',
     rule: 'Measure CRDT work, cryptography, transport and disk I/O separately with the workload, device and browser recorded.',
     limit:
-      'A bounded policy call does not establish the composed runtime budget. Hard frame timing, 50 MB cold-start TTI and scalable mesh fallback remain open.',
+      'Chromium records time to first edit after a 50 MiB restart. A main-thread frame budget, progressive hydration and scalable mesh fallback remain open.',
     source: 'docs/feature-audit.md',
     tests: [
       'verification/advanced/EXECUTION.md',
@@ -561,6 +581,7 @@ export const flows = [
         'Check manifest and fetch missing blocks',
         'load-quorum',
         'wire-budget',
+        'block-reassembly',
       ],
       ['Client device', 'Apply admitted history', 'convergence'],
     ],

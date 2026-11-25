@@ -159,7 +159,7 @@ test('webrtc concurrent encrypted document convergence', async ({
   await report(info, 'webrtc', result);
 });
 
-test('cold browser process reads large encrypted IndexedDB history and measures document TTI', async ({
+test('cold browser process reopens encrypted IndexedDB history and measures time to first edit', async ({
   baseURL,
 }, info) => {
   const profile = await mkdtemp(join(tmpdir(), 'peerborne-cold-'));
@@ -168,12 +168,13 @@ test('cold browser process reads large encrypted IndexedDB history and measures 
     context = await chromium.launchPersistentContext(profile, {
       baseURL,
       headless: true,
+      args: ['--enable-precise-memory-info'],
     });
     const seedPage = await context.newPage();
     await ready(seedPage);
     const fixture = await seedPage.evaluate(
       (options) => (window as any).technical.seedCold(options),
-      { full, seed },
+      { seed },
     );
     await context.close();
     context = undefined;
@@ -181,18 +182,31 @@ test('cold browser process reads large encrypted IndexedDB history and measures 
     context = await chromium.launchPersistentContext(profile, {
       baseURL,
       headless: true,
+      args: ['--enable-precise-memory-info'],
     });
     const page = await context.newPage();
     const errors = await ready(page);
-    const result = await page.evaluate(() =>
-      (window as any).technical.loadCold(),
-    );
+    const [result] = await Promise.all([
+      page.evaluate(() => (window as any).technical.loadCold()),
+      (async () => {
+        await expect(page.locator('#document')).toHaveText(
+          `Loaded ${fixture.historyMutations} historical edits`,
+          { timeout: 120_000 },
+        );
+        await page
+          .getByRole('button', { name: 'Edit recovered document' })
+          .click();
+        await expect(page.locator('#probe')).toHaveText('Committed edit 1');
+      })(),
+    ]);
     result.metrics.fixture = fixture;
-    expect(result.metrics.encodedHistoryBytes).toBeGreaterThanOrEqual(
-      (full ? 50 : 1) * 1024 * 1024,
+    expect(result.metrics.encodedHistoryBytes).toBeGreaterThanOrEqual(50 * 1024 * 1024);
+    expect(result.metrics.encodedHistoryBytes).toBe(
+      fixture.encodedHistoryBytes,
     );
-    await page.getByRole('button', { name: 'Input probe' }).click();
-    await expect(page.locator('#probe')).toHaveText('2');
+    expect(fixture.chunkedUnixFS).toBe(true);
+    expect(result.metrics.documentTTIms).toBeGreaterThan(0);
+    expect(Number.isFinite(result.metrics.documentTTIms)).toBe(true);
     expect(errors(), 'cold process runtime errors').toBe(0);
     await report(info, 'cold', result);
   } finally {

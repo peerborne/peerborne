@@ -1,5 +1,11 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
+import {
+  DocumentBlockReadLimitError,
+  MAX_DOCUMENT_BLOCK_BYTES,
+  readDocumentBlock,
+  type DocumentBlockReadOptions,
+} from './document-block-reader.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -292,10 +298,6 @@ async function retryLoadACLConflict<T>(
   }
 }
 
-const MAX_BOUNDED_BLOCK_CHUNKS = 65_536;
-
-class _LoadFetchLimitExceededError extends RangeError {}
-
 interface DocumentChangeFetchBudget {
   readonly maxBytes: number;
   consumedBytes: number;
@@ -307,7 +309,7 @@ function consumeDocumentChangeFetchBytes(
 ): void {
   const nextTotal = budget.consumedBytes + byteLength;
   if (!Number.isSafeInteger(nextTotal) || nextTotal > budget.maxBytes) {
-    throw new _LoadFetchLimitExceededError(
+    throw new DocumentBlockReadLimitError(
       'Missing change block byte budget exceeded',
     );
   }
@@ -761,12 +763,6 @@ interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly canDispatch?: () => boolean;
 }
 
-interface MissingBlockFetchOptions {
-  readonly signal?: AbortSignal;
-  readonly maxBlockBytes?: number;
-  readonly consumeBytes?: (byteLength: number) => void;
-}
-
 interface DocumentChangeFetchOptions<DocumentKey> {
   readonly signal?: AbortSignal;
   readonly maxBlockBytes?: number;
@@ -968,6 +964,7 @@ export class PeerborneDocument<
   private _competingBeeKEMGeneration: number | undefined;
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
+  private _oversizedEditClose?: Promise<void>;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1626,6 +1623,12 @@ export class PeerborneDocument<
   }
 
   private _assertDocumentStateNotPoisoned(): void {
+    if (this._oversizedEditClose) {
+      throw new Error(
+        `Document ${this.documentPath} was retired after an oversized edit; ` +
+          'open a fresh instance from accepted state before continuing',
+      );
+    }
     if (this._bootstrapLoadApplicationState === 'poisoned') {
       throw new Error(
         `Document ${this.documentPath} has indeterminate authorization state; ` +
@@ -1664,6 +1667,7 @@ export class PeerborneDocument<
 
   /** @internal Recheck an invitation response at its dispatch boundary. */
   public assertBeeKEMForkAdmission(): void {
+    this._assertDocumentStateNotPoisoned();
     this._beekemForkGuard?.assertAcceptsWork();
   }
 
@@ -1681,6 +1685,7 @@ export class PeerborneDocument<
 
   private _isStateApplicationBlocked(): boolean {
     return (
+      this._oversizedEditClose !== undefined ||
       this._bootstrapLoadApplicationState === 'pending' ||
       this._bootstrapLoadApplicationState === 'poisoned' ||
       (this._beekemForkGuard !== undefined && !this._beekemForkGuard.acceptsWork)
@@ -1885,49 +1890,13 @@ export class PeerborneDocument<
 
   private async _readBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
   ): Promise<Uint8Array> {
-    // Helia v6 / interface-blockstore v6 changed `Blockstore#get(cid)` to
-    // return an `AwaitGenerator<Uint8Array>` (a generator of byte chunks)
-    // rather than a single `Uint8Array`. Consume the generator into a
-    // contiguous buffer here before slicing the encryption header off.
     throwIfLoadAborted(options?.signal);
-    const signal = options?.signal;
-    const maxBlockBytes = options?.maxBlockBytes;
-    const consumeBytes = options?.consumeBytes;
-    const rawBlock = this.swarm.heliaNode.blockstore.get(
-      hash,
-      signal ? { signal } : undefined,
+    const block = await awaitLoadWork(
+      readDocumentBlock(this.swarm.heliaNode.blockstore, hash, options),
+      options?.signal,
     );
-    const boundedBlock =
-      maxBlockBytes !== undefined || consumeBytes !== undefined
-        ? (async function* () {
-            let byteLength = 0;
-            let chunkCount = 0;
-            for await (const chunk of rawBlock) {
-              throwIfLoadAborted(signal);
-              chunkCount += 1;
-              if (chunkCount > MAX_BOUNDED_BLOCK_CHUNKS) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream chunk budget exceeded',
-                );
-              }
-              const nextByteLength = byteLength + chunk.byteLength;
-              if (
-                !Number.isSafeInteger(nextByteLength) ||
-                (maxBlockBytes !== undefined && nextByteLength > maxBlockBytes)
-              ) {
-                throw new _LoadFetchLimitExceededError(
-                  'Block stream byte budget exceeded',
-                );
-              }
-              consumeBytes?.(chunk.byteLength);
-              byteLength = nextByteLength;
-              yield chunk;
-            }
-          })()
-        : rawBlock;
-    const block = await awaitLoadWork(readUint8Iterable(boundedBlock), signal);
     throwIfLoadAborted(options?.signal);
     return block;
   }
@@ -1961,7 +1930,7 @@ export class PeerborneDocument<
 
   private async _getBlock(
     hash: CID,
-    options?: MissingBlockFetchOptions,
+    options?: DocumentBlockReadOptions,
     getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
   ): Promise<ChangesType> {
     return this._decodeBlock(
@@ -1972,7 +1941,10 @@ export class PeerborneDocument<
     );
   }
 
-  private async _putBlock(block: ChangesType): Promise<string> {
+  private async _putBlock(
+    block: ChangesType,
+    kind?: CRDTChangeNodeKind,
+  ): Promise<string> {
     const [documentKeyID, documentKey] = await this._keychain.current();
     if (!documentKey) {
       throw new Error(`Document ${this.documentPath} has an empty keychain!`);
@@ -1984,6 +1956,22 @@ export class PeerborneDocument<
     );
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
+    }
+    const encryptedBytes =
+      documentKeyID.byteLength + nonce.byteLength + data.byteLength;
+    if (encryptedBytes > MAX_DOCUMENT_BLOCK_BYTES) {
+      if (kind === crdtDocumentChangeNode) {
+        // Legacy providers may already have advanced their live causal state.
+        // Fence it before any further edit or checkpoint can retain that gap.
+        this._bootstrapLoadApplicationRevision++;
+        this._oversizedEditClose = Promise.resolve().then(() =>
+          this._closeDocument(),
+        );
+        void this._oversizedEditClose.catch(() => {});
+      }
+      throw new DocumentBlockReadLimitError(
+        'Encrypted document block exceeds the byte limit',
+      );
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
     const newFileResult = await this.heliaFs.addBytes(blockData);
@@ -2019,6 +2007,7 @@ export class PeerborneDocument<
   ): void {
     for (const handler of notification.handlers) {
       if (
+        this._oversizedEditClose ||
         (this._beekemForkGuard && !this._beekemForkGuard.acceptsWork) ||
         notification.canDispatch?.() === false
       ) {
@@ -2713,11 +2702,11 @@ export class PeerborneDocument<
               throw error;
             }
             if (fetchLimitExceeded && fetchController.signal.aborted) return;
-            if (error instanceof _LoadFetchLimitExceededError) {
+            if (error instanceof DocumentBlockReadLimitError) {
               fetchLimitExceeded = true;
               if (!fetchController.signal.aborted) {
                 fetchController.abort(
-                  new _LoadFetchLimitExceededError(
+                  new DocumentBlockReadLimitError(
                     'Missing change block fetch limits exceeded',
                   ),
                 );
@@ -2772,7 +2761,7 @@ export class PeerborneDocument<
       );
       if (workerFailure) throw workerFailure.reason;
       if (fetchLimitExceeded) {
-        throw new _LoadFetchLimitExceededError(
+        throw new DocumentBlockReadLimitError(
           'Missing change block fetch limits exceeded',
         );
       }
@@ -3971,7 +3960,7 @@ export class PeerborneDocument<
     let commitResolved = false;
     try {
       // Store changes in blockstore.
-      hash = await this._putBlock(changes);
+      hash = await this._putBlock(changes, kind);
       hashWasKnown = this._hashes.has(hash);
       this._hashes.add(hash);
 
@@ -5517,10 +5506,10 @@ export class PeerborneDocument<
                 ) {
                   return;
                 }
-                if (error instanceof _LoadFetchLimitExceededError) {
+                if (error instanceof DocumentBlockReadLimitError) {
                   prefetchLimitExceeded = true;
                   prefetchController.abort(
-                    new _LoadFetchLimitExceededError(
+                    new DocumentBlockReadLimitError(
                       'Load pre-fetch limits exceeded',
                     ),
                   );
@@ -7558,6 +7547,10 @@ export class PeerborneDocument<
    * stale instance does not unregister a newer live document.
    */
   public close(): Promise<void> {
+    return this._oversizedEditClose ?? this._closeDocument();
+  }
+
+  private _closeDocument(): Promise<void> {
     const guard = this._beekemForkGuard;
     if (!guard) return this._closeResources();
     guard.beginClose();
@@ -8192,6 +8185,8 @@ export class PeerborneDocument<
    * Y.Doc. Callers using Yjs should treat a failed transaction as leaving
    * the local document in a potentially inconsistent state and consider
    * re-syncing from peers.
+   * An oversized encrypted block retires the instance before publication.
+   * Reopen from accepted state before retrying the edit in smaller changes.
    *
    * **Known limitation -- concurrent remote changes during rollback:** The
    * rollback sets `_document` back to the snapshot captured when
@@ -8385,6 +8380,7 @@ export class PeerborneDocument<
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
+   * An oversized encrypted block retires the legacy instance before publication.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
