@@ -39,3 +39,4 @@ packages/core/src/policy/journal-store.ts
 packages/core/src/policy/field-authorization.ts
 packages/core/src/policy/document-recovery.ts
 packages/core/src/policy/beekem-fork-anchor.ts
+packages/core/src/policy/document-catch-up.ts

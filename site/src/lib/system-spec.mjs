@@ -368,6 +368,26 @@ export const claims = [
     ],
   },
   {
+    id: 'coordinated-catch-up',
+    label: 'Authenticated catch-up',
+    title: 'Merge a controller checkpoint into retained local state',
+    rule: 'Match current strict roles and epoch. Verify the controller’s response for the current document and the receiver’s request, then publish the native merge after journal acceptance.',
+    checked:
+      'Receipt admission preserves existing heads and prevents a peer from seeding the requester’s sequence. Native scenarios exercise current-epoch recovery and restart.',
+    limit:
+      'The application retains identity and trust, supplies authenticated control and role delivery, and relays the messages. The snapshot payload is limited to 512 KiB and conflicting receipt prefixes require ordered redelivery.',
+    proof: [
+      'packages/core/src/policy/document-catch-up.ts',
+      'admitDocumentCatchUpReceipt_ensures',
+      'CatchUpReceiptHistory',
+    ],
+    source: 'packages/core/src/coordinated-document.ts',
+    tests: [
+      'packages/core/src/document-catch-up-properties.test.ts',
+      'verification/mls-provider/document-tests.ts',
+    ],
+  },
+  {
     id: 'publication',
     label: 'Outbox integrity',
     title: 'Preserve accepted publication through journal updates',
@@ -641,7 +661,7 @@ export const flows = [
         'journal-restart',
         'authority',
       ],
-      ['Network boundary', 'Resume pending publication', 'publication'],
+      ['Network boundary', 'Resume catch-up and publication', 'coordinated-catch-up', 'publication'],
     ],
   },
   {

@@ -7126,6 +7126,39 @@ export class PeerborneDocument<
     return applied;
   }
 
+  /** Create an encrypted request for the current controller to relay through the application. */
+  public async createSecurityCatchUpRequest(): Promise<Uint8Array> {
+    return this._catchUpEngine().createCatchUpRequest();
+  }
+
+  /** Answer an authenticated current member's request with an encrypted checkpoint. */
+  public async createSecurityCatchUpCheckpoint(
+    request: Uint8Array,
+  ): Promise<Uint8Array> {
+    return this._catchUpEngine().createCatchUpCheckpoint(request);
+  }
+
+  /** Durably merge a solicited current-controller checkpoint with accepted local state. */
+  public async applySecurityCatchUpCheckpoint(
+    checkpoint: Uint8Array,
+  ): Promise<void> {
+    const engine = this._catchUpEngine();
+    await engine.applyCatchUpCheckpoint(checkpoint);
+    const rosterIsCurrent = engine.captureStrictNotificationGuard()!;
+    void this._fireStrictCoordinatedUpdateHandlers(
+      Object.values(this._remoteHandlers),
+      rosterIsCurrent,
+    ).catch(() =>
+      console.error(`Remote update handler failed for ${this.documentPath}`),
+    );
+  }
+
+  private _catchUpEngine() {
+    if (!this._coordinated || !this._subscribed || this._gcClosed)
+      throw new Error('Coordinated document is not open');
+    return this._coordinated;
+  }
+
   private async _fireStrictCoordinatedUpdateHandlers(
     handlers: PeerborneDocumentChangeHandler<DocType, PublicKey>[],
     rosterIsCurrent: () => boolean,

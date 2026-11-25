@@ -30,6 +30,8 @@ export interface CRDTDocumentSession<Document, Changes, Change> {
     options?: DocumentPreparationOptions,
   ): PreparedDocumentChange<Changes>;
   prepareSnapshot?(snapshot: Changes): PreparedDocumentChange<Changes>;
+  /** Stage a native CRDT merge that retains already accepted local operations. */
+  prepareMergeSnapshot?(snapshot: Changes): PreparedDocumentChange<Changes>;
   close(): void;
 }
 

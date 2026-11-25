@@ -3,6 +3,18 @@
   "scope": "Function contracts and named generated properties. A source-file association is not whole-file verification; direct test imports are not execution coverage.",
   "propertyGroups": [
     {
+      "id": "coordinated-checkpoint-catch-up",
+      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. Native tests cover signed and encrypted binding, detached CRDT merge, acknowledged journal publication, replay, context changes and restart. Trusted controller behavior, group membership and cryptographic secrecy remain separate assumptions.",
+      "evidence": ["packages/core/src/document-catch-up-properties.test.ts"],
+      "sources": [
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/document-catch-up-wire.ts",
+        "packages/core/src/policy/document-catch-up.ts",
+        "packages/core/src/document-crdt-session.ts",
+        "verification/mls-provider/document-tests.ts"
+      ]
+    },
+    {
       "id": "encrypted-unixfs-block-reads",
       "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. Runtime properties cover actual UnixFS exporter traversal, raw and chunked files, observed chunk lengths, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
       "evidence": [

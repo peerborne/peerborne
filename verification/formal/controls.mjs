@@ -1565,6 +1565,18 @@ method mapOperand_domain()
       "if (phase === 'committed') return 'preparing'; if (phase === 'cancelled') return phase;",
     ],
     [
+      'document-catch-up-seeded-local-receipt',
+      'document-catch-up.ts',
+      "if (current === 0) return canAdopt ? 'adopt' : 'conflict';",
+      "if (current === 0) return 'adopt';",
+    ],
+    [
+      'document-catch-up-mismatched-receipt-hash',
+      'document-catch-up.ts',
+      "return current === offered && hashesMatch ? 'keep' : 'conflict';",
+      "return current === offered ? 'keep' : 'conflict';",
+    ],
+    [
       'document-sequence-replay',
       'document-content.ts',
       "if (sequence <= accepted) return 'replay';",

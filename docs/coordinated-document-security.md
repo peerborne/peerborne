@@ -74,6 +74,36 @@ An offline replica retains its earlier keys and roles until it learns the
 transition. The outbox can retry historical ciphertext that the local replica
 committed before it learned of the removal.
 
+## Resume with a controller checkpoint
+
+Set `enableAuthenticatedCatchUp: true` on both strict documents. This profile
+requires an encrypted replay journal and an adapter that prepares a detached
+snapshot merge. Automerge and Yjs retain accepted local operations in that
+merge.
+
+1. Deliver the authenticated group transitions and signed roles in order. Open
+   the returning member’s document with the current group state and role head.
+2. Relay its `createSecurityCatchUpRequest()` result to the current controller.
+   The controller calls `createSecurityCatchUpCheckpoint(request)` and returns
+   the encrypted response to the requester.
+3. Call `applySecurityCatchUpCheckpoint(checkpoint)` on the returning document.
+   The prepared merge becomes visible after journal acceptance and a fresh
+   authority check.
+
+Both messages are encrypted and signed. The current epoch, pinned genesis,
+document path, role head, recipient and one-shot request challenge bind the
+response. Only a current controller with whole-document write authority can
+issue it. A replica can import a missing receipt for another current writer.
+Overlapping receipts must agree on their sequence and hash, and the requester
+keeps its own sequence. A conflicting head requires ordered frame redelivery.
+The encoded snapshot payload is limited to 512 KiB. Native snapshot generation
+and merge costs still depend on the document and adapter.
+
+The application relays the messages and retains identity, trust roots and the
+independent rollback anchor across restart. This profile leaves peer discovery,
+control-message delivery, old-epoch edit rebasing and recovery after key or
+anchor loss to the application.
+
 ## Native field write scopes
 
 Set a member's `writePaths` when creating or updating `DocumentAuthorityLog`.
@@ -282,8 +312,9 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, late-join content snapshots, missing-prefix redelivery,
-old-epoch edit rebasing and epoch-fork reconciliation remain future work. An
+Automatic anti-entropy, missing-prefix redelivery, old-epoch edit rebasing and
+epoch-fork reconciliation remain future work. The controller checkpoint is an
+explicit application-relayed recovery path for current members. An
 unknown/stale epoch or missing native causal context is rejected, not silently
 buffered without a bound. The caller must arrange ordered control/role delivery
 and content recovery. Role records contain public identities and the document

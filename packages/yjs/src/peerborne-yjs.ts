@@ -751,6 +751,13 @@ export class YjsProvider
         preparing = false;
       }
     };
+    const prepareSnapshot = (changes: Uint8Array) => {
+      const owned = new Uint8Array(changes);
+      return stage((value) => {
+        applyUpdateV2(value, owned);
+        return owned;
+      });
+    };
     return {
       get document() {
         assertHealthy();
@@ -773,13 +780,8 @@ export class YjsProvider
           return owned;
         }, options);
       },
-      prepareSnapshot: (changes) => {
-        const owned = new Uint8Array(changes);
-        return stage((value) => {
-          applyUpdateV2(value, owned);
-          return owned;
-        });
-      },
+      prepareSnapshot,
+      prepareMergeSnapshot: prepareSnapshot,
       close: () => {
         closed = true;
         active?.discard();

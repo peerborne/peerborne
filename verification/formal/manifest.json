@@ -856,6 +856,16 @@
         "beeKEMForkAnchor_nonOwnerHistory"
       ],
       "solverSeeds": [1, 2, 7, 19]
+    },
+    {
+      "path": "packages/core/src/policy/document-catch-up.ts",
+      "functions": ["admitDocumentCatchUpReceipt"],
+      "witness": "documentCatchUpReceipt_domain",
+      "consumers": ["packages/core/src/coordinated-document.ts"],
+      "verifiedTargets": [
+        "admitDocumentCatchUpReceipt_ensures",
+        "CatchUpReceiptHistory"
+      ]
     }
   ]
 }

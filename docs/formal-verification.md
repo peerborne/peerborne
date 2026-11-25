@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 168 production functions in 41 proof units. The runtime calls
+LemmaScript checks 169 production functions in 42 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -68,6 +68,7 @@ consumer, proof obligation and non-vacuity witness.
 | [Sync response admission](../packages/core/src/policy/sync-request.ts) | 7 | Exact freshness, nondecreasing effective time, expiry-only replay pruning, bounded insertion and response eligibility. Checked finite histories preserve every live nonce and bound the response ledger to 46 entries under the two-second cooldown. |
 | [Authority capture](../packages/core/src/policy/authority-capture.ts) | 2 | Exact scalar-roster acceptance, unique identities, required local membership, a 256-entry bound, exact ID/key/role lookup bindings and empty rejection results. |
 | [Content admission](../packages/core/src/policy/document-content.ts) | 3 | Exact sequence/parent/replay and role decisions, safe next sequence and finite-history accepted-prefix laws. |
+| [Catch-up receipts](../packages/core/src/policy/document-catch-up.ts) | 1 | Exact keep, adopt and conflict decisions. Finite receipt histories preserve an existing accepted head and leave a local identity's absent receipt empty. |
 | [Journal recovery and publication ledger](../packages/core/src/policy/document-journal.ts) | 11 | Exact bounded full/recovery read plans, authenticated recovery with a final anchor match, strict authority epoch advance, exact accepted-token lookup, fresh bounded insertion, exact pending-token projection, abort-preserving candidate selection and finite-history token provenance. |
 | [Journal store transitions](../packages/core/src/policy/journal-store.ts) | 3 | Exact revision/count/byte admission, token/checkpoint-bound commit eligibility, unique bounded outbox append/removal, exact byte totals and retained-index projection. Checked finite histories preserve metadata bounds and accepted prefixes when no checkpoint commits occur. |
 
@@ -660,7 +661,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 71 property-suite files containing 260 explicit
+The inventory audits 72 property-suite files containing 264 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

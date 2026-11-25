@@ -1,5 +1,6 @@
 import type {
   DocumentReplayJournal,
+  DocumentReplayReceipt,
   PreparedDocumentJournal,
 } from './document-replay-journal.js';
 import type { AuthProvider } from './auth-provider.js';
@@ -15,7 +16,10 @@ import type {
   GroupSecurityDocumentContext,
   GroupSecurityDocumentPreparation,
 } from './group-security-coordinator.js';
-import { GroupDocumentOperationBudget } from './group-document-operation.js';
+import {
+  GroupDocumentOperationBudget,
+  type PreparedGroupDocumentOperation,
+} from './group-document-operation.js';
 import {
   documentBytesEqual,
   documentBytesId,
@@ -41,6 +45,17 @@ import {
   contentRolePermits,
   nextContentSequence,
 } from './policy/document-content.js';
+import { admitDocumentCatchUpReceipt } from './policy/document-catch-up.js';
+import {
+  decodeDocumentCatchUpCheckpoint,
+  decodeDocumentCatchUpRequest,
+  documentCatchUpAAD,
+  encodeDocumentCatchUpCheckpoint,
+  encodeDocumentCatchUpRequest,
+  MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
+  type DocumentCatchUpBinding,
+  type DocumentCatchUpKind,
+} from './document-catch-up-wire.js';
 import {
   decodeDocumentContent,
   decodeEncryptedDocumentContent,
@@ -90,6 +105,8 @@ export interface CoordinatedDocumentOptions {
   readonly persistPublications?: boolean;
   /** Require the signed roles to enumerate the provider's exact decrypting roster. */
   readonly requireGroupRosterMatch?: boolean;
+  /** Allow explicit app-relayed catch-up from the current unrestricted controller. */
+  readonly enableAuthenticatedCatchUp?: boolean;
 }
 
 interface DocumentGroupRosterBinding {
@@ -102,6 +119,38 @@ interface Receipt {
   sequence: number;
   hash: Uint8Array;
 }
+
+type AuthorityLease = ReturnType<typeof captureDocumentAuthorityLease>;
+
+interface CatchUpWork {
+  readonly binding: DocumentCatchUpBinding;
+  readonly roster: DocumentGroupRosterBinding;
+  readonly lease: AuthorityLease;
+  readonly material: GroupDocumentEncryptionMaterial;
+  readonly work: GroupSecurityDocumentPreparation;
+  assertCurrent(): void;
+}
+
+interface CatchUpPreparation<Value> {
+  readonly value: Value;
+  isCurrent?(): boolean;
+  commit?(): void;
+}
+
+interface PendingCatchUp {
+  readonly roster: DocumentGroupRosterBinding;
+  readonly challenge: Uint8Array;
+}
+
+function receiptEntries(
+  receipts: ReadonlyMap<string, Receipt>,
+): DocumentReplayReceipt[] {
+  return [...receipts].map(([id, receipt]) => ({
+    memberId: Uint8Array.from(id.match(/../g)!, (byte) => parseInt(byte, 16)),
+    ...receipt,
+  }));
+}
+
 const aggregate = new GroupDocumentOperationBudget(64, 64 * 1024 * 1024);
 const ZERO_HASH = new Uint8Array(32);
 
@@ -125,6 +174,7 @@ export class CoordinatedDocument<
   private recovered = false;
   private activated = false;
   private rosterBinding?: DocumentGroupRosterBinding;
+  private pendingCatchUp?: PendingCatchUp;
   private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
   private material?: {
@@ -151,6 +201,7 @@ export class CoordinatedDocument<
       journal,
       persistPublications,
       requireGroupRosterMatch,
+      enableAuthenticatedCatchUp,
     } = options;
     if (
       !documentId ||
@@ -172,6 +223,20 @@ export class CoordinatedDocument<
       throw new Error(
         'Strict group roster matching requires a signed document authority log',
       );
+    if (
+      enableAuthenticatedCatchUp !== undefined &&
+      typeof enableAuthenticatedCatchUp !== 'boolean'
+    )
+      throw new TypeError('Document catch-up flag must be boolean');
+    if (
+      enableAuthenticatedCatchUp &&
+      (!requireGroupRosterMatch ||
+        !journal ||
+        typeof crdt.getSnapshot !== 'function')
+    )
+      throw new TypeError(
+        'Document catch-up requires strict roster matching, a journal, and native snapshots',
+      );
 
     this.options = {
       coordinator,
@@ -179,6 +244,7 @@ export class CoordinatedDocument<
       journal,
       persistPublications,
       requireGroupRosterMatch,
+      enableAuthenticatedCatchUp,
     };
     this.genesisId = copyUnsharedUint8Array(
       authority.genesisId,
@@ -189,6 +255,15 @@ export class CoordinatedDocument<
     authority.assertCoordinator?.(coordinator);
     journal?.assertBinding(documentId, this.genesisId);
     this.session = crdt.createDocumentSession(initial);
+    if (
+      enableAuthenticatedCatchUp &&
+      typeof this.session.prepareMergeSnapshot !== 'function'
+    ) {
+      this.session.close();
+      throw new TypeError(
+        'Document catch-up requires detached native snapshot preparation',
+      );
+    }
   }
 
   get document(): Document {
@@ -371,6 +446,453 @@ export class CoordinatedDocument<
     }
   }
 
+  createCatchUpRequest(): Promise<Uint8Array> {
+    return this.enqueueCatchUp(undefined, 0, 0, (input) =>
+      this.runCatchUp(input, async (stage) => {
+        const requesterId = this.options.coordinator.localMemberId;
+        const member = stage.lease.members.get(documentBytesId(requesterId));
+        if (!member) throw new Error('Local member has no document authority');
+        const challenge = crypto.getRandomValues(new Uint8Array(32));
+        const value = await this.sealCatchUp(
+          stage,
+          'request',
+          encodeDocumentCatchUpRequest({
+            ...stage.binding,
+            requesterId,
+            challenge,
+          }),
+          member,
+        );
+        return {
+          value,
+          commit: () => {
+            this.pendingCatchUp = { roster: stage.roster, challenge };
+          },
+        };
+      }),
+    );
+  }
+
+  createCatchUpCheckpoint(request: Uint8Array): Promise<Uint8Array> {
+    return this.enqueueCatchUp(
+      request,
+      MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
+      MAX_DOCUMENT_CONTENT_BYTES,
+      (input) =>
+        this.runCatchUp(input, async (stage) => {
+          const controllerId = this.options.coordinator.localMemberId;
+          const controller = this.catchUpController(stage.lease, controllerId);
+          const signed = await this.openCatchUp(stage, 'request', input);
+          const body = decodeDocumentCatchUpRequest(signed.unsigned);
+          this.assertCatchUpBinding(stage.binding, body);
+          const requester = stage.lease.members.get(
+            documentBytesId(body.requesterId),
+          );
+          if (!requester || documentBytesEqual(body.requesterId, controllerId))
+            throw new Error('Document catch-up requester is unauthorized');
+          await this.verifyCatchUp(stage, signed, requester);
+          stage.assertCurrent();
+          const receipts = new Map(
+            [...this.receiptsAt(stage.binding.context)].sort(([a], [b]) =>
+              a < b ? -1 : a === b ? 0 : 1,
+            ),
+          );
+          const snapshot = this.serializer.serializeChanges(
+            this.crdt.getSnapshot!(this.session.document),
+          );
+          const value = await this.sealCatchUp(
+            stage,
+            'checkpoint',
+            encodeDocumentCatchUpCheckpoint({
+              ...body,
+              controllerId,
+              receipts: receiptEntries(receipts),
+              snapshot,
+            }),
+            controller,
+          );
+          return { value };
+        }),
+    );
+  }
+
+  applyCatchUpCheckpoint(checkpoint: Uint8Array): Promise<void> {
+    return this.enqueueCatchUp(
+      checkpoint,
+      MAX_DOCUMENT_SECURITY_FRAME_BYTES,
+      MAX_DOCUMENT_CONTENT_BYTES,
+      (input) => this.mergeCatchUpCheckpoint(input),
+    );
+  }
+
+  private enqueueCatchUp<Value>(
+    frame: Uint8Array | undefined,
+    maximum: number,
+    workBytes: number,
+    run: (input: Uint8Array) => Promise<Value>,
+  ): Promise<Value> {
+    try {
+      if (!this.options.enableAuthenticatedCatchUp)
+        throw new Error('Authenticated document catch-up is disabled');
+      const length =
+        frame === undefined
+          ? 0
+          : unsharedUint8ArrayByteLength(
+              frame,
+              1,
+              maximum,
+              'document catch-up frame',
+            );
+      return this.enqueue(length + workBytes, () => {
+        const owned =
+          frame === undefined
+            ? new Uint8Array()
+            : copyUnsharedUint8Array(
+                frame,
+                length,
+                length,
+                'document catch-up frame',
+              );
+        return () => run(owned);
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private async runCatchUp<Value>(
+    input: Uint8Array,
+    prepare: (
+      stage: CatchUpWork,
+      input: Uint8Array,
+    ) => Promise<CatchUpPreparation<Value>>,
+  ): Promise<Value> {
+    this.assertActivated();
+    const roster = this.rosterBinding;
+    if (!roster) throw new Error('Authenticated group roster is unavailable');
+    this.assertCurrentGroupRoster(roster);
+    let preparation: Promise<PreparedGroupDocumentOperation> | undefined;
+    let value!: Value;
+    try {
+      await this.options.coordinator.runDocumentOperation(
+        roster.context,
+        input,
+        (captured, owned, signal, work) => {
+          preparation = (async () => {
+            const lease = this.authority(captured);
+            const isCurrent = () =>
+              !signal.aborted &&
+              !this.closed &&
+              !this.failed &&
+              this.rosterBinding === roster &&
+              lease.isCurrent() &&
+              roster.isCurrent();
+            const assertCurrent = () => {
+              if (!isCurrent())
+                throw new Error('Document catch-up authority changed');
+              this.assertCurrentGroupRoster(roster);
+            };
+            assertCurrent();
+            const staged = await prepare(
+              {
+                binding: {
+                  documentId: this.documentId,
+                  genesisId: this.genesisId,
+                  authorityHead: lease.headId,
+                  context: captured,
+                },
+                roster,
+                lease,
+                material: await this.key(captured, work),
+                work,
+                assertCurrent,
+              },
+              owned,
+            );
+            return {
+              isAuthorizationCurrent: () =>
+                isCurrent() && (staged.isCurrent?.() ?? true),
+              commit: () => {
+                staged.commit?.();
+                value = staged.value;
+              },
+            };
+          })();
+          return preparation;
+        },
+      );
+      return value;
+    } finally {
+      await preparation?.then(
+        () => {},
+        () => {},
+      );
+    }
+  }
+
+  private catchUpController(
+    lease: AuthorityLease,
+    memberId: Uint8Array,
+  ): CapturedDocumentMember {
+    const id = documentBytesId(memberId);
+    const member = lease.members.get(id);
+    const paths = lease.writePaths.get(id);
+    if (
+      !member ||
+      !contentRolePermits(member.role, true) ||
+      (paths !== undefined && !paths.some((path) => path.length === 0))
+    )
+      throw new Error(
+        'Document catch-up requires the unrestricted current controller',
+      );
+    return member;
+  }
+
+  private assertCatchUpBinding(
+    expected: DocumentCatchUpBinding,
+    value: DocumentCatchUpBinding,
+  ): void {
+    if (
+      value.documentId !== expected.documentId ||
+      !documentBytesEqual(value.genesisId, expected.genesisId) ||
+      !documentBytesEqual(value.authorityHead, expected.authorityHead) ||
+      !documentContextsMatch(value.context, expected.context)
+    )
+      throw new Error('Document catch-up context mismatch');
+  }
+
+  private async openCatchUp(
+    stage: CatchUpWork,
+    kind: DocumentCatchUpKind,
+    frame: Uint8Array,
+  ) {
+    const envelope = decodeEncryptedDocumentContent(frame);
+    if (!documentBytesEqual(envelope.epochTag, stage.material.epochTag))
+      throw new Error('Document catch-up epoch is unavailable');
+    const { value } = await stage.work.observe<ArrayBuffer>(
+      (async () =>
+        crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+            additionalData: documentCatchUpAAD(
+              kind,
+              stage.binding,
+            ) as Uint8Array<ArrayBuffer>,
+          },
+          stage.material.key,
+          envelope.ciphertext as Uint8Array<ArrayBuffer>,
+        ))(),
+    );
+    return decodeSignedDocumentContent(new Uint8Array(value));
+  }
+
+  private async verifyCatchUp(
+    stage: CatchUpWork,
+    body: ReturnType<typeof decodeSignedDocumentContent>,
+    member: CapturedDocumentMember,
+  ): Promise<void> {
+    const { value: key } = await stage.work.observe<PublicKey>(
+      this.auth.deserializePublicKey(member.publicKey),
+    );
+    const { value: canonical } = await stage.work.observe<string>(
+      this.auth.serializePublicKey(key),
+    );
+    if (canonical !== member.publicKey)
+      throw new Error('Noncanonical document catch-up signer');
+    const { value: verified } = await stage.work.observe<boolean>(
+      this.auth.verify(body.unsigned.slice(), key, body.signature.slice()),
+    );
+    if (verified !== true)
+      throw new Error('Invalid document catch-up signature');
+  }
+
+  private async sealCatchUp(
+    stage: CatchUpWork,
+    kind: DocumentCatchUpKind,
+    unsigned: Uint8Array,
+    member: CapturedDocumentMember,
+  ): Promise<Uint8Array> {
+    const { value: canonical } = await stage.work.observe<string>(
+      this.auth.serializePublicKey(this.publicKey),
+    );
+    if (canonical !== member.publicKey)
+      throw new Error('Document signing identity mismatch');
+    const { value: rawSignature } = await stage.work.observe<Uint8Array>(
+      this.auth.sign(unsigned.slice(), this.privateKey),
+    );
+    const signature = copyUnsharedUint8Array(
+      rawSignature,
+      1,
+      1024,
+      'document catch-up signature',
+    );
+    const { value: verified } = await stage.work.observe<boolean>(
+      this.auth.verify(unsigned.slice(), this.publicKey, signature.slice()),
+    );
+    if (verified !== true)
+      throw new Error('Local catch-up signature does not match its authority');
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const { value: ciphertext } = await stage.work.observe<ArrayBuffer>(
+      (async () =>
+        crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: nonce,
+            additionalData: documentCatchUpAAD(
+              kind,
+              stage.binding,
+            ) as Uint8Array<ArrayBuffer>,
+          },
+          stage.material.key,
+          encodeSignedDocumentContent(
+            unsigned,
+            signature,
+          ) as Uint8Array<ArrayBuffer>,
+        ))(),
+    );
+    return encodeEncryptedDocumentContent(
+      stage.material.epochTag,
+      nonce,
+      new Uint8Array(ciphertext),
+    );
+  }
+
+  private async mergeCatchUpCheckpoint(input: Uint8Array): Promise<void> {
+    const pending = this.pendingCatchUp;
+    if (!pending) throw new Error('No document catch-up request is pending');
+    let plan: PreparedDocumentChange<Changes> | undefined;
+    let journal: PreparedDocumentJournal | undefined;
+    let accepting = false;
+    try {
+      const { context, receipts, lease } = await this.runCatchUp(
+        input,
+        async (stage, owned) => {
+          if (pending.roster !== stage.roster)
+            throw new Error('Document catch-up request authority changed');
+          const localId = this.options.coordinator.localMemberId;
+          if (!stage.lease.members.has(documentBytesId(localId)))
+            throw new Error('Local member has no document authority');
+          const signed = await this.openCatchUp(stage, 'checkpoint', owned);
+          const body = decodeDocumentCatchUpCheckpoint(signed.unsigned);
+          this.assertCatchUpBinding(stage.binding, body);
+          if (
+            !documentBytesEqual(body.requesterId, localId) ||
+            !documentBytesEqual(body.challenge, pending.challenge)
+          )
+            throw new Error(
+              'Document catch-up response has no matching request',
+            );
+          const controller = this.catchUpController(
+            stage.lease,
+            body.controllerId,
+          );
+          await this.verifyCatchUp(stage, signed, controller);
+          stage.assertCurrent();
+          const context = stage.binding.context;
+          const receipts = this.mergeCatchUpReceipts(
+            stage.lease,
+            context,
+            localId,
+            body.receipts,
+          );
+          plan = this.session.prepareMergeSnapshot!(
+            this.serializer.deserializeChanges(body.snapshot),
+          );
+          if (!plan.snapshot)
+            throw new Error('CRDT provider cannot checkpoint merged state');
+          const { value } = await stage.work.observe<PreparedDocumentJournal>(
+            this.options.journal!.prepare({
+              checkpoint: true,
+              context,
+              changes: this.serializer.serializeChanges(plan.snapshot()),
+              receipts: receiptEntries(receipts),
+              authorityHead: stage.lease.headId,
+              authorityRecords: this.options.authority.exportRecords!(),
+            }),
+          );
+          journal = value;
+          return {
+            value: { context, receipts, lease: stage.lease },
+            isCurrent: () => plan!.isCurrent(),
+          };
+        },
+      );
+      // An uncertain acceptance requires reopen. Do not expose the native merge
+      // before the authenticated journal and its independent anchor agree.
+      accepting = true;
+      this.pendingCatchUp = undefined;
+      await journal!.commit();
+      await this.runCatchUp(new Uint8Array(), async (stage) => {
+        if (stage.roster !== pending.roster || !lease.isCurrent())
+          throw new Error(
+            'Document catch-up authority changed after acceptance',
+          );
+        return {
+          value: undefined,
+          isCurrent: () => plan!.isCurrent(),
+          commit: () => {
+            plan!.commit();
+            this.receipts = receipts;
+            this.receiptsContext = context;
+            this.persistedAuthorityLease = lease.isCurrent;
+          },
+        };
+      });
+    } catch (error) {
+      if (accepting) this.failed = true;
+      throw error;
+    } finally {
+      plan?.discard();
+      try {
+        await journal?.discard();
+      } catch {
+        this.failed = true;
+        throw new Error('Document journal cleanup failed; reopen is required');
+      }
+    }
+  }
+
+  private mergeCatchUpReceipts(
+    lease: AuthorityLease,
+    context: GroupSecurityDocumentContext,
+    localId: Uint8Array,
+    offered: readonly DocumentReplayReceipt[],
+  ): Map<string, Receipt> {
+    const receipts = new Map(this.receiptsAt(context));
+    const local = documentBytesId(localId);
+    for (const { memberId, sequence, hash } of offered) {
+      const id = documentBytesId(memberId);
+      const writer = lease.members.get(id);
+      if (!writer || !contentRolePermits(writer.role, false))
+        throw new Error(
+          'Document catch-up receipt names an unauthorized writer',
+        );
+      const current = receipts.get(id);
+      const admission = admitDocumentCatchUpReceipt(
+        current?.sequence ?? 0,
+        sequence,
+        current !== undefined && documentBytesEqual(current.hash, hash),
+        id !== local,
+      );
+      if (admission === 'conflict')
+        throw new Error(
+          'Document catch-up receipt conflicts with the accepted head',
+        );
+      if (admission === 'adopt') receipts.set(id, { sequence, hash });
+    }
+    return receipts;
+  }
+
+  private receiptsAt(
+    context: GroupSecurityDocumentContext,
+  ): Map<string, Receipt> {
+    return this.receiptsContext &&
+      documentContextsMatch(this.receiptsContext, context)
+      ? this.receipts
+      : new Map();
+  }
+
   private authority(context: GroupSecurityDocumentContext) {
     return captureDocumentAuthorityLease(
       this.options.authority.capture(context),
@@ -400,11 +922,7 @@ export class CoordinatedDocument<
     message = '',
   ): Promise<Uint8Array> {
     const context = this.options.coordinator.documentContext;
-    const receipts =
-      this.receiptsContext &&
-      documentContextsMatch(this.receiptsContext, context)
-        ? this.receipts
-        : new Map<string, Receipt>();
+    const receipts = this.receiptsAt(context);
     let journal: PreparedDocumentJournal | undefined;
     let commitAttempted = false;
     let acceptedAuthorityLease: (() => boolean) | undefined;
@@ -633,12 +1151,7 @@ export class CoordinatedDocument<
               const nextReceipts = new Map(receipts);
               nextReceipts.set(documentBytesId(memberId), { sequence, hash });
               const persistedReceipts = checkpoint
-                ? [...nextReceipts].map(([id, receipt]) => ({
-                    memberId: Uint8Array.from(id.match(/../g)!, (byte) =>
-                      parseInt(byte, 16),
-                    ),
-                    ...receipt,
-                  }))
+                ? receiptEntries(nextReceipts)
                 : [{ memberId, sequence, hash }];
               const { value } = await work.observe<PreparedDocumentJournal>(
                 this.options.journal.prepare({
@@ -1008,6 +1521,7 @@ export class CoordinatedDocument<
     this.closed = true;
     this.activated = false;
     this.rosterBinding = undefined;
+    this.pendingCatchUp = undefined;
     this.material = undefined;
     return this.tail.then(() => this.session.close());
   }
