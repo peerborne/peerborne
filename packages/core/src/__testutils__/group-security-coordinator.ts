@@ -612,6 +612,8 @@ export class TestIdentities {
   readonly actorId = id(0xa1);
   readonly attackerId = id(0xb2);
   failNextSign = false;
+  rejectSignatures = false;
+  verifyFailure?: Error;
   verifyCalls = 0;
   private readonly keys = new Map<string, CryptoKey>();
 
@@ -636,6 +638,8 @@ export class TestIdentities {
     actorId,
   ) => {
     this.verifyCalls += 1;
+    if (this.verifyFailure !== undefined) throw this.verifyFailure;
+    if (this.rejectSignatures) return false;
     const key = this.keys.get(toHex(actorId));
     return (
       key !== undefined &&
@@ -667,12 +671,14 @@ export async function generateHmacKey(): Promise<CryptoKey> {
 export class AuthorizationPolicy {
   allowed = true;
   requirePrevious = false;
+  failure?: Error;
   calls: MembershipControlAuthorizationContext[] = [];
 
   constructor(private readonly allowedActor: Uint8Array) {}
 
   readonly authorize: MembershipControlAuthorizer = async (context) => {
     this.calls.push(context);
+    if (this.failure !== undefined) throw this.failure;
     if (
       !this.allowed ||
       !equalBytes(context.record.actorId, this.allowedActor)
