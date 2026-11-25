@@ -1,4 +1,4 @@
-import { fixtureLoadChallenge, fixtureLoadCommitments } from './__testutils__/load-session.js';
+import { fixtureLoadChallenge, fixtureLoadCommitments, fixtureLoadResponder, fixtureLoadResponderSwarm } from './__testutils__/load-session.js';
 import { welcomeFixture } from './__testutils__/beekem-v2.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
@@ -221,11 +221,11 @@ function publicationHarness(
       })),
     },
     _topic: '/topic',
-    swarm: {
+    swarm: fixtureLoadResponderSwarm({
       heliaNode: {
         libp2p: { services: { pubsub: { publish } } },
       },
-    },
+    }),
     _localHandlers: {},
     _maybeCompact: jest.fn(async () => undefined),
     _documentChangeCount: 0,
@@ -354,7 +354,7 @@ describe('writer ACL publication boundary', () => {
       .mockImplementation(() => undefined);
     try {
       await document.handleLoadRequestData(
-        { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+        { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==', responder: fixtureLoadResponder },
         { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
     } finally {
@@ -838,11 +838,11 @@ describe('writer ACL publication boundary', () => {
     await encryptionStarted.promise;
 
     const loadResponse = document.handleLoadRequestData(
-      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==', responder: fixtureLoadResponder },
       { send: loadSend, onDrain: async () => {}, close: async () => {} },
     );
     const snapshotResponse = document.handleSnapshotLoadRequestData(
-      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==' },
+      { loadChallenge: fixtureLoadChallenge(), documentId: '/writer-publication', signature: 'AA==', responder: fixtureLoadResponder },
       { send: snapshotSend, onDrain: async () => {}, close: async () => {} },
     );
 

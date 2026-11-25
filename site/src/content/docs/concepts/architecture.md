@@ -50,8 +50,10 @@ convergence through this complete path are not yet demonstrated in CI.
 ![A V4 load captures locally trusted writers, group commitments, and a fresh challenge; authenticated authorities agree on a complete response digest before state is applied.](../../../assets/diagrams/initial-load.svg "Current V4 load authentication and response binding.")
 
 Normal network loading uses V4 exclusively. Before probing, the loader captures
-canonical trusted signing authorities, a locally resolved control/group tuple,
-and a fresh 32-byte challenge. Every load, including the first, and every
+canonical trusted signing authorities and a locally resolved control/group
+tuple. Each responder receives its own signed request with a fresh 32-byte
+challenge and the responder's libp2p PeerId; responders refuse requests
+addressed to another PeerId. Every load, including the first, and every
 response a peer serves needs `resolveLoadSecurityCommitments`. Signing
 authorities come from the local writer ACL or, when it is empty as on a first
 load, from `resolveTrustedDocumentWriters`. Applications must supply
@@ -62,9 +64,10 @@ Quorum probes count each authenticated signing authority once across transport
 PeerIds. The agreed digest binds the document, served frontier, captured tuple,
 and a complete response manifest containing node kinds, edges, inline payloads,
 snapshot content/metadata, and keychain changes. The selected response must echo
-the fresh challenge, match the local tuple, verify under a captured writer, and
-reproduce that digest before mutation. Disabling quorum allows one trusted
-signed V4 response; challenge, tuple, signature, and frontier checks remain.
+the challenge sent to that responder, match the local tuple, verify under a
+captured writer, and reproduce that digest before mutation. Disabling quorum
+allows one trusted signed V4 response; challenge, tuple, signature, and
+frontier checks remain.
 
 Quorum loads strip inline changes and prefetch the served tree's CIDs through
 Helia before mutation. CID validation covers ciphertext bytes; signed manifests

@@ -1,4 +1,4 @@
-import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
+import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, fixtureLoadResponder, fixtureLoadResponderSwarm, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import { describe, expect, jest, test } from '@jest/globals';
 
@@ -1381,7 +1381,7 @@ describe('document load response boundaries', () => {
       .mockResolvedValue(['writer']);
     const verify = jest.fn(async () => true);
     const document = fakeDocument({
-      swarm: { config: { enableSigning: true } },
+      swarm: fixtureLoadResponderSwarm({ config: { enableSigning: true } }),
       _deserializeSignature: jest.fn(() => new Uint8Array([1])),
       _encoder: new TextEncoder(),
       _readers: { users: readers },
@@ -1393,6 +1393,7 @@ describe('document load response boundaries', () => {
       document._isLoadRequesterAuthorized({ loadChallenge: fixtureLoadChallenge(),
         documentId: '/retry-load-requester',
         signature: 'AAAA',
+        responder: fixtureLoadResponder,
       }),
     ).resolves.toBe(true);
     expect(readers).toHaveBeenCalledTimes(2);
@@ -2814,7 +2815,7 @@ describe('document load response boundaries', () => {
     async (enableSigning) => {
       const verify = jest.fn(async (_raw, key) => key === 'reader');
       const document = fakeDocument({
-        swarm: { config: { enableSigning } },
+        swarm: fixtureLoadResponderSwarm({ config: { enableSigning } }),
         _deserializeSignature: jest.fn(() => new Uint8Array([1])),
         _readers: { users: async () => ['reader'] },
         _writers: { users: async () => [] },
@@ -2824,6 +2825,7 @@ describe('document load response boundaries', () => {
         documentId: '/signed-load-requester',
         loadChallenge: fixtureLoadChallenge(),
         signature: 'AAAA',
+        responder: fixtureLoadResponder,
       };
 
       await expect(document._isLoadRequesterAuthorized(request)).resolves.toBe(
@@ -2831,6 +2833,9 @@ describe('document load response boundaries', () => {
       );
       await expect(
         document._isLoadRequesterAuthorized({ ...request, signature: undefined }),
+      ).resolves.toBe(false);
+      await expect(
+        document._isLoadRequesterAuthorized({ ...request, responder: 'other-peer' }),
       ).resolves.toBe(false);
       expect(verify).toHaveBeenCalledTimes(1);
     },
@@ -4470,7 +4475,7 @@ describe('document load response boundaries', () => {
       documentPath: '/response-aba',
       _bootstrapLoadApplicationState: 'complete',
       _bootstrapLoadApplicationRevision: 2,
-      swarm: { config: { enableSigning: true } },
+      swarm: fixtureLoadResponderSwarm({ config: { enableSigning: true } }),
       _isLoadRequesterAuthorized: async () => true,
       _createLoadResponsePlan: async (request: any) => currentLoadResponse({ documentId: '/response-aba', loadChallenge: request.loadChallenge }),
       _servedFrontier: jest.fn(() => []),
@@ -4495,7 +4500,7 @@ describe('document load response boundaries', () => {
     });
 
     const response = document.handleSecurityAdvertiseRequestData(
-      { loadChallenge: fixtureLoadChallenge(), signature: 'AQ==', documentId: '/response-aba' },
+      { loadChallenge: fixtureLoadChallenge(), signature: 'AQ==', documentId: '/response-aba', responder: fixtureLoadResponder },
       { send: responseSend, close: responseClose, onDrain: async () => {} },
     );
     await signingStarted.promise;
@@ -4535,7 +4540,7 @@ describe('document load response boundaries', () => {
         _bootstrapLoadApplicationRevision: 2,
         _encoder: new TextEncoder(),
         _mutationQueue: mutationQueue,
-        swarm: { config: { enableSigning: true }, resolveLoadSecurityCommitments: fixtureLoadCommitments },
+        swarm: fixtureLoadResponderSwarm({ config: { enableSigning: true }, resolveLoadSecurityCommitments: fixtureLoadCommitments }),
         _readers: {
           users: jest.fn(async () =>
             authorized ? ['revoked-reader'] : [],
@@ -4574,7 +4579,7 @@ describe('document load response boundaries', () => {
       });
 
       const response = document[methodName](
-        { loadChallenge: fixtureLoadChallenge(), documentId: '/response-revocation', signature: 'AAAA' },
+        { loadChallenge: fixtureLoadChallenge(), documentId: '/response-revocation', signature: 'AAAA', responder: fixtureLoadResponder },
         { send: responseSend, close: responseClose, onDrain: async () => {} },
       );
       await responseConstructionPaused.promise;
@@ -4616,7 +4621,7 @@ describe('document load response boundaries', () => {
       _bootstrapLoadApplicationRevision: 2,
       _encoder: new TextEncoder(),
       _mutationQueue: mutationQueue,
-      swarm: { config: { enableSigning: true } },
+      swarm: fixtureLoadResponderSwarm({ config: { enableSigning: true } }),
       _readers: {
         users: conflictingACL === 'readers' ? conflictingUsers : otherUsers,
       },
@@ -4677,6 +4682,7 @@ describe('document load response boundaries', () => {
           documentId: '/queued-authorization-conflict',
           loadChallenge: fixtureLoadChallenge(),
           signature: 'AAAA',
+          responder: fixtureLoadResponder,
         },
         responseStream,
       );
@@ -4711,6 +4717,7 @@ describe('document load response boundaries', () => {
         documentId: '/queued-authorization-conflict',
         loadChallenge: fixtureLoadChallenge(),
         signature: 'AAAA',
+        responder: fixtureLoadResponder,
       },
       responseStream,
       admission,
@@ -5010,7 +5017,12 @@ describe('document load response boundaries', () => {
         _encoder: new TextEncoder(),
         swarm: {
           heliaNode: {
-            libp2p: { dialProtocol: jest.fn(async () => rawStream) },
+            libp2p: {
+              dial: jest.fn(async () => ({
+                remotePeer: { toString: () => 'founder-peer' },
+                newStream: jest.fn(async () => rawStream),
+              })),
+            },
           },
         },
         _authProvider: {

@@ -185,8 +185,9 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 
 Initial loads, security advertisements, and the BeeKEM Welcome and PathUpdate
 membership-control protocols are a deliberate exception to that toggle. Load
-and advertisement requests are always signed by the requester, and each
-responder verifies them against its own current reader and writer ACLs. Load
+and advertisement requests are always signed by the requester and addressed to
+one responder's libp2p PeerId. Each responder checks that PeerId and verifies
+the signature against its own current reader and writer ACLs. Load
 responses and advertisements are always writer-signed, and the loader verifies
 them against its captured trusted writer authorities. Welcome and PathUpdate
 outer messages are always writer-signed, and receivers drop unsigned or
@@ -211,8 +212,19 @@ rejects responses without reducing the configured quorum or applying state.
 These limits bound outer-signature work for a load, rather than supplying a
 global peer rate limiter or a complete denial-of-service defense.
 
-V4 loading requires a fresh signed request challenge, trusted writer identities,
-and locally resolved control/group commitments. Configure
+V4 loading signs a separate request for each responder. The signature covers
+the document path, a fresh 32-byte challenge, and the remote libp2p PeerId of
+the authenticated connection the request is sent on; invitation catch-up
+addresses its request the same way. A responder refuses a request that names
+another PeerId, and the loader accepts only a response that echoes the
+challenge it sent to that responder. A peer that speaks the
+load protocols but holds no document key therefore cannot forward a loader's
+request to a writer and return the writer's signed answer as its own vote. It
+can neither fill a probe slot that way nor pair a forwarded answer with the
+writer's later direct answer to abort the load as an equivocating authority.
+
+V4 loading also requires trusted writer identities and locally resolved
+control/group commitments. Configure
 `resolveLoadSecurityCommitments(documentPath)` for every load, including the
 first, and for serving. It supplies the current `version`, `controlHead`,
 `groupId`, `epoch`, `treeHash`, and `confirmedTranscriptHash`; a responder

@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { runInNewContext } from 'node:vm';
 import {
   INITIAL_LOAD_CHALLENGE_LENGTH,
+  MAX_INITIAL_LOAD_RESPONDER_BYTES,
   cloneInitialLoadChallenge,
   createInitialLoadChallenge,
   deserializeInitialLoadChallengeFromWire,
@@ -9,6 +10,7 @@ import {
   initialLoadRequestSignaturePayload,
   serializeInitialLoadChallengeForWire,
   validateInitialLoadChallenge,
+  validateInitialLoadResponder,
 } from './initial-load-challenge.js';
 
 describe('V4 initial-load challenge', () => {
@@ -62,8 +64,8 @@ describe('V4 initial-load challenge', () => {
     expect(serializeInitialLoadChallengeForWire(challenge)).toBe(
       serializeInitialLoadChallengeForWire(cloned),
     );
-    expect(initialLoadRequestSignaturePayload('/doc', challenge)).toEqual(
-      initialLoadRequestSignaturePayload('/doc', cloned),
+    expect(initialLoadRequestSignaturePayload('/doc', challenge, 'peer')).toEqual(
+      initialLoadRequestSignaturePayload('/doc', cloned, 'peer'),
     );
   });
 
@@ -92,7 +94,7 @@ describe('V4 initial-load challenge', () => {
         /unshared/,
       );
       expect(() =>
-        initialLoadRequestSignaturePayload('/doc', invalid),
+        initialLoadRequestSignaturePayload('/doc', invalid, 'peer'),
       ).toThrow(/unshared/);
       expect(
         initialLoadChallengeEquals(new Uint8Array(32).fill(4), invalid),
@@ -120,16 +122,55 @@ describe('V4 initial-load challenge', () => {
 
   test('signature payload binds document, nonce, boundaries, and rejects lone surrogates', () => {
     const challenge = new Uint8Array(INITIAL_LOAD_CHALLENGE_LENGTH).fill(1);
-    expect(initialLoadRequestSignaturePayload('/a', challenge)).not.toEqual(
-      initialLoadRequestSignaturePayload('/b', challenge),
+    expect(initialLoadRequestSignaturePayload('/a', challenge, 'peer')).not.toEqual(
+      initialLoadRequestSignaturePayload('/b', challenge, 'peer'),
     );
     const changed = new Uint8Array(challenge);
     changed[0] ^= 1;
-    expect(initialLoadRequestSignaturePayload('/a', challenge)).not.toEqual(
-      initialLoadRequestSignaturePayload('/a', changed),
+    expect(initialLoadRequestSignaturePayload('/a', challenge, 'peer')).not.toEqual(
+      initialLoadRequestSignaturePayload('/a', changed, 'peer'),
     );
     expect(() =>
-      initialLoadRequestSignaturePayload('\ud800', challenge),
+      initialLoadRequestSignaturePayload('\ud800', challenge, 'peer'),
     ).toThrow(/well-formed UTF-16/);
+  });
+
+  test('signature payload binds the addressed responder with a length prefix', () => {
+    const challenge = new Uint8Array(INITIAL_LOAD_CHALLENGE_LENGTH).fill(1);
+    const relay = initialLoadRequestSignaturePayload('/a', challenge, 'relay');
+    expect(relay).not.toEqual(
+      initialLoadRequestSignaturePayload('/a', challenge, 'writer'),
+    );
+    expect(relay).not.toEqual(
+      initialLoadRequestSignaturePayload('/a', challenge, 'relay2'),
+    );
+    expect(relay.subarray(-9)).toEqual(
+      new Uint8Array([0, 0, 0, 5, ...new TextEncoder().encode('relay')]),
+    );
+    const longest = 'p'.repeat(MAX_INITIAL_LOAD_RESPONDER_BYTES);
+    expect(() =>
+      initialLoadRequestSignaturePayload('/a', challenge, longest),
+    ).not.toThrow();
+    expect(() => validateInitialLoadResponder(longest)).not.toThrow();
+  });
+
+  test.each([
+    ['a missing responder', undefined, /non-empty string/],
+    ['an empty responder', '', /non-empty string/],
+    ['a non-string responder', 7, /non-empty string/],
+    ['a boxed responder', new String('peer'), /non-empty string/],
+    [
+      'an oversized responder',
+      'p'.repeat(MAX_INITIAL_LOAD_RESPONDER_BYTES + 1),
+      /exceeds 128 UTF-8 bytes/,
+    ],
+    ['a wide oversized responder', 'あ'.repeat(43), /exceeds 128 UTF-8 bytes/],
+    ['a lone surrogate responder', '\udc00', /well-formed UTF-16/],
+  ])('rejects %s', (_label, responder, error) => {
+    const challenge = new Uint8Array(INITIAL_LOAD_CHALLENGE_LENGTH).fill(1);
+    expect(() => validateInitialLoadResponder(responder)).toThrow(error);
+    expect(() =>
+      initialLoadRequestSignaturePayload('/a', challenge, responder as string),
+    ).toThrow(error);
   });
 });

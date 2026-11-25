@@ -9,7 +9,10 @@ import {
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
-import type { InitialLoadSession } from './internal/initial-load-session.js';
+import type {
+  InitialLoadSession,
+  InitialLoadSessionBase,
+} from './internal/initial-load-session.js';
 import {
   decodeSyncRequest, encodeSyncRequest, isSyncRequest, isSyncRequestFresh,
   syncRequestSigningPayload, syncSnapshotHint, type SyncRequest,
@@ -35,7 +38,7 @@ import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, se
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
 import { identifyInitialLoadSigner, verifyInitialLoadAuthentication, InitialLoadAuthenticationBudget } from './initial-load-auth.js';
-import { createInitialLoadChallenge, cloneInitialLoadChallenge, initialLoadChallengeEquals, initialLoadRequestSignaturePayload } from './initial-load-challenge.js';
+import { createInitialLoadChallenge, cloneInitialLoadChallenge, initialLoadChallengeEquals, initialLoadRequestSignaturePayload, validateInitialLoadResponder } from './initial-load-challenge.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
@@ -250,6 +253,9 @@ import {
 } from './shared-protocol-admission.js';
 import { constantTimeEqual } from './internal/constant-time-equal.js';
 export type { HistoryVisibility } from './invitation-policy.js';
+
+/** Authenticated libp2p PeerIds of connected load candidates, by address. */
+const loadCandidateResponders = new WeakMap<object, string>();
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -1618,7 +1624,13 @@ export class PeerborneDocument<
     );
     const peers = connections
       .filter((_connection, index) => loadable[index])
-      .map((connection) => connection.remoteAddr);
+      .map((connection) => {
+        const responder = connection.remotePeer?.toString();
+        if (typeof responder === 'string') {
+          loadCandidateResponders.set(connection.remoteAddr, responder);
+        }
+        return connection.remoteAddr;
+      });
     if (peers.length === 0) {
       return peers;
     }
@@ -3096,7 +3108,7 @@ export class PeerborneDocument<
 
   private async _captureLoadSession(
     issuer?: PublicKey,
-  ): Promise<InitialLoadSession<PublicKey>> {
+  ): Promise<InitialLoadSessionBase<PublicKey>> {
     const writerVersion = this._writerKeysVersion ?? 0;
     this._assertLoadWriterVersion(writerVersion);
     const commitments = issuer === undefined
@@ -3127,7 +3139,6 @@ export class PeerborneDocument<
       authorityId, publicKey: stableKeys.get(authorityId)!,
     })));
     const captured = {
-      challenge: createInitialLoadChallenge(),
       authorities: stableAuthorities,
       trustedSigners: createInitialLoadSignerLookup(stableAuthorities),
       authenticationBudget: new InitialLoadAuthenticationBudget(),
@@ -3139,19 +3150,39 @@ export class PeerborneDocument<
       : Object.freeze({ ...captured, context: 'invitation-catch-up-v1' });
   }
 
+  /**
+   * Address a captured session to one responder's libp2p PeerId with a fresh
+   * challenge. A response is accepted only when it echoes that challenge, so it
+   * answers the one request this responder was sent.
+   */
+  private _addressLoadSession(
+    session: InitialLoadSessionBase<PublicKey>,
+    responder: string,
+  ): InitialLoadSession<PublicKey> {
+    validateInitialLoadResponder(responder);
+    return Object.freeze({
+      ...session,
+      responder,
+      challenge: createInitialLoadChallenge(),
+    });
+  }
+
   private async _serializeInitialLoadRequest(session: InitialLoadSession<PublicKey>): Promise<Uint8Array> {
     const signature = this._serializeSignature(await this._authProvider.sign(
-      initialLoadRequestSignaturePayload(this.documentPath, session.challenge), this._userKey,
+      initialLoadRequestSignaturePayload(this.documentPath, session.challenge, session.responder),
+      this._userKey,
     ));
     const request: CRDTLoadRequest = {
       documentId: this.documentPath, signature,
       loadChallenge: new Uint8Array(session.challenge),
+      responder: session.responder,
     };
     const encoded = copyUnsharedUint8Array(
       this._loadMessageSerializer.serializeLoadRequest(request), 1,
       MAX_SHARED_PROTOCOL_REQUEST_BYTES, 'Initial load request',
     );
     if (request.documentId !== this.documentPath || request.signature !== signature ||
+        request.responder !== session.responder ||
         !initialLoadChallengeEquals(session.challenge, request.loadChallenge)) {
       throw new Error('Initial load request changed during serialization');
     }
@@ -3233,17 +3264,35 @@ export class PeerborneDocument<
     return this._handleLoadRequestData(message, stream, 'invitation-catch-up-v1', admission);
   }
 
+  /**
+   * Whether a load request names this node's libp2p PeerId as its responder.
+   * A peer that relays someone else's signed request cannot obtain an answer
+   * from a writer the request was not addressed to.
+   */
+  private _isLoadRequestAddressedHere(message: CRDTLoadRequest): boolean {
+    let localPeer: unknown;
+    try {
+      localPeer = this.libp2p.peerId?.toString();
+    } catch {
+      return false;
+    }
+    return typeof localPeer === 'string' && localPeer.length > 0 &&
+      message.responder === localPeer;
+  }
+
   private async _isLoadRequesterAuthorized(
     message: CRDTLoadRequest,
     retryConflicts = true,
   ): Promise<boolean> {
-    if (!message.signature) return false;
+    if (!message.signature || !this._isLoadRequestAddressedHere(message)) return false;
 
     let signature: Uint8Array;
     let requestBytes: Uint8Array;
     try {
       signature = this._deserializeSignature(message.signature);
-      requestBytes = initialLoadRequestSignaturePayload(message.documentId, message.loadChallenge!);
+      requestBytes = initialLoadRequestSignaturePayload(
+        message.documentId, message.loadChallenge!, message.responder,
+      );
     } catch {
       return false;
     }
@@ -6226,21 +6275,27 @@ export class PeerborneDocument<
       try {
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) throw new Error('Invitation catch-up deadline exceeded');
+        const responders = new WeakMap<object, string>();
         return await withIssuerPinnedInvitationStream(
           founderAddress,
-          (address, signal, forceNewConnection) =>
-            this.libp2p.dialProtocol(multiaddr(address) as any, [invitationCatchUpV1], {
+          async (address, signal, forceNewConnection) => {
+            const options = {
               runOnLimitedConnection: true,
               force: forceNewConnection,
               signal,
-            }),
+            };
+            const connection = await this.libp2p.dial(multiaddr(address) as any, options);
+            const stream = await connection.newStream([invitationCatchUpV1], options);
+            responders.set(stream, connection.remotePeer.toString());
+            return stream;
+          },
           async (rawStream, signal) => {
             // Capture and sign inside each stream deadline so a provider that
             // never settles cannot hold the invitation transaction's
             // `_mutationQueue` slot.
-            const session = await awaitLoadWork(
-              this._captureLoadSession(issuerPublicKey),
-              signal,
+            const session = this._addressLoadSession(
+              await awaitLoadWork(this._captureLoadSession(issuerPublicKey), signal),
+              responders.get(rawStream) as string,
             );
             const serializedRequest = await awaitLoadWork(
               this._serializeInitialLoadRequest(session),
@@ -6334,7 +6389,27 @@ export class PeerborneDocument<
       }
     }
 
-    const serializedRequest = await this._serializeInitialLoadRequest(session);
+    // Each responder receives its own signed request and challenge, so a peer
+    // cannot relay another responder's request or answer as its own vote.
+    const addressedRequests = new Map<string, Promise<{
+      session: InitialLoadSession<PublicKey>;
+      serializedRequest: Uint8Array;
+    }>>();
+    const addressedRequest = (peer: import('@multiformats/multiaddr').Multiaddr) => {
+      const responder = loadCandidateResponders.get(peer) ?? this._peerIdOf(peer);
+      let request = addressedRequests.get(responder);
+      if (request === undefined) {
+        request = (async () => {
+          const addressed = this._addressLoadSession(session, responder);
+          return {
+            session: addressed,
+            serializedRequest: await this._serializeInitialLoadRequest(addressed),
+          };
+        })();
+        addressedRequests.set(responder, request);
+      }
+      return request;
+    };
 
     const quorumPeers = dedupePeersByPeerId(
       orderedPeers,
@@ -6345,8 +6420,12 @@ export class PeerborneDocument<
     const quorumResult = await runLoadQuorum({
       peers: quorumPeers,
       peerIdOf: (p) => this._peerIdOf(p),
-      probeFn: (peer) =>
-        this._raceSecurityAdvertiseProbe(session, peer, serializedRequest, timeoutMs),
+      probeFn: async (peer) => {
+        const request = await addressedRequest(peer);
+        return this._raceSecurityAdvertiseProbe(
+          request.session, peer, request.serializedRequest, timeoutMs,
+        );
+      },
       documentPath: this.documentPath,
       config: {
         enabled: this.swarm.config?.loadQuorumEnabled ?? true,
@@ -6383,13 +6462,14 @@ export class PeerborneDocument<
         try {
           this._beekemForkGuard?.assertAcceptsWork();
           console.log('Trying snapshot-load from peer:', peer.toString());
+          const request = await addressedRequest(peer);
           const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV4,
           ], { runOnLimitedConnection: true });
           const loaded = await this._sendLoadRequestAndSync(
-            session,
+            request.session,
             snapshotStream,
-            serializedRequest,
+            request.serializedRequest,
             winningHashHex,
           );
           if (loaded) {
@@ -6419,13 +6499,14 @@ export class PeerborneDocument<
       try {
         this._beekemForkGuard?.assertAcceptsWork();
         console.log('Trying doc-load from peer:', peer.toString());
+        const request = await addressedRequest(peer);
         const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV4,
         ], { runOnLimitedConnection: true });
         const loaded = await this._sendLoadRequestAndSync(
-          session,
+          request.session,
           docStream,
-          serializedRequest,
+          request.serializedRequest,
           winningHashHex,
         );
         if (loaded) {

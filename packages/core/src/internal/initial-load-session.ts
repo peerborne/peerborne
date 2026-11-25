@@ -5,8 +5,7 @@ import type {
 import type { InitialLoadAuthenticationBudget } from '../initial-load-auth.js';
 import type { LoadSecurityCommitments } from '../load-security-state.js';
 
-export type InitialLoadSession<PublicKey> = {
-  readonly challenge: Uint8Array;
+export type InitialLoadSessionBase<PublicKey> = {
   readonly authorities: readonly InitialLoadSignerAuthority<PublicKey>[];
   readonly trustedSigners: InitialLoadSignerLookup<PublicKey>;
   readonly authenticationBudget: InitialLoadAuthenticationBudget;
@@ -19,3 +18,9 @@ export type InitialLoadSession<PublicKey> = {
     }
   | { readonly context: 'invitation-catch-up-v1' }
 );
+
+/** A load session addressed to one responder with its own fresh challenge. */
+export type InitialLoadSession<PublicKey> = InitialLoadSessionBase<PublicKey> & {
+  readonly responder: string;
+  readonly challenge: Uint8Array;
+};

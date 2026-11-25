@@ -84,6 +84,7 @@ describe('load-request stream framing', () => {
       documentId: '/doc',
       signature: 'sig',
       loadChallenge: new Uint8Array(32).fill(7),
+      responder: 'peer',
     });
     expect(jsonSerializer.deserializeLoadRequest(request).documentId).toBe(
       '/doc',
@@ -120,6 +121,7 @@ describe('V4 initial-load challenge JSON boundary', () => {
           documentId: '/doc',
           signature: 'request-signature',
           loadChallenge: challenge,
+          responder: 'peer',
         }),
       ).loadChallenge,
     ).toEqual(challenge);
@@ -169,6 +171,7 @@ describe('signed top-level wire field order', () => {
           documentId: '/doc',
           signature: 'sig',
           loadChallenge: new Uint8Array(32).fill(7),
+          responder: 'peer',
         }),
       ),
     ).loadChallenge as string;
@@ -176,14 +179,17 @@ describe('signed top-level wire field order', () => {
       JSON.stringify({
         loadChallenge: challengeWire,
         documentId: '/doc',
+        responder: 'peer',
         signature: 'sig',
       }),
       JSON.stringify({
         documentId: '/doc',
         loadChallenge: challengeWire,
         signature: 'sig',
+        responder: 'peer',
       }),
       JSON.stringify({
+        responder: 'peer',
         signature: 'sig',
         documentId: '/doc',
         loadChallenge: challengeWire,

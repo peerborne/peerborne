@@ -1,4 +1,4 @@
-import { fixtureLoadChallenge } from './__testutils__/load-session.js';
+import { fixtureLoadChallenge, fixtureLoadResponder } from './__testutils__/load-session.js';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
@@ -44,6 +44,7 @@ type Handler = (stream: unknown) => Promise<void>;
 function requestBytes(documentId: string): Uint8Array {
   return new JSONSerializer<unknown>().serializeLoadRequest({
     documentId, signature: 'AQ==', loadChallenge: fixtureLoadChallenge(),
+    responder: fixtureLoadResponder,
   });
 }
 

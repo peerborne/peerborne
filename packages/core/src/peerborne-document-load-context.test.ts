@@ -225,6 +225,33 @@ describe('load-response V4 confinement', () => {
     expect(harness.syncUnlocked).not.toHaveBeenCalled();
   });
 
+  test('rejects a full response that answers a request addressed to another responder', async () => {
+    const harness = loadHarness();
+    const base = fixedLoadSession(harness.document);
+    const relay = harness.document._addressLoadSession(base, 'relay');
+    const writer = harness.document._addressLoadSession(base, 'writer');
+    harness.deserializeSyncMessage.mockImplementation(() =>
+      currentLoadResponse({
+        documentId: documentPath,
+        signatureContext: 'load-response-v4',
+        tips: [],
+        signature: 'AQ==',
+        loadChallenge: writer.challenge,
+      }),
+    );
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(relay, loadStream(), new Uint8Array([1])),
+    ).resolves.toBe(false);
+    expect(harness.verify).not.toHaveBeenCalled();
+    expect(harness.syncUnlocked).not.toHaveBeenCalled();
+
+    await expect(
+      harness.document._sendLoadRequestAndSync(writer, loadStream(), new Uint8Array([1])),
+    ).resolves.toBe(true);
+    expect(harness.syncUnlocked).toHaveBeenCalledTimes(1);
+  });
+
   test('detaches nested state before deferred verification', async () => {
     const decoded = {
       documentId: documentPath,
@@ -921,6 +948,61 @@ describe('load connection handling', () => {
 
     await expect(document.load()).resolves.toBe(true);
     expect(new Set(attempts)).toEqual(new Set([aliceDirect, aliceRelayed]));
+  });
+
+  test('addresses one request per peer id and reuses it for that peer', async () => {
+    const document = connectionHarness([aliceDirect, aliceRelayed, bob], {
+      loadQuorumEnabled: false,
+    });
+    const signed: Array<{ responder: string; challenge: Uint8Array }> = [];
+    document._serializeInitialLoadRequest = jest.fn(
+      async (session: { responder: string; challenge: Uint8Array }) => {
+        signed.push(session);
+        return new Uint8Array([signed.length]);
+      },
+    );
+    const attempts: Array<{ peer: string; responder: string; bytes: Uint8Array }> = [];
+    document._sendLoadRequestAndSync = jest.fn(
+      async (
+        session: { responder: string },
+        stream: { peer: string },
+        bytes: Uint8Array,
+      ) => {
+        attempts.push({ peer: stream.peer, responder: session.responder, bytes });
+        return false;
+      },
+    );
+
+    await expect(document.load()).resolves.toBe(false);
+    expect(signed.map(({ responder }) => responder).sort()).toEqual(['alice', 'bob']);
+    expect(signed[0].challenge).not.toEqual(signed[1].challenge);
+    expect(attempts).toHaveLength(3);
+    for (const { peer, responder, bytes } of attempts) {
+      expect(document._peerIdOf({ toString: () => peer })).toBe(responder);
+      const session = signed.find((candidate) => candidate.responder === responder)!;
+      expect(bytes).toEqual(new Uint8Array([signed.indexOf(session) + 1]));
+    }
+  });
+
+  test('addresses the authenticated connection PeerId instead of the address encoding', async () => {
+    const cidAddress = '/ip4/10.0.0.8/tcp/1/p2p/bafzaajaiaejcal72gwuz2or47oyxxn6b3rkwdmmkrxgkjxzy3rqt5kczyn7lcm3l';
+    const canonical = '12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA';
+    const document = connectionHarness([], { loadQuorumEnabled: false });
+    const remoteAddr = { toString: () => cidAddress };
+    document.swarm.heliaNode.libp2p.getConnections = () => [
+      { remoteAddr, remotePeer: { toString: () => canonical } },
+    ];
+    const responders: string[] = [];
+    document._serializeInitialLoadRequest = jest.fn(
+      async (session: { responder: string }) => {
+        responders.push(session.responder);
+        return new Uint8Array([1]);
+      },
+    );
+    document._sendLoadRequestAndSync = jest.fn(async () => true);
+
+    await expect(document.load()).resolves.toBe(true);
+    expect(responders).toEqual([canonical]);
   });
 
   test('probes each peer id once when quorum is enabled', async () => {

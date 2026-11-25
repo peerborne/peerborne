@@ -70,7 +70,7 @@ test.each(['lastChangeNodeCID', 'compactedCount', 'timestamp'] as const)(
   },
 );
 
-test.each(['challenge', 'commitments', 'manifest'] as const)(
+test.each(['challenge', 'responder', 'commitments', 'manifest'] as const)(
   'over-limit %s text is rejected without UTF-8 allocation or an unbounded scan',
   async (kind) => {
     await fc.assert(
@@ -78,7 +78,8 @@ test.each(['challenge', 'commitments', 'manifest'] as const)(
         fc.integer({ min: 1, max: 128 }),
         fc.boolean(),
         async (extra, wide) => {
-          const maximum = kind === 'challenge' ? 4096 : 1024;
+          const maximum =
+            kind === 'challenge' ? 4096 : kind === 'responder' ? 128 : 1024;
           const value = wide
             ? 'あ'.repeat(Math.floor(maximum / 3) + extra)
             : 'x'.repeat(maximum + extra);
@@ -102,7 +103,17 @@ test.each(['challenge', 'commitments', 'manifest'] as const)(
           try {
             const call = () =>
               kind === 'challenge'
-                ? initialLoadRequestSignaturePayload(value, new Uint8Array(32))
+                ? initialLoadRequestSignaturePayload(
+                    value,
+                    new Uint8Array(32),
+                    'responder',
+                  )
+                : kind === 'responder'
+                  ? initialLoadRequestSignaturePayload(
+                      '/doc',
+                      new Uint8Array(32),
+                      value,
+                    )
                 : kind === 'commitments'
                   ? cloneLoadSecurityCommitments(commitments(value))
                   : loadResponseManifestHash({
@@ -186,25 +197,25 @@ test('valid text retains canonical challenge bytes and needs no encoding during 
         })
         .map((parts) => parts.join('')),
       fc.uint8Array({ minLength: 32, maxLength: 32 }),
-      (value, nonce) => {
+      fc.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{1,128}$/),
+      (value, nonce, responderText) => {
         const document = new TextEncoder().encode(value);
+        const responder = new TextEncoder().encode(responderText);
         const domain = new TextEncoder().encode(
           'peerborne/initial-load-request/v4\0',
         );
-        const expected = new Uint8Array(
-          domain.length + 4 + document.length + 32,
-        );
+        const responderOffset = domain.length + 4 + document.length + 32;
+        const expected = new Uint8Array(responderOffset + 4 + responder.length);
+        const view = new DataView(expected.buffer);
         expected.set(domain);
-        new DataView(expected.buffer).setUint32(
-          domain.length,
-          document.length,
-          false,
-        );
+        view.setUint32(domain.length, document.length, false);
         expected.set(document, domain.length + 4);
         expected.set(nonce, domain.length + 4 + document.length);
-        expect(initialLoadRequestSignaturePayload(value, nonce)).toEqual(
-          expected,
-        );
+        view.setUint32(responderOffset, responder.length, false);
+        expected.set(responder, responderOffset + 4);
+        expect(
+          initialLoadRequestSignaturePayload(value, nonce, responderText),
+        ).toEqual(expected);
         const spy = jest.spyOn(TextEncoder.prototype, 'encode');
         try {
           const original = commitments(value);

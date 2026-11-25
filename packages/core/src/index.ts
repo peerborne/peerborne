@@ -403,6 +403,7 @@ export type {
 export {
   INITIAL_LOAD_CHALLENGE_LENGTH,
   MAX_INITIAL_LOAD_CHALLENGE_DOCUMENT_ID_BYTES,
+  MAX_INITIAL_LOAD_RESPONDER_BYTES,
   cloneInitialLoadChallenge,
   createInitialLoadChallenge,
   deserializeInitialLoadChallengeFromWire,
@@ -410,6 +411,7 @@ export {
   initialLoadRequestSignaturePayload,
   serializeInitialLoadChallengeForWire,
   validateInitialLoadChallenge,
+  validateInitialLoadResponder,
 } from './initial-load-challenge.js';
 export {
   documentLoadV4,
