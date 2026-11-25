@@ -15,7 +15,7 @@
     "@peerborne/vue": "workspace:^",
     "@peerborne/yjs": "workspace:^",
     "@tanstack/db": "1.0.0-rc.1.1",
-    "@tiptap/core": "^3.32.2",
+    "@tiptap/core": "^3.35.0",
     "@tiptap/extension-collaboration": "^3.32.2",
     "@tiptap/pm": "^3.32.2",
     "@tiptap/starter-kit": "^3.32.2",

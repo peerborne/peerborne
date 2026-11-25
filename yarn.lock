@@ -5105,7 +5105,7 @@ __metadata:
     "@peerborne/yjs": "workspace:^"
     "@sveltejs/vite-plugin-svelte": "npm:^7.3.1"
     "@tanstack/db": "npm:1.0.0-rc.1.1"
-    "@tiptap/core": "npm:^3.32.2"
+    "@tiptap/core": "npm:^3.35.0"
     "@tiptap/extension-collaboration": "npm:^3.32.2"
     "@tiptap/pm": "npm:^3.32.2"
     "@tiptap/starter-kit": "npm:^3.32.2"
@@ -6382,12 +6382,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@tiptap/core@npm:3.32.2, @tiptap/core@npm:^3.32.2":
+"@tiptap/core@npm:3.32.2":
   version: 3.32.2
   resolution: "@tiptap/core@npm:3.32.2"
   peerDependencies:
     "@tiptap/pm": 3.32.2
   checksum: 10/a1a236d6332f9985d1a3a42cae4ee6609ad4045395de612cfe3e9083a41d16e3f7d749939b470fa6b5243dc77706808881dcb677f32e2833949d46597e9bf3f0
+  languageName: node
+  linkType: hard
+
+"@tiptap/core@npm:^3.35.0":
+  version: 3.35.0
+  resolution: "@tiptap/core@npm:3.35.0"
+  peerDependencies:
+    "@tiptap/pm": 3.35.0
+  checksum: 10/100ba87cb867e67d6d2894515ccc43cd93cacd76cea59b385d49c60dd41674d799e7df885691bdbba25c35185618eeb75c38a7055f1d88150bbb422f72c1dcf2
   languageName: node
   linkType: hard
 
