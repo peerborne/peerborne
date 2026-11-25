@@ -119,6 +119,22 @@ describe('GroupSecurityCoordinator terminal removal', () => {
     },
   );
 
+  test('rejects an active apply result for a signed removal of the local member', async () => {
+    const { coordinator, receiver, anchor, delivery } = await fixture();
+    receiver.provider.applyCommit = ContractTestProvider.prototype.applyCommit.bind(
+      receiver.provider,
+    );
+    await expect(
+      coordinator.applyCommit(delivery.commit!, delivery.controlRecord, []),
+    ).rejects.toMatchObject({ code: 'control-mismatch' });
+    expect((await anchor.load(storeKey))?.removal).toBeUndefined();
+    expect(coordinator.publicState.epoch).toBe(0n);
+    expect((await receiver.provider.getPublicState()).epoch).toBe(0n);
+    expect(
+      (await receiver.store.load(storeKey))?.encryptedState?.state.epoch,
+    ).toBe(0n);
+  });
+
   test('rejects a removed result that reports invented next-epoch state', async () => {
     const invalid = { status: 'removed' as const, state: publicState(1n) };
     const { coordinator, anchor, delivery } = await fixture(invalid);

@@ -2155,6 +2155,15 @@ export class GroupSecurityCoordinator {
       if (applied.status !== 'applied') {
         fail('control-mismatch', 'provider rejected a new authenticated record');
       }
+      if (
+        controlRecord.action === 'remove' &&
+        equalBytes(controlRecord.subjectId, this.actorId)
+      ) {
+        fail(
+          'control-mismatch',
+          'provider reported an active result for the local member removal',
+        );
+      }
       await this.validateApplyResult(
         applied,
         commit,
