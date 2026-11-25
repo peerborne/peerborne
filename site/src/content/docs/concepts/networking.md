@@ -100,6 +100,8 @@ A relay node bridges traffic between two peers behind NAT:
 
 The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data volume) but cannot decrypt document content.
 
+Relayed connections are limited connections in libp2p. Peerborne runs Bitswap on them by default (`helia.bitswap.runOnLimitedConnections: true`), so a peer reachable only through a relay can still fetch change blocks within the relay's circuit data and duration limits. Setting it to `false` stops block fetches over relays, which can stall loads and invitations.
+
 ### DCUtR (Direct Connection Upgrade through Relay)
 
 After an initial relayed connection, peers attempt to establish a direct WebRTC connection using DCUtR. The relay facilitates the hole-punching handshake; if successful, peers communicate directly, reducing relay load and latency.

@@ -23,7 +23,7 @@ export const MAX_CHANGE_TREE_DEPTH = 512;
  * tree that is one level deeper before its own compaction runs.
  */
 export const CHANGE_TREE_COMPACTION_DEPTH = MAX_CHANGE_TREE_DEPTH / 2;
-/** Upper bound on document nodes kept by a depth-triggered prune. */
+/** Inline changes kept by a depth-bound prune. */
 export const CHANGE_TREE_COMPACTION_KEEP = CHANGE_TREE_COMPACTION_DEPTH / 2;
 
 /**

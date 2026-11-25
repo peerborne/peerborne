@@ -34,9 +34,12 @@ export async function createAndStartHeliaNode(
   try {
     const {
       libp2p: libp2pInit,
-      bitswap: bitswapInit,
+      bitswap: configuredBitswap,
       ...heliaOptions
     } = heliaInit ?? {};
+    // Browser peers usually reach each other only through Circuit Relay, so
+    // block fetches must be allowed on relayed (limited) connections.
+    const bitswapInit = { runOnLimitedConnections: true, ...configuredBitswap };
     if (isLibp2p(libp2pInit)) {
       throw new Error(
         'Helia 7 requires libp2p creation options; preconfigured libp2p nodes are not supported',

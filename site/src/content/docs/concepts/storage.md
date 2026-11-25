@@ -143,8 +143,13 @@ by default**; writers can still request one directly with
 Each change embeds the retained tree as its parent, so the tree grows one level
 per change and serialization rejects trees deeper than 512 levels. Whatever the
 compaction settings, a writer whose retained tree reaches 256 levels takes a
-snapshot and prunes the tree to at most 128 recent document nodes. This runs
-after local changes, remote syncs and loads; readers do not snapshot.
+snapshot and prunes the tree to its 128 most recent inline changes, whatever
+`keepRecentNodes` says. Membership changes count toward that limit, and older
+ones stay attached as leaves. A peer that misses more changes than the retained
+tree holds cannot fill the gap from later messages; it needs `requestSync()` or
+a reload. This runs after local changes, remote syncs and loads; readers do
+not snapshot. A CRDT provider without `getSnapshot` cannot compact, so its
+documents still stop accepting changes at 512 levels.
 
 When compaction runs:
 1. The current CRDT state is serialized as a full snapshot

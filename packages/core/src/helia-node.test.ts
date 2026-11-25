@@ -127,9 +127,28 @@ describe('Helia node startup cleanup', () => {
       bitswap,
     } as NonNullable<PeerborneConfig['helia']>);
 
-    expect(mockCreateHelia).toHaveBeenCalledWith({ bitswap });
+    expect(mockCreateHelia).toHaveBeenCalledWith({
+      bitswap: { runOnLimitedConnections: true },
+    });
     expect(result.heliaNode).toBe(node);
     expect(result.openedStores).toEqual([]);
+  });
+
+  test('keeps an explicit Bitswap limited-connection setting', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      libp2p: { services: { pubsub: {} } },
+    };
+    mockCreateHelia.mockReturnValue(node as never);
+
+    await createAndStartHeliaNode({
+      bitswap: { runOnLimitedConnections: false },
+    } as NonNullable<PeerborneConfig['helia']>);
+
+    expect(mockCreateHelia).toHaveBeenCalledWith({
+      bitswap: { runOnLimitedConnections: false },
+    });
   });
 
   test('rejects an already-created libp2p node explicitly', async () => {

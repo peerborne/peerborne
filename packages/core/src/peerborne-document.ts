@@ -4187,12 +4187,13 @@ export class PeerborneDocument<
       this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
     }
 
-    // Track document changes for compaction.
+    // Track document changes for compaction. Membership nodes deepen the
+    // retained tree too, so every kind reaches the depth bound.
     if (kind === crdtDocumentChangeNode) {
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
-      await this._maybeCompact();
     }
+    await this._maybeCompact();
   }
 
   /**
@@ -4312,6 +4313,11 @@ export class PeerborneDocument<
     this._compactionInProgress = true;
     try {
       await this._snapshotUnlocked(signal, depthBound);
+    } catch (error) {
+      // The triggering change is already published. A failed depth-bound
+      // snapshot is retried by the next change instead of rolling it back.
+      if (!depthBound || signal?.aborted) throw error;
+      console.warn(`Depth-bound compaction failed for ${this.documentPath}`);
     } finally {
       this._compactionInProgress = false;
     }
@@ -4325,10 +4331,17 @@ export class PeerborneDocument<
    * `keepCount`.
    *
    * @param keepCount Maximum number of change nodes to retain in the sync tree.
+   * @param depthBound Count every node that carries an inline change, ACL or
+   *   document, and no deferred leaves, so `keepCount` bounds both the retained
+   *   depth and the changes a lagging peer can still receive inline. ACL nodes
+   *   below the cut are still preserved as re-attached leaves.
    * @returns Set of CID strings for document nodes that were pruned from the tree.
    *   ACL node CIDs are never included (they are always preserved).
    */
-  private _pruneChanges(keepCount: number): Set<string> {
+  private _pruneChanges(
+    keepCount: number,
+    depthBound = false,
+  ): Set<string> {
     const prunedCIDs = new Set<string>();
 
     if (keepCount <= 0) {
@@ -4441,7 +4454,7 @@ export class PeerborneDocument<
         current.kind === crdtReaderChangeNode ||
         current.kind === crdtWriterChangeNode;
 
-      if (!isACLNode) {
+      if (depthBound ? current.change !== undefined : !isACLNode) {
         documentNodesVisited++;
       }
 
@@ -4451,7 +4464,7 @@ export class PeerborneDocument<
       ) {
         if (
           shouldPruneDocumentChildren(
-            isACLNode,
+            isACLNode && !depthBound,
             documentNodesVisited,
             keepCount,
           )
@@ -4471,6 +4484,37 @@ export class PeerborneDocument<
           }
         }
       }
+    }
+
+    // Cross-links into pruned history name blocks a new replica cannot fetch
+    // from the retained tree, and the snapshot already covers them.
+    const retained: CRDTChangeNode<ChangesType>[] = [prunedRoot];
+    const retainedInline = new Set<string>();
+    for (let index = 0; index < retained.length; index++) {
+      const children = retained[index]!.children;
+      if (children === undefined || children === crdtChangeNodeDeferred)
+        continue;
+      for (const [childId, child] of Object.entries(children)) {
+        if (child.change !== undefined) retainedInline.add(childId);
+        retained.push(child);
+      }
+    }
+    for (const node of retained) {
+      const children = node.children;
+      if (children === undefined || children === crdtChangeNodeDeferred)
+        continue;
+      for (const [childId, child] of Object.entries(children)) {
+        if (
+          child.kind === crdtDocumentChangeNode &&
+          child.change === undefined &&
+          child.children === undefined &&
+          prunedCIDs.has(childId) &&
+          !retainedInline.has(childId)
+        ) {
+          delete children[childId];
+        }
+      }
+      if (Object.keys(children).length === 0) delete node.children;
     }
 
     console.log(
@@ -8803,15 +8847,13 @@ export class PeerborneDocument<
       this._lastSyncMessage &&
       (this._compactionConfig.pruneAfterSnapshot || depthBound)
     ) {
-      // A depth-bound prune must leave room for further changes, whatever the
-      // configured retention.
+      // A depth-bound prune keeps a fixed window of inline changes: enough
+      // for lagging peers to heal from live traffic, and room to grow again.
       const prunedCIDs = this._pruneChanges(
         depthBound
-          ? Math.min(
-              Math.max(this._compactionConfig.keepRecentNodes, 1),
-              CHANGE_TREE_COMPACTION_KEEP,
-            )
+          ? CHANGE_TREE_COMPACTION_KEEP
           : this._compactionConfig.keepRecentNodes,
+        depthBound,
       );
 
       // Delete pruned blocks from the Helia blockstore asynchronously, but only
@@ -8821,6 +8863,7 @@ export class PeerborneDocument<
       // Fire-and-forget: GC errors are logged but don't block snapshot creation.
       if (
         this._compactionConfig.gcAfterPrune &&
+        this._compactionConfig.pruneAfterSnapshot &&
         this._lastSyncMessage?.changes &&
         this._lastSyncMessage.changeId
       ) {

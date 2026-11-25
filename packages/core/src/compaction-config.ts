@@ -47,7 +47,8 @@ export interface CompactionConfig {
 
   /**
    * Keep at least N recent change nodes after pruning so slightly-behind
-   * peers can catch up. A depth-bound prune keeps between 1 and 128 nodes.
+   * peers can catch up. A depth-bound prune always keeps the 128 most recent
+   * inline changes instead.
    */
   keepRecentNodes: number;
 }

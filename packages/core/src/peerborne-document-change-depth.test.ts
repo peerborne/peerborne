@@ -16,6 +16,7 @@ import { mergeCompactionConfig } from './compaction-config.js';
 import type { CompactionConfig } from './compaction-config.js';
 import {
   crdtDocumentChangeNode,
+  crdtReaderChangeNode,
   type CRDTChangeNode,
 } from './crdt-change-node.js';
 import { JSONSerializer } from './json-serializer.js';
@@ -112,6 +113,32 @@ function writerDocument(
 const retainedDepth = (document: any): number =>
   changeTreeDepth(document._lastSyncMessage.changes);
 
+function danglingCrossLinks(root: CRDTChangeNode<unknown>): string[] {
+  const inline = new Set<string>();
+  const deferred: string[] = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    for (const [id, child] of Object.entries(node.children ?? {})) {
+      if (child.change === undefined) deferred.push(id);
+      else inline.add(id);
+      pending.push(child);
+    }
+  }
+  return deferred.filter((id) => !inline.has(id));
+}
+
+function inlineChanges(root: CRDTChangeNode<unknown>): number {
+  let count = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.change !== undefined) count++;
+    if (node.children) pending.push(...Object.values(node.children));
+  }
+  return count;
+}
+
 function deepRemoteTree(depth: number) {
   let changeId = cidFor(-1);
   let changes: CRDTChangeNode<unknown> = {
@@ -165,6 +192,20 @@ describe('change tree depth bound', () => {
     },
   );
 
+  test('keeps the most recent inline changes after a depth-bound prune', async () => {
+    const { document } = writerDocument();
+    let changes = 0;
+    while (document._latestSnapshot === undefined) {
+      await document._makeChange({ index: changes++ }, crdtDocumentChangeNode);
+      expect(changes).toBeLessThanOrEqual(CHANGE_TREE_COMPACTION_DEPTH);
+    }
+    expect(inlineChanges(document._lastSyncMessage.changes)).toBe(
+      CHANGE_TREE_COMPACTION_KEEP,
+    );
+    expect(retainedDepth(document)).toBe(CHANGE_TREE_COMPACTION_KEEP);
+    expect(danglingCrossLinks(document._lastSyncMessage.changes)).toEqual([]);
+  });
+
   test('a writer compacts an adopted deep remote tree before its next change', async () => {
     const { document } = writerDocument();
     const remote = deepRemoteTree(MAX_CHANGE_TREE_DEPTH - 1);
@@ -178,6 +219,70 @@ describe('change tree depth bound', () => {
     await expect(
       document._makeChange({ local: true }, crdtDocumentChangeNode),
     ).resolves.toBeUndefined();
+  });
+
+  test('bounds a long run of membership changes', async () => {
+    const { document, published } = writerDocument();
+    for (let index = 0; index < 200; index++)
+      await document._makeChange({ index }, crdtDocumentChangeNode);
+    for (let index = 0; index < MAX_CHANGE_TREE_DEPTH; index++) {
+      await document._makeChange(
+        { add: `reader-${index}` },
+        crdtReaderChangeNode,
+      );
+      expect(retainedDepth(document)).toBeLessThanOrEqual(
+        CHANGE_TREE_COMPACTION_DEPTH,
+      );
+    }
+    expect(published).toHaveLength(200 + MAX_CHANGE_TREE_DEPTH);
+    await expect(
+      document._makeChange({ after: true }, crdtDocumentChangeNode),
+    ).resolves.toBeUndefined();
+  });
+
+  test.each([
+    ['disabled', false, 0],
+    ['enabled', true, 1],
+  ])(
+    'collects pruned blocks only when pruning is %s',
+    async (_name, pruneAfterSnapshot, collections) => {
+      const { document } = writerDocument({
+        pruneAfterSnapshot,
+        gcAfterPrune: true,
+      });
+      document._gcPrunedBlocks = jest.fn(async () => undefined);
+      for (let index = 0; index < CHANGE_TREE_COMPACTION_DEPTH; index++)
+        await document._makeChange({ index }, crdtDocumentChangeNode);
+      expect(document._latestSnapshot).toBeDefined();
+      expect(document._gcPrunedBlocks).toHaveBeenCalledTimes(collections);
+    },
+  );
+
+  test('a failed depth-bound snapshot keeps the published change and retries', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { document, published } = writerDocument();
+      document._crdtProvider.getSnapshot.mockImplementationOnce(() => {
+        throw new Error('snapshot unavailable');
+      });
+      for (let index = 0; index < CHANGE_TREE_COMPACTION_DEPTH; index++)
+        await document._makeChange({ index }, crdtDocumentChangeNode);
+      const head = document._lastSyncMessage.changeId;
+      expect(document._hashes.has(head)).toBe(true);
+      expect(document._latestSnapshot).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        'Depth-bound compaction failed for /change-depth',
+      );
+
+      await document._makeChange({ next: true }, crdtDocumentChangeNode);
+      expect(published).toHaveLength(CHANGE_TREE_COMPACTION_DEPTH + 1);
+      expect(document._latestSnapshot).toBeDefined();
+      expect(retainedDepth(document)).toBeLessThanOrEqual(
+        CHANGE_TREE_COMPACTION_KEEP + 1,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('a reader leaves an adopted deep remote tree unsnapshotted', async () => {
