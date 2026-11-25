@@ -62,6 +62,11 @@ async function currentDeliveryHarness() {
     false,
     ['sign', 'verify'],
   );
+  const otherWriter = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-384' },
+    false,
+    ['sign', 'verify'],
+  );
   const installedEpochs: Uint8Array[] = [];
   const prepareEpochKey = jest.fn(async (epoch: Uint8Array) => ({
     claimCommit: () => ({
@@ -80,10 +85,13 @@ async function currentDeliveryHarness() {
       _writerKeysVersion: 0,
       _syncMessageSerializer: serializer,
       _keychain: { prepareEpochKey },
-      _getWriterKeys: async () => [signing.publicKey],
+      _getWriterKeys: async () => [signing.publicKey, otherWriter.publicKey],
+      _readerLeafIndices: new Map([['founder', founder.myLeafIndex]]),
       _deserializeSignature: (signature: string) =>
         new Uint8Array(Buffer.from(signature, 'base64')),
       _authProvider: {
+        serializePublicKey: async (key: CryptoKey) =>
+          key === signing.publicKey ? 'founder' : 'other-writer',
         verify: async (
           data: Uint8Array,
           key: CryptoKey,
@@ -101,6 +109,7 @@ async function currentDeliveryHarness() {
   async function deliver(
     update: Awaited<ReturnType<BeeKEM['update']>>,
     signatureContext = 'beekem-path-update-v2',
+    signer: CryptoKeyPair = signing,
   ) {
     const pathUpdate = serializePathUpdateV2ForWire(update.pathUpdate);
     const message = {
@@ -111,7 +120,7 @@ async function currentDeliveryHarness() {
     };
     const signature = await crypto.subtle.sign(
       { name: 'ECDSA', hash: 'SHA-384' },
-      signing.privateKey,
+      signer.privateKey,
       serializer.serializeSyncMessage(message) as BufferSource,
     );
     await document._handleBeeKEMPathUpdateRequestDataUnlocked(
@@ -127,6 +136,7 @@ async function currentDeliveryHarness() {
     staleFounder,
     document,
     deliver,
+    otherWriter,
     prepareEpochKey,
     installedEpochs,
   };
@@ -181,6 +191,25 @@ describe('document current BeeKEM delivery', () => {
         Buffer.from(committedRoot),
       ),
     ).toBe(true);
+  });
+
+  test("drops another writer's signature on the founder leaf update", async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    const { founder, reader, document, deliver, otherWriter, installedEpochs } =
+      await currentDeliveryHarness();
+    const update = await founder.update();
+
+    await deliver(update, 'beekem-path-update-v2', otherWriter);
+    expect(warn).toHaveBeenCalledWith(
+      'Dropping BeeKEM PathUpdateV2 not signed by its sender leaf owner',
+    );
+    expect(document._beekem).toBe(reader);
+    expect(installedEpochs).toHaveLength(0);
+
+    await deliver(update);
+    expect(installedEpochs).toHaveLength(1);
+    expect(document._beekem.generation).toBe(update.pathUpdate.generation);
   });
 
   test('drops a signed PathUpdateV2 tagged with the retired V1 context', async () => {

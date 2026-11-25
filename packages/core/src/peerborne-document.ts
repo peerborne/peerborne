@@ -3799,7 +3799,12 @@ export class PeerborneDocument<
     message: CRDTSyncMessage<ChangesType>,
     context: Extract<SyncMessageContext, 'beekem-path-update-v2'>,
   ): Promise<
-    | { kind: 'authenticated'; writerKeysVersion: number }
+    | {
+        kind: 'authenticated';
+        writerKeysVersion: number;
+        raw: Uint8Array;
+        signature: Uint8Array;
+      }
     | {
         kind: 'missing-signature' | 'malformed' | 'invalid-signature' | 'changed';
       }
@@ -3848,7 +3853,54 @@ export class PeerborneDocument<
     ) {
       return { kind: 'changed' };
     }
-    return { kind: 'authenticated', writerKeysVersion };
+    return {
+      kind: 'authenticated',
+      writerKeysVersion,
+      raw,
+      signature: this._deserializeSignature(signature),
+    };
+  }
+
+  /**
+   * Require a PathUpdate signer to own its sender leaf. Only the local leaf and
+   * readers registered by this replica have an authenticated owner.
+   */
+  private async _isSignedBySenderLeafOwner(
+    senderLeafIndex: number,
+    authentication: {
+      readonly writerKeysVersion: number;
+      readonly raw: Uint8Array;
+      readonly signature: Uint8Array;
+    },
+  ): Promise<boolean> {
+    const serializePublicKey = requireSerializePublicKey(
+      this._authProvider,
+      'BeeKEM PathUpdateV2 sender',
+    );
+    let owner: string | undefined;
+    if (senderLeafIndex === this._beekem?.myLeafIndex) {
+      owner = await serializePublicKey(this._userPublicKey);
+    } else {
+      for (const [identity, leafIndex] of this._readerLeafIndices) {
+        if (leafIndex !== senderLeafIndex) continue;
+        if (owner !== undefined) return false;
+        owner = identity;
+      }
+    }
+    if (owner === undefined) return false;
+    for (const writer of await this._getWriterKeys()) {
+      if ((await serializePublicKey(writer)) !== owner) continue;
+      const verified = await this._authProvider.verify(
+        new Uint8Array(authentication.raw),
+        writer,
+        new Uint8Array(authentication.signature),
+      );
+      return (
+        verified === true &&
+        this._writerKeysVersion === authentication.writerKeysVersion
+      );
+    }
+    return false;
   }
 
   private _encoder = new TextEncoder();
@@ -11403,6 +11455,21 @@ export class PeerborneDocument<
       if (!this._beekemInitialized || !this._beekem) {
         console.warn(
           'Dropping BeeKEM PathUpdateV2 without initialized local BeeKEM state',
+        );
+        return;
+      }
+      let signedBySenderLeafOwner: boolean;
+      try {
+        signedBySenderLeafOwner = await this._isSignedBySenderLeafOwner(
+          pathUpdate.senderLeafIndex,
+          authentication,
+        );
+      } catch {
+        signedBySenderLeafOwner = false;
+      }
+      if (!signedBySenderLeafOwner) {
+        console.warn(
+          'Dropping BeeKEM PathUpdateV2 not signed by its sender leaf owner',
         );
         return;
       }

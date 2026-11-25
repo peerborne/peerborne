@@ -359,6 +359,10 @@ function pathUpdateHarness(
     readonly message?: Partial<Record<string, unknown>>;
     readonly onPrepare?: () => void;
     readonly onProcess?: () => void;
+    readonly leafOwners?: ReadonlyArray<readonly [string, number]>;
+    readonly writers?: readonly string[];
+    readonly signers?: readonly string[];
+    readonly myLeafIndex?: number;
   } = {},
 ) {
   const order: string[] = [];
@@ -366,7 +370,11 @@ function pathUpdateHarness(
     options.initialEpoch === undefined
       ? undefined
       : new Uint8Array(options.initialEpoch);
-  const liveBeeKEM = { name: 'live-tree', generation: 1 } as Record<string, unknown>;
+  const liveBeeKEM = {
+    name: 'live-tree',
+    generation: 1,
+    myLeafIndex: options.myLeafIndex ?? 0,
+  } as Record<string, unknown>;
   const stagedBeeKEM = {
     name: 'staged-tree',
     generation: 2,
@@ -438,6 +446,10 @@ function pathUpdateHarness(
     pathUpdateEpochId: new Uint8Array(nextEpoch),
     ...options.message,
   };
+  const signers = new Set(options.signers ?? ['remote-writer']);
+  const verifyOwner = jest.fn(async (_raw: Uint8Array, key: { id: string }) =>
+    signers.has(key.id),
+  );
   const document = fakeDocument({
     _beekemInitialized: true,
     _syncMessageSerializer: {
@@ -445,6 +457,14 @@ function pathUpdateHarness(
       serializeSyncMessage: jest.fn(() => new Uint8Array([6])),
     },
     _keychain: { addEpochKey, prepareEpochKey },
+    _readerLeafIndices: new Map(options.leafOwners ?? [['remote-writer', 4]]),
+    _getWriterKeys: jest.fn(async () =>
+      (options.writers ?? ['remote-writer']).map((id) => ({ id })),
+    ),
+    _authProvider: {
+      serializePublicKey: async (key: { id: string }) => key.id,
+      verify: verifyOwner,
+    },
   });
   let installedBeeKEM: unknown = liveBeeKEM;
   Object.defineProperty(document, '_beekem', {
@@ -469,6 +489,7 @@ function pathUpdateHarness(
     prepareEpochKey,
     preparedEpoch,
     stagedBeeKEM,
+    verifyOwner,
   };
 }
 
@@ -1347,6 +1368,97 @@ describe('inbound BeeKEM PathUpdateV2 transaction', () => {
       'finalize',
       'beekem-swap',
     ]);
+  });
+
+  test.each([
+    {
+      case: 'another writer signs for the sender leaf',
+      leafOwners: [
+        ['remote-writer', 4],
+        ['other-writer', 6],
+      ] as const,
+      writers: ['remote-writer', 'other-writer'],
+      signers: ['other-writer'],
+    },
+    {
+      case: 'the sender leaf has no authenticated owner',
+      leafOwners: [['other-writer', 6]] as const,
+      writers: ['remote-writer', 'other-writer'],
+      signers: ['remote-writer', 'other-writer'],
+    },
+    {
+      case: 'two identities claim the sender leaf',
+      leafOwners: [
+        ['remote-writer', 4],
+        ['other-writer', 4],
+      ] as const,
+      writers: ['remote-writer', 'other-writer'],
+      signers: ['remote-writer', 'other-writer'],
+    },
+    {
+      case: 'the sender leaf owner is no longer a writer',
+      leafOwners: [['remote-writer', 4]] as const,
+      writers: ['other-writer'],
+      signers: ['remote-writer', 'other-writer'],
+    },
+  ])(
+    'drops a writer-signed PathUpdateV2 before processing when $case',
+    async ({ leafOwners, writers, signers }) => {
+      const harness = pathUpdateHarness({ leafOwners, writers, signers });
+
+      await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(
+        new Uint8Array([1]),
+      );
+
+      expect(harness.stagedBeeKEM.processPathUpdate).not.toHaveBeenCalled();
+      expect(harness.prepareEpochKey).not.toHaveBeenCalled();
+      expect(harness.installedBeeKEM()).toBe(harness.liveBeeKEM);
+      expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
+    },
+  );
+
+  test('verifies the authenticated bytes under the sender leaf owner only', async () => {
+    const harness = pathUpdateHarness({
+      leafOwners: [
+        ['remote-writer', 4],
+        ['other-writer', 6],
+      ],
+      writers: ['other-writer', 'remote-writer'],
+    });
+
+    await harness.document._handleBeeKEMPathUpdateRequestDataUnlocked(
+      new Uint8Array([1]),
+    );
+
+    expect(harness.verifyOwner.mock.calls).toEqual([
+      [new Uint8Array([6]), { id: 'remote-writer' }, expect.any(Uint8Array)],
+    ]);
+    expect(harness.stagedBeeKEM.processPathUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  test('binds an update from the local leaf to the local identity', async () => {
+    const ownLeaf = pathUpdateHarness({
+      leafOwners: [],
+      myLeafIndex: 4,
+      writers: ['remote-writer', 'local'],
+      signers: ['local'],
+    });
+    const otherSigner = pathUpdateHarness({
+      leafOwners: [],
+      myLeafIndex: 4,
+      writers: ['remote-writer', 'local'],
+      signers: ['remote-writer'],
+    });
+
+    await ownLeaf.document._handleBeeKEMPathUpdateRequestDataUnlocked(
+      new Uint8Array([1]),
+    );
+    await otherSigner.document._handleBeeKEMPathUpdateRequestDataUnlocked(
+      new Uint8Array([1]),
+    );
+
+    expect(ownLeaf.stagedBeeKEM.processPathUpdate).toHaveBeenCalledTimes(1);
+    expect(otherSigner.stagedBeeKEM.processPathUpdate).not.toHaveBeenCalled();
   });
 
   test.each(['missing', 'accessor'] as const)(
