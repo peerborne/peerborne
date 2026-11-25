@@ -28,6 +28,7 @@ test.each(['lastChangeNodeCID', 'compactedCount', 'timestamp'] as const)(
             lastChangeNodeCID: 'ROOT',
             compactedCount: 0,
             timestamp: 0,
+            signature: new Uint8Array([7]),
           };
           if (field === 'lastChangeNodeCID')
             snapshot.lastChangeNodeCID = 'x'.repeat(1025);
@@ -238,6 +239,7 @@ test('validated metadata and payloads stay captured when a change serializer mut
             lastChangeNodeCID: 'ROOT',
             compactedCount: 1,
             timestamp,
+            signature: payload.slice(),
           },
           keychainChangesBytes: payload.slice(),
           serializeChange: () => new Uint8Array([2]),
@@ -250,6 +252,7 @@ test('validated metadata and payloads stay captured when a change serializer mut
           input.snapshot.compactedCount = -1;
           input.snapshot.timestamp = -1;
           input.snapshot.stateBytes.fill(0);
+          input.snapshot.signature.fill(0);
           input.keychainChangesBytes.fill(0);
           return new Uint8Array([2]);
         };
@@ -313,6 +316,7 @@ test('invalid roots fail before graph capture, payload copies or serialization',
             lastChangeNodeCID: 'ROOT',
             compactedCount: 1,
             timestamp: 0,
+            signature: new Uint8Array([7]),
           },
           keychainChangesBytes: payload,
           serializeChange: jest.fn(() => payload),

@@ -69,7 +69,8 @@ import {
   shuffleArray,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
-import type { Stream } from '@libp2p/interface';
+import type { Connection, Stream } from '@libp2p/interface';
+import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider } from './crdt-provider.js';
 import {
@@ -771,6 +772,7 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
+  readonly applySnapshotAfterChanges?: boolean;
 }
 
 /**
@@ -881,6 +883,7 @@ function documentLoadResponseTimeoutMs(configured: unknown): number {
  * loader.
  */
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
+const LOAD_PROTOCOL_REFRESH_TIMEOUT_MS = 5_000;
 
 /**
  * Module-private sentinel thrown by `_sendLoadRequestAndSync` when the
@@ -1609,9 +1612,13 @@ export class PeerborneDocument<
   }
 
   private async _shuffledPeers() {
-    const peers = this.swarm.heliaNode.libp2p
-      .getConnections()
-      ?.map((x) => x.remoteAddr);
+    const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+    const loadable = await Promise.all(
+      connections.map((connection) => this._mayServeDocumentLoad(connection)),
+    );
+    const peers = connections
+      .filter((_connection, index) => loadable[index])
+      .map((connection) => connection.remoteAddr);
     if (peers.length === 0) {
       return peers;
     }
@@ -1620,6 +1627,44 @@ export class PeerborneDocument<
     const shuffledPeers = [...peers];
     shuffleArray(shuffledPeers);
     return shuffledPeers;
+  }
+
+  /**
+   * Exclude only peers whose completed identify record omits document
+   * loading, such as relays. libp2p also records individually negotiated
+   * stream protocols, so only identify's version metadata, written after its
+   * protocol list, shows that the list is complete. A holder can be identified
+   * before it registers its handlers, and identify-push is not configured, so
+   * such a peer is identified again before it is excluded.
+   */
+  private async _mayServeDocumentLoad(
+    connection: Pick<Connection, 'remotePeer'>,
+  ): Promise<boolean> {
+    const libp2p = this.swarm.heliaNode.libp2p;
+    const peerStore = libp2p.peerStore;
+    const remotePeer = connection.remotePeer as PeerId | undefined;
+    if (peerStore === undefined || remotePeer === undefined) return true;
+    let peer: Awaited<ReturnType<typeof peerStore.get>>;
+    try {
+      peer = await peerStore.get(remotePeer);
+    } catch {
+      return true;
+    }
+    const identified =
+      peer.metadata.has('AgentVersion') || peer.metadata.has('ProtocolVersion');
+    if (!identified || peer.protocols.includes(documentLoadV4)) return true;
+    const identify = libp2p.services?.identify as
+      Pick<Identify, 'identify'> | undefined;
+    if (typeof identify?.identify !== 'function') return false;
+    try {
+      const refreshed = await identify.identify(connection as Connection, {
+        signal: AbortSignal.timeout(LOAD_PROTOCOL_REFRESH_TIMEOUT_MS),
+        runOnLimitedConnection: true,
+      });
+      return refreshed.protocols.includes(documentLoadV4);
+    } catch {
+      return false;
+    }
   }
 
   private _assertDocumentStateNotPoisoned(): void {
@@ -3161,6 +3206,7 @@ export class PeerborneDocument<
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
         compactedCount: message.snapshot.compactedCount,
         timestamp: message.snapshot.timestamp,
+        signature: message.snapshot.signature,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
         this._changesSerializer.serializeChanges(message.keychainChanges),
@@ -5648,14 +5694,12 @@ export class PeerborneDocument<
           // Snapshots: `CRDTSnapshotNode.state` is NOT CID-addressed --
           // the snapshot's `lastChangeNodeCID` only identifies the
           // boundary, not the snapshot bytes. Defense is the writer
-          // signature (`_verifySnapshotSignature`), which fails on
-          // first load (writers empty) and rejects the snapshot
-          // automatically. On subsequent loads writers are known and
-          // the signature is the source of truth. We drop the snapshot
-          // entirely on first load below so a malicious snapshot
-          // signature forged with an attacker-controlled key (which
-          // would be admitted if the inline ACL pre-pass were trusted)
-          // never reaches `applySnapshot`.
+          // signature (`_verifySnapshotSignature`). On a first load the
+          // writer set exists only in the CID-validated ACL blocks, so the
+          // snapshot is verified and applied after those blocks merge; the
+          // stripped inline ACL is never trusted. Pruning keeps history only
+          // in the snapshot, so a first load that does not apply the agreed
+          // snapshot is a bind failure rather than a partial success.
           // Capture every CID that appears in the served tree BEFORE
           // stripping. `_syncDocumentChanges` swallows per-block fetch
           // failures (logs + returns); without a post-sync verification
@@ -5679,43 +5723,37 @@ export class PeerborneDocument<
           const preLoadWriterCount = (
             await retryLoadACLConflict(() => this._writers.users(), signal)
           ).length;
-          if (preLoadWriterCount === 0 && message.snapshot) {
-            console.warn(
-              `[${this.documentPath}] Dropping snapshot from quorum-bound ` +
-                `first load: writers ACL is not yet populated so the ` +
-                `snapshot signature cannot be verified. The receiver will ` +
-                `rebuild state from individual change blocks via Helia ` +
-                `(each block content-validated against its CID).`,
-            );
-            message.snapshot = undefined;
+          const requiresServedSnapshot =
+            preLoadWriterCount === 0 && message.snapshot !== undefined;
+          if (requiresServedSnapshot) {
+            changeFetchOptions = {
+              ...changeFetchOptions,
+              applySnapshotAfterChanges: true,
+            };
           }
 
-          // Snapshot-only first-load detection: after the snapshot drop
-          // above, if the response now carries NO changes tree AND NO
-          // snapshot, the responder served us nothing usable. Without
-          // this guard the path falls through to the validated load-response
-          // sync boundary
-          // (which returns `true` for a vacuously-empty message because
-          // there is nothing to merge / reject) and this method reports
-          // success — `load()` then returns `true` with neither state
-          // applied nor an opportunity to retry. Treat as a per-peer
-          // bind failure so the agreeing-cohort load loop tries the
-          // next peer (which may serve a real changes tree).
+          // A response without a changes tree serves nothing usable when it
+          // also lacks a snapshot, and on a first load it has no
+          // CID-validated ACL that could authenticate one. Without this guard
+          // the path falls through to the validated load-response sync
+          // boundary (which returns `true` for a vacuously-empty message)
+          // and `load()` reports success with no state applied. Treat it as
+          // a per-peer bind failure so the agreeing-cohort load loop tries
+          // the next peer (which may serve a real changes tree).
           if (
             message.changes === undefined &&
-            message.snapshot === undefined
+            (message.snapshot === undefined || preLoadWriterCount === 0)
           ) {
             console.warn(
               `[${this.documentPath}] Quorum-bound first-load response ` +
-                `carries neither a changes tree nor a snapshot after the ` +
-                `defensive snapshot drop. Treating as bind failure so the ` +
-                `loader tries the next agreeing peer.`,
+                `carries no changes tree that can establish its writer ` +
+                `set. Treating as bind failure so the loader tries the next ` +
+                `agreeing peer.`,
             );
             throw new _QuorumBindCheckFailedError(
               '(snapshot-only first-load)',
-              `Quorum-bound first-load response had only a snapshot (now ` +
-                `dropped because writers are not yet populated) and no ` +
-                `changes tree; no state can be applied.`,
+              `Quorum-bound first-load response had no changes tree; no ` +
+                `authenticated state can be applied.`,
             );
           }
 
@@ -5825,6 +5863,18 @@ export class PeerborneDocument<
                 `of ${expectedCids.length} expected CIDs were not retrievable; ` +
                 `served tree had stripped inline content and bitswap could ` +
                 `not retrieve the missing blocks.`,
+            );
+          }
+          if (requiresServedSnapshot && !this._isLatestSnapshotFrom(message)) {
+            console.warn(
+              `[${this.documentPath}] Quorum-bound first load did not apply ` +
+                `its agreed snapshot. Recording peer as bind-failed so the ` +
+                `loader does not report a partial document.`,
+            );
+            throw new _QuorumBindCheckFailedError(
+              '(snapshot-not-applied)',
+              `Quorum-bound first load did not apply its agreed snapshot; ` +
+                `the served change tail alone can omit pruned history.`,
             );
           }
 
@@ -7788,6 +7838,31 @@ export class PeerborneDocument<
   }
 
   /** Apply a sync message after any required membership-queue admission. */
+  private _countChangesAppliedAboveSnapshot(
+    message: CRDTSyncMessage<ChangesType>,
+    hashesBefore: ReadonlySet<string>,
+  ): number {
+    if (message.changes === undefined) return 0;
+    const boundary = message.snapshot?.lastChangeNodeCID;
+    const counted = new Set<string>();
+    for (const { nodeId, kind } of collectBoundedChangeTree(
+      message.changeId,
+      message.changes,
+      { stopBelowNodeIds: new Set(boundary === undefined ? [] : [boundary]) },
+    )) {
+      if (
+        nodeId !== undefined &&
+        nodeId !== boundary &&
+        kind === crdtDocumentChangeNode &&
+        this._hashes.has(nodeId) &&
+        !hashesBefore.has(nodeId)
+      ) {
+        counted.add(nodeId);
+      }
+    }
+    return counted.size;
+  }
+
   private async _syncUnlocked(
     message: CRDTSyncMessage<ChangesType>,
     verifySignature: boolean,
@@ -7980,12 +8055,9 @@ export class PeerborneDocument<
 
     let appliedSnapshot = false;
     let receivedSnapshotHint: string | undefined;
-    // Apply snapshot if present and more recent than ours.
-    // Happens before full change sync so document changes that are already
-    // covered by the snapshot don't need to be applied first (CRDTs handle
-    // duplicate application correctly, but this avoids unnecessary work).
-    if (message.snapshot) {
-      const incoming = message.snapshot;
+    const applyIncomingSnapshot = async (
+      incoming: NonNullable<CRDTSyncMessage<ChangesType>['snapshot']>,
+    ): Promise<void> => {
       if (context === 'ordinary-sync-v1' && signingEnabled) {
         try {
           const stateBytes = this._changesSerializer.serializeChanges(incoming.state);
@@ -8061,7 +8133,22 @@ export class PeerborneDocument<
           );
         }
       }
+    };
+    // Apply snapshot if present and more recent than ours.
+    // Happens before full change sync so document changes that are already
+    // covered by the snapshot don't need to be applied first (CRDTs handle
+    // duplicate application correctly, but this avoids unnecessary work).
+    // A first load whose ACL arrives only in CID-addressed blocks verifies the
+    // snapshot after those blocks establish the writer set.
+    const snapshotAfterChanges =
+      changeFetchOptions.applySnapshotAfterChanges === true;
+    if (message.snapshot && !snapshotAfterChanges) {
+      await applyIncomingSnapshot(message.snapshot);
     }
+    const hashesBeforeChanges = snapshotAfterChanges
+      ? new Set(this._hashes)
+      : undefined;
+    const documentChangeCountBeforeChanges = this._documentChangeCount;
 
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
@@ -8073,6 +8160,25 @@ export class PeerborneDocument<
         changeFetchOptions,
       );
       assertStillActive();
+    }
+
+    if (message.snapshot && snapshotAfterChanges) {
+      await applyIncomingSnapshot(message.snapshot);
+      assertStillActive();
+      if (appliedSnapshot) {
+        // Count only changes the snapshot does not cover, as if it had been
+        // applied before the change sync.
+        const newerChanges = this._countChangesAppliedAboveSnapshot(
+          message,
+          hashesBeforeChanges!,
+        );
+        this._documentChangeCount =
+          Math.max(
+            documentChangeCountBeforeChanges,
+            message.snapshot.compactedCount,
+          ) + newerChanges;
+        this._changesSinceSnapshot = newerChanges;
+      }
     }
 
     assertStillActive();
