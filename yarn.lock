@@ -2093,11 +2093,11 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@helia/unixfs@npm:^8.0.7":
-  version: 8.0.7
-  resolution: "@helia/unixfs@npm:8.0.7"
+"@helia/unixfs@npm:^8.0.9":
+  version: 8.0.9
+  resolution: "@helia/unixfs@npm:8.0.9"
   dependencies:
-    "@helia/interface": "npm:^7.1.1"
+    "@helia/interface": "npm:^7.1.2"
     "@ipld/dag-pb": "npm:^4.1.7"
     "@libp2p/interface": "npm:^3.2.3"
     "@libp2p/logger": "npm:^6.2.8"
@@ -2117,7 +2117,7 @@ __metadata:
     progress-events: "npm:^1.1.0"
     sparse-array: "npm:^1.3.2"
     uint8arrays: "npm:^6.1.1"
-  checksum: 10/00e002afd3621e6d4c6f6b25918c496644fe69830e91d55dc8deaea894c45f6cfe807e82014b27ee4aff9608e20e06b35e4c01ded535bb1d39a7d80c044ff616
+  checksum: 10/4cc7330a6048c9426d09639a63b583a1a2d94b9aedf49a963aff8dda07a43ee0e5b1d6f6f7325ee819075d323eb8b89b9ce9373246bb7bf3f0f6a0b612ebe59b
   languageName: node
   linkType: hard
 
@@ -5016,7 +5016,7 @@ __metadata:
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
     "@helia/bitswap": "npm:^4.0.20"
     "@helia/libp2p": "npm:^2.1.5"
-    "@helia/unixfs": "npm:^8.0.7"
+    "@helia/unixfs": "npm:^8.0.9"
     "@ipld/dag-cbor": "npm:^10.0.1"
     "@ipld/dag-json": "npm:^11.0.0"
     "@libp2p/autonat": "npm:^3.0.32"
