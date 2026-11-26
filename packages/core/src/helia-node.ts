@@ -11,6 +11,8 @@ import { isLibp2p } from 'libp2p';
 import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import type { PeerborneConfig } from './peerborne-config.js';
+import { acquirePeerIdentity } from './peer-identity.js';
+import type { PeerIdentityLease } from './peer-identity.js';
 import { closeHeliaStores, openHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 
@@ -30,6 +32,7 @@ export async function createAndStartHeliaNode(
     ? await openHeliaStores(heliaInit.datastore, heliaInit.blockstore)
     : [];
   let heliaNode: PeerborneHeliaNode | undefined;
+  let identity: PeerIdentityLease | undefined;
 
   try {
     const {
@@ -45,6 +48,10 @@ export async function createAndStartHeliaNode(
         'Helia 7 requires libp2p creation options; preconfigured libp2p nodes are not supported',
       );
     }
+    if (libp2pInit?.privateKey === undefined) {
+      identity = await acquirePeerIdentity(heliaOptions.datastore);
+    }
+    const privateKey = libp2pInit?.privateKey ?? identity?.privateKey;
     heliaNode = (
       libp2pInit
         ? withBitswap(
@@ -62,12 +69,22 @@ export async function createAndStartHeliaNode(
                 ],
                 hashers: [sha512, ...(heliaOptions.hashers ?? [])],
               }),
-              libp2pInit,
+              { ...libp2pInit, privateKey },
             ),
             bitswapInit,
           )
-        : createHelia({ ...heliaOptions, bitswap: bitswapInit })
+        : createHelia({
+            ...heliaOptions,
+            ...(privateKey && { libp2p: { privateKey } }),
+            bitswap: bitswapInit,
+          })
     ) as PeerborneHeliaNode;
+    if (identity) {
+      heliaNode.addMixin({
+        name: 'peerborne-peer-identity',
+        stop: identity.release,
+      });
+    }
     await heliaNode.start();
     if (!heliaNode.libp2p.services.pubsub) {
       throw new Error(
@@ -82,6 +99,7 @@ export async function createAndStartHeliaNode(
     } catch {
       // Best-effort cleanup preserves the startup error.
     }
+    identity?.release();
     await closeHeliaStores(openedStores);
     throw error;
   }
