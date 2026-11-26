@@ -167,7 +167,11 @@ export function createBrowserCheckpointStorage(
     const database = await openDatabase();
     try {
       return await new Promise<T>((resolve, reject) => {
-        const tx = database.transaction(store, mode);
+        const tx = database.transaction(
+          store,
+          mode,
+          mode === 'readwrite' ? { durability: 'strict' } : undefined,
+        );
         let result: T;
         tx.oncomplete = () => resolve(result);
         tx.onabort = () =>
@@ -311,6 +315,11 @@ export function createBrowserCheckpointStorage(
             (a.createdAtMs ?? -1) - (b.createdAtMs ?? -1) ||
             (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
         );
+    }
+
+    /** Whether this browser holds a saved record for `path`. */
+    async has(path: string): Promise<boolean> {
+      return (await read('documents', path)) !== undefined;
     }
 
     async load(
