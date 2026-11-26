@@ -156,6 +156,14 @@ describe('document checkpoint state', () => {
     );
   }, 70_000);
 
+  test('after Automerge, Yjs and Loro restore a checkpoint with a large snapshot, edits publish small frames a replica applies', async () => {
+    await promisify(execFile)(
+      process.execPath,
+      ['--test', `${__dirname}/restored-checkpoint-frame.fixture.mjs`],
+      { timeout: 120_000 },
+    );
+  }, 130_000);
+
   test('round-trips a document field near the checkpoint size limit', () => {
     const documentBytes = new Uint8Array(4 * 1024 * 1024).map(
       (_, index) => index % 251,
