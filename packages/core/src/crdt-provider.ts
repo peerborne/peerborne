@@ -40,6 +40,20 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   newDocument(): DocType;
 
   /**
+   * Return a writable copy of `document` as it was when it was produced, even
+   * after a later `localChange()` or `remoteChange()` consumed it.
+   *
+   * Implement this when those methods leave their input unusable, as
+   * Automerge marks it outdated. A transaction that fails before publication
+   * rolls back to this copy. The copy must make its next local change under a
+   * new replica identity, so the discarded change's position is never reused.
+   * When not implemented, the transaction rolls back to `document` itself.
+   *
+   * @param document A document this provider returned before the failed change.
+   */
+  cloneDocument?(document: DocType): DocType;
+
+  /**
    * Apply locally made changes to provided CRDT document as defined by `changeFn`.
    *
    * If `changeFn` throws, leave `document` without its edits and rethrow the

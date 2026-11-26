@@ -206,6 +206,11 @@ export class AutomergeProvider<T = any>
   newDocument(): Doc<T> {
     return init();
   }
+  cloneDocument(document: Doc<T>): Doc<T> {
+    // A clone forks at the heads `document` had, outdated or not, under a
+    // new actor.
+    return clone(document);
+  }
   localChange(
     document: Doc<T>,
     message: string,

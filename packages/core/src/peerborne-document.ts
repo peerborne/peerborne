@@ -1502,6 +1502,9 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
+  // CID of the last local change whose frame publication resolved. A failed
+  // transaction compares it to tell a published change from one to roll back.
+  private _lastPublishedChange?: string;
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -2613,61 +2616,73 @@ export class PeerborneDocument<
     assertStillActive();
 
     // First apply changes that were sent directly.
+    const documentBeforeSync = this._document;
     let newDocument = this._document;
     let appliedDocumentChanges = 0;
     const newDocumentHashes: string[] = [];
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
-    for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
-      assertStillActive();
-      if (sentChanges) {
-        switch (sentChangeKind) {
-          case crdtDocumentChangeNode: {
-            // Apply the changes that were sent directly.
-            newDocument = this._crdtProvider.remoteChange(
-              newDocument,
-              sentChanges,
-            );
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            appliedDocumentChanges++;
-            break;
+    try {
+      for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
+        assertStillActive();
+        if (sentChanges) {
+          switch (sentChangeKind) {
+            case crdtDocumentChangeNode: {
+              // Apply the changes that were sent directly.
+              newDocument = this._crdtProvider.remoteChange(
+                newDocument,
+                sentChanges,
+              );
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              appliedDocumentChanges++;
+              break;
+            }
+            case crdtReaderChangeNode: {
+              // Apply the changes that were sent directly. Use the
+              // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
+              // drained immediately after the ACL update lands.
+              await this._mergeReaders(
+                sentChanges,
+                assertStillActive,
+                signal,
+              ).catch(rejectCertifiedACLMerge);
+              appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              assertStillActive();
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              break;
+            }
+            case crdtWriterChangeNode: {
+              // Apply the changes that were sent directly.
+              await this._mergeWriters(
+                sentChanges,
+                assertStillActive,
+                signal,
+              ).catch(rejectCertifiedACLMerge);
+              appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              assertStillActive();
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              break;
+            }
           }
-          case crdtReaderChangeNode: {
-            // Apply the changes that were sent directly. Use the
-            // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
-            // drained immediately after the ACL update lands.
-            await this._mergeReaders(
-              sentChanges,
-              assertStillActive,
-              signal,
-            ).catch(rejectCertifiedACLMerge);
-            appliedDirectACLNodes.set(sentHash, sentChangeKind);
-            assertStillActive();
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            break;
-          }
-          case crdtWriterChangeNode: {
-            // Apply the changes that were sent directly.
-            await this._mergeWriters(
-              sentChanges,
-              assertStillActive,
-              signal,
-            ).catch(rejectCertifiedACLMerge);
-            appliedDirectACLNodes.set(sentHash, sentChangeKind);
-            assertStillActive();
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            break;
-          }
+        } else {
+          missingDocumentHashes.push([sentHash, sentChangeKind]);
         }
-      } else {
-        missingDocumentHashes.push([sentHash, sentChangeKind]);
       }
+      if (newDocumentHashes.length) assertStillActive();
+    } catch (error) {
+      // Automerge outdated the document these entries consumed, so restore a
+      // writable copy of the state the sync started from.
+      if (newDocument !== documentBeforeSync) {
+        this._document =
+          this._crdtProvider.cloneDocument?.(documentBeforeSync) ??
+          documentBeforeSync;
+      }
+      throw error;
     }
     if (newDocumentHashes.length) {
-      assertStillActive();
       this._document = newDocument;
       this._documentChangeCount += appliedDocumentChanges;
       this._changesSinceSnapshot += appliedDocumentChanges;
@@ -4205,6 +4220,7 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
+      this._lastPublishedChange = hash;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -8543,10 +8559,16 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * On failure (from any step: write check, CRDT apply, or network publish),
-   * the transaction is aborted and the document reference is rolled back.
-   * For immutable CRDT providers (e.g. Automerge), rollback is reliable
-   * because `localChange()` returns a new document object.
+   * A failure before the change is published (write check, CRDT apply,
+   * block storage, signing, encryption or the publish call) aborts the
+   * transaction and rolls it back: the document returns to its state when
+   * `endChange()` was called, and the attempt's history bookkeeping is
+   * removed. Automerge outdates the document a change consumes, so the
+   * rollback restores a writable copy from `CRDTProvider.cloneDocument()`,
+   * which makes later changes under a new actor. A failure after
+   * publication, from a local update handler or compaction, keeps the
+   * published change and its bookkeeping, ends the transaction and rejects
+   * with that error, as `change()` does.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -8569,54 +8591,22 @@ export class PeerborneDocument<
    * An oversized encrypted block retires the instance before publication.
    * Reopen from accepted state before retrying the edit in smaller changes.
    *
-   * **Known limitation -- concurrent remote changes during rollback:** The
-   * rollback sets `_document` back to the snapshot captured when
-   * `endChange()` is called (before applying the pending change functions).
-   * Because `_makeChange()` is async and the node remains
-   * subscribed to pubsub throughout, remote sync messages may arrive and be
-   * applied to `_document` between the start of the transaction and the
-   * point of failure. Rolling back to the original snapshot **reverts those
-   * remote changes as well**, not just the local batch. This is acceptable
-   * because the CRDT layer guarantees eventual consistency -- the reverted
-   * remote changes will be re-applied on the next sync cycle or document
-   * load. If transaction failure is critical, callers should re-sync the
-   * document after a failed transaction (e.g. call `load()` or wait for
-   * the next pubsub round) to ensure remote state is promptly restored.
+   * **Known limitation -- ambiguous publication:** A publish call that
+   * rejects after the transport accepted the frame is rolled back like an
+   * unpublished change, so a peer may hold a change this replica discarded.
+   * For Automerge, the copy's new actor keeps later local changes from
+   * colliding with it.
    *
-   * **Known limitation -- partial internal state on failure:** If
-   * `_makeChange()` fails partway through (e.g. encryption succeeds but
-   * pubsub publish throws), `_hashes` may retain CIDs for the rolled-back
-   * change (see below). Other counters and bookkeeping fields
-   * (`_lastSyncMessage`, `_documentChangeCount`, `_changesSinceSnapshot`,
-   * `_recentTips`) ARE restored from snapshots captured before
-   * `_makeChange()` -- see the "Internal metadata rollback" section below
-   * for details.
-   *
-   * **Specifically, `_hashes` may retain CIDs for the rolled-back change.**
-   * Because `_hashes` is used to skip already-seen changes during sync,
-   * any CID added before the failure will cause that change to be silently
-   * skipped if it arrives again via pubsub or `load()`. This means the
-   * rolled-back change is effectively "lost" from this peer's perspective
-   * until `_hashes` is rebuilt. **Callers should call `load()` after a
-   * failed transaction** to re-sync the full document state from a peer
-   * and restore consistency. A new transaction must be started after a
-   * failure.
-   *
-   * **Internal metadata rollback:** On failure, `_lastSyncMessage`,
+   * **Internal metadata rollback:** On a rollback, `_lastSyncMessage`,
    * `_documentChangeCount`, `_changesSinceSnapshot`, and `_recentTips`
    * are restored from snapshots captured before `_makeChange()`.
    * (`_recentTips` is bounded to `MAX_RECENT_TIPS` entries so the snapshot
    * is a cheap shallow array copy.) For `_hashes` and
    * `_referencedAncestors`, all entries added to each Set after its
-   * pre-attempt size are removed. Because the node remains
-   * subscribed to pubsub during the async transaction, this may include
-   * CIDs appended by concurrent remote syncs, not just local ones.
-   * This is acceptable because CRDT convergence guarantees those remote
-   * CIDs will be re-added on the next sync cycle or document load.
-   * The approach is O(n) iteration but O(delta) memory -- no full
-   * array clone -- and avoids disrupting any concurrent sync iteration
-   * that `clear()` would break. A new transaction must be started after
-   * a failure.
+   * pre-attempt size are removed. The document's state queue keeps remote
+   * syncs out of the transaction, so those entries are the attempt's own.
+   * The approach is O(n) iteration but O(delta) memory. A new transaction
+   * must be started after a failure.
    *
    * @throws {Error} If any step in the commit pipeline fails.
    */
@@ -8663,6 +8653,7 @@ export class PeerborneDocument<
     }
 
     const originalDocument = this._document;
+    const lastPublishedBefore = this._lastPublishedChange;
     // Snapshot internal metadata so we can restore on failure.
     // Only track the Set size (O(1)) instead of cloning the entire Set (O(n)):
     // _makeChange adds at most one CID, and JS Sets iterate in insertion order,
@@ -8698,9 +8689,22 @@ export class PeerborneDocument<
       this._pendingChangeFns = [];
     } catch (err) {
       // Abort transaction on ANY error (ensureWrite, localChange, or makeChange).
+      this._inTransaction = false;
+      this._pendingChangeFns = [];
+      const thrown = failure
+        ? partialChangeCommitFailure(failure.error, err)
+        : err;
+      // A local update handler or compaction failed after publication. Peers
+      // hold the change, so it and its bookkeeping stay, as for `change()`.
+      if (this._lastPublishedChange !== lastPublishedBefore) throw thrown;
       // Roll back document and internal metadata (best-effort for in-place
-      // mutating providers like Yjs).
-      this._document = originalDocument;
+      // mutating providers like Yjs). Automerge outdated `originalDocument`
+      // when it made the change, so restore a writable copy of it instead.
+      if (this._document !== originalDocument) {
+        this._document =
+          this._crdtProvider.cloneDocument?.(originalDocument) ??
+          originalDocument;
+      }
       // Remove only the CIDs appended by _makeChange instead of clearing and
       // re-populating the entire Set. This avoids mutating the Set during
       // concurrent sync (clear() would disrupt any in-progress iteration)
@@ -8743,9 +8747,7 @@ export class PeerborneDocument<
       this._documentChangeCount = changeCountSnapshot;
       this._changesSinceSnapshot = compactionCountSnapshot;
       this._recentTips = recentTipsSnapshot;
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-      throw failure ? partialChangeCommitFailure(failure.error, err) : err;
+      throw thrown;
     } finally {
       this._committing = false;
     }
