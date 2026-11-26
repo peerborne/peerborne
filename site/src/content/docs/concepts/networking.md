@@ -255,13 +255,16 @@ updates without an application call. It sends the signed sync request that
 - when the CRDT holds remote changes that wait for missing dependencies
   (Automerge's queued changes, Yjs pending structs or deletions);
 - when a frame names a change that cannot be fetched;
-- when a verified member's request names a head this replica does not hold;
+- when a verified member's request names, as its own head, a change this
+  replica does not hold;
 - otherwise every 30 to 60 s, drawn uniformly around 45 s.
 
 A request names the requester's head, up to 32 recent tips, its known
 snapshots and its libp2p PeerId. It is signed by a current reader or writer
-and encrypted with the document key. Members learn the requester's PeerId,
-which GossipSub's signed `from` field already shows them. A writer answers only
+and encrypted with the document key. A request is ignored, and rejected by
+topic validators, unless that PeerId is the GossipSub publisher of its frame,
+so a member cannot speak for other peers. Members learn the requester's
+PeerId, which GossipSub's signed `from` field already shows them. A writer answers only
 when the requester lacks its head or its snapshot, with an ordinary signed
 update, so every reply passes the normal signature, ACL and admission checks.
 Replies go to the whole topic, so one request repairs every replica that is
@@ -273,15 +276,26 @@ behind in the same way.
   document sends at most one request per 5 s (`minRequestIntervalMs`), and
   while a detected gap stays open that spacing doubles up to the periodic
   interval.
-- One peer triggers at most one request per kind of signal per 30 s
-  (`peerCooldownMs`), so a flapping connection cannot cause a storm. A
-  document verifies at most four advertised heads at once, refilled at one per
-  2 s.
+- Advertised heads are counted per member signing key, however many PeerIds
+  the member uses. One member triggers at most one request per kind of signal
+  per 30 s (`peerCooldownMs`), and a document verifies at most four
+  advertisements at once, refilled at one per 2 s.
+- Topic names are public, so a peer subscribing to the topic counts on its
+  own only if it recently sent a verified request or writer frame. All other
+  peers share one cooldown per document.
+- An advertisement expires after three periodic intervals, a member's newer
+  advertisement replaces its older one, and a verified request naming a head
+  the replica holds retracts it. An expired or unresolved advertisement
+  closes as `abandoned`, not `repaired`, and the member's advertisements are
+  then ignored for 5 minutes, doubling to 2 hours.
 - A periodic request is postponed once when another member asks with the same
   head, since writers' replies reach every subscriber.
 - All documents of one Peerborne instance share a request bucket of 16,
-  refilled at four per second. At most one catch-up load runs at a time, and
-  at most one per peer every 10 s.
+  refilled at four per second. Periodic requests leave four tokens for
+  requests a gap or a new peer triggered, and the periodic interval stretches
+  with the number of open documents so that they plan at most half of the
+  rate (beyond about 90 documents at the default interval). At most one
+  catch-up load runs at a time, and at most one per peer every 10 s.
 - Responders keep the existing limits: one reply per document every 2 s, a
   60 s freshness window and a 128-entry replay ledger, however many members
   ask.
@@ -298,14 +312,20 @@ A reply carries the responder's retained tree and, when the requester lacks
 it, the snapshot. If that does not fit a GossipSub frame, no reply arrives
 and a detected gap stays open; a writer's own request still names its head.
 Once the gap outlives the first request by 15 s (`loadAfterMs`), the document
-runs the authenticated V4 `load()`, preferring the newest connected writer
-that named a head it lacks. Every load rule applies. It needs
+runs the authenticated V4 `load()` if the evidence is strong enough: local
+evidence (pending CRDT state or an unfetched change), for at most three loads
+per gap, or a head that at least two members advertise. One member, honest
+or not, can make replicas ask over gossip but not load. The load prefers the
+newest connected writer that named the head. Every load rule applies. It needs
 `resolveLoadSecurityCommitments`, and with the quorum enabled the agreeing
 peers decide what is served, so a single peer that is ahead of the others is
 not loaded from unless `loadQuorumAllowSinglePeer` or a disabled quorum allows
-it. A gap that only readers advertised is repaired over gossip, because
-readers cannot sign load responses. Each load that leaves the gap open doubles
-the delay before the next, from 60 s (`loadIntervalMs`) up to 16 minutes.
+it. Readers are never load targets, because they cannot sign load responses.
+A load that leaves an advertised head unknown penalizes its advertisers, and
+an unfetched change it does not reveal is not escalated again for an hour.
+Each load that leaves anything unresolved doubles the delay before the next,
+from 60 s (`loadIntervalMs`) up to 64 minutes; only a repair resets it.
+Closing the document aborts a load in progress.
 
 ### Configuration and status
 
@@ -318,7 +338,7 @@ document.subscribeToAntiEntropy('status', (event, status) => {
 });
 ```
 
-Events are `gap`, `request`, `load` and `repaired`. Catch-up runs only for
+Events are `gap`, `request`, `load`, `repaired` and `abandoned`. Catch-up runs only for
 signed documents on a node with a libp2p identity; coordinated documents use
 their [controller catch-up](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#resume-with-a-controller-checkpoint).
 `requestSync()` still sends a request at once, within its 2 s rate limit, and

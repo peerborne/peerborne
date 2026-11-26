@@ -48,6 +48,7 @@ function documentFixture(config: Record<string, unknown> = {}) {
     _invitationBootstrapReady: true,
     load: jest.fn(async () => true),
     _hashes: new Set<string>(),
+    _referencedAncestors: new Set<string>(),
     _computeTopic: () => topic,
     _isSigningEnabled: () => true,
     _mutationQueue: new InvitationMembershipQueue(),
@@ -216,4 +217,54 @@ test('a throwing observer does not stop catch-up', async () => {
     warn.mockRestore();
     await fixture.document.close();
   }
+});
+
+test('subscription churn from peers not seen as members is held to one request per cooldown', async () => {
+  const fixture = documentFixture();
+  await fixture.document.open();
+  await advance(1_500);
+  for (let i = 0; i < 100; i++)
+    fixture.subscriptionChange(`12D3KooWThrowaway${i}`, [
+      { topic, subscribe: true },
+    ]);
+  await advance(30_500);
+  expect(fixture.publishSyncRequest).toHaveBeenCalledTimes(2);
+  for (let i = 100; i < 200; i++)
+    fixture.subscriptionChange(`12D3KooWThrowaway${i}`, [
+      { topic, subscribe: true },
+    ]);
+  await advance(10_000);
+  expect(fixture.publishSyncRequest).toHaveBeenCalledTimes(3);
+  await fixture.document.close();
+});
+
+test('closing the document aborts a catch-up load in progress', async () => {
+  const fixture = documentFixture({ antiEntropy: { loadAfterMs: 5_000 } });
+  Object.assign(fixture.document.swarm, {
+    resolveLoadSecurityCommitments: () => ({}),
+  });
+  const signals: AbortSignal[] = [];
+  (fixture.document as unknown as { load: unknown }).load = jest.fn(
+    (_peer: unknown, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        }),
+      );
+    },
+  );
+  await fixture.document.open();
+  await advance(1_500);
+  fixture.pending.value = true;
+  (
+    fixture.document as unknown as {
+      _antiEntropy: { remoteStateApplied(): void };
+    }
+  )._antiEntropy.remoteStateApplied();
+  await advance(12_000);
+  expect(signals).toHaveLength(1);
+  expect(fixture.document.antiEntropyStatus.phase).toBe('loading');
+  await fixture.document.close();
+  expect(signals[0]!.aborted).toBe(true);
 });

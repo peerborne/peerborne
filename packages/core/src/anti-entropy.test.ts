@@ -70,9 +70,13 @@ function fakeHost() {
     pending: false,
     loadable: true,
     outcome: 'sent' as AntiEntropyRequestOutcome,
-    load: async (_peer: string | undefined): Promise<boolean> => true,
+    load: async (
+      _peer: string | undefined,
+      _signal: AbortSignal,
+    ): Promise<boolean> => true,
     requestTimes: [] as number[],
     loads: [] as Array<{ peer?: string; at: number }>,
+    signals: [] as AbortSignal[],
   };
   let clockNow = () => 0;
   const host: AntiEntropyHost = {
@@ -84,12 +88,13 @@ function fakeHost() {
     isKnown: (cid) => state.known.has(cid),
     canLoad: () => state.loadable,
     isConnected: (peer) => state.connected.has(peer),
-    load: (peer) => {
+    load: (peer, signal) => {
       state.loads.push({
         ...(peer === undefined ? {} : { peer }),
         at: clockNow(),
       });
-      return state.load(peer);
+      state.signals.push(signal);
+      return state.load(peer, signal);
     },
   };
   return {
@@ -169,7 +174,7 @@ describe('anti-entropy triggering', () => {
       enabled: true,
       running: true,
       requests: 1,
-      suppressed: 1,
+      suppressed: 2,
       gap: false,
       lastRequestAt: START + 1_000,
       nextRunAt: START + 46_000,
@@ -218,7 +223,7 @@ describe('anti-entropy triggering', () => {
     expect(antiEntropy.status().gap).toBe(false);
   });
 
-  test('one peer triggers at most one request per kind of signal within its cooldown', async () => {
+  test('one member or peer triggers at most one request per kind of signal within its cooldown', async () => {
     const { time, state, antiEntropy } = setup();
     state.loadable = false;
     antiEntropy.start();
@@ -228,7 +233,7 @@ describe('anti-entropy triggering', () => {
     expect(state.requestTimes).toEqual([1_000, 6_000]);
     expect(antiEntropy.status().suppressed).toBe(19);
     expect(antiEntropy.admitAdvertisement('flapping', 'head')).toBe(true);
-    antiEntropy.advertisement('flapping', 'head', true);
+    antiEntropy.advertisement('flapping', 'peer-flapping', 'head', true);
     expect(antiEntropy.admitAdvertisement('flapping', 'head')).toBe(false);
     expect(antiEntropy.admitAdvertisement('flapping', 'newer')).toBe(false);
     await time.to(31_000);
@@ -340,7 +345,7 @@ describe('anti-entropy triggering', () => {
     antiEntropy.close();
     antiEntropy.peerSubscribed('a');
     antiEntropy.missingChange('cid');
-    antiEntropy.advertisement('a', 'head', true);
+    antiEntropy.advertisement('a', 'peer-a', 'head', true);
     antiEntropy.remoteStateApplied();
     await time.to(1_000_000);
     expect(state.requestTimes).toEqual([]);
@@ -371,34 +376,35 @@ describe('anti-entropy triggering', () => {
 });
 
 describe('anti-entropy load escalation', () => {
-  test('loads from the newest connected writer that advertised newer state', async () => {
+  test('loads a head two members advertise from its newest connected writer', async () => {
     const { time, state, events, antiEntropy } = setup();
     state.connected = new Set(['reader', 'w1', 'w2']);
+    state.load = async () => {
+      state.known.add('h1');
+      state.known.add('h2');
+      return true;
+    };
     antiEntropy.start();
     await time.to(1_000);
     await time.to(2_000);
-    antiEntropy.advertisement('reader', 'h-reader', false);
-    antiEntropy.advertisement('w1', 'h1', true);
-    antiEntropy.advertisement('w2', 'h2', true);
-    antiEntropy.advertisement('w3', 'h3', true);
+    antiEntropy.advertisement('m-reader', 'reader', 'h1', false);
+    antiEntropy.advertisement('m-w1', 'w1', 'h1', true);
+    antiEntropy.advertisement('m-w2', 'w2', 'h2', true);
+    antiEntropy.advertisement('m-w3', 'w3', 'h1', true);
     await time.to(20_999);
     expect(state.requestTimes).toEqual([1_000, 6_000, 16_000]);
     expect(state.loads).toEqual([]);
     await time.to(21_000);
-    expect(state.loads).toEqual([{ peer: 'w2', at: 21_000 }]);
-    expect(events.at(-1)).toMatchObject({
-      type: 'load',
-      peer: 'w2',
-      outcome: 'loaded',
-    });
+    expect(state.loads).toEqual([{ peer: 'w1', at: 21_000 }]);
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({ type: 'repaired', afterMs: 19_000 }),
+      expect.objectContaining({ type: 'load', peer: 'w1', outcome: 'loaded' }),
+    ]);
     expect(antiEntropy.status()).toMatchObject({
       loads: 1,
-      gap: true,
-      lastLoad: { at: START + 21_000, peer: 'w2', outcome: 'loaded' },
+      gap: false,
+      lastLoad: { at: START + 21_000, peer: 'w1', outcome: 'loaded' },
     });
-    state.known = new Set(['h-reader', 'h1', 'h3']);
-    antiEntropy.remoteStateApplied();
-    expect(events.at(-1)).toMatchObject({ type: 'repaired' });
   });
 
   test('a gap advertised only by readers is repaired over gossip, never by load', async () => {
@@ -406,7 +412,7 @@ describe('anti-entropy load escalation', () => {
     state.connected = new Set(['reader']);
     antiEntropy.start();
     await time.to(1_000);
-    antiEntropy.advertisement('reader', 'h', false);
+    antiEntropy.advertisement('m-reader', 'reader', 'h', false);
     await time.to(600_000);
     expect(state.loads).toEqual([]);
     expect(state.requestTimes.length).toBeGreaterThan(10);
@@ -425,7 +431,7 @@ describe('anti-entropy load escalation', () => {
     expect(Math.max(...gaps)).toBe(45_000);
   });
 
-  test('loads that leave the gap open back off to sixteen times the load interval', async () => {
+  test('local evidence starts at most three loads per gap, with doubling spacing', async () => {
     const { time, state, events, antiEntropy } = setup();
     state.pending = true;
     let attempt = 0;
@@ -435,19 +441,17 @@ describe('anti-entropy load escalation', () => {
     };
     antiEntropy.start();
     await time.to(5_000_000);
-    const spacing = state.loads
-      .slice(1)
-      .map((load, i) => load.at - state.loads[i]!.at);
-    expect(state.loads[0]).toEqual({ at: 16_000 });
-    expect(spacing.slice(0, 5)).toEqual([
-      120_000, 240_000, 480_000, 960_000, 960_000,
+    expect(state.loads).toEqual([
+      { at: 16_000 },
+      { at: 136_000 },
+      { at: 376_000 },
     ]);
     expect(
       events
         .filter((event) => event.type === 'load')
-        .slice(0, 2)
         .map((event) => event.type === 'load' && event.outcome),
-    ).toEqual(['not-served', 'failed']);
+    ).toEqual(['not-served', 'failed', 'not-served']);
+    expect(antiEntropy.status().gap).toBe(true);
   });
 
   test('a repaired gap resets request and load backoff', async () => {
@@ -496,7 +500,7 @@ describe('anti-entropy shared budget', () => {
       [],
     ]);
     await time.to(3_000);
-    expect(documents[2]!.requestTimes).toEqual([2_500]);
+    expect(documents[2]!.requestTimes).toEqual([3_000]);
   });
 
   test('loads are serialized across documents and spaced per peer', async () => {
@@ -541,5 +545,198 @@ describe('anti-entropy shared budget', () => {
     await time.to(35_000);
     expect(states[1]!.loads).toHaveLength(1);
     expect(states[0]!.loads).toHaveLength(1);
+  });
+});
+
+describe('anti-entropy evidence and abuse bounds', () => {
+  test('subscriptions from peers not seen as members share one cooldown per document', async () => {
+    const { time, state, antiEntropy } = setup();
+    state.loadable = false;
+    antiEntropy.start();
+    await time.to(1_000);
+    for (let i = 0; i < 50; i++) antiEntropy.peerSubscribed(`throwaway-${i}`);
+    await time.to(30_000);
+    expect(state.requestTimes).toEqual([1_000, 6_000]);
+    antiEntropy.memberPeer('member-a');
+    antiEntropy.memberPeer('member-b');
+    antiEntropy.peerSubscribed('member-a');
+    antiEntropy.peerSubscribed('member-b');
+    antiEntropy.peerSubscribed('throwaway-50');
+    await time.to(40_000);
+    expect(state.requestTimes).toEqual([1_000, 6_000, 31_000]);
+    antiEntropy.peerSubscribed('member-a');
+    antiEntropy.peerSubscribed('throwaway-51');
+    await time.to(45_000);
+    expect(state.requestTimes).toHaveLength(4);
+    expect(antiEntropy.status().suppressed).toBe(51);
+    antiEntropy.peerSubscribed('throwaway-52');
+    antiEntropy.peerSubscribed('dialed-relay', true);
+    await time.to(55_000);
+    expect(state.requestTimes).toHaveLength(5);
+    expect(antiEntropy.status().suppressed).toBe(52);
+  });
+
+  test('one member counts once however many PeerIds it advertises from', async () => {
+    const { time, state, antiEntropy } = setup();
+    state.connected = new Set(Array.from({ length: 20 }, (_, i) => `p${i}`));
+    antiEntropy.start();
+    await time.to(1_000);
+    for (let i = 0; i < 20; i++) {
+      await time.to(1_000 + i * 31_000);
+      if (antiEntropy.admitAdvertisement('member', 'head'))
+        antiEntropy.advertisement('member', `p${i}`, 'head', true);
+    }
+    await time.to(2_000_000);
+    expect(state.loads).toEqual([]);
+  });
+
+  test('a head only one member advertises is asked for, then abandoned with a growing penalty, never loaded', async () => {
+    const { time, state, events, antiEntropy } = setup();
+    state.connected = new Set(['w']);
+    antiEntropy.start();
+    await time.to(1_000);
+    expect(antiEntropy.admitAdvertisement('m', 'fake-1')).toBe(true);
+    antiEntropy.advertisement('m', 'w', 'fake-1', true);
+    await time.to(200_000);
+    expect(state.loads).toEqual([]);
+    const abandoned = events.find((event) => event.type === 'abandoned')!;
+    expect(abandoned).toBeDefined();
+    expect(events.some((event) => event.type === 'repaired')).toBe(false);
+    expect(abandoned.at - START).toBeGreaterThanOrEqual(136_000);
+    const firstStrike = abandoned.at - START;
+    await time.to(firstStrike + 299_000);
+    expect(antiEntropy.admitAdvertisement('m', 'fake-2')).toBe(false);
+    await time.to(firstStrike + 300_000);
+    expect(antiEntropy.admitAdvertisement('m', 'fake-2')).toBe(true);
+    antiEntropy.advertisement('m', 'w', 'fake-2', true);
+    await time.to(firstStrike + 600_000);
+    const second = events.filter((event) => event.type === 'abandoned')[1]!;
+    const secondStrike = second.at - START;
+    await time.to(secondStrike + 599_000);
+    expect(antiEntropy.admitAdvertisement('m', 'fake-3')).toBe(false);
+    await time.to(secondStrike + 600_000);
+    expect(antiEntropy.admitAdvertisement('m', 'fake-3')).toBe(true);
+    expect(state.loads).toEqual([]);
+  });
+
+  test('a corroborated load that leaves the head unknown penalizes its advertisers and keeps the backoff', async () => {
+    const { time, state, events, antiEntropy } = setup();
+    state.connected = new Set(['w1', 'w2']);
+    antiEntropy.start();
+    await time.to(1_000);
+    antiEntropy.advertisement('m1', 'w1', 'fake', true);
+    antiEntropy.advertisement('m2', 'w2', 'fake', true);
+    await time.to(21_000);
+    expect(state.loads).toEqual([{ peer: 'w2', at: 21_000 }]);
+    expect(events.slice(-2).map((event) => event.type)).toEqual([
+      'abandoned',
+      'load',
+    ]);
+    expect(antiEntropy.status().gap).toBe(false);
+    expect(antiEntropy.admitAdvertisement('m1', 'fake')).toBe(false);
+    expect(antiEntropy.admitAdvertisement('m2', 'other')).toBe(false);
+    antiEntropy.advertisement('m3', 'w1', 'next', true);
+    antiEntropy.advertisement('m4', 'w2', 'next', true);
+    await time.to(140_999);
+    expect(state.loads).toHaveLength(1);
+    await time.to(141_000);
+    expect(state.loads).toHaveLength(2);
+  });
+
+  test('an unfetched change a load does not reveal is not escalated again for an hour', async () => {
+    const { time, state, events, antiEntropy } = setup();
+    antiEntropy.start();
+    await time.to(1_000);
+    antiEntropy.missingChange('ghost');
+    await time.to(21_000);
+    expect(state.loads).toEqual([{ at: 21_000 }]);
+    expect(events.filter((event) => event.type === 'abandoned')).toHaveLength(
+      1,
+    );
+    const suppressed = antiEntropy.status().suppressed;
+    antiEntropy.missingChange('ghost');
+    expect(antiEntropy.status()).toMatchObject({
+      gap: false,
+      suppressed: suppressed + 1,
+    });
+    await time.to(21_000 + 60 * 60 * 1000);
+    antiEntropy.missingChange('ghost');
+    expect(antiEntropy.status().gap).toBe(true);
+  });
+
+  test("advertisements expire, a member's latest replaces its earlier one, and a retraction is not a repair", async () => {
+    const { time, state, events, antiEntropy } = setup();
+    state.loadable = false;
+    antiEntropy.start();
+    await time.to(1_000);
+    antiEntropy.advertisement('m', 'p', 'h1', false);
+    await time.to(32_000);
+    expect(antiEntropy.admitAdvertisement('m', 'h2')).toBe(true);
+    antiEntropy.advertisement('m', 'p', 'h2', false);
+    state.known.add('h1');
+    antiEntropy.remoteStateApplied();
+    expect(antiEntropy.status().gap).toBe(true);
+    expect(antiEntropy.admitRetraction('other')).toBe(false);
+    expect(antiEntropy.admitRetraction('m')).toBe(true);
+    antiEntropy.retractAdvertisement('m');
+    expect(antiEntropy.status().gap).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: 'abandoned' });
+    expect(events.some((event) => event.type === 'repaired')).toBe(false);
+  });
+
+  test('many open documents stretch the periodic interval and keep tokens for gap-driven requests', async () => {
+    const budget = new AntiEntropyBudget();
+    const time = fakeClock();
+    const documents = Array.from({ length: 300 }, () => {
+      const fake = fakeHost();
+      fake.bind(() => time.now);
+      fake.state.loadable = false;
+      const antiEntropy = new AntiEntropy(
+        resolveAntiEntropyConfig(),
+        fake.host,
+        budget,
+        () => {},
+        time.clock,
+      );
+      antiEntropy.start();
+      return { ...fake, antiEntropy };
+    });
+    expect(budget.openDocuments).toBe(300);
+    expect(budget.periodicScale(45_000)).toBeCloseTo(300 / 90);
+    await time.to(600_000);
+    const counts = documents.map(({ state }) => state.requestTimes.length);
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    expect(total).toBeLessThanOrEqual(600 * 4 + 16);
+    expect(Math.max(...counts)).toBeLessThanOrEqual(6);
+    const target = documents[0]!;
+    target.antiEntropy.missingChange('needed');
+    const before = target.state.requestTimes.length;
+    await time.to(603_000);
+    expect(target.state.requestTimes.length).toBe(before + 1);
+    for (const { antiEntropy } of documents) antiEntropy.close();
+    expect(budget.openDocuments).toBe(0);
+  });
+
+  test('closing during a load aborts it and reports nothing afterwards', async () => {
+    const { time, state, events, antiEntropy } = setup();
+    state.pending = true;
+    state.load = (_peer, signal) =>
+      new Promise<boolean>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    antiEntropy.start();
+    await time.to(16_000);
+    expect(state.loads).toHaveLength(1);
+    expect(antiEntropy.status().phase).toBe('loading');
+    const signal = state.signals[0]!;
+    expect(signal.aborted).toBe(false);
+    const eventCount = events.length;
+    antiEntropy.close();
+    expect(signal.aborted).toBe(true);
+    await time.to(200_000);
+    expect(events).toHaveLength(eventCount);
+    expect(antiEntropy.status()).toMatchObject({ running: false, loads: 0 });
   });
 });

@@ -349,7 +349,8 @@ export interface PeerborneConfig {
    * peer subscribed to its topic connects, when the CRDT waits for missing
    * dependencies, when a frame names a change that cannot be fetched, when a
    * member advertises a head it lacks, and every 30-60 s. A gap that outlives
-   * a request is repaired with the authenticated V4 load path, which needs
+   * a request is repaired with the authenticated V4 load path when the CRDT
+   * itself shows the gap or two members advertise the same head; that needs
    * `resolveLoadSecurityCommitments` and keeps every load quorum rule.
    * Observe it with `document.antiEntropyStatus` and
    * `document.subscribeToAntiEntropy()`.

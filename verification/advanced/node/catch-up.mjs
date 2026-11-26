@@ -440,8 +440,8 @@ export async function droppedFinalFrameCatchUp({ full }) {
 
 /**
  * The reader misses changes whose snapshot no gossip reply can carry, so the
- * writer does not answer its request. The gap shows as pending dependencies
- * or as the writer's advertised head, and the reader loads from that writer
+ * writer does not answer its request. The writer's next frame leaves the
+ * reader's CRDT waiting for dependencies, which is local evidence for a load
  * over the V4 stream path.
  */
 export async function largeCatchUpLoad() {
@@ -474,8 +474,14 @@ export async function largeCatchUpLoad() {
       });
     session.inbound.drop = () => false;
     session.clock.since = performance.now();
+    // The next edit's frame carries only the newest changes, so the reader's
+    // CRDT waits for the ones it missed.
+    await session.source.change((draft) => {
+      draft.after = 'large';
+    });
     const convergedMs = await until(
       () =>
+        session.target.document.after === 'large' &&
         values.every(
           (value, i) => session.target.document[`large${i}`] === value,
         ),

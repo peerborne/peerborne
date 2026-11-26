@@ -19,8 +19,10 @@ const signal = fc.record({
     'advertised',
     'equivalent',
     'learned',
+    'member',
   ),
   peer: fc.integer({ min: 0, max: peers.length - 1 }),
+  member: fc.integer({ min: 0, max: 2 }),
   head: fc.integer({ min: 0, max: 5 }),
   writer: fc.boolean(),
 });
@@ -53,7 +55,7 @@ test('generated signal histories keep request, load and timer bounds', async () 
         };
         const known = new Set<string>();
         const connected = new Set(['a', 'b']);
-        const advertised = new Map<string, boolean>();
+        const writerPeers = new Set<string>();
         let pending = false;
         const requests: number[] = [];
         const loads: Array<{ at: number; peer?: string; writer?: boolean }> =
@@ -76,7 +78,7 @@ test('generated signal histories keep request, load and timer bounds', async () 
                 at: now,
                 ...(peer === undefined
                   ? {}
-                  : { peer, writer: advertised.get(peer) }),
+                  : { peer, writer: writerPeers.has(peer) }),
               });
               if (loadOutcome === 'throw') throw new Error('load');
               return loadOutcome === 'loaded';
@@ -121,9 +123,14 @@ test('generated signal histories keep request, load and timer bounds', async () 
               antiEntropy.missingChange(head);
               break;
             case 'advertised':
-              if (antiEntropy.admitAdvertisement(peer, head)) {
-                antiEntropy.advertisement(peer, head, step.writer);
-                advertised.set(peer, step.writer);
+              if (antiEntropy.admitAdvertisement(`m${step.member}`, head)) {
+                antiEntropy.advertisement(
+                  `m${step.member}`,
+                  peer,
+                  head,
+                  step.writer,
+                );
+                if (step.writer) writerPeers.add(peer);
               }
               break;
             case 'equivalent':
@@ -132,6 +139,9 @@ test('generated signal histories keep request, load and timer bounds', async () 
             case 'learned':
               known.add(head);
               antiEntropy.remoteStateApplied();
+              break;
+            case 'member':
+              antiEntropy.memberPeer(peer);
               break;
           }
         }
