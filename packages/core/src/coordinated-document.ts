@@ -342,6 +342,8 @@ export class CoordinatedDocument<
   private readonly senders = new Map<string, ReceivedFrameBudget>();
   // Admitted frames waiting for their turn, by author, sequence and hash.
   private readonly admittedFrames = new Map<string, WaitingFrame>();
+  // Changes whenever held frames are added, removed or replaced.
+  private heldVersion = 0;
   // The last queued publication; null when the outbox is known to be empty.
   private outboxTail: OutboxTail | null | undefined;
   private deriving?: {
@@ -647,26 +649,39 @@ export class CoordinatedDocument<
         throw new TypeError('Invalid document frame sender');
       this.assertUsable();
       const frames = splitDocumentPublication(frame);
-      for (const value of frames) {
-        const releases: Array<() => void> = [];
-        reserved.push(releases);
-        const charge = 2 * value.length;
-        releases.push(aggregateInbound.reserve(charge));
-        releases.push(this.inbound.reserve(charge));
-        if (sender !== undefined)
-          releases.push(
-            reserveSender(
-              this.senders,
-              sender,
-              charge,
-              SENDER_FRAMES,
-              SENDER_BYTES,
-            ),
-          );
-      }
+      const charge = (index: number) => {
+        const releases = (reserved[index] ??= []);
+        const bytes = 2 * frames[index].length;
+        try {
+          releases.push(aggregateInbound.reserve(bytes));
+          releases.push(this.inbound.reserve(bytes));
+          if (sender !== undefined)
+            releases.push(
+              reserveSender(
+                this.senders,
+                sender,
+                bytes,
+                SENDER_FRAMES,
+                SENDER_BYTES,
+              ),
+            );
+        } catch (error) {
+          release(index);
+          throw error;
+        }
+      };
+      for (let index = 0; index < frames.length; index++) charge(index);
       const admitted = this.admitFrames(
         frames,
         (index) => () => release(index),
+        (index) => {
+          try {
+            charge(index);
+            return true;
+          } catch {
+            return false;
+          }
+        },
       );
       admitted.then(undefined, () => release());
       const result = this.tail.then(async () => {
@@ -678,11 +693,15 @@ export class CoordinatedDocument<
           failure: unknown,
           stopped = accepted.length;
         const retry: AdmittedFrame[] = [];
+        const delivered =
+          accepted.length === 0
+            ? undefined
+            : this.deliveryCheck(accepted[0].context);
         for (const [index, value] of accepted.entries()) {
           let processed = false;
           try {
             if (
-              !this.delivered(value) &&
+              !delivered!(value) &&
               (await this.receiveOwned(value.frame, value))
             )
               applied = true;
@@ -806,8 +825,10 @@ export class CoordinatedDocument<
   private async admitFrames(
     frames: readonly Uint8Array[],
     releaser: (index: number) => () => void,
+    recharge: (index: number) => boolean,
   ): Promise<AdmittedFrame[]> {
     const context = this.options.coordinator.documentContext;
+    const delivered = this.deliveryCheck(context);
     const key = await this.frameKey();
     const decoded: Array<{
       plaintext: Uint8Array;
@@ -818,8 +839,7 @@ export class CoordinatedDocument<
       released: boolean;
     }> = [];
     const covered = (value: (typeof decoded)[number]) =>
-      this.delivered({ ...value, context }) ||
-      this.admittedFrames.has(value.id);
+      delivered(value) || this.admittedFrames.has(value.id);
     for (const [index, frame] of frames.entries()) {
       const envelope = decodeEncryptedDocumentContent(frame);
       if (!documentBytesEqual(envelope.epochTag, key.material.epochTag))
@@ -880,11 +900,13 @@ export class CoordinatedDocument<
     for (const [index, value] of decoded.entries()) {
       const release = releaser(index);
       const waiting = this.admittedFrames.get(value.id);
-      if (waiting || this.delivered({ ...value, context })) {
+      if (waiting || delivered(value)) {
         if (waiting) waiting.copied = true;
         release();
         continue;
       }
+      // Its original was released unapplied while this frame decoded.
+      if (value.released && !recharge(index)) continue;
       const entry: WaitingFrame = { copied: false };
       this.admittedFrames.set(value.id, entry);
       let done = false;
@@ -909,53 +931,76 @@ export class CoordinatedDocument<
     return admitted;
   }
 
-  /** Whether a frame was already accepted, or is held, at its context. */
-  private delivered(value: {
-    context: GroupSecurityDocumentContext;
+  /**
+   * A check of whether a frame at `context` was already accepted or is held.
+   * Contexts are compared only when the receipts or held frames are replaced,
+   * so checking each frame of a publication stays cheap.
+   */
+  private deliveryCheck(
+    context: GroupSecurityDocumentContext,
+  ): (value: {
     author: string;
     sequence: number;
     hash: Uint8Array;
-  }): boolean {
-    if (
-      !documentContextsMatch(
-        value.context,
-        this.options.coordinator.documentContext,
-      )
-    )
-      return false;
-    const accepted = this.receiptsAt(value.context).get(value.author);
-    const sequence = accepted?.sequence ?? 0;
-    return (
-      value.sequence < sequence ||
-      (value.sequence === sequence &&
-        documentBytesEqual(value.hash, accepted!.hash)) ||
-      this.isHeld(value.author, value.sequence, value.hash)
-    );
+  }) => boolean {
+    let receiptsSource: Map<string, Receipt> | undefined,
+      receipts: ReadonlyMap<string, Receipt> = new Map(),
+      heldVersion = -1,
+      held = new Set<string>();
+    return ({ author, sequence, hash }) => {
+      if (receiptsSource !== this.receipts) {
+        receiptsSource = this.receipts;
+        receipts = this.receiptsAt(context);
+      }
+      if (heldVersion !== this.heldVersion) {
+        heldVersion = this.heldVersion;
+        held = new Set();
+        if (this.held && documentContextsMatch(this.held.context, context))
+          for (const entry of this.held.frames)
+            held.add(
+              `${entry.author}:${entry.sequence}:${documentBytesId(entry.hash)}`,
+            );
+      }
+      const accepted = receipts.get(author);
+      const last = accepted?.sequence ?? 0;
+      return (
+        sequence < last ||
+        (sequence === last && documentBytesEqual(hash, accepted!.hash)) ||
+        held.has(`${author}:${sequence}:${documentBytesId(hash)}`)
+      );
+    };
   }
 
   /**
    * Give frames another turn at the end of the queue. They are charged again;
-   * frames that find no capacity are dropped.
+   * the frames after the first that finds no capacity are dropped.
    */
   private retryFrames(frames: readonly AdmittedFrame[]): void {
     const releases: Array<() => void> = [];
     const release = () => {
       for (const value of releases.splice(0).reverse()) value();
     };
-    try {
-      for (const value of frames) {
-        releases.push(aggregateInbound.reserve(2 * value.frame.length));
-        releases.push(this.inbound.reserve(2 * value.frame.length));
+    // Frames that find capacity keep their turn in sequence order.
+    let fitting = 0;
+    for (const value of frames) {
+      let shared: (() => void) | undefined;
+      try {
+        shared = aggregateInbound.reserve(2 * value.frame.length);
+        releases.push(this.inbound.reserve(2 * value.frame.length), shared);
+      } catch {
+        shared?.();
+        break;
       }
-    } catch {
-      release();
-      return;
+      fitting++;
     }
+    if (fitting === 0) return;
+    const turns = frames.slice(0, fitting);
     const result = this.tail
       .then(async () => {
-        for (const value of frames) {
+        const delivered = this.deliveryCheck(turns[0].context);
+        for (const value of turns) {
           this.assertUsable();
-          if (this.delivered(value)) continue;
+          if (delivered(value)) continue;
           try {
             await this.receiveOwned(value.frame, value);
           } catch {
@@ -967,23 +1012,6 @@ export class CoordinatedDocument<
     this.tail = result.then(
       () => {},
       () => {},
-    );
-  }
-
-  private isHeld(author: string, sequence: number, hash: Uint8Array): boolean {
-    const held = this.held;
-    return (
-      !!held &&
-      documentContextsMatch(
-        held.context,
-        this.options.coordinator.documentContext,
-      ) &&
-      held.frames.some(
-        (entry) =>
-          entry.author === author &&
-          entry.sequence === sequence &&
-          documentBytesEqual(entry.hash, hash),
-      )
     );
   }
 
@@ -1012,6 +1040,7 @@ export class CoordinatedDocument<
     ) {
       this.clearHeld();
       this.held = { context: pending.context, frames: [], bytes: 0 };
+      this.heldVersion++;
     }
     const held = this.held;
     const same = held.frames.find(
@@ -1032,6 +1061,7 @@ export class CoordinatedDocument<
         MAX_HELD_FRAMES_PER_AUTHOR
     )
       throw new Error('Document frames waiting for predecessors exceed their bound');
+    this.heldVersion++;
     held.frames.push({
       frame,
       author: pending.author,
@@ -1047,6 +1077,7 @@ export class CoordinatedDocument<
   private clearHeld(): void {
     for (const entry of this.held?.frames ?? []) entry.release();
     this.held = undefined;
+    this.heldVersion++;
   }
 
   /** Apply held frames that an accepted frame or checkpoint made admissible. */
@@ -1091,6 +1122,7 @@ export class CoordinatedDocument<
         if (this.held !== held) return;
         if (keep) continue;
         held.frames.splice(held.frames.indexOf(entry), 1);
+        this.heldVersion++;
         held.bytes -= entry.frame.length;
         entry.release();
         if (applied) {

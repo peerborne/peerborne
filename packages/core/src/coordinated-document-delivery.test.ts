@@ -529,6 +529,29 @@ describe('coordinated document delivery', () => {
     }
   }, 110_000);
 
+  test('recognizes copies of an accepted publication at thousands of frames per second', async () => {
+    const g = await group(2);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 1024; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      expect(await g.deliver(publication, [0])).toEqual([]);
+      const receiver = engine(g.doc(0));
+      const start = performance.now();
+      const copies = Array.from({ length: 16 }, (_, index) =>
+        receiver.receive(publication.data, `r${index % 2}`),
+      );
+      expect(await Promise.all(copies)).toEqual(Array(16).fill(false));
+      // Under a second locally; comparing contexts for every frame took nine.
+      expect(performance.now() - start).toBeLessThan(5_000);
+      expect(queued(g.doc(0))).toBe(0);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
   test('applies live edits sent while a reconnect backlog drains and keeps the author live', async () => {
     const g = await group(2, { subscribers: true });
     try {
