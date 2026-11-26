@@ -5,7 +5,13 @@
  * the full CRDT state, allowing peers to skip replaying the full change history.
  */
 export interface CompactionConfig {
-  /** Enable automatic compaction; when false, only manual `document.snapshot()` is available. */
+  /**
+   * Enable periodic automatic compaction. When false, snapshots are manual
+   * (`document.snapshot()`) except for the depth bound: a writer whose
+   * retained sync tree reaches 256 levels always snapshots and prunes,
+   * because each change nests that tree one level deeper and serialization
+   * rejects trees deeper than 512 levels.
+   */
   enabled: boolean;
 
   /** Create a snapshot every N document changes (ACL changes do not count). */
@@ -14,7 +20,11 @@ export interface CompactionConfig {
   /** Minimum document changes before the first snapshot, to avoid premature snapshots. */
   minChangesBeforeSnapshot: number;
 
-  /** Prune old nodes from the in-memory sync tree after a snapshot. ACL nodes are always preserved. */
+  /**
+   * Prune old nodes from the in-memory sync tree after a snapshot. ACL nodes
+   * are always preserved. A depth-bound snapshot prunes even when this is
+   * false.
+   */
   pruneAfterSnapshot: boolean;
 
   /**
@@ -35,7 +45,11 @@ export interface CompactionConfig {
    */
   gcAfterPrune: boolean;
 
-  /** Keep at least N recent change nodes after pruning so slightly-behind peers can catch up. */
+  /**
+   * Keep at least N recent change nodes after pruning so slightly-behind
+   * peers can catch up. A depth-bound prune always keeps the 128 most recent
+   * inline changes instead.
+   */
   keepRecentNodes: number;
 }
 

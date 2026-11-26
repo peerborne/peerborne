@@ -10,6 +10,7 @@ import {
   assertAcceptedInvitationMembershipTopology,
   InvitationMembershipQueue,
 } from './invitation-membership.js';
+import { mergeCompactionConfig } from './compaction-config.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -163,6 +164,7 @@ async function founderDocument(publish: ReturnType<typeof jest.fn>) {
       })),
     },
     _topic: '/topic',
+    _compactionConfig: mergeCompactionConfig({}),
     swarm: { heliaNode: { libp2p: { services: { pubsub: { publish } } } } },
     _prepareInvitationBootstrapCapacity: jest.fn(async () => ({
       keychainChanges: { keychain: 1 },
