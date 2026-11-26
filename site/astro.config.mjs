@@ -29,6 +29,18 @@ const socialCard = {
   alt: 'Peerborne — local-first TypeScript state with end-to-end encryption.',
 };
 
+const googleAnalyticsId = 'G-JMJLN1YM4N';
+const googleAnalytics = `if (location.hostname === 'peerborne.io') {
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function gtag() { dataLayer.push(arguments); };
+  gtag('js', new Date());
+  gtag('config', '${googleAnalyticsId}');
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = 'https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}';
+  document.head.append(script);
+}`;
+
 // Deployed through GitHub Pages at the custom apex domain.
 export default defineConfig({
   site: 'https://peerborne.io',
@@ -94,6 +106,7 @@ export default defineConfig({
       },
       customCss: ['./src/styles/custom.css'],
       head: [
+        { tag: 'script', content: googleAnalytics },
         {
           tag: 'meta',
           attrs: { property: 'og:image', content: socialCard.url },
