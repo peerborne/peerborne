@@ -2,6 +2,7 @@ import { createHelia, createHeliaLight } from 'helia';
 import { withBitswap } from '@helia/bitswap';
 import { withLibp2pLight } from '@helia/libp2p';
 import type { HeliaWithLibp2p } from '@helia/libp2p';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import * as dagCbor from '@ipld/dag-cbor';
 import * as dagJson from '@ipld/dag-json';
 import type { ServiceMap } from '@libp2p/interface';
@@ -45,6 +46,10 @@ export async function createAndStartHeliaNode(
         'Helia 7 requires libp2p creation options; preconfigured libp2p nodes are not supported',
       );
     }
+    // Without a configured key, Helia reuses the PeerId persisted in the
+    // datastore, which every tab of a browser origin shares.
+    const privateKey =
+      libp2pInit?.privateKey ?? (await generateKeyPair('Ed25519'));
     heliaNode = (
       libp2pInit
         ? withBitswap(
@@ -62,11 +67,15 @@ export async function createAndStartHeliaNode(
                 ],
                 hashers: [sha512, ...(heliaOptions.hashers ?? [])],
               }),
-              libp2pInit,
+              { ...libp2pInit, privateKey },
             ),
             bitswapInit,
           )
-        : createHelia({ ...heliaOptions, bitswap: bitswapInit })
+        : createHelia({
+            ...heliaOptions,
+            libp2p: { privateKey },
+            bitswap: bitswapInit,
+          })
     ) as PeerborneHeliaNode;
     await heliaNode.start();
     if (!heliaNode.libp2p.services.pubsub) {

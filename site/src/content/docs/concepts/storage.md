@@ -68,6 +68,35 @@ CRDT state, and membership before opening locally. Retaining blocks alone does
 not restore those things; other applications and peer-assisted recovery remain
 unverified.
 
+### Several tabs of one origin
+
+`defaultConfig()` opens the same IndexedDB blockstore (`/peerborne-blocks`) and
+datastore (`/peerborne-data`) in every tab of a browser origin. The datastore
+holds Helia pins and the libp2p peer store. It does not hold the libp2p private
+key: unless `config.helia.libp2p.privateKey` is set, every `initialize()`
+starts libp2p with a new Ed25519 key. Each tab and each reload is therefore a
+separate peer with its own PeerId, so two tabs can dial each other and each
+holds its own relay reservation. A PeerId only addresses a node. Document
+access is bound to signing keys, and online invitations already end when their
+creator restarts. Set a fixed key only when a stable PeerId is required, and
+never in two instances that run at the same time.
+
+Sharing the stores leaves two caveats:
+
+- Garbage collection (`gcAfterPrune`, off by default) protects only the
+  retained history of the tab that runs it. It can delete blocks that another
+  tab still needs for the same document.
+- Peerborne does not coordinate application storage between tabs. Two tabs
+  that restore one signing identity are two peers of the same member, and the
+  application must coordinate any checkpoints they both save. Peerborne Note
+  and the password manager keep a same-profile Web Lock for this reason: their
+  encrypted checkpoint store accepts a save only at the expected revision, so
+  a second tab's saves would be rejected as stale.
+
+**Evidence boundary:** a Node test with an IndexedDB shim checks that
+default-config instances sharing these stores get distinct PeerIds. Two tabs
+of one profile synchronizing in a real browser is not covered by CI.
+
 ### No automatic replication factor
 
 Peerborne does not replicate blocks automatically. If you have 3 peers and one stores a block, the other 2 may fetch it on demand (bitswap) or may not. There is no "store on at least N peers" guarantee.

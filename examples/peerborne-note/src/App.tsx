@@ -537,7 +537,7 @@ export default function App({ initialFragment }: AppProps) {
             <h1>Use the existing Peerborne Note tab.</h1>
             <p>
               One active tab per browser profile protects the local identity and
-              Peerborne datastore from concurrent access. A collaborator needs a
+              saved notes from concurrent access. A collaborator needs a
               different browser profile or device.
             </p>
           </section>

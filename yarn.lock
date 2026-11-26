@@ -4130,6 +4130,7 @@ __metadata:
     "@libp2p/autonat": "npm:^3.0.33"
     "@libp2p/bootstrap": "npm:^12.0.37"
     "@libp2p/circuit-relay-v2": "npm:^4.2.18"
+    "@libp2p/crypto": "npm:^5.2.0"
     "@libp2p/dcutr": "npm:^3.0.33"
     "@libp2p/gossipsub": "npm:^17.2.2"
     "@libp2p/identify": "npm:^4.1.19"

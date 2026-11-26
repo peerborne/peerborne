@@ -279,6 +279,11 @@ export interface PeerborneConfig {
    *
    * Helia 7 accepts libp2p creation options here, not an already-created
    * libp2p node.
+   *
+   * Unless `libp2p.privateKey` is set, every `initialize()` starts libp2p
+   * with a new Ed25519 key, so each running instance, such as each browser
+   * tab sharing the default IndexedDB stores, has its own PeerId. Set a key
+   * only for a stable PeerId, and never in two instances running at once.
    */
   helia?: HeliaInit & {
     libp2p?: CreateLibp2pOptions<ServiceMap>;
