@@ -248,10 +248,13 @@ application step, when:
 - the application calls `requestSecurityCatchUp()`, which sends a request at
   once.
 
-A joining member's first request goes out 1 to 1.5 s after open. While no
-checkpoint arrives and a request is still needed, requests back off from 5 s
-to 2 min. A peer that subscribes to the topic, which may be the controller
-coming online, brings the next request forward to 5 s after the last.
+The controller never asks. A joining member's first request goes out 1 to
+1.5 s after open. While no checkpoint arrives and a request is still needed,
+requests back off from 5 s to 2 min; the backoff resets only when a checkpoint
+meets the need. For a joining member, a peer that subscribes to the topic,
+which may be the controller coming online, brings the next request forward to
+5 s after the last, at most once every 30 s per document whatever peer
+subscribes. Held frames never bring a request forward.
 
 The request is the same signed request with the requester's accepted heads,
 plus its issue time and the node's libp2p PeerId. It is encrypted under the
@@ -266,13 +269,35 @@ authenticated outside the document queue and charged against the received
 bounds and the sender's share, never the local operation budget.
 
 Only the unrestricted current controller answers. Every other replica drops a
-request before decrypting it. A member gets at most one checkpoint every 10 s,
-and all coordinated documents in a process share a budget of four
-checkpoints, refilled at one every 2 s. One request therefore yields at most
-one checkpoint, from one replica, however often it is delivered. The
-controller builds the checkpoint in the document queue, after any local edits
-waiting there, with the same snapshot, receipts and suffixes as the relayed
-checkpoint. It is bound to the request's challenge and published on the topic.
+request before decrypting it. A member gets at most one answer every 10 s. All
+coordinated documents in a process share a budget of four checkpoints,
+refilled at one every 2 s, and each document may take two of them, refilled at
+one every 4 s, so one document's members cannot exhaust the budget for the
+others. One request therefore yields at most one checkpoint, from one replica,
+however often it is delivered. The controller builds the checkpoint in the
+document queue, after any local edits waiting there, with the same snapshot,
+receipts and suffixes as the relayed checkpoint. It is bound to the request's
+challenge and published on the topic.
+
+A checkpoint holds the whole native document state, including Automerge
+history and deleted Yjs content, so a newly added member receives what was
+written before it joined. Set the security option `authorizeCatchUp(memberId)`
+on the controller to decide which authenticated members get one; any answer but
+`true`, or a failure, refuses. Without it, every current member does. The
+application-relayed path is its own decision point and does not consult it.
+
+The encoded snapshot a checkpoint carries is bounded to 512 KiB. When the
+controller's snapshot is larger, or `authorizeCatchUp` refuses, it answers with
+a signed refusal bound to the request, in its own AAD domain and outer format,
+instead of a checkpoint. It remembers an oversized snapshot until its content
+changes, so repeated requests do not serialize the document again; refusals
+use the per-member interval but not the checkpoint budget. A requester accepts
+a refusal only for one of its outstanding challenges and from the current
+controller, then stops requesting and reports it through the security option
+`onCatchUpRefused`, or a logged warning, as `{ reason: 'denied' }` or
+`{ reason: 'snapshot-too-large', snapshotBytes }`. Automatic requests resume
+only after `requestSecurityCatchUp()`. A document whose snapshot stays over
+the bound cannot onboard members through checkpoints.
 
 The requester keeps up to four outstanding challenges, bound to its installed
 roster and dropped after 2 min. A replica without one drops checkpoints
@@ -293,8 +318,8 @@ A requester that holds the start of a writer's history in the current context
 and missed more of its frames than any peer retains gets their content from the
 checkpoint's snapshot, but its receipt for that writer stays at its own head.
 That writer's later frames then wait as held frames, and the replica gets
-their content only from later checkpoints, at most one every 10 s, until a new
-group context resets receipts. Without a libp2p PeerId, as in a document
+their content only from later checkpoints, at a request backoff that grows to
+2 min, until a new group context resets receipts. Without a libp2p PeerId, as in a document
 opened without a network node, no request goes out automatically. Requests and
 checkpoints, up to 1 MiB, are visible on the topic as traffic, and every topic
 subscriber receives each checkpoint.

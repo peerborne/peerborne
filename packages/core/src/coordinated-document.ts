@@ -53,11 +53,13 @@ import {
 import { admitDocumentCatchUpReceipt } from './policy/document-catch-up.js';
 import {
   decodeDocumentCatchUpCheckpoint,
+  decodeDocumentCatchUpRefusal,
   decodeDocumentCatchUpRequest,
   decodeDocumentTopicCatchUpRequest,
   decodeEncryptedDocumentCatchUp,
   documentCatchUpAAD,
   encodeDocumentCatchUpCheckpoint,
+  encodeDocumentCatchUpRefusal,
   encodeDocumentCatchUpRequest,
   encodeDocumentTopicCatchUpRequest,
   encodeEncryptedDocumentCatchUp,
@@ -266,8 +268,23 @@ export interface CoordinatedDocumentOptions {
   readonly joinPublications?: boolean;
   /** Require the signed roles to enumerate the provider's exact decrypting roster. */
   readonly requireGroupRosterMatch?: boolean;
-  /** Allow explicit app-relayed catch-up from the current unrestricted controller. */
+  /**
+   * Allow catch-up from the current unrestricted controller: requested on the
+   * document topic, or relayed by the application.
+   */
   readonly enableAuthenticatedCatchUp?: boolean;
+  /**
+   * On the controller, decide whether an authenticated member's topic request
+   * gets a checkpoint, which holds the whole document state and its history.
+   * Any answer but `true` refuses it. Without it, every current member does.
+   */
+  readonly authorizeCatchUp?: (memberId: Uint8Array) => boolean | Promise<boolean>;
+  /**
+   * Called when the controller refuses this replica's topic request; it then
+   * stops requesting until `requestSecurityCatchUp()` is called. Without it,
+   * a warning is logged.
+   */
+  readonly onCatchUpRefused?: (refusal: CoordinatedCatchUpRefusal) => void;
   /**
    * Called with the number of unsent frames dropped because they were sealed
    * for an earlier group context or authority head and their author cannot
@@ -276,6 +293,15 @@ export interface CoordinatedDocumentOptions {
    */
   readonly onPublicationsDropped?: (frames: number) => void;
 }
+
+/** Why the controller answered this replica's topic request without a checkpoint. */
+export type CoordinatedCatchUpRefusal =
+  | {
+      /** The encoded snapshot exceeds the 512 KiB a checkpoint carries. */
+      readonly reason: 'snapshot-too-large';
+      readonly snapshotBytes: number;
+    }
+  | { readonly reason: 'denied' };
 
 interface DocumentGroupRosterBinding {
   readonly context: GroupSecurityDocumentContext;
@@ -501,22 +527,39 @@ const REDELIVERY_FRAMES_PER_SECOND = 32;
 const CATCH_UP_MEMBER_INTERVAL_MS = 10_000;
 /**
  * Topic checkpoints that all coordinated documents in this module instance
- * answer together: a burst of four, refilled at one every 2 s.
+ * answer together: a burst of four, refilled at one every 2 s. Each document
+ * may take a burst of two, refilled at one every 4 s, so one document's
+ * members cannot use the whole budget.
  */
-const CATCH_UP_PROCESS_BURST = 4;
-const CATCH_UP_PROCESS_REFILL_MS = 2_000;
-const catchUpAnswers = { tokens: CATCH_UP_PROCESS_BURST, refilledAt: 0 };
+const CATCH_UP_PROCESS = { burst: 4, refillMs: 2_000 };
+const CATCH_UP_DOCUMENT = { burst: 2, refillMs: 4_000 };
+const catchUpAnswers = { tokens: CATCH_UP_PROCESS.burst, refilledAt: 0 };
 /** Topic requests a replica keeps outstanding; a newer one displaces the oldest. */
 const MAX_TOPIC_CATCH_UPS = 4;
 
-function takeCatchUpAnswer(now: number): boolean {
-  catchUpAnswers.tokens = Math.min(
-    CATCH_UP_PROCESS_BURST,
-    catchUpAnswers.tokens +
-      Math.max(0, now - catchUpAnswers.refilledAt) / CATCH_UP_PROCESS_REFILL_MS,
+interface Bucket {
+  tokens: number;
+  refilledAt: number;
+}
+
+function refill(
+  bucket: Bucket,
+  limit: { burst: number; refillMs: number },
+  now: number,
+): void {
+  bucket.tokens = Math.min(
+    limit.burst,
+    bucket.tokens + Math.max(0, now - bucket.refilledAt) / limit.refillMs,
   );
-  catchUpAnswers.refilledAt = now;
-  if (catchUpAnswers.tokens < 1) return false;
+  bucket.refilledAt = now;
+}
+
+/** Take a checkpoint from the document's share and the process budget, or neither. */
+function takeCatchUpAnswer(share: Bucket, now: number): boolean {
+  refill(share, CATCH_UP_DOCUMENT, now);
+  refill(catchUpAnswers, CATCH_UP_PROCESS, now);
+  if (share.tokens < 1 || catchUpAnswers.tokens < 1) return false;
+  share.tokens--;
   catchUpAnswers.tokens--;
   return true;
 }
@@ -742,6 +785,14 @@ export class CoordinatedDocument<
     issued: new Map<string, number>(),
   };
   private staleCatchUps = 0;
+  private readonly catchUpShare: Bucket = {
+    tokens: CATCH_UP_DOCUMENT.burst,
+    refilledAt: 0,
+  };
+  // Changes whenever accepted content changes, so a refused snapshot is not rebuilt.
+  private contentVersion = 0;
+  private oversized?: { readonly version: number; readonly bytes: number };
+  private catchUpRefusal?: CoordinatedCatchUpRefusal;
   // Whether this replica accepted a frame or checkpoint, now or before a restart.
   private holdsContent = false;
   // Opened or added without content, and no checkpoint merged since.
@@ -772,6 +823,8 @@ export class CoordinatedDocument<
       joinPublications,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      authorizeCatchUp,
+      onCatchUpRefused,
       onPublicationsDropped,
     } = options;
     if (
@@ -804,6 +857,10 @@ export class CoordinatedDocument<
       typeof onPublicationsDropped !== 'function'
     )
       throw new TypeError('Dropped publication handler must be a function');
+    if (authorizeCatchUp !== undefined && typeof authorizeCatchUp !== 'function')
+      throw new TypeError('Catch-up authorization must be a function');
+    if (onCatchUpRefused !== undefined && typeof onCatchUpRefused !== 'function')
+      throw new TypeError('Catch-up refusal handler must be a function');
     if (
       enableAuthenticatedCatchUp &&
       (!requireGroupRosterMatch ||
@@ -823,6 +880,8 @@ export class CoordinatedDocument<
         persistPublications === true && joinPublications === true,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      authorizeCatchUp,
+      onCatchUpRefused,
       onPublicationsDropped,
     };
     this.genesisId = copyUnsharedUint8Array(
@@ -2340,6 +2399,13 @@ export class CoordinatedDocument<
     const snapshot = this.serializer.serializeChanges(
       this.crdt.getSnapshot!(this.session.document),
     );
+    if (kind === 'topic-checkpoint' && snapshot.length > MAX_DOCUMENT_CONTENT_BYTES) {
+      this.oversized = { version: this.contentVersion, bytes: snapshot.length };
+      return this.sealRefusal(stage, body, {
+        reason: 'snapshot-too-large',
+        snapshotBytes: snapshot.length,
+      });
+    }
     const base = {
       documentId: body.documentId,
       genesisId: body.genesisId,
@@ -2372,6 +2438,45 @@ export class CoordinatedDocument<
     );
   }
 
+  /** Seal the controller's signed answer that sends no checkpoint for a topic request. */
+  private sealRefusal(
+    stage: CatchUpWork,
+    body: DocumentCatchUpRequest,
+    refusal: CoordinatedCatchUpRefusal,
+  ): Promise<Uint8Array> {
+    const controllerId = this.options.coordinator.localMemberId;
+    const controller = this.catchUpController(stage.lease, controllerId);
+    stage.assertCurrent();
+    return this.sealCatchUp(
+      stage,
+      'topic-refusal',
+      encodeDocumentCatchUpRefusal({
+        documentId: body.documentId,
+        genesisId: body.genesisId,
+        authorityHead: body.authorityHead,
+        context: body.context,
+        requesterId: body.requesterId,
+        challenge: body.challenge,
+        controllerId,
+        reason: refusal.reason,
+        snapshotBytes:
+          refusal.reason === 'snapshot-too-large' ? refusal.snapshotBytes : 0,
+      }),
+      controller,
+    );
+  }
+
+  /** The application's decision for a member's topic request; failures refuse it. */
+  private async authorizesCatchUp(memberId: Uint8Array): Promise<boolean> {
+    const authorize = this.options.authorizeCatchUp;
+    if (!authorize) return true;
+    try {
+      return (await authorize(memberId.slice())) === true;
+    } catch {
+      return false;
+    }
+  }
+
   applyCatchUpCheckpoint(checkpoint: Uint8Array): Promise<void> {
     return this.enqueueCatchUp(
       checkpoint,
@@ -2397,9 +2502,18 @@ export class CoordinatedDocument<
 
   /** Whether this replica opened, or a role update reached it, without content, and no checkpoint merged since. */
   needsJoinCatchUp(): boolean {
+    return this.joining && this.canRequestCatchUp();
+  }
+
+  /**
+   * Whether this open replica may ask the controller for a checkpoint: it is a
+   * current member other than the controller, and the controller has not
+   * refused it since the last explicit request.
+   */
+  canRequestCatchUp(): boolean {
     if (
       !this.options.enableAuthenticatedCatchUp ||
-      !this.joining ||
+      this.catchUpRefusal !== undefined ||
       !this.activated ||
       this.closed ||
       this.failed ||
@@ -2416,6 +2530,11 @@ export class CoordinatedDocument<
     } catch {
       return false;
     }
+  }
+
+  /** Ask again after the controller refused; the application decides when. */
+  resumeCatchUp(): void {
+    this.catchUpRefusal = undefined;
   }
 
   get topicCatchUpEnabled(): boolean {
@@ -2511,6 +2630,7 @@ export class CoordinatedDocument<
     const lease = this.authority(context);
     if (!this.controlsCatchUp(lease)) return undefined;
     let request: DocumentTopicCatchUpRequest;
+    let refusal: CoordinatedCatchUpRefusal | undefined;
     const releases = this.reserveReceived(length, from);
     try {
       const envelope = decodeEncryptedDocumentCatchUp(
@@ -2561,13 +2681,28 @@ export class CoordinatedDocument<
       if (stale() || replayed()) return undefined;
       state.issued.set(requesterId, body.issuedAt);
       boundRecent(state.issued);
-      const now = Date.now();
       if (
-        now - (state.answered.get(requesterId) ?? -Infinity) <
-          CATCH_UP_MEMBER_INTERVAL_MS ||
-        !takeCatchUpAnswer(now)
+        Date.now() - (state.answered.get(requesterId) ?? -Infinity) <
+        CATCH_UP_MEMBER_INTERVAL_MS
       )
         return undefined;
+      const authorized = await this.authorizesCatchUp(body.requesterId);
+      if (
+        !lease.isCurrent() ||
+        this.rosterBinding !== roster ||
+        !documentContextsMatch(context, this.options.coordinator.documentContext)
+      )
+        throw new Error('Document catch-up request is no longer current');
+      const now = Date.now();
+      if (now - (state.answered.get(requesterId) ?? -Infinity) < CATCH_UP_MEMBER_INTERVAL_MS)
+        return undefined;
+      if (!authorized) refusal = { reason: 'denied' };
+      else if (this.oversized?.version === this.contentVersion)
+        refusal = {
+          reason: 'snapshot-too-large',
+          snapshotBytes: this.oversized.bytes,
+        };
+      else if (!takeCatchUpAnswer(this.catchUpShare, now)) return undefined;
       state.answered.set(requesterId, now);
       boundRecent(state.answered);
       request = body;
@@ -2585,7 +2720,9 @@ export class CoordinatedDocument<
             throw new Error('Document catch-up authority changed');
           this.assertCatchUpBinding(stage.binding, request);
           return {
-            value: await this.sealCheckpoint(stage, request, 'topic-checkpoint'),
+            value: refusal
+              ? await this.sealRefusal(stage, request, refusal)
+              : await this.sealCheckpoint(stage, request, 'topic-checkpoint'),
           };
         }),
       );
@@ -2665,6 +2802,91 @@ export class CoordinatedDocument<
       return true;
     } finally {
       for (const release of releases.reverse()) release();
+    }
+  }
+
+  /**
+   * Accept the controller's signed refusal of one of this replica's
+   * outstanding requests. The replica then stops requesting until the
+   * application asks again, and reports the refusal.
+   */
+  async receiveTopicCatchUpRefusal(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<boolean> {
+    const length = unsharedUint8ArrayByteLength(
+      frame,
+      1,
+      MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES + 64,
+      'document catch-up refusal',
+    );
+    if (from !== undefined && (typeof from !== 'string' || from.length > 1024))
+      throw new TypeError('Invalid document frame sender');
+    if (!this.options.enableAuthenticatedCatchUp) return false;
+    this.assertUsable();
+    if (this.outstandingCatchUps().length === 0) return false;
+    this.assertActivated();
+    const releases = this.reserveReceived(length, from);
+    try {
+      const context = this.options.coordinator.documentContext;
+      const lease = this.authority(context);
+      const binding: DocumentCatchUpBinding = {
+        documentId: this.documentId,
+        genesisId: this.genesisId,
+        authorityHead: lease.headId,
+        context,
+      };
+      const signed = await this.openTopicCatchUp(
+        context,
+        documentCatchUpAAD('topic-refusal', binding),
+        decodeEncryptedDocumentCatchUp(
+          'topic-refusal',
+          copyUnsharedUint8Array(frame, length, length, 'document catch-up refusal'),
+        ),
+      );
+      if (!signed) return false;
+      const body = decodeDocumentCatchUpRefusal(signed.unsigned);
+      this.assertCatchUpBinding(binding, body);
+      const pending = this.outstandingCatchUps().find((entry) =>
+        documentBytesEqual(entry.challenge, body.challenge),
+      );
+      if (
+        !pending ||
+        !documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+      )
+        return false;
+      await this.verifySigned(
+        signed,
+        this.catchUpController(lease, body.controllerId),
+      );
+      if (!lease.isCurrent() || !this.topicCatchUps.includes(pending))
+        return false;
+      this.topicCatchUps = [];
+      this.catchUpRefusal =
+        body.reason === 'denied'
+          ? { reason: 'denied' }
+          : { reason: body.reason, snapshotBytes: body.snapshotBytes };
+      this.reportRefusal(this.catchUpRefusal);
+      return true;
+    } finally {
+      for (const release of releases.reverse()) release();
+    }
+  }
+
+  private reportRefusal(refusal: CoordinatedCatchUpRefusal): void {
+    const report = this.options.onCatchUpRefused;
+    if (!report) {
+      console.warn(
+        refusal.reason === 'denied'
+          ? `[${this.documentId}] the document controller refused catch-up for this member.`
+          : `[${this.documentId}] the document snapshot is ${refusal.snapshotBytes} bytes, over the 524288 a catch-up checkpoint carries.`,
+      );
+      return;
+    }
+    try {
+      report(refusal);
+    } catch {
+      // The application's handler cannot affect catch-up state.
     }
   }
 
@@ -2895,9 +3117,9 @@ export class CoordinatedDocument<
     return this.openSealed(
       stage,
       documentCatchUpAAD(kind, stage.binding),
-      kind === 'topic-request' || kind === 'topic-checkpoint'
-        ? decodeEncryptedDocumentCatchUp(kind, frame)
-        : decodeEncryptedDocumentContent(frame),
+      kind === 'request' || kind === 'checkpoint'
+        ? decodeEncryptedDocumentContent(frame)
+        : decodeEncryptedDocumentCatchUp(kind, frame),
     );
   }
 
@@ -2963,10 +3185,10 @@ export class CoordinatedDocument<
       documentCatchUpAAD(kind, stage.binding),
       unsigned,
       member,
-      kind === 'topic-request' || kind === 'topic-checkpoint'
-        ? (epochTag, nonce, ciphertext) =>
-            encodeEncryptedDocumentCatchUp(kind, epochTag, nonce, ciphertext)
-        : encodeEncryptedDocumentContent,
+      kind === 'request' || kind === 'checkpoint'
+        ? encodeEncryptedDocumentContent
+        : (epochTag, nonce, ciphertext) =>
+            encodeEncryptedDocumentCatchUp(kind, epochTag, nonce, ciphertext),
     );
   }
 
@@ -3111,6 +3333,7 @@ export class CoordinatedDocument<
             this.receiptsContext = context;
             this.persistedAuthorityLease = lease.isCurrent;
             this.holdsContent = true;
+            this.contentVersion++;
             this.joining = false;
           },
         };
@@ -3760,6 +3983,7 @@ export class CoordinatedDocument<
                 commitAttempted = true;
                 plan?.commit();
                 this.holdsContent = true;
+                this.contentVersion++;
                 this.receipts = receipts;
                 this.receiptsContext = captured;
                 this.receipts.set(documentBytesId(memberId), {
@@ -3869,6 +4093,7 @@ export class CoordinatedDocument<
       };
       for (const record of records) {
         if (record.receipts.length !== 0) this.holdsContent = true;
+        this.contentVersion++;
         for (const frame of record.carriedFrames ?? [])
           restoreOwn({
             context: frame.context,

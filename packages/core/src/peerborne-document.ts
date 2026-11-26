@@ -7,6 +7,7 @@ import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import { isDocumentRedeliveryFrame } from './document-redelivery-wire.js';
 import {
   isDocumentCatchUpCheckpointFrame,
+  isDocumentCatchUpRefusalFrame,
   isDocumentCatchUpRequestFrame,
 } from './document-catch-up-wire.js';
 import {
@@ -364,6 +365,8 @@ const CATCH_UP_REDELIVERY_WAIT_MS = 3_000;
 /** While no checkpoint arrives, requests back off from 5 s to 2 min. */
 const CATCH_UP_MIN_RETRY_MS = 5_000;
 const CATCH_UP_MAX_RETRY_MS = 120_000;
+/** Subscribing peers bring a joining member's next request forward at most this often. */
+const CATCH_UP_PULL_INTERVAL_MS = 30_000;
 
 function jitter([low, high]: readonly [number, number]): number {
   return low + Math.random() * (high - low);
@@ -1782,6 +1785,7 @@ export class PeerborneDocument<
   private _catchUpSentAt = -Infinity;
   private _catchUpRetryAt = -Infinity;
   private _catchUpBackoff = CATCH_UP_MIN_RETRY_MS;
+  private _catchUpPulledAt = -Infinity;
   // Frames stayed held after a redelivery request made no progress.
   private _catchUpForHeld = false;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
@@ -8913,7 +8917,10 @@ export class PeerborneDocument<
           void this._answerSecurityCatchUp(data, from).catch(() => {});
           return;
         }
-        if (isDocumentCatchUpCheckpointFrame(data)) {
+        if (
+          isDocumentCatchUpCheckpointFrame(data) ||
+          isDocumentCatchUpRefusalFrame(data)
+        ) {
           void this._receiveSecurityCatchUp(data, from).catch(() => {});
           return;
         }
@@ -8934,6 +8941,15 @@ export class PeerborneDocument<
         void this.retrySecurityPublications().catch(() => {});
         const peer = String(event.detail.peerId);
         const now = Date.now();
+        // The subscriber may be the controller coming online. Any peer can
+        // subscribe, so this happens at most once per interval per document.
+        if (
+          this._coordinated?.needsJoinCatchUp() &&
+          now - this._catchUpPulledAt >= CATCH_UP_PULL_INTERVAL_MS
+        ) {
+          this._catchUpPulledAt = now;
+          this._scheduleSecurityCatchUp(jitter(CATCH_UP_SETTLE_MS), true);
+        }
         if (now - (this._redeliveryPeers.get(peer) ?? -Infinity) < REDELIVERY_PEER_DEBOUNCE_MS)
           return;
         this._redeliveryPeers.delete(peer);
@@ -8941,8 +8957,6 @@ export class PeerborneDocument<
         if (this._redeliveryPeers.size > 256)
           this._redeliveryPeers.delete(this._redeliveryPeers.keys().next().value!);
         this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
-        if (this._securityCatchUpNeeded())
-          this._scheduleSecurityCatchUp(jitter(CATCH_UP_SETTLE_MS), true);
       };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.addEventListener(
@@ -9019,12 +9033,19 @@ export class PeerborneDocument<
    * reaches it without content, and when frames stay held after a redelivery
    * request brought none of them in. While no checkpoint arrives, requests back
    * off from 5 s to 2 min. A request is bound to this node's libp2p PeerId,
-   * which GossipSub signs as its sender.
+   * which GossipSub signs as its sender. After the controller refuses a
+   * request, automatic requests stop until this is called again.
    */
   public async requestSecurityCatchUp(): Promise<void> {
     const engine = this._catchUpEngine();
     if (!engine.topicCatchUpEnabled)
       throw new Error('Authenticated document catch-up is disabled');
+    engine.resumeCatchUp();
+    await this._sendSecurityCatchUp();
+  }
+
+  private async _sendSecurityCatchUp(): Promise<void> {
+    const engine = this._catchUpEngine();
     const peer = this.swarm.heliaNode.libp2p.peerId?.toString();
     if (!peer) return;
     const now = Date.now();
@@ -9050,7 +9071,7 @@ export class PeerborneDocument<
 
   private _securityCatchUpNeeded(): boolean {
     const engine = this._coordinated;
-    if (!engine?.topicCatchUpEnabled || !this._subscribed || this._gcClosed)
+    if (!engine?.canRequestCatchUp() || !this._subscribed || this._gcClosed)
       return false;
     if (this._catchUpForHeld && !engine.hasHeldFrames())
       this._catchUpForHeld = false;
@@ -9058,9 +9079,9 @@ export class PeerborneDocument<
   }
 
   /**
-   * Schedule a request while one is needed. Requests keep their backoff; a
-   * subscribing peer, which may be the controller, brings one forward to 5 s
-   * after the last.
+   * Schedule a request while one is needed. Requests keep their backoff, which
+   * resets only once a checkpoint meets the need; a subscribing peer brings a
+   * joining member's next request forward to 5 s after the last.
    */
   private _scheduleSecurityCatchUp(
     delayMs: number,
@@ -9088,8 +9109,7 @@ export class PeerborneDocument<
     this._catchUpTimer = setTimeout(() => {
       this._catchUpTimer = undefined;
       if (this._securityCatchUpNeeded())
-        void this.requestSecurityCatchUp().catch(() => {});
-      else this._resetSecurityCatchUp();
+        void this._sendSecurityCatchUp().catch(() => {});
     }, due - now);
     unrefTimer(this._catchUpTimer);
   }
@@ -9118,13 +9138,23 @@ export class PeerborneDocument<
     );
   }
 
-  /** Merge a checkpoint that answers one of this replica's topic requests. */
+  /** Merge a checkpoint, or accept a refusal, that answers one of this replica's topic requests. */
   private async _receiveSecurityCatchUp(
     frame: Uint8Array,
     from: string | undefined,
   ): Promise<void> {
     const engine = this._coordinated;
     if (!engine || !this._subscribed || this._gcClosed) return;
+    if (isDocumentCatchUpRefusalFrame(frame)) {
+      if (
+        (await engine.receiveTopicCatchUpRefusal(frame, from)) &&
+        this._catchUpTimer !== undefined
+      ) {
+        clearTimeout(this._catchUpTimer);
+        this._catchUpTimer = undefined;
+      }
+      return;
+    }
     if (!(await engine.receiveTopicCatchUp(frame, from))) return;
     if (!this._securityCatchUpNeeded()) this._resetSecurityCatchUp();
     const rosterIsCurrent = engine.captureStrictNotificationGuard()!;
@@ -9287,12 +9317,13 @@ export class PeerborneDocument<
     const frame = await engine.createRedeliveryRequest(peer);
     engine.assertPublicationDispatchAllowed();
     await this.swarm.heliaNode.libp2p.services.pubsub.publish(this._topic, frame);
-    if (engine.topicCatchUpEnabled && engine.hasHeldFrames())
+    if (engine.canRequestCatchUp() && engine.hasHeldFrames())
       this._awaitRedeliveryProgress(engine.heldProgress);
   }
 
   /** Ask the controller for a checkpoint when no held frame applies after a redelivery request. */
   private _awaitRedeliveryProgress(mark: number): void {
+    if (!this._subscribed || this._gcClosed) return;
     if (this._redeliveryProgressTimer !== undefined)
       clearTimeout(this._redeliveryProgressTimer);
     this._redeliveryProgressTimer = setTimeout(() => {

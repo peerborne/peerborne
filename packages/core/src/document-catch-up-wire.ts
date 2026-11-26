@@ -55,18 +55,33 @@ export interface DocumentCatchUpCheckpoint
   readonly snapshot: Uint8Array;
 }
 
+/** Why a controller answered a topic request without a checkpoint. */
+export type DocumentCatchUpRefusalReason = 'snapshot-too-large' | 'denied';
+
+/** The controller's signed answer when it sends no checkpoint for a topic request. */
+export interface DocumentCatchUpRefusal
+  extends Omit<DocumentCatchUpRequest, 'receipts'> {
+  readonly controllerId: Uint8Array;
+  readonly reason: DocumentCatchUpRefusalReason;
+  /** The encoded snapshot size for `snapshot-too-large`, otherwise zero. */
+  readonly snapshotBytes: number;
+}
+
 /** Application-relayed messages and those carried on the document topic use separate domains. */
 export type DocumentCatchUpKind =
   | 'request'
   | 'checkpoint'
   | 'topic-request'
-  | 'topic-checkpoint';
+  | 'topic-checkpoint'
+  | 'topic-refusal';
 type CheckpointKind = 'checkpoint' | 'topic-checkpoint';
+type TopicKind = 'topic-request' | 'topic-checkpoint' | 'topic-refusal';
 const KINDS: Readonly<Record<DocumentCatchUpKind, number>> = {
   request: 0,
   checkpoint: 1,
   'topic-request': 2,
   'topic-checkpoint': 3,
+  'topic-refusal': 4,
 };
 /** Outer format markers that route catch-up messages carried on the document topic. */
 export const DOCUMENT_CATCH_UP_REQUEST_MARKER = Uint8Array.of(0x50, 0x42, 0x44, 3);
@@ -76,6 +91,7 @@ export const DOCUMENT_CATCH_UP_CHECKPOINT_MARKER = Uint8Array.of(
   0x44,
   4,
 );
+export const DOCUMENT_CATCH_UP_REFUSAL_MARKER = Uint8Array.of(0x50, 0x42, 0x44, 5);
 /** Room for the signature, its framing and the AEAD tag around a request body. */
 export const MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES =
   MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES + 2048;
@@ -284,15 +300,61 @@ export function decodeDocumentCatchUpCheckpoint(
   return { ...request, controllerId, receipts, suffixes, snapshot };
 }
 
-function topicMarker(kind: 'topic-request' | 'topic-checkpoint') {
-  return kind === 'topic-request'
+export function encodeDocumentCatchUpRefusal(
+  value: DocumentCatchUpRefusal,
+): Uint8Array {
+  if (
+    !Number.isSafeInteger(value.snapshotBytes) ||
+    (value.reason === 'snapshot-too-large'
+      ? value.snapshotBytes <= MAX_DOCUMENT_CONTENT_BYTES
+      : value.reason !== 'denied' || value.snapshotBytes !== 0)
+  )
+    throw new TypeError('Invalid document catch-up refusal');
+  return writeRequest('topic-refusal', value)
+    .fixed(fixed32(value.controllerId))
+    .integer(value.reason === 'snapshot-too-large' ? 1 : 2, 1)
+    .integer(value.snapshotBytes, 8)
+    .finish();
+}
+
+export function decodeDocumentCatchUpRefusal(
+  value: Uint8Array,
+): DocumentCatchUpRefusal {
+  const reader = new DocumentBinaryReader(
+    value,
+    MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
+  );
+  const request = readRequest(reader, 'topic-refusal');
+  const controllerId = reader.fixed(32);
+  const code = reader.number(1);
+  const snapshotBytes = reader.number(8);
+  reader.end();
+  if (
+    code === 1
+      ? snapshotBytes <= MAX_DOCUMENT_CONTENT_BYTES
+      : code !== 2 || snapshotBytes !== 0
+  )
+    throw new TypeError('Invalid document catch-up refusal');
+  return {
+    ...request,
+    controllerId,
+    reason: code === 1 ? 'snapshot-too-large' : 'denied',
+    snapshotBytes,
+  };
+}
+
+function topicMarker(kind: TopicKind) {
+  return kind === 'topic-checkpoint'
     ? {
-        marker: DOCUMENT_CATCH_UP_REQUEST_MARKER,
-        maximum: MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES,
-      }
-    : {
         marker: DOCUMENT_CATCH_UP_CHECKPOINT_MARKER,
         maximum: MAX_DOCUMENT_SECURITY_FRAME_BYTES - 64,
+      }
+    : {
+        marker:
+          kind === 'topic-request'
+            ? DOCUMENT_CATCH_UP_REQUEST_MARKER
+            : DOCUMENT_CATCH_UP_REFUSAL_MARKER,
+        maximum: MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES,
       };
 }
 
@@ -311,8 +373,12 @@ export function isDocumentCatchUpCheckpointFrame(frame: Uint8Array): boolean {
   return hasMarker(frame, DOCUMENT_CATCH_UP_CHECKPOINT_MARKER);
 }
 
+export function isDocumentCatchUpRefusalFrame(frame: Uint8Array): boolean {
+  return hasMarker(frame, DOCUMENT_CATCH_UP_REFUSAL_MARKER);
+}
+
 export function encodeEncryptedDocumentCatchUp(
-  kind: 'topic-request' | 'topic-checkpoint',
+  kind: TopicKind,
   epochTag: Uint8Array,
   nonce: Uint8Array,
   ciphertext: Uint8Array,
@@ -327,7 +393,7 @@ export function encodeEncryptedDocumentCatchUp(
 }
 
 export function decodeEncryptedDocumentCatchUp(
-  kind: 'topic-request' | 'topic-checkpoint',
+  kind: TopicKind,
   value: Uint8Array,
 ): { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array } {
   const { marker, maximum } = topicMarker(kind);

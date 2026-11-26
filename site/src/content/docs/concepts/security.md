@@ -41,7 +41,9 @@ racing from the same anchored state can still drop the intent of one that
 lands. Focused tests show this with in-memory stores and anchors only.
 A member that joins without content, or whose frames stay held after a
 redelivery request, asks the controller for a checkpoint on the document topic
-by itself. Further anti-entropy, field permissions and device performance
+by itself. A checkpoint carries the whole document state, including history
+from before the member joined; the controller's `authorizeCatchUp` option
+decides which members receive one. Further anti-entropy, field permissions and device performance
 qualification are not supplied by this mode. The default BeeKEM
 workflow described below remains separate. See the repository
 [coordinated document evidence and limits](https://github.com/peerborne/peerborne/blob/main/docs/coordinated-document-security.md).

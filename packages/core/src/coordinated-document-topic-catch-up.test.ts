@@ -2,14 +2,17 @@ import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
 import {
   decodeDocumentCatchUpCheckpoint,
+  decodeDocumentCatchUpRefusal,
   decodeDocumentCatchUpRequest,
   decodeDocumentTopicCatchUpRequest,
   decodeEncryptedDocumentCatchUp,
   documentCatchUpAAD,
   encodeDocumentCatchUpCheckpoint,
+  encodeDocumentCatchUpRefusal,
   encodeDocumentTopicCatchUpRequest,
   encodeEncryptedDocumentCatchUp,
   isDocumentCatchUpCheckpointFrame,
+  isDocumentCatchUpRefusalFrame,
   isDocumentCatchUpRequestFrame,
   MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES,
   type DocumentCatchUpBinding,
@@ -89,12 +92,24 @@ const adapter = {
 
 const realNow = Date.now.bind(Date);
 let offset = 0;
+let frozen: number | undefined;
+const mockClock = () =>
+  jest
+    .spyOn(Date, 'now')
+    .mockImplementation(() => frozen ?? realNow() + offset);
 const shiftClock = (ms: number) => {
   offset += ms;
-  jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+  if (frozen !== undefined) frozen += ms;
+  mockClock();
+};
+/** Stop the clock, so token refills depend only on explicit shifts. */
+const freezeClock = () => {
+  frozen = realNow() + offset;
+  mockClock();
 };
 afterEach(() => {
   offset = 0;
+  frozen = undefined;
   jest.restoreAllMocks();
 });
 
@@ -124,11 +139,15 @@ type Engine = any;
 const engine = (document: object): Engine =>
   (document as { _coordinated: Engine })._coordinated;
 
-async function group(members = 3) {
+async function group(
+  members = 3,
+  security?: Parameters<typeof coordinatedGroupFixture>[2]['security'],
+) {
   const g = await coordinatedGroupFixture(mergingCRDT, testChanges, {
     members,
     catchUp: true,
     peers: true,
+    security,
   });
   for (let index = 1; index < members; index++) await g.addMember(index);
   for (let index = 0; index < members; index++) await g.open(index);
@@ -281,6 +300,65 @@ describe('topic catch-up wire', () => {
   });
 });
 
+describe('topic catch-up refusals', () => {
+  test('round trips both refusal reasons in their own domain and rejects inconsistent ones', () => {
+    const binding = topicRequest('Peer', 0, 1);
+    const base = { ...binding, controllerId: id(9) };
+    for (const refusal of [
+      { reason: 'denied' as const, snapshotBytes: 0 },
+      { reason: 'snapshot-too-large' as const, snapshotBytes: 512 * 1024 + 1 },
+    ]) {
+      const encoded = encodeDocumentCatchUpRefusal({ ...base, ...refusal });
+      const {
+        receipts: _,
+        requesterPeer: __,
+        issuedAt: ___,
+        ...expected
+      } = base;
+      expect(decodeDocumentCatchUpRefusal(encoded)).toEqual({
+        ...expected,
+        ...refusal,
+      });
+      expect(() =>
+        decodeDocumentCatchUpCheckpoint(encoded, 'topic-checkpoint'),
+      ).toThrow('domain');
+      const outer = encodeEncryptedDocumentCatchUp(
+        'topic-refusal',
+        id(7).subarray(0, 16),
+        id(8).subarray(0, 12),
+        encoded,
+      );
+      expect(isDocumentCatchUpRefusalFrame(outer)).toBe(true);
+      expect(isDocumentCatchUpCheckpointFrame(outer)).toBe(false);
+      expect(isDocumentCatchUpRequestFrame(outer)).toBe(false);
+      expect(() =>
+        decodeEncryptedDocumentCatchUp('topic-checkpoint', outer),
+      ).toThrow('domain');
+    }
+    for (const invalid of [
+      { reason: 'denied' as const, snapshotBytes: 1 },
+      { reason: 'snapshot-too-large' as const, snapshotBytes: 512 * 1024 },
+      { reason: 'other' as never, snapshotBytes: 0 },
+    ])
+      expect(() =>
+        encodeDocumentCatchUpRefusal({ ...base, ...invalid }),
+      ).toThrow('refusal');
+    const denied = encodeDocumentCatchUpRefusal({
+      ...base,
+      reason: 'denied',
+      snapshotBytes: 0,
+    });
+    for (const [at, value] of [
+      [denied.length - 9, 3],
+      [denied.length - 1, 1],
+    ]) {
+      const changed = denied.slice();
+      changed[at] = value;
+      expect(() => decodeDocumentCatchUpRefusal(changed)).toThrow('refusal');
+    }
+  });
+});
+
 describe('automatic topic catch-up', () => {
   test('a member added in a new epoch converges without an application relay', async () => {
     const result = await joinCatchUpScenario(adapter);
@@ -349,6 +427,11 @@ describe('automatic topic catch-up', () => {
     const { g, engines, seal } = await group();
     const [controller, other, member] = engines;
     try {
+      expect(controller.canRequestCatchUp()).toBe(false);
+      await expect(
+        controller.createTopicCatchUpRequest(groupPeer(0)),
+      ).rejects.toThrow('no catch-up source');
+      expect(member.canRequestCatchUp()).toBe(true);
       const request = await member.createTopicCatchUpRequest(groupPeer(2));
       await expect(
         controller.answerTopicCatchUp(request, groupPeer(1)),
@@ -513,10 +596,157 @@ describe('automatic topic catch-up', () => {
     }
   }, 60_000);
 
-  test('one request yields one checkpoint, and members and the process are rate limited', async () => {
-    const { g, engines } = await group(6);
-    const [controller] = engines;
+  test('a snapshot over the checkpoint bound is refused once per state and stops the requester', async () => {
+    const refusals = jest.fn();
+    const { g, engines } = await group(3, { onCatchUpRefused: refusals });
+    const [controller, , member] = engines;
     try {
+      for (const value of [123_456, 234_567])
+        await g.doc(0).change((document) => {
+          document.push(...Array<number>(60_000).fill(value));
+        });
+      g.take();
+      const snapshots = jest.spyOn(mergingCRDT, 'getSnapshot');
+      const first = await controller.answerTopicCatchUp(
+        await member.createTopicCatchUpRequest(groupPeer(2)),
+        groupPeer(2),
+      );
+      expect(isDocumentCatchUpRefusalFrame(first)).toBe(true);
+      expect(snapshots).toHaveBeenCalledTimes(1);
+      shiftClock(11_000);
+      const second = await controller.answerTopicCatchUp(
+        await member.createTopicCatchUpRequest(groupPeer(2)),
+        groupPeer(2),
+      );
+      expect(isDocumentCatchUpRefusalFrame(second)).toBe(true);
+      expect(snapshots).toHaveBeenCalledTimes(1);
+      expect(
+        await member.receiveTopicCatchUpRefusal(second, groupPeer(0)),
+      ).toBe(true);
+      expect(refusals).toHaveBeenCalledTimes(1);
+      const [[refusal]] = refusals.mock.calls as [
+        [{ reason: string; snapshotBytes: number }],
+      ];
+      expect(refusal.reason).toBe('snapshot-too-large');
+      expect(refusal.snapshotBytes).toBeGreaterThan(512 * 1024);
+      expect(member.needsJoinCatchUp()).toBe(false);
+      expect(member.canRequestCatchUp()).toBe(false);
+      expect(await member.receiveTopicCatchUpRefusal(first, groupPeer(0))).toBe(
+        false,
+      );
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('the controller asks the application before sending a member the document', async () => {
+    let allowed = false;
+    const authorize = jest.fn(async () => allowed);
+    const refusals = jest.fn();
+    const g = await coordinatedGroupFixture(mergingCRDT, testChanges, {
+      members: 2,
+      catchUp: true,
+      peers: true,
+      security: { authorizeCatchUp: authorize, onCatchUpRefused: refusals },
+    });
+    const requests = () =>
+      g
+        .take()
+        .filter((publication) =>
+          isDocumentCatchUpRequestFrame(publication.data),
+        );
+    try {
+      await g.open(0);
+      await g.doc(0).change(adapter.edit('history'));
+      g.take();
+      await g.addMember(1);
+      await g.open(1);
+      expect(
+        await floodUntil(g, [0, 1], () => refusals.mock.calls.length > 0),
+      ).toBe(true);
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(authorize.mock.calls[0]).toEqual([g.members[1]]);
+      expect(refusals).toHaveBeenCalledWith({ reason: 'denied' });
+      expect(adapter.read(g.doc(1).document)).toEqual([]);
+      expect(engine(g.doc(1)).needsJoinCatchUp()).toBe(false);
+      await pause(7_000);
+      expect(requests()).toEqual([]);
+      allowed = true;
+      shiftClock(4_000);
+      await g.doc(1).requestSecurityCatchUp();
+      expect(
+        await floodUntil(g, [0, 1], () =>
+          adapter.read(g.doc(1).document).includes('history'),
+        ),
+      ).toBe(true);
+      expect(authorize).toHaveBeenCalledTimes(2);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('subscribing peers bring a joining member’s request forward at most once per interval', async () => {
+    const g = await coordinatedGroupFixture(mergingCRDT, testChanges, {
+      members: 2,
+      catchUp: true,
+      peers: true,
+    });
+    try {
+      await g.addMember(1);
+      await g.open(0);
+      await g.open(1);
+      const document = g.doc(1) as unknown as {
+        _catchUpBackoff: number;
+        _topic: string;
+      };
+      await pause(2_000);
+      g.take();
+      document._catchUpBackoff = 120_000;
+      await g.doc(1).requestSecurityCatchUp();
+      const sent = Date.now();
+      g.take();
+      const seen: number[] = [];
+      for (let index = 0; Date.now() - sent < 12_000; index++) {
+        g.pubsubs[1].dispatchEvent(
+          new CustomEvent('subscription-change', {
+            detail: {
+              peerId: { toString: () => `12D3KooWFresh${index}` },
+              subscriptions: [{ topic: document._topic, subscribe: true }],
+            },
+          }),
+        );
+        for (const publication of g.take())
+          if (isDocumentCatchUpRequestFrame(publication.data))
+            seen.push(Date.now() - sent);
+        await pause(100);
+      }
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBeGreaterThanOrEqual(4_900);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('one request yields one checkpoint, and each document takes a share of the process budget', async () => {
+    const first = await group(4);
+    const second = await group(3);
+    const third = await group(3);
+    const answer = async (
+      { engines }: { engines: Engine[] },
+      members: readonly number[],
+    ) =>
+      (
+        await Promise.all(
+          members.map(async (index) =>
+            engines[0].answerTopicCatchUp(
+              await engines[index].createTopicCatchUpRequest(groupPeer(index)),
+              groupPeer(index),
+            ),
+          ),
+        )
+      ).filter((value) => value !== undefined).length;
+    try {
+      const { g, engines } = first;
       await pause(2_000);
       g.take();
       await g.doc(1).requestSecurityCatchUp();
@@ -526,7 +756,7 @@ describe('automatic topic catch-up', () => {
           isDocumentCatchUpRequestFrame(publication.data),
         );
       for (let round = 0; round < 5; round++)
-        for (const recipient of [0, 2, 3, 4, 5]) g.dispatch(request, recipient);
+        for (const recipient of [0, 2, 3]) g.dispatch(request, recipient);
       await pause(1_500);
       const checkpoints = g
         .take()
@@ -534,34 +764,17 @@ describe('automatic topic catch-up', () => {
           isDocumentCatchUpCheckpointFrame(publication.data),
         );
       expect(checkpoints.map((publication) => publication.sender)).toEqual([0]);
-      const next = await engines[1].createTopicCatchUpRequest(groupPeer(1));
-      expect(
-        await controller.answerTopicCatchUp(next, groupPeer(1)),
-      ).toBeUndefined();
+      expect(await answer(first, [1])).toBe(0);
+      freezeClock();
       shiftClock(60_000);
-      const burst = await Promise.all(
-        [1, 2, 3, 4, 5].map(async (index) =>
-          controller.answerTopicCatchUp(
-            await engines[index].createTopicCatchUpRequest(groupPeer(index)),
-            groupPeer(index),
-          ),
-        ),
-      );
-      expect(burst.filter((value) => value !== undefined)).toHaveLength(4);
-      const refused = burst.findIndex((value) => value === undefined) + 1;
+      expect(await answer(first, [1, 2, 3])).toBe(2);
+      expect(await answer(second, [1, 2])).toBe(2);
+      expect(await answer(third, [1])).toBe(0);
       shiftClock(2_000);
-      expect(
-        isDocumentCatchUpCheckpointFrame(
-          await controller.answerTopicCatchUp(
-            await engines[refused].createTopicCatchUpRequest(
-              groupPeer(refused),
-            ),
-            groupPeer(refused),
-          ),
-        ),
-      ).toBe(true);
+      expect(await answer(third, [1])).toBe(1);
+      expect(await answer(first, [1, 2, 3])).toBe(0);
     } finally {
-      await g.close();
+      await Promise.all([first, second, third].map(({ g }) => g.close()));
     }
   }, 90_000);
 });
