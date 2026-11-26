@@ -11,8 +11,10 @@ encrypts it with the document key (AES-GCM by default), and stores the resulting
 key ID, mode-specific encryption parameters, and ciphertext bytes in the local
 Helia blockstore. The CID addresses those encrypted bytes. A separate
 signed-when-enabled, encrypted `CRDTSyncMessage` carries the CID and shadow
-graph metadata; the stored payload itself has no writer signature or parent
-links.
+graph metadata. A stored document change also carries its author's
+[change signature](../security/#crdt-actors-are-bound-to-change-signers); the
+stored payload has no parent links, and ACL and keychain payloads have no
+writer signature.
 
 ## Implemented model
 
@@ -101,8 +103,8 @@ Sharing the stores leaves these caveats:
   additional tabs repeatedly can fill a relay with a small
   `RELAY_MAX_RESERVATIONS`.
 - Garbage collection (`gcAfterPrune`, off by default) protects only the
-  retained history of the tab that runs it. It can delete blocks that another
-  tab still needs for the same document.
+  retained history of the tab that runs it. It deletes only blocks that tab
+  stored, but another tab may still need them for the same document.
 - Peerborne does not coordinate application storage between tabs. Two tabs
   that restore one signing identity are two peers of the same member, and the
   application must coordinate any checkpoints they both save. Peerborne Note
@@ -235,13 +237,22 @@ snapshot boundary, but deletion is **destructive for that local copy**:
 - Recovery then depends on another reachable provider still holding the bytes
 - GC is disabled by default
 
+A document deletes only blocks that it stored for its own changes while
+`gcAfterPrune` was on. Any writer can name an arbitrary CID in its change tree,
+and the blockstore is shared by every document on the node and by the
+application, so a pruned CID alone never makes its block deletable. Blocks
+fetched from peers, other documents' blocks and application data stay in the
+blockstore. The document remembers at most 32,768 stored blocks; when that
+record is full, it forgets the oldest one, which then stays in the blockstore.
+
 Deletion pauses whenever the retained tree changes, so a writer that keeps
 editing can leave pruned blocks waiting; `document.collectGarbage()` retries
-them. Blocks still waiting are recorded in the next `exportCheckpoint()`, and
-an instance restored from that checkpoint deletes them at its next collection.
-Blocks pruned after the last export are recorded nowhere else and stay in the
-blockstore. Peerborne does not sweep the blockstore for them, because it is
-shared by every document on the node.
+them. The next `exportCheckpoint()` records the stored blocks and the blocks
+still waiting, and an instance restored from that checkpoint deletes them at
+its next collection. Restoration refuses a checkpoint that lists a waiting
+block the document did not store. Blocks stored after the last export are
+recorded nowhere else and stay in the blockstore. Peerborne does not sweep the
+blockstore for them, because it is shared by every document on the node.
 
 ## CI-backed evidence
 

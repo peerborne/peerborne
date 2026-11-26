@@ -21,6 +21,8 @@ function fixture() {
     subscribe(id, handler) {
       handlers.set(id, handler);
     },
+    reserveActor: jest.fn(async () => undefined as string | undefined),
+    releaseActor: jest.fn(),
     unsubscribe(id) {
       handlers.delete(id);
     },
@@ -32,7 +34,7 @@ describe('Yjs editor bridge', () => {
   test('captures editor deltas through the authoritative mutation boundary', async () => {
     const { source, document, changes } = fixture();
     document.getText('body').insert(0, 'Initial');
-    const bridge = createYjsEditorBridge(source);
+    const bridge = await createYjsEditorBridge(source);
     expect(bridge.document).not.toBe(document);
     bridge.document.getText('body').insert(7, ' edited');
     expect(document.getText('body').toString()).toBe('Initial');
@@ -48,9 +50,24 @@ describe('Yjs editor bridge', () => {
     await bridge.destroy();
   });
 
+  test('the editor mirror writes under the actor its source reserves', async () => {
+    const { source, document, changes } = fixture();
+    source.reserveActor = jest.fn(async () => '9007199254740990');
+    const bridge = await createYjsEditorBridge(source);
+    expect(bridge.document.clientID).toBe(9007199254740990);
+    bridge.document.getText('body').insert(0, 'Mirrored');
+    await bridge.flush();
+    expect(document.getText('body').toString()).toBe('Mirrored');
+    expect(new YjsProvider().actorBinding.changeActors(changes[0]!)).toEqual(
+      new Set(['9007199254740990']),
+    );
+    await bridge.destroy();
+    expect(source.releaseActor).toHaveBeenCalledWith('9007199254740990');
+  });
+
   test('remote updates reach the editor without generating another write', async () => {
     const { source, handlers, document } = fixture();
-    const bridge = createYjsEditorBridge(source);
+    const bridge = await createYjsEditorBridge(source);
     document.getText('body').insert(0, 'Remote');
     for (const handler of handlers.values()) handler(document, [], [], []);
     await bridge.flush();
@@ -68,7 +85,7 @@ describe('Yjs editor bridge', () => {
       throw error;
     });
     const onError = jest.fn();
-    const bridge = createYjsEditorBridge(source, { onError });
+    const bridge = await createYjsEditorBridge(source, { onError });
     bridge.document.getText('body').insert(0, 'Denied');
     bridge.document.getText('body').insert(6, ' later');
     await expect(bridge.flush()).rejects.toBe(error);
@@ -90,7 +107,7 @@ describe('Yjs editor bridge', () => {
       await gate;
       await original(change);
     };
-    const bridge = createYjsEditorBridge(source);
+    const bridge = await createYjsEditorBridge(source);
     bridge.document.getText('body').insert(0, 'Saved');
     const destroying = bridge.destroy();
     expect(handlers.size).toBe(0);

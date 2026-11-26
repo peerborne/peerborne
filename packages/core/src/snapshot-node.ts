@@ -15,7 +15,9 @@
 export interface CRDTSnapshotNode<ChangesType> {
   /**
    * Full serialized CRDT state at this point.
-   * Produced by `CRDTProvider.getSnapshot(doc)`.
+   * Produced by `CRDTProvider.getSnapshot(doc)`. With a provider that has an
+   * `actorBinding`, the state carries the manifest of its actors'
+   * registrations, which `actorBinding.detach()` separates.
    */
   state: ChangesType;
 

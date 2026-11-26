@@ -3,7 +3,15 @@ import * as Y from 'yjs';
 import { createHeliaLight } from 'helia';
 import { MemoryBlockstore } from 'blockstore-core/memory';
 import { MemoryDatastore } from 'datastore-core/memory';
-import { Peerborne, SubtleCrypto } from '@peerborne/core';
+import {
+  Peerborne,
+  SubtleCrypto,
+  createCRDTActorNonce,
+  crdtActorRegistrationPayload,
+  crdtChangeAuthorPayload,
+  deriveCRDTActorDigest,
+  encodeCRDTChangeAuthor,
+} from '@peerborne/core';
 import {
   AutomergeProvider,
   AutomergeACLProvider,
@@ -108,9 +116,11 @@ export async function documentFixture({
   blockstore = new MemoryBlockstore(),
   datastore = new MemoryDatastore(),
   open = true,
+  actorBinding = true,
 } = {}) {
   identity ??= await signingIdentity();
   const provider = providerFor(adapter, index);
+  if (!actorBinding) provider.actorBinding = undefined;
   // Loro has no ACL, keychain or serializer of its own and uses Yjs's.
   const serializer =
     adapter === 'automerge'
@@ -219,6 +229,52 @@ export async function publishedMessage(fixture) {
   if (raw === undefined)
     throw new Error('Fixture could not decrypt its published frame');
   return fixture.serializer.deserializeSyncMessage(raw);
+}
+
+/** A fresh actor registration for `identity` and the native actor it derives. */
+export async function actorRegistration(fixture, identity = fixture.identity) {
+  const registration = {
+    signer: await fixture.auth.serializePublicKey(identity.publicKey),
+    nonce: createCRDTActorNonce(),
+  };
+  const digest = await deriveCRDTActorDigest(
+    fixture.document.documentPath,
+    registration,
+  );
+  return {
+    registration,
+    actor: fixture.provider.actorBinding.actorFromDigest(digest),
+  };
+}
+
+/** Bare changes made under `registration`'s actor, signed by `identity`. */
+export async function authoredChange(
+  fixture,
+  registration,
+  bare,
+  identity = fixture.identity,
+) {
+  const path = fixture.document.documentPath;
+  const registrationSignature = await fixture.auth.sign(
+    crdtActorRegistrationPayload(path, registration),
+    identity.privateKey,
+  );
+  const signature = await fixture.auth.sign(
+    crdtChangeAuthorPayload(
+      path,
+      registration,
+      fixture.serializer.serializeChanges(bare),
+    ),
+    identity.privateKey,
+  );
+  return fixture.provider.actorBinding.attach(
+    bare,
+    encodeCRDTChangeAuthor({
+      ...registration,
+      registrationSignature,
+      signature,
+    }),
+  );
 }
 
 export async function signedMessage(fixture, fields) {

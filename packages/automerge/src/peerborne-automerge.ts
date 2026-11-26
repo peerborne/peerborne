@@ -11,6 +11,7 @@ import {
   getObjectId,
   applyChanges,
   getMissingDeps,
+  getChangesMetaSince,
   getHeads,
   hasHeads,
   Change as BinaryChange,
@@ -28,6 +29,8 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  CRDTActorBinding,
+  CRDTActorBindingError,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
@@ -62,6 +65,7 @@ import {
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
+  isCRDTActorPrefix,
 } from '@peerborne/core';
 import { Base64 } from 'js-base64';
 import { AutomergeOperationIndex } from './operation-targets.js';
@@ -100,11 +104,168 @@ function automergeChangeHash(change: BinaryChange): string {
 export type AutomergeDocumentChangeHandler<T = any> =
   PeerborneDocumentChangeHandler<Doc<T>, CryptoKey>;
 
+const AUTOMERGE_MAGIC = [0x85, 0x6f, 0x4a, 0x83];
+const AUTOMERGE_DOCUMENT_CHUNK = 0;
+const AUTOMERGE_CHANGE_CHUNK = 1;
+const AUTOMERGE_HASH_BYTES = 32;
+
+function automergeChunkType(chunk: unknown): number | undefined {
+  return chunk instanceof Uint8Array &&
+    chunk.byteLength > 9 &&
+    AUTOMERGE_MAGIC.every((byte, index) => chunk[index] === byte)
+    ? chunk[8]
+    : undefined;
+}
+
+/**
+ * Read the body of a single uncompressed chunk with `read`, which returns
+ * `undefined` for a layout it does not recognize.
+ */
+function readAutomergeChunk<T>(
+  chunk: Uint8Array,
+  read: (next: {
+    uleb(): number | undefined;
+    skip(bytes: number): boolean;
+    hex(bytes: number): string | undefined;
+  }) => T | undefined,
+): T | undefined {
+  let offset = 9;
+  const uleb = (): number | undefined => {
+    let value = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const byte = chunk[offset];
+      offset += 1;
+      if (byte === undefined) return undefined;
+      value += (byte & 0x7f) * 2 ** shift;
+      if ((byte & 0x80) === 0) return value;
+    }
+    return undefined;
+  };
+  const length = uleb();
+  if (length === undefined || offset + length !== chunk.byteLength)
+    return undefined;
+  return read({
+    uleb,
+    skip(bytes) {
+      if (offset + bytes > chunk.byteLength) return false;
+      offset += bytes;
+      return true;
+    },
+    hex(bytes) {
+      if (bytes === 0 || offset + bytes > chunk.byteLength) return undefined;
+      const value = Array.from(chunk.subarray(offset, offset + bytes), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join('');
+      offset += bytes;
+      return value;
+    },
+  });
+}
+
+/**
+ * The author of an uncompressed change chunk, read from its header: the
+ * actor follows the dependency hashes. Every operation in the change has
+ * this actor, so its operations need not be decoded.
+ */
+function automergeChangeActor(change: unknown): string {
+  if (!(change instanceof Uint8Array))
+    throw new CRDTActorBindingError('Automerge change must be bytes');
+  const actor =
+    automergeChunkType(change) === AUTOMERGE_CHANGE_CHUNK
+      ? readAutomergeChunk(change, ({ uleb, skip, hex }) => {
+          const deps = uleb();
+          if (deps === undefined || !skip(deps * AUTOMERGE_HASH_BYTES))
+            return undefined;
+          const size = uleb();
+          return size === undefined ? undefined : hex(size);
+        })
+      : undefined;
+  return actor ?? decodeChange(change).actor;
+}
+
+/**
+ * The actor table that opens a single saved document chunk. Every change in
+ * the chunk names its actor by an index into this table, so it lists the
+ * document's change authors without loading the document.
+ */
+function documentChunkActors(chunk: Uint8Array): string[] | undefined {
+  return readAutomergeChunk(chunk, ({ uleb, hex }) => {
+    const count = uleb();
+    if (count === undefined) return undefined;
+    const actors: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const size = uleb();
+      const actor = size === undefined ? undefined : hex(size);
+      if (actor === undefined) return undefined;
+      actors.push(actor);
+    }
+    return actors;
+  });
+}
+
+function loadedDocumentActors(document: Doc<unknown>): Set<string> {
+  return new Set(getChangesMetaSince(document, []).map(({ actor }) => actor));
+}
+
+function automergeStateActors(state: BinaryChange[]): ReadonlySet<string> {
+  if (!Array.isArray(state))
+    throw new CRDTActorBindingError('Automerge state must be a change list');
+  const actors = new Set<string>();
+  for (const chunk of state) {
+    if (automergeChunkType(chunk) !== AUTOMERGE_DOCUMENT_CHUNK) {
+      actors.add(automergeChangeActor(chunk));
+      continue;
+    }
+    const table = documentChunkActors(chunk as Uint8Array);
+    if (table !== undefined) {
+      for (const actor of table) actors.add(actor);
+      continue;
+    }
+    const loaded = load(chunk as Uint8Array);
+    try {
+      for (const actor of loadedDocumentActors(loaded)) actors.add(actor);
+    } finally {
+      free(loaded);
+    }
+  }
+  return actors;
+}
+
+function automergeActorBinding<T>(): CRDTActorBinding<Doc<T>, BinaryChange[]> {
+  return {
+    actorFromDigest: (digest) =>
+      Array.from(digest.subarray(0, 16), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    localActor: (document) => getActorId(document),
+    setLocalActor: (document, actor) => clone(document, actor),
+    changeActors(changes) {
+      if (!Array.isArray(changes))
+        throw new CRDTActorBindingError('Automerge changes must be a list');
+      return new Set(changes.map(automergeChangeActor));
+    },
+    stateActors: automergeStateActors,
+    attach: (changes, prefix) => [prefix as BinaryChange, ...changes],
+    detach(changes) {
+      if (
+        !Array.isArray(changes) ||
+        changes.length === 0 ||
+        !isCRDTActorPrefix(changes[0])
+      )
+        throw new CRDTActorBindingError('Missing actor binding prefix');
+      return [changes[0], changes.slice(1)];
+    },
+  };
+}
+
 export class AutomergeProvider<T = any>
   implements CRDTProvider<Doc<T>, BinaryChange[], (doc: T) => void>
 {
   readonly initialInvitationCapacityProfile =
     INITIAL_INVITATION_CAPACITY_PROFILE;
+
+  readonly actorBinding: CRDTActorBinding<Doc<T>, BinaryChange[]> =
+    automergeActorBinding<T>();
 
   createDocumentSession(
     initial: Doc<T>,
@@ -308,7 +469,20 @@ export class AutomergeProvider<T = any>
     // snapshot is [save(doc)] -- a single-element array containing a save buffer.
     // Load it into a new document and merge with the current one to preserve
     // any concurrent changes not included in the snapshot.
+    // Actor binding reads the snapshot's actors from its chunk header, so
+    // merge only a document whose changes have exactly those actors.
     const loaded = load<T>(snapshot[0] as unknown as Uint8Array);
+    const declared = automergeStateActors(snapshot);
+    const actual = loadedDocumentActors(loaded);
+    if (
+      declared.size !== actual.size ||
+      [...actual].some((actor) => !declared.has(actor))
+    ) {
+      free(loaded);
+      throw new CRDTActorBindingError(
+        'Automerge snapshot changes do not match its actor table',
+      );
+    }
     return merge(document, loaded);
   }
   hasPendingChanges(document: Doc<T>): boolean {

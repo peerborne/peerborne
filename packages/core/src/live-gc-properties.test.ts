@@ -38,7 +38,11 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture(protectedIds: Set<string>, retained: string[] = []) {
+function fixture(
+  protectedIds: Set<string>,
+  retained: string[] = [],
+  storesPruned = true,
+) {
   const deleted: string[] = [],
     unpinned: string[] = [];
   const document = Object.assign(Object.create(PeerborneDocument.prototype), {
@@ -47,6 +51,7 @@ function fixture(protectedIds: Set<string>, retained: string[] = []) {
     _gcLifecycle: {},
     _gcClosed: false,
     _gcCandidates: new Set<string>(),
+    _ownBlocks: new Set<string>(),
     _recentTips: [],
     _latestSnapshot: { lastChangeNodeCID: 'snapshot-boundary' },
     _lastSyncMessage: {
@@ -76,6 +81,17 @@ function fixture(protectedIds: Set<string>, retained: string[] = []) {
       },
     },
   });
+  if (storesPruned) {
+    const collect = document._gcPrunedBlocks;
+    document._gcPrunedBlocks = function (
+      cids: Set<unknown>,
+      ...rest: unknown[]
+    ) {
+      for (const cid of cids)
+        if (typeof cid === 'string') this._ownBlocks.add(cid);
+      return collect.call(this, cids, ...rest);
+    };
+  }
   return { document, deleted, unpinned };
 }
 
@@ -361,6 +377,7 @@ test('explicit maintenance requires opt-in and drains retained pending work', as
           (_, index) => `pending-${index}`,
         );
         document._gcCandidates = new Set(pending);
+        document._ownBlocks = new Set(pending);
         if (!enabled) {
           await expect(document.collectGarbage()).rejects.toThrow(
             /not enabled/,
@@ -378,6 +395,49 @@ test('explicit maintenance requires opt-in and drains retained pending work', as
     { seed: 2012208, numRuns: 20 },
   );
 });
+
+test('garbage collection deletes only the pruned blocks the document stored itself', async () => {
+  const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }),
+        async (stored) => {
+          const ids = stored.map((_, index) => `block-${index}`);
+          const own = ids.filter((_, index) => stored[index]);
+          const { document, deleted } = fixture(new Set(), [], false);
+          document._ownBlocks = new Set([...own, 'unpruned']);
+          await document._gcPrunedBlocks(new Set(ids));
+          expect(deleted).toEqual(own);
+          expect(document._gcCandidates).toEqual(new Set());
+          expect(document._ownBlocks).toEqual(new Set(['unpruned']));
+        },
+      ),
+      { seed: 2012216, numRuns: 30, examples: [[[false]], [[true, false]]] },
+    );
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test('garbage collection never deletes a pending candidate the document did not store', async () => {
+  const { document, deleted } = fixture(new Set(), [], false);
+  document._compactionConfig = { gcAfterPrune: true };
+  document._gcCandidates = new Set(['foreign', 'stored']);
+  document._ownBlocks = new Set(['stored']);
+  await expect(document.collectGarbage()).resolves.toEqual({ pending: 1 });
+  expect(deleted).toEqual(['stored']);
+  await expect(document.collectGarbage()).resolves.toEqual({ pending: 1 });
+  expect(deleted).toEqual(['stored']);
+});
+
+test('a writer cannot make garbage collection delete blocks the document did not store', async () => {
+  await promisify(execFile)(
+    process.execPath,
+    ['--test', `${__dirname}/gc-ownership.fixture.mjs`],
+    { timeout: 60_000 },
+  );
+}, 70_000);
 
 test('checks the native offline Helia adapter with actual CIDs and pins', async () => {
   await promisify(execFile)(

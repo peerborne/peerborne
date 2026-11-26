@@ -10,7 +10,9 @@ import {
   signedMessage,
 } from '../../../verification/fixtures.mjs';
 
-const options = { adapter: 'loro' };
+// The crafted payloads are written under fixed peer IDs, so these scenarios
+// check Loro byte validation without binding actors to change signers.
+const options = { adapter: 'loro', actorBinding: false };
 
 function fixture(name) {
   return new Uint8Array(

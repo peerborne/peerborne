@@ -1,5 +1,10 @@
 import { describe, expect, test } from '@jest/globals';
-import { collectTreeCIDs, filterDeletableCIDs } from './blockstore-gc.js';
+import {
+  MAX_OWN_BLOCKS,
+  collectTreeCIDs,
+  filterDeletableCIDs,
+  rememberOwnBlock,
+} from './blockstore-gc.js';
 import {
   CRDTChangeNode,
   crdtDocumentChangeNode,
@@ -330,4 +335,38 @@ describe('filterDeletableCIDs', () => {
       expect(result).toEqual(new Set(c.expected));
     });
   }
+});
+
+describe('rememberOwnBlock', () => {
+  test('remembers each stored block once in storage order', () => {
+    const ownBlocks = new Set<string>();
+    const candidates = new Set<string>();
+    for (const cid of ['cid-1', 'cid-2', 'cid-1'])
+      rememberOwnBlock(ownBlocks, candidates, cid);
+    expect([...ownBlocks]).toEqual(['cid-1', 'cid-2']);
+    expect(candidates).toEqual(new Set());
+  });
+
+  test('forgets the oldest block and its pending deletion when full', () => {
+    const stored = Array.from(
+      { length: MAX_OWN_BLOCKS },
+      (_, index) => `cid-${index}`,
+    );
+    const ownBlocks = new Set(stored);
+    const candidates = new Set(['cid-0', 'cid-1']);
+    rememberOwnBlock(ownBlocks, candidates, 'cid-new');
+    expect(ownBlocks.size).toBe(MAX_OWN_BLOCKS);
+    expect(ownBlocks.has('cid-0')).toBe(false);
+    expect([...ownBlocks].at(-1)).toBe('cid-new');
+    expect(candidates).toEqual(new Set(['cid-1']));
+  });
+
+  test.each([
+    ['an empty identifier', ''],
+    ['an overlong identifier', 'x'.repeat(513)],
+  ])('refuses %s', (_name, cid) => {
+    const ownBlocks = new Set(['cid-1']);
+    rememberOwnBlock(ownBlocks, new Set(), cid);
+    expect(ownBlocks).toEqual(new Set(['cid-1']));
+  });
 });
