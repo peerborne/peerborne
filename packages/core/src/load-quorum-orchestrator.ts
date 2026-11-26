@@ -2,10 +2,13 @@
  * Select an agreeing cohort of authenticated, distinct writer authorities.
  * probeFn owns signature and trust verification; this module validates and
  * detaches votes, deduplicates authorities, and enforces the configured Q.
+ * A document with exactly one trusted writer authority accepts a response
+ * from any of that authority's devices instead.
  */
 
 import {
   decideLoadQuorum,
+  decideSingleWriterLoad,
   DEFAULT_LOAD_QUORUM_K,
   effectiveK,
   LoadQuorumFailedError,
@@ -127,11 +130,33 @@ export interface LoadQuorumOrchestratorConfig {
 
 /**
  * A disabled gate or empty peer list is skipped. A successful round returns
- * the agreeing cohort and bound digest. No result authorizes document creation.
+ * the peers to load from, in order, and the digest each one must serve:
+ * `boundHashHexes[i]` binds `narrowedPeers[i]`. A quorum binds every peer to
+ * `winningHashHex`; a single-writer load binds each device to the digest it
+ * advertised, starting with `winningHashHex`. No result authorizes document
+ * creation.
  */
 export type LoadQuorumOrchestratorResult<T> =
   | { skipped: true }
-  | { ok: true; narrowedPeers: T[]; winningHashHex: string };
+  | {
+      ok: true;
+      narrowedPeers: T[];
+      winningHashHex: string;
+      boundHashHexes: string[];
+    };
+
+/** The one distinct authority in a captured trusted writer set, if any. */
+function soleTrustedAuthority(
+  authorities: readonly string[] | undefined,
+): string | undefined {
+  if (authorities === undefined || authorities.length === 0) return undefined;
+  const [first] = authorities;
+  return typeof first === 'string' &&
+    first.length !== 0 &&
+    authorities.every((authority) => authority === first)
+    ? first
+    : undefined;
+}
 
 /**
  * Run the initial-load quorum orchestration round.
@@ -152,10 +177,15 @@ export type LoadQuorumOrchestratorResult<T> =
  *   the caller's probe implementation and should be fixed at the source.
  * @param documentPath Used to construct the `LoadQuorumFailedError` on
  *   failure; carries the document name into operator-visible logs.
+ * @param trustedAuthorities The locally trusted writer authorities captured
+ *   for this load. When it holds exactly one authority and no explicit Q
+ *   above 1 is configured, one valid response from that authority suffices,
+ *   from any of its devices, and `loadQuorumAllowSinglePeer` is not needed.
+ *   Documents with more trusted writers keep the K/Q quorum.
  * @param config Quorum tuning knobs (see `LoadQuorumOrchestratorConfig`).
  *
  * @returns Either `{ skipped }` (gate disabled or no peers) or
- *   `{ ok: true, narrowedPeers, winningHashHex }` on success. Throws
+ *   `{ ok: true, narrowedPeers, winningHashHex, boundHashHexes }` on success. Throws
  *   `LoadQuorumFailedError` on any failure mode (no responses, no majority,
  *   insufficient single-peer probe).
  */
@@ -164,6 +194,7 @@ export async function runLoadQuorum<T>(opts: {
   peerIdOf: (peer: T) => string;
   probeFn: (peer: T) => Promise<LoadQuorumProbeResult>;
   documentPath: string;
+  trustedAuthorities?: readonly string[];
   config?: LoadQuorumOrchestratorConfig;
 }): Promise<LoadQuorumOrchestratorResult<T>> {
   const { peers, peerIdOf, probeFn, documentPath, config } = opts;
@@ -265,6 +296,17 @@ export async function runLoadQuorum<T>(opts: {
     });
   }
 
+  const soleAuthority = soleTrustedAuthority(opts.trustedAuthorities);
+  if (soleAuthority !== undefined && (explicitQ ?? 1) === 1) {
+    return runSingleWriterLoad(
+      peers.slice(0, k),
+      peerIdOf,
+      probeFn,
+      documentPath,
+      soleAuthority,
+    );
+  }
+
   const q = requiredQuorumQ(k, explicitQ ?? 0);
 
   if (k === 1 && !allowSinglePeer) {
@@ -351,7 +393,12 @@ export async function runLoadQuorum<T>(opts: {
     // against THIS peer's hash — a non-sequitur that could either pass the
     // binding by coincidence or fail it even though single-peer mode was
     // opted-into.
-    return { ok: true, narrowedPeers: [probedPeer], winningHashHex };
+    return {
+      ok: true,
+      narrowedPeers: [probedPeer],
+      winningHashHex,
+      boundHashHexes: [winningHashHex],
+    };
   }
 
   // Standard K-of-Q quorum path. Probe the first K peers in parallel,
@@ -365,23 +412,11 @@ export async function runLoadQuorum<T>(opts: {
   // `LoadQuorumFailedError` API the caller is written against —
   // surfacing a raw probe error from `load()` instead of the structured
   // `LoadQuorumFailedError(insufficient-responses)` callers expect.
-  const probedPeers = peers.slice(0, k).map((peer) => ({
-    peer,
-    peerId: peerIdOf(peer),
-  }));
-  const probeResults = await Promise.all(
-    probedPeers.map(async ({ peer, peerId }) => {
-      let result: LoadQuorumProbeResult;
-      try {
-        result = await probeFn(peer);
-      } catch {
-        console.warn(
-          `[${documentPath}] Initial-load quorum probe for peer ${peerId} threw; recording as non-vote.`,
-        );
-        result = null;
-      }
-      return { peer, peerId, result: normalizeLoadQuorumProbeResult(result) };
-    }),
+  const { probedPeers, probeResults } = await probePeers(
+    peers.slice(0, k),
+    peerIdOf,
+    probeFn,
+    documentPath,
   );
   // V4 votes are attributed to the signing authority that `probeFn` already
   // verified, not merely to the transport's libp2p PeerId. This orchestrator
@@ -414,12 +449,13 @@ export async function runLoadQuorum<T>(opts: {
   );
   if (classification.equivocating) {
     console.warn(
-      `[${documentPath}] Initial-load quorum FAILED: a signing authority ` +
-        `voted for conflicting state digests. Aborting load.`,
+      `[${documentPath}] Initial-load quorum FAILED: the devices of one ` +
+        `writer authority advertised different state digests; they may be ` +
+        `out of sync, or the authority may have forked. Aborting load.`,
     );
     throw new LoadQuorumFailedError({
       documentPath,
-      reason: 'equivocating-authority',
+      reason: 'divergent-authority',
       respondingCount: probeResults.filter(
         ({ result }) => result.kind === 'vote',
       ).length,
@@ -474,5 +510,108 @@ export async function runLoadQuorum<T>(opts: {
     ok: true,
     narrowedPeers: narrowed,
     winningHashHex: decision.winningHashHex,
+    boundHashHexes: narrowed.map(() => decision.winningHashHex),
+  };
+}
+
+/**
+ * Probe peers in parallel, containing probe errors at the orchestrator
+ * boundary so a rejected `probeFn` is recorded as a non-vote instead of
+ * escaping past the `LoadQuorumFailedError` contract.
+ */
+async function probePeers<T>(
+  peers: readonly T[],
+  peerIdOf: (peer: T) => string,
+  probeFn: (peer: T) => Promise<LoadQuorumProbeResult>,
+  documentPath: string,
+) {
+  const probedPeers = peers.map((peer) => ({ peer, peerId: peerIdOf(peer) }));
+  const probeResults = await Promise.all(
+    probedPeers.map(async ({ peer, peerId }) => {
+      let result: LoadQuorumProbeResult;
+      try {
+        result = await probeFn(peer);
+      } catch {
+        console.warn(
+          `[${documentPath}] Initial-load quorum probe for peer ${peerId} threw; recording as non-vote.`,
+        );
+        result = null;
+      }
+      return { peer, peerId, result: normalizeLoadQuorumProbeResult(result) };
+    }),
+  );
+  return { probedPeers, probeResults };
+}
+
+/**
+ * Load a document whose only trusted writer is `authority`. A second
+ * agreeing authority cannot exist, so one valid response suffices; challenge,
+ * tuple, frontier, manifest and responder checks still bind each response to
+ * the digest its device advertised. Devices that disagree are out of sync:
+ * the state most of them advertise is tried first and the others follow.
+ */
+async function runSingleWriterLoad<T>(
+  peers: readonly T[],
+  peerIdOf: (peer: T) => string,
+  probeFn: (peer: T) => Promise<LoadQuorumProbeResult>,
+  documentPath: string,
+  authority: string,
+): Promise<LoadQuorumOrchestratorResult<T>> {
+  const { probedPeers, probeResults } = await probePeers(
+    peers,
+    peerIdOf,
+    probeFn,
+    documentPath,
+  );
+  const decision = decideSingleWriterLoad(
+    probeResults.map(({ peerId, result }) =>
+      result.kind === 'vote'
+        ? {
+            peerId,
+            hash: result.hash,
+            signerAuthority: result.signerAuthority,
+          }
+        : { peerId, hash: null },
+    ),
+    authority,
+  );
+  if (!decision.ok) {
+    console.warn(
+      `[${documentPath}] Initial load FAILED: none of ${probeResults.length} ` +
+        `probed peer${probeResults.length === 1 ? '' : 's'} returned a valid ` +
+        `response from the document's only trusted writer. Aborting load.`,
+    );
+    throw new LoadQuorumFailedError({
+      documentPath,
+      reason: 'insufficient-responses',
+      respondingCount: 0,
+      requiredQ: 1,
+      agreement: new Map(),
+    });
+  }
+  if (decision.stateCount > 1) {
+    const leading = decision.cohort.filter(
+      ({ hashHex }) => hashHex === decision.winningHashHex,
+    ).length;
+    console.warn(
+      `[${documentPath}] Initial load: ${decision.respondingCount} devices of ` +
+        `the document's only trusted writer advertised ` +
+        `${decision.stateCount} different states; they are out of sync. ` +
+        `Loading the state ${leading} of them advertise first and falling ` +
+        `back to the others.`,
+    );
+  } else {
+    console.log(
+      `[${documentPath}] Initial load: the document's only trusted writer ` +
+        `answered from ${decision.respondingCount} device` +
+        `${decision.respondingCount === 1 ? '' : 's'} with ` +
+        `digest=${decision.winningHashHex.slice(0, 12)}...`,
+    );
+  }
+  return {
+    ok: true,
+    narrowedPeers: decision.cohort.map(({ index }) => probedPeers[index].peer),
+    winningHashHex: decision.winningHashHex,
+    boundHashHexes: decision.cohort.map(({ hashHex }) => hashHex),
   };
 }
