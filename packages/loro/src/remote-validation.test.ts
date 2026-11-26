@@ -7,7 +7,14 @@ import {
   test,
 } from '@jest/globals';
 import { readFileSync } from 'node:fs';
-import { LoroDoc, LoroList, LoroMap, LoroText } from 'loro-crdt';
+import {
+  LoroDoc,
+  LoroList,
+  LoroMap,
+  LoroText,
+  UndoManager,
+  type JsonSchema,
+} from 'loro-crdt';
 import { LoroProvider } from './index.js';
 
 // Each fixture is an update to `baseSnapshot()` from an authorized writer whose
@@ -149,14 +156,14 @@ describe('Loro remote payload validation', () => {
     expectDurable(provider, live);
   });
 
-  test('rejects an update whose state does not survive a snapshot round trip', () => {
+  test('rejects a container value whose ID is not its own operation', () => {
     const provider = new LoroProvider();
     const live = replica(provider, baseSnapshot());
     expectRejected(
       provider,
       live,
       fixture('lossy-nested-container'),
-      'snapshot round trip',
+      'container with a foreign ID',
     );
     expectDurable(provider, live);
   });
@@ -271,7 +278,7 @@ describe('Loro remote payload validation', () => {
       ['unknown-list-container', 'unsupported container'],
       ['foreign-text-delete', 'deletes elements it cannot see'],
       ['missing-tree-node', 'tree node that does not exist'],
-      ['lossy-nested-container', 'snapshot round trip'],
+      ['lossy-nested-container', 'container with a foreign ID'],
     ] as const) {
       const history = rawReplica(baseSnapshot(), fixture(name)).export({
         mode: 'update',
@@ -433,4 +440,369 @@ describe('Loro remote payload validation', () => {
       expectDurable(provider, doc);
     }
   });
+
+  // Mallory's client rewrites an honest update in Loro's JSON form, then
+  // re-encodes it with an unmodified Loro.
+  function crafted(
+    base: Uint8Array,
+    peer: `${number}`,
+    edit: (doc: LoroDoc) => void,
+    rewrite: (json: JsonSchema) => void,
+  ): Uint8Array {
+    const author = rawReplica(base);
+    const from = author.oplogVersion();
+    author.setPeerId(peer);
+    edit(author);
+    author.commit();
+    const json = author.exportJsonUpdates(from, author.oplogVersion(), false);
+    rewrite(json);
+    const encoder = rawReplica(base);
+    encoder.importJsonUpdates(json);
+    return encoder.export({ mode: 'update', from });
+  }
+
+  test('reaches the same verdict on a crafted container value in every delivery order', () => {
+    const provider = new LoroProvider();
+    const author = new LoroDoc();
+    author.setPeerId('1');
+    const node = author.getTree('tr').createNode();
+    node.data.set('name', 'n');
+    const other = author.getTree('tr').createNode();
+    author.getText('t').insert(0, 'base');
+    author.commit();
+    const base = author.export({ mode: 'update' });
+    const fork = (peer: `${number}`) => {
+      const doc = rawReplica(base);
+      doc.setPeerId(peer);
+      return doc;
+    };
+    const [, deletion] = provider.localChange(fork('2'), 'c', (doc) => {
+      doc.getTree('tr').delete(node.id);
+    });
+    const [, move] = provider.localChange(fork('4'), 'd', (doc) => {
+      doc.getText('t').insert(0, 'dave ');
+      doc.getTree('tr').move(node.id, other.id);
+    });
+    const poisoned = crafted(
+      base,
+      '8',
+      (doc) => doc.getTree('tr').getNodeByID(node.id)!.data.set('x', 1),
+      (json) => {
+        const [op] = json.changes[0]!.ops;
+        (op!.content as { value: unknown }).value =
+          `🦜:cid:${op!.counter}@8:Unknown(21)`;
+      },
+    );
+    const orders: Uint8Array[][] = [
+      [deletion, poisoned, move],
+      [deletion, move, poisoned],
+      [poisoned, deletion, move],
+    ];
+    const replicas = orders.map((order) => {
+      const doc = provider.remoteChange(provider.newDocument(), base);
+      for (const update of order) {
+        if (update === poisoned) {
+          expect(() => provider.remoteChange(doc, update)).toThrow(
+            'container with a foreign ID',
+          );
+        } else {
+          provider.remoteChange(doc, update);
+        }
+      }
+      return doc;
+    });
+    replicas[1]!.setPeerId('30');
+    const [, later] = provider.localChange(replicas[1]!, 'y', (doc) => {
+      doc.getText('t').insert(0, 'later ');
+    });
+    for (const doc of replicas) {
+      provider.remoteChange(doc, later);
+      expect(doc.toJSON()).toEqual(replicas[0]!.toJSON());
+      expectDurable(provider, doc);
+    }
+  });
+
+  test('rejects writes to containers that the change cannot have created', () => {
+    const provider = new LoroProvider();
+    const base = baseSnapshot();
+    const live = replica(provider, base);
+    const child = (doc: LoroDoc) =>
+      doc.getMap('m').setContainer('c', new LoroMap()).set('k', 1);
+    expectRejected(
+      provider,
+      live,
+      crafted(base, '8', child, (json) => {
+        json.changes[0]!.ops[1]!.container = 'cid:99@8:Map';
+      }),
+      'container it cannot see',
+    );
+    expectRejected(
+      provider,
+      live,
+      crafted(base, '8', child, (json) => {
+        json.changes[0]!.ops[1]!.container = 'cid:5@1:Map';
+      }),
+      'container it cannot see',
+    );
+    expectDurable(provider, live);
+  });
+
+  test('keeps an honest waiting update released together with a crafted one in either order', () => {
+    const provider = new LoroProvider();
+    const complete = rawReplica(baseSnapshot());
+    const partial = complete.forkAt([{ peer: '1', counter: 31 }]);
+    const missing = complete.export({
+      mode: 'update',
+      from: partial.oplogVersion(),
+    });
+    const carol = rawReplica(baseSnapshot());
+    carol.setPeerId('3');
+    const [, honest] = provider.localChange(carol, 'c', (doc) => {
+      doc.getText('t').insert(0, 'carol ');
+    });
+    const poisoned = fixture('unknown-tree-container');
+    for (const order of [
+      [honest, poisoned, missing],
+      [missing, honest, poisoned],
+    ]) {
+      const live = provider.remoteChange(
+        provider.newDocument(),
+        partial.export({ mode: 'update' }),
+      );
+      for (const update of order) {
+        if (update === poisoned && order[0] === missing) {
+          expect(() => provider.remoteChange(live, update)).toThrow();
+        } else {
+          provider.remoteChange(live, update);
+        }
+      }
+      expect(provider.hasIntegrated(live, honest)).toBe(true);
+      expect(provider.hasDiscarded(live, poisoned)).toBe(true);
+      expect(live.getText('t').toString()).toBe('carol hello world');
+    }
+  });
+
+  test('releases a chain of waiting updates delivered in order without rescanning', () => {
+    const provider = new LoroProvider();
+    const author = new LoroDoc();
+    author.setPeerId('7');
+    const updates = Array.from(
+      { length: 4096 },
+      () =>
+        provider.localChange(author, 'e', (doc) => {
+          doc.getCounter('c').increment(1);
+        })[1],
+    );
+    const live = provider.newDocument();
+    const started = performance.now();
+    for (const update of updates.slice(1)) provider.remoteChange(live, update);
+    expect(live.getCounter('c').value).toBe(0);
+    provider.remoteChange(live, updates[0]!);
+    expect(live.getCounter('c').value).toBe(4096);
+    expect(performance.now() - started).toBeLessThan(20_000);
+  }, 30_000);
+
+  test('evicts the waiting updates of the peer holding the most first', () => {
+    const provider = new LoroProvider();
+    const complete = rawReplica(baseSnapshot());
+    const partial = complete.forkAt([{ peer: '1', counter: 31 }]);
+    const missing = complete.export({
+      mode: 'update',
+      from: partial.oplogVersion(),
+    });
+    const carol = rawReplica(baseSnapshot());
+    carol.setPeerId('3');
+    const [, honest] = provider.localChange(carol, 'c', (doc) => {
+      doc.getText('t').insert(0, 'carol ');
+    });
+    const flooder = new LoroDoc();
+    flooder.setPeerId('9');
+    const flood = Array.from(
+      { length: 4097 },
+      () =>
+        provider.localChange(flooder, 'f', (doc) => {
+          doc.getCounter('f').increment(1);
+        })[1],
+    );
+    const live = provider.remoteChange(
+      provider.newDocument(),
+      partial.export({ mode: 'update' }),
+    );
+    provider.remoteChange(live, honest);
+    for (const update of flood.slice(1)) provider.remoteChange(live, update);
+    expect(provider.hasDiscarded(live, honest)).toBe(false);
+    expect(provider.hasDiscarded(live, flood[1]!)).toBe(true);
+    provider.remoteChange(live, missing);
+    expect(provider.hasIntegrated(live, honest)).toBe(true);
+  }, 30_000);
+
+  test('rejects an update that trapped Loro without validating it again', () => {
+    const provider = new LoroProvider();
+    const live = replica(provider, baseSnapshot());
+    const source = replica(provider, baseSnapshot(), '3');
+    const [, update] = provider.localChange(source, 'edit', (doc) => {
+      doc.getMap('m').set('k', 2);
+    });
+    const importBatch = jest
+      .spyOn(LoroDoc.prototype, 'importBatch')
+      .mockImplementationOnce(() => {
+        throw new WebAssembly.RuntimeError('unreachable');
+      });
+    expect(() => provider.remoteChange(live, update)).toThrow('unreachable');
+    expect(() => provider.remoteChange(live, update)).toThrow('trapped Loro');
+    expect(importBatch).toHaveBeenCalledTimes(1);
+    expect(live.getMap('m').get('k')).toBe(1);
+  });
+
+  test('honest replicas converge with undo, rich text and nested containers in any delivery order', () => {
+    for (const start of [1, 2, 3]) {
+      const provider = new LoroProvider();
+      let seed = start;
+      const random = () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return seed / 2 ** 32;
+      };
+      const pick = (n: number) => Math.floor(random() * n);
+      const docs = [0, 1, 2, 3].map((index) => {
+        const doc = provider.newDocument();
+        doc.setPeerId(`${100 + index}` as `${number}`);
+        return doc;
+      });
+      const undos = docs.map(
+        (doc) => new UndoManager(doc, { mergeInterval: 0 }),
+      );
+      const inbox: Uint8Array[][] = docs.map(() => []);
+      const edit = (doc: LoroDoc, tag: string) => {
+        const text = doc.getText('t');
+        const list = doc.getList('l');
+        const moves = doc.getMovableList('ml');
+        const tree = doc.getTree('tr');
+        const map = doc.getMap('m');
+        for (let count = 1 + pick(4); count > 0; count--) {
+          switch (pick(12)) {
+            case 0:
+              text.insert(pick(text.length + 1), tag);
+              break;
+            case 1:
+              if (text.length > 1) {
+                const at = pick(text.length);
+                text.delete(at, 1 + pick(text.length - at));
+              }
+              break;
+            case 2:
+              if (text.length > 2) {
+                const at = pick(text.length - 1);
+                text.mark(
+                  { start: at, end: at + 1 + pick(text.length - at - 1) },
+                  pick(2) ? 'bold' : 'link',
+                  tag,
+                );
+              }
+              break;
+            case 3:
+              text.update(
+                text.toString().split('').reverse().join('').slice(0, 20) + tag,
+              );
+              break;
+            case 4:
+              list.insert(pick(list.length + 1), tag);
+              if (list.length > 3) list.delete(pick(list.length - 2), 2);
+              break;
+            case 5:
+              list
+                .insertContainer(pick(list.length + 1), new LoroText())
+                .insert(0, tag);
+              break;
+            case 6:
+              moves.push(tag);
+              if (moves.length > 1) {
+                moves.move(pick(moves.length), pick(moves.length));
+              }
+              moves.set(pick(moves.length), `${tag}!`);
+              if (moves.length > 3) moves.delete(pick(moves.length - 1), 1);
+              break;
+            case 7: {
+              const nodes = tree.nodes().filter((n) => !n.isDeleted());
+              if (nodes.length > 0 && pick(2)) {
+                const target = nodes[pick(nodes.length)]!;
+                if (pick(2)) {
+                  tree.delete(target.id);
+                } else {
+                  const parent = nodes[pick(nodes.length)]!;
+                  try {
+                    tree.move(
+                      target.id,
+                      parent.id === target.id ? undefined : parent.id,
+                    );
+                  } catch {
+                    // Moving a node under its own descendant is refused.
+                  }
+                }
+              } else {
+                const parent = nodes.length
+                  ? nodes[pick(nodes.length)]!.id
+                  : undefined;
+                tree.createNode(parent).data.set('tag', tag);
+              }
+              break;
+            }
+            case 8: {
+              const child = map.setContainer(`k${pick(3)}`, new LoroMap());
+              child.set('v', tag);
+              child.setContainer('list', new LoroList()).push(tag);
+              break;
+            }
+            case 9:
+              if (pick(2)) map.delete(`k${pick(3)}`);
+              else map.set(`k${pick(3)}`, tag);
+              break;
+            case 10:
+              moves.insertContainer(0, new LoroText()).insert(0, tag);
+              break;
+            default:
+              doc.getCounter('c').increment(pick(2) ? 1 : -2);
+          }
+        }
+      };
+      for (let round = 0; round < 30; round++) {
+        docs.forEach((doc, index) => {
+          if (pick(3) === 0) return;
+          let change: Uint8Array;
+          if (pick(8) === 0 && undos[index]!.canUndo()) {
+            const from = doc.oplogVersion();
+            undos[index]!.undo();
+            doc.commit();
+            if (from.compare(doc.oplogVersion()) === 0) return;
+            change = doc.export({ mode: 'update', from });
+          } else {
+            [, change] = provider.localChange(doc, 'e', (d) =>
+              edit(d, `${index}.${round}`),
+            );
+          }
+          inbox.forEach((box, other) => {
+            if (other !== index) box.push(change);
+          });
+        });
+        docs.forEach((doc, index) => {
+          const box = inbox[index]!;
+          const delivered =
+            pick(3) === 0 ? box.splice(0) : box.splice(0, pick(box.length + 1));
+          const order =
+            pick(3) === 0
+              ? delivered.reverse()
+              : delivered.sort(() => random() - 0.5);
+          for (const update of order) provider.remoteChange(doc, update);
+        });
+      }
+      docs.forEach((doc, index) => {
+        for (const update of inbox[index]!.splice(0).reverse()) {
+          provider.remoteChange(doc, update);
+        }
+      });
+      for (const doc of docs) {
+        expect(doc.oplogVersion().compare(docs[0]!.oplogVersion())).toBe(0);
+        expect(doc.toJSON()).toEqual(docs[0]!.toJSON());
+      }
+    }
+  }, 60_000);
 });

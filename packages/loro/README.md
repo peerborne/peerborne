@@ -30,25 +30,39 @@ xxHash32 checksum is not a MAC and an authorized writer's client can alter
 update bytes. `remoteChange` accepts only update blobs and `applySnapshot` only
 full snapshots. A snapshot contributes its operation history; its encoded state
 is never loaded. `getHistory` exports that history as one update, so a
-checkpoint restore replays it through the same validation. An update whose
-dependencies are missing waits outside the document, and `hasIntegrated` reports
-it as not yet integrated, so Peerborne does not record it as applied and
-checkpoints omit it. Once it can integrate, it is imported into a fork together
-with the waiting updates it releases, and the batch is rejected if an operation
-writes to an unknown container type, deletes elements outside its container or
-causal past, or moves a tree node that does not exist, or if any root container
-reads differently after a snapshot round trip. Only a batch that passes reaches
-the document; a rejected one leaves it unchanged. A waiting update dropped
-because it fails with the update that released it is reported by `hasDiscarded`,
-so Peerborne stops waiting for it.
+checkpoint restore replays it through the same validation.
+
+An update whose dependencies are missing waits outside the document, and
+`hasIntegrated` reports it as not yet integrated, so Peerborne does not record
+it as applied and checkpoints omit it. Once it can integrate, it is imported
+into a fork together with the waiting updates it releases. The batch is rejected
+if an operation writes to an unknown container type, creates a container whose
+ID is not its own, writes to a container or deletes elements outside its causal
+past, or moves a tree node that does not exist there. Each of these rules
+depends only on the change and its causal past, so every replica reaches the
+same verdict in any delivery order. As a defence in depth, the batch is also
+rejected if any root container reads differently after a snapshot round trip.
+Only a batch that passes reaches the document; a rejected one leaves it
+unchanged. When a batch fails but the update that released it passes alone, the
+waiting updates are validated one at a time, and the ones that fail, with those
+that depend on them, are discarded. `hasDiscarded` reports them, so Peerborne
+stops waiting for them and passes a later delivery to `remoteChange` again.
+
+A document holds at most 4,096 waiting updates and evicts the oldest update of
+the Loro peer holding the most. An update that once trapped Loro during
+validation is rejected without validating it again, because Loro cannot free the
+fork it trapped in.
 
 Validation reads the whole document, so every integrated remote update costs
-O(document). Duplicate and waiting deliveries cost microseconds. The rules
-cover the malformation classes that byte-mutation fuzzing found; they do not
-prove that every operation Loro accepts is harmless. Rich-text marks are not
-compared, an update that reuses another replica's peer ID is not detected, and
-`toJSON()` shows one of two root containers that share a name depending on
-arrival order.
+O(document). Duplicate and waiting deliveries cost microseconds. The rules cover
+the malformation classes that byte-mutation fuzzing and review found; they do
+not prove that every operation Loro accepts is harmless. The round trip reads
+the visible state, which concurrent changes can alter, so a malformation that
+only it catches could be judged differently by replicas that received changes in
+different orders; none of the fuzzed classes relies on it alone. Rich-text marks
+are not compared, an update that reuses another replica's peer ID is not
+detected, and `toJSON()` shows one of two root containers that share a name
+depending on arrival order.
 
 Focused tests cover concurrent edits, out-of-order delivery, replay, snapshot
 merging, malformed and crafted payloads, and a `PeerborneDocument` fixture where

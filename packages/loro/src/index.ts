@@ -2,6 +2,7 @@ import {
   LoroDoc,
   LoroTree,
   decodeImportBlobMeta,
+  isValidContainerId,
   type ContainerID,
   type OpId,
   type PeerID,
@@ -29,11 +30,16 @@ const CONTAINER_TYPES = new Set([
   'Counter',
 ]);
 
+/** How Loro's JSON form marks a value that is a container. */
+const CONTAINER_VALUE = '🦜:';
+
 /** The most updates a document holds while their dependencies are missing. */
 const MAX_WAITING_UPDATES = 4096;
 
+/** The most updates a document remembers as having trapped Loro. */
+const MAX_TRAPPED_UPDATES = 256;
+
 const ranges = new WeakMap<Uint8Array, BlobRange>();
-const waitingUpdates = new WeakMap<LoroDoc, Uint8Array[]>();
 
 function rangeOf(blob: Uint8Array): BlobRange {
   let range = ranges.get(blob);
@@ -63,41 +69,127 @@ function covers(version: Version, range: BlobRange): boolean {
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return (
-    left.byteLength === right.byteLength &&
-    left.every((byte, index) => byte === right[index])
-  );
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 /**
- * Selects the queued updates that integrate on `document`, in an order where
- * each one's dependencies come first.
+ * Updates held for one document, found by their bytes. Past `capacity`, the
+ * oldest update of the peer holding the most is evicted, so one writer cannot
+ * push out everyone else's.
+ */
+class HeldUpdates {
+  private readonly updates = new Set<Uint8Array>();
+  private readonly buckets = new Map<string, Uint8Array[]>();
+
+  constructor(private readonly capacity: number) {}
+
+  private static key(blob: Uint8Array): string {
+    // Bytes 16 to 19 hold the header checksum.
+    return `${blob.byteLength}:${blob[16]},${blob[17]},${blob[18]},${blob[19]}`;
+  }
+
+  private static author(blob: Uint8Array): PeerID | undefined {
+    return rangeOf(blob).end[0]?.[0];
+  }
+
+  values(): IterableIterator<Uint8Array> {
+    return this.updates.values();
+  }
+
+  find(blob: Uint8Array): Uint8Array | undefined {
+    if (this.updates.has(blob)) return blob;
+    return this.buckets
+      .get(HeldUpdates.key(blob))
+      ?.find((held) => sameBytes(held, blob));
+  }
+
+  add(blob: Uint8Array): void {
+    if (this.find(blob) !== undefined) return;
+    this.updates.add(blob);
+    const key = HeldUpdates.key(blob);
+    this.buckets.set(key, [...(this.buckets.get(key) ?? []), blob]);
+    if (this.updates.size <= this.capacity) return;
+    const counts = new Map<PeerID | undefined, number>();
+    for (const update of this.updates) {
+      const author = HeldUpdates.author(update);
+      counts.set(author, (counts.get(author) ?? 0) + 1);
+    }
+    const heaviest = [...counts].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+    for (const update of this.updates) {
+      if (HeldUpdates.author(update) === heaviest) {
+        this.delete(update);
+        return;
+      }
+    }
+  }
+
+  delete(blob: Uint8Array): void {
+    if (!this.updates.delete(blob)) return;
+    const key = HeldUpdates.key(blob);
+    const bucket = this.buckets.get(key)!.filter((held) => held !== blob);
+    if (bucket.length > 0) this.buckets.set(key, bucket);
+    else this.buckets.delete(key);
+  }
+}
+
+const waitingUpdates = new WeakMap<LoroDoc, HeldUpdates>();
+const trappedUpdates = new WeakMap<LoroDoc, HeldUpdates>();
+
+function held(
+  registry: WeakMap<LoroDoc, HeldUpdates>,
+  document: LoroDoc,
+  capacity: number,
+): HeldUpdates {
+  let updates = registry.get(document);
+  if (updates === undefined) {
+    registry.set(document, (updates = new HeldUpdates(capacity)));
+  }
+  return updates;
+}
+
+/**
+ * Selects the `candidates` that integrate on `document`, each after the ones
+ * it depends on. An update is examined again only when the peer it waits for
+ * advances.
  */
 function integrable(
   document: LoroDoc,
-  queue: readonly Uint8Array[],
+  candidates: Iterable<Uint8Array>,
 ): Uint8Array[] {
   const version: Version = document.oplogVersion().toJSON();
   const selected: Uint8Array[] = [];
-  for (let progressed = true; progressed;) {
-    progressed = false;
-    for (let index = queue.length - 1; index >= 0; index--) {
-      const blob = queue[index]!;
-      if (selected.includes(blob)) continue;
-      const range = rangeOf(blob);
-      if (
-        range.dependencies.some(
-          ({ peer, counter }) => (version.get(peer) ?? 0) <= counter,
-        ) ||
-        range.start.some(([peer, start]) => (version.get(peer) ?? 0) < start)
-      ) {
-        continue;
+  const blocked = new Map<PeerID, Uint8Array[]>();
+  const pending = [...candidates].reverse();
+  while (pending.length > 0) {
+    const blob = pending.pop()!;
+    const range = rangeOf(blob);
+    const missing =
+      range.dependencies.find(
+        ({ peer, counter }) => (version.get(peer) ?? 0) <= counter,
+      )?.peer ??
+      range.start.find(
+        ([peer, start]) => (version.get(peer) ?? 0) < start,
+      )?.[0];
+    if (missing !== undefined) {
+      const waiting = blocked.get(missing);
+      if (waiting === undefined) blocked.set(missing, [blob]);
+      else waiting.push(blob);
+      continue;
+    }
+    selected.push(blob);
+    for (const [peer, end] of range.end) {
+      if ((version.get(peer) ?? 0) >= end) continue;
+      version.set(peer, end);
+      const released = blocked.get(peer);
+      if (released === undefined) continue;
+      blocked.delete(peer);
+      for (let index = released.length - 1; index >= 0; index--) {
+        pending.push(released[index]!);
       }
-      selected.push(blob);
-      for (const [peer, end] of range.end) {
-        version.set(peer, Math.max(version.get(peer) ?? 0, end));
-      }
-      progressed = true;
     }
   }
   return selected;
@@ -110,6 +202,26 @@ function containerType(id: string): string {
 function opId(id: string): OpId {
   const at = id.indexOf('@');
   return { peer: id.slice(at + 1) as PeerID, counter: Number(id.slice(0, at)) };
+}
+
+function containerValue(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.startsWith(CONTAINER_VALUE)) {
+    return undefined;
+  }
+  const id = value.slice(CONTAINER_VALUE.length);
+  return isValidContainerId(id) ? id : undefined;
+}
+
+function holdsContainerValue(value: unknown): boolean {
+  const pending = [value];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (containerValue(next) !== undefined) return true;
+    if (typeof next === 'object' && next !== null) {
+      pending.push(...Object.values(next));
+    }
+  }
+  return false;
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -150,11 +262,18 @@ function release(document: LoroDoc): void {
 
 /**
  * Loro decodes operations without checking that they make sense. Reject the
- * ones an unmodified client cannot produce: unknown container types, deletions
- * of elements outside the change's causal past or container, and tree nodes
- * that do not exist there. Each rule depends only on the change and its causal
- * past, so every replica reaches the same verdict in any delivery order.
- * Returns the root containers the operations write to.
+ * ones an unmodified client cannot produce:
+ *
+ * - an unknown container type, as a target or a value;
+ * - a container value whose ID is not that of the operation creating it, or
+ *   one nested in another value;
+ * - a write to a container that is not created in the change's causal past;
+ * - a deletion of elements outside the change's causal past or container;
+ * - a tree node that is not created in the change's causal past.
+ *
+ * Each rule depends only on the change and its causal past, so every replica
+ * reaches the same verdict in any delivery order. Returns the root containers
+ * the operations write to.
  */
 function assertOperations(
   document: LoroDoc,
@@ -179,10 +298,38 @@ function assertOperations(
       }
       ops.push([counter, container]);
       if (container.startsWith('cid:root-')) roots.add(container);
+      const values =
+        content.type === 'insert' && 'value' in content
+          ? 'key' in content || !Array.isArray(content.value)
+            ? [content.value]
+            : content.value
+          : content.type === 'set'
+            ? [content.value]
+            : [];
+      values.forEach((value, index) => {
+        const id = containerValue(value);
+        if (id === undefined) {
+          if (holdsContainerValue(value)) {
+            throw new Error('Loro update nests a container in a value');
+          }
+          return;
+        }
+        if (
+          !CONTAINER_TYPES.has(containerType(id)) ||
+          id !== `cid:${counter + index}@${peer}:${containerType(id)}`
+        ) {
+          throw new Error('Loro update creates a container with a foreign ID');
+        }
+        created.add(id);
+      });
+      if (content.type === 'mark' && holdsContainerValue(content.style_value)) {
+        throw new Error('Loro update nests a container in a value');
+      }
       if (containerType(container) === 'Tree' && content.type === 'create') {
         if (content.target !== `${counter}@${peer}`) {
           throw new Error('Loro update creates a tree node with a foreign ID');
         }
+        created.add(`cid:${content.target}:Map`);
         created.add(`${container} ${content.target}`);
       }
     }
@@ -217,6 +364,15 @@ function assertOperations(
       id.counter + length <= (past.get(id.peer) ?? 0) ||
       (id.peer === peer && id.counter + length <= counter);
     for (const { container, content, counter } of change.ops) {
+      if (!container.startsWith('cid:root-')) {
+        const creator = opId(container.slice(4, container.lastIndexOf(':')));
+        if (
+          !precedes(creator, counter) ||
+          (!created.has(container) && !document.hasContainer(container))
+        ) {
+          throw new Error('Loro update writes to a container it cannot see');
+        }
+      }
       if (content.type === 'delete' && 'start_id' in content) {
         const start = opId(content.start_id);
         const length = Math.abs(content.len);
@@ -257,11 +413,14 @@ function assertKnownRoots(document: LoroDoc): ContainerID[] {
 }
 
 /**
- * Imports `updates` into a fork of `document` and checks their operations,
- * then that every root container reads the same after a snapshot round trip
- * and the version vector is unchanged. Roots are compared by container ID
- * because Loro resolves a root name shared by two container types by
- * registration order, which differs between replicas and reloads.
+ * Imports `updates` into a fork of `document` and checks their operations.
+ * Then, as a defence in depth, checks that every root container reads the
+ * same after a snapshot round trip and the version vector is unchanged. The
+ * round trip reads the visible state, which concurrent changes can alter, so
+ * every malformation it has caught is also rejected by an operation rule.
+ * Roots are compared by container ID because Loro resolves a root name shared
+ * by two container types by registration order, which differs between
+ * replicas and reloads.
  */
 function validateImport(
   document: LoroDoc,
@@ -348,23 +507,37 @@ export class LoroProvider implements CRDTProvider<
    * Rejects a blob that is not a valid update and leaves `document` unchanged.
    * An update whose dependencies are missing waits and is validated once they
    * arrive, together with the update that released it. When that batch fails
-   * but the releasing update passes on its own, each waiting update is then
-   * validated on its own, and the ones that fail are discarded.
+   * but the releasing update passes on its own, the waiting updates are
+   * validated one at a time, each after its dependencies. The ones that fail,
+   * and those that depend on them, are discarded.
    */
   remoteChange(document: LoroDoc, changes: Uint8Array): LoroDoc {
     const range = expectMode(changes, 'update');
     if (covers(document.oplogVersion().toJSON(), range)) return document;
-    const held = waitingUpdates.get(document) ?? [];
-    if (held.some((update) => sameBytes(update, changes))) return document;
-    const queue = [...held, changes];
-    const ready = integrable(document, queue);
+    const trapped = held(trappedUpdates, document, MAX_TRAPPED_UPDATES);
+    if (trapped.find(changes) !== undefined) {
+      throw new Error('Loro update trapped Loro when it was validated before');
+    }
+    const waiting = held(waitingUpdates, document, MAX_WAITING_UPDATES);
+    if (waiting.find(changes) !== undefined) return document;
+    const ready = integrable(document, [...waiting.values(), changes]);
     if (!ready.includes(changes)) {
-      waitingUpdates.set(document, queue.slice(-MAX_WAITING_UPDATES));
+      waiting.add(changes);
       return document;
     }
+    const validate = (updates: readonly Uint8Array[]): void => {
+      try {
+        validateImport(document, updates);
+      } catch (error) {
+        if (updates.length === 1 && error instanceof WebAssembly.RuntimeError) {
+          trapped.add(updates[0]!);
+        }
+        throw error;
+      }
+    };
     let valid = true;
     try {
-      validateImport(document, ready);
+      validate(ready);
     } catch (error) {
       if (ready.length === 1 || integrable(document, [changes]).length === 0) {
         throw error;
@@ -374,24 +547,21 @@ export class LoroProvider implements CRDTProvider<
     if (valid) {
       document.importBatch(ready);
     } else {
-      validateImport(document, [changes]);
+      validate([changes]);
       document.importBatch([changes]);
       for (const update of ready) {
         if (update === changes || integrable(document, [update]).length === 0) {
           continue;
         }
         try {
-          validateImport(document, [update]);
+          validate([update]);
           document.importBatch([update]);
         } catch {
           // `hasDiscarded` reports the update from now on.
         }
       }
     }
-    waitingUpdates.set(
-      document,
-      queue.filter((update) => !ready.includes(update)),
-    );
+    for (const update of ready) waiting.delete(update);
     return document;
   }
 
@@ -405,15 +575,13 @@ export class LoroProvider implements CRDTProvider<
 
   /**
    * An update is discarded once it is neither integrated nor waiting: it
-   * failed validation with the update that released it, the waiting queue
-   * evicted it, or `remoteChange` rejected it.
+   * failed validation after its dependencies arrived, depends on one that did,
+   * the waiting queue evicted it, or `remoteChange` rejected it.
    */
   hasDiscarded(document: LoroDoc, changes: Uint8Array): boolean {
-    if (this.hasIntegrated(document, changes)) return false;
-    const held = waitingUpdates.get(document) ?? [];
     return (
-      !held.includes(changes) &&
-      !held.some((update) => sameBytes(update, changes))
+      !this.hasIntegrated(document, changes) &&
+      waitingUpdates.get(document)?.find(changes) === undefined
     );
   }
 
