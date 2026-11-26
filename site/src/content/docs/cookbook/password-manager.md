@@ -91,7 +91,7 @@ cover that refusal and the last-editor guard.
 - Test dropped, replayed, delayed, and out-of-order Welcome and PathUpdate messages.
 - Test restart before and after invitation, removal, and key rotation.
 - Provide explicit backup, export, recovery, and destructive-loss UX.
-- Export a checkpoint after every committed change, and always after a change reported to `subscribeDeliveryFailures()`. A storage or signing failure, including a transient IndexedDB error or a cancelled WebAuthn prompt, retires a Yjs instance, and reopening from an older checkpoint loses undelivered edits.
+- Export an encrypted checkpoint after every committed change, and always after a change reported to `subscribeDeliveryFailures()`. A checkpoint holds the vault's plaintext state and document keys, so keep it encrypted at rest and never transmit it; see [Local checkpoints](../../concepts/storage/#local-checkpoints). A storage or signing failure, including a transient IndexedDB error or a cancelled WebAuthn prompt, retires a Yjs instance, and reopening from an older checkpoint loses undelivered edits.
 - Reconcile the per-user index and secret document after partial dual-write failure.
 
 Local checkpoints retain BeeKEM reader mappings, tree state, rotated local

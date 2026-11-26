@@ -44,7 +44,7 @@ walks through the browser-test controls and their evidence boundary.
 
 ## Verify the examples
 
-Install Chromium once, then run all four smoke suites:
+Install Chromium once, then run the example and integration smoke suites:
 
 ```sh
 yarn exec playwright install chromium

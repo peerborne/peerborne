@@ -43,7 +43,8 @@ member, still resolves and reaches peers with the next change;
 the node already created or holds open, and an instance with restored or loaded
 state, since creating the path again would found a different document with a
 new key; open such a path instead. `open()` never creates one. It activates state without a network load only when the same document
-instance already holds restored state from `restoreCheckpoint()`.
+instance already holds state restored from a
+[checkpoint](../storage/#local-checkpoints) with `restoreEncryptedCheckpoint()`.
 `peerborne.doc(path)` returns a new, unopened instance on each call, so the
 React hook's and Redux thunk's default `'open'` mode always loads from peers.
 

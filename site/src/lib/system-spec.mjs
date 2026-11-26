@@ -88,7 +88,7 @@ export const claims = [
     checked:
       'The guard admits the exact next generation only with current parent and writer inputs. A blanked leaf slot cannot be reused. Finite histories preserve both guarantees across restart when the authenticated checkpoint matches an independently trusted current pin.',
     limit:
-      'The application must protect checkpoint contents and keep the independent pin fresh. Peerborne Note and the password-manager example omit the SDK pin. Browser-app rollback protection and group-wide exclusion remain open.',
+      'The application must keep checkpoints encrypted, since they hold document keys and plaintext state, and keep the independent pin fresh. Peerborne Note and the password-manager example omit the SDK pin. Browser-app rollback protection and group-wide exclusion remain open.',
     proof: [
       'packages/core/src/policy/beekem-transition.ts',
       'canCommitBeeKEMPathUpdate_ensures',

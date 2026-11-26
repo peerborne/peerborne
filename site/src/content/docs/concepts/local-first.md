@@ -10,7 +10,7 @@ A local-first application stores its primary data on the user's device — not o
 Peerborne adopts these local-first principles:
 
 - **Local replica near the user.** The application reads and writes a local CRDT document. There is no server round-trip for reads or writes.
-- **Work offline.** Once a replica is open—including a new local document—it can be edited without network access. Changes are applied immediately to the CRDT and stored locally in IndexedDB.
+- **Work offline.** Once a replica is open—including a new local document—it can be edited without network access. Each change is applied to the CRDT at once, and its encrypted block is stored in the local blockstore (IndexedDB in a browser). Those blocks alone do not reopen a document after it closes: the application must save an [encrypted checkpoint](../storage/#local-checkpoints) and restore it before `open()`.
 - **No server-ordained write ordering.** Two peers can edit the same document concurrently. The CRDT layer merges their changes when they eventually exchange updates.
 - **Eventually consistent.** When peers reconnect, they may discover and fetch blocks that were created during the offline period. Delivery is not guaranteed — see limitations below.
 
@@ -28,10 +28,10 @@ and missed announcements are replayed.
 
 An open Peerborne document with its local state and key material available can
 be edited offline. This includes a new document created locally without a peer
-connection. The `document.change()` call applies the mutation to the local Yjs
-or Automerge replica immediately. Its promise covers storing an encrypted
-change payload, building and optionally signing a separate sync message,
-encrypting that message, and attempting publication through GossipSub.
+connection. The `document.change()` call applies the mutation to the local
+Yjs, Automerge or Loro replica immediately, and its promise resolves once the
+change is committed locally. Encrypting and publishing the change's sync frame
+come after that commit, and their failure does not reject the call.
 
 ```ts
 await todos.change((state) => {
@@ -40,22 +40,35 @@ await todos.change((state) => {
 ```
 
 The encrypted change payload is stored before publication is attempted, so it
-can remain in local IndexedDB even if publication later fails. Libp2p may
-restore some peer connections, but missed-update replay and delivery are not
+stays in the local blockstore even if publication fails. Libp2p may restore
+some peer connections, but missed-update replay and delivery are not
 guaranteed.
 
 ### What `change()` covers
 
-The `document.change()` promise resolves when:
+The `document.change()` promise resolves when the change is committed locally:
 
 1. The CRDT provider has applied the mutation to the local replica
 2. The change payload has been serialized and encrypted with the document key (AES-GCM by default)
 3. The ciphertext has been stored in the local Helia blockstore, producing its CID
-4. A separate `CRDTSyncMessage` has been built with that CID, inline history, and any deferred CID references
-5. The complete sync message has been signed when signing is enabled, then serialized and encrypted with the document key (AES-GCM by default)
-6. Publication of the full encrypted sync envelope through GossipSub has completed
+4. A separate `CRDTSyncMessage` has been built with that CID and inline history, signed when signing is enabled, and checked against the frame size limit
+5. That message has become the document's retained change tree
 
-If storage or publication fails (e.g., IndexedDB quota exceeded, network error), the CRDT mutation **may already be applied**. The CRDT state reflects the mutation even if the remote sync path failed. There is no automatic rollback.
+Encrypting the message and publishing it through GossipSub follow. If either
+fails, or the frame reaches no peer known to serve a member, the call still
+resolves and the change stays committed. The failure is reported to
+`document.subscribeDeliveryFailures()` handlers and through
+`document.deliveryFailure`, which `subscribeDeliveryState()` handlers observe
+as it is set and cleared. A coordinated document
+(`peerborne.doc(path, { security })`) rejects instead.
+
+A failure before the commit, such as a storage quota error or a failed
+signature, rejects the call and discards the change. Automerge returns to a
+writable copy of the document from before it. Yjs and Loro cannot undo an
+in-place edit, so the instance is retired and must be reopened from accepted
+state. See
+[Local changes that fail before publication](#local-changes-that-fail-before-publication)
+for the other cases.
 
 ## What is not yet implemented
 
@@ -76,9 +89,18 @@ was offline. Applications that require recovery must observe connectivity and
 coordinate their own retry, resynchronization, or acknowledgment flow. See the
 [networking page](../networking/) for transport details.
 
-### No close/restart recovery verified in CI
+### Close and restart need an application checkpoint
 
-Documents store encrypted blocks in browser IndexedDB via Helia's blockstore. Local persistence works in single-session tests, but complete browser close → reopen → verify document state has not been proven in CI. See the [roadmap](../../community/roadmap/) for current status.
+Documents store encrypted blocks in browser IndexedDB via Helia's blockstore,
+but the blocks do not hold the document keys, membership or CRDT state needed
+to reopen it. After `close()`, a new `peerborne.doc(path).open()` loads from a
+connected peer; with no peer that holds the document, it rejects with
+`No document state is available`. To reopen offline, export an
+[encrypted checkpoint](../storage/#local-checkpoints) after each change and
+restore it on the fresh instance before `open()`. Peerborne Note and the
+password-manager example do this, and their CI suites reopen documents after a
+full Chromium relaunch. Other applications must test their own checkpoint
+path.
 
 ### Local changes that fail before publication
 
@@ -86,7 +108,7 @@ A `change()` call or `endChange()` batch is committed locally once its block is 
 
 A change that fails before that point, because the blockstore exceeds its storage quota or signing fails, is discarded, so no later change depends on an edit that peers never received. An Automerge document returns to a writable copy of its state before the change, which makes later changes under a new actor. Yjs and Loro edit in place and cannot undo the edit, so the instance is retired instead, as is an Automerge document that holds remote changes waiting for missing dependencies. The call rejects with an error whose `cause` is the failure. A retired instance refuses further changes and checkpoints, and `document.retired` is `true`, until it is reopened from accepted state, such as the last checkpoint exported before the failure. A `@peerborne/store` store then reports the `retired` status, and a TanStack DB collection over it fails rather than show the discarded edit.
 
-Storage and signing failures are not always permanent. A transient IndexedDB write error, or a remote or WebAuthn signer whose prompt the user cancels, also retires a Yjs or Loro instance. Reopening from the last checkpoint then loses every change made after that checkpoint that peers have not received, including changes reported to `subscribeDeliveryFailures()` handlers, because those exist only on this device. Export a checkpoint after each committed change, and always after a delivery failure, so that reopening keeps them.
+Storage and signing failures are not always permanent. A transient IndexedDB write error, or a remote or WebAuthn signer whose prompt the user cancels, also retires a Yjs or Loro instance. Reopening from the last checkpoint then loses every change made after that checkpoint that peers have not received, including changes reported to `subscribeDeliveryFailures()` handlers, because those exist only on this device. Export a checkpoint after each committed change, and always after a delivery failure, so that reopening keeps them. A checkpoint holds the document's state and its document keys: save it only as `exportEncryptedCheckpoint(storageKey)` produces it, or encrypted by the application, and never send it to another party. See [Local checkpoints](../storage/#local-checkpoints).
 
 ## The infrastructure boundary
 
@@ -137,12 +159,12 @@ These behaviors are verified by CI:
 - Encrypted existing-history retrieval through Circuit Relay
 - Automerge and Yjs provider initialization and basic operation
 - Crypto operations (signing, encryption, key generation)
+- Peerborne Note and the password-manager example reopening documents from their encrypted checkpoints after reload and a full Chromium relaunch
 
 These behaviors are **not** verified:
 
-- Browser restart and document recovery
-- Multi-session persistence across browser closes
-- Offline editing with later reconnection and delivery
+- Restart recovery in other applications, or from IndexedDB blocks without a checkpoint
+- Offline editing with later reconnection and delivery, outside Note's bounded relay-outage gate
 - Guaranteed transport reconnection and missed-update replay
 
 ## Next steps
