@@ -7,13 +7,11 @@ import * as Y from 'yjs';
 
 export function PasswordEditor({
   indexPath,
-  initialization,
   passwordId,
   peerborne,
   kemKeyPair,
 }: {
   indexPath: string;
-  initialization: 'open' | 'create';
   passwordId?: string;
   peerborne: YjsPeerborne;
   kemKeyPair: CryptoKeyPair;
@@ -22,8 +20,6 @@ export function PasswordEditor({
   const [doc, changeDoc, , error] = usePeerborneDocumentState(
     peerborne,
     `/passwords/${passwordId}`,
-    'all',
-    initialization,
   );
 
   const id = (doc && doc.getText('id').toString()) || passwordId;
