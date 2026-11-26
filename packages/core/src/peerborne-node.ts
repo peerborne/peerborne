@@ -67,8 +67,8 @@ import {
  *
  * The default blockstore and datastore are process-local and ephemeral. Node
  * applications that require persistence should replace `config.helia`'s
- * stores before starting Peerborne. The stores do not keep the PeerId; set
- * `config.helia.libp2p.privateKey` when a node needs a stable one.
+ * stores before starting Peerborne. The datastore persists the libp2p key for
+ * one running instance at a time.
  *
  * @param bootstrapConfig Bootstrap peer list to seed peer discovery.
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.

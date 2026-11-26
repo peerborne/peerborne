@@ -72,17 +72,27 @@ unverified.
 
 `defaultConfig()` opens the same IndexedDB blockstore (`/peerborne-blocks`) and
 datastore (`/peerborne-data`) in every tab of a browser origin. The datastore
-holds Helia pins and the libp2p peer store. It does not hold the libp2p private
-key: unless `config.helia.libp2p.privateKey` is set, every `initialize()`
-starts libp2p with a new Ed25519 key. Each tab and each reload is therefore a
-separate peer with its own PeerId, so two tabs can dial each other and each
-holds its own relay reservation. A PeerId only addresses a node. Document
-access is bound to signing keys, and online invitations already end when their
-creator restarts. Set a fixed key only when a stable PeerId is required, and
-never in two instances that run at the same time.
+holds Helia pins, the libp2p peer store and one persisted libp2p key. Unless
+`config.helia.libp2p.privateKey` is set, the first running instance takes a
+Web Lock named after the datastore and uses that key, so a single tab keeps
+its PeerId across reloads. Any other instance running at the same time gets a
+new Ed25519 key for that session, so tabs are separate peers that can dial
+each other. Stopping the Helia node releases the lock. Where the Web Locks API
+is unavailable, every instance uses a new key. Other datastores, such as the
+in-memory default of `defaultNodeConfig()`, give the persisted key to one
+instance at a time within a JavaScript realm.
 
-Sharing the stores leaves two caveats:
+A PeerId only addresses a node. Document access is bound to signing keys, and
+online invitations already end when their creator restarts. Set a fixed key
+only when a specific PeerId is required, and never in two instances that run
+at the same time.
 
+Sharing the stores leaves these caveats:
+
+- Each additional tab reserves its own relay slot, under a new PeerId on every
+  load. A relay frees a reservation only when its TTL expires, so reloading
+  additional tabs repeatedly can fill a relay with a small
+  `RELAY_MAX_RESERVATIONS`.
 - Garbage collection (`gcAfterPrune`, off by default) protects only the
   retained history of the tab that runs it. It can delete blocks that another
   tab still needs for the same document.
@@ -93,9 +103,10 @@ Sharing the stores leaves two caveats:
   encrypted checkpoint store accepts a save only at the expected revision, so
   a second tab's saves would be rejected as stale.
 
-**Evidence boundary:** a Node test with an IndexedDB shim checks that
-default-config instances sharing these stores get distinct PeerIds. Two tabs
-of one profile synchronizing in a real browser is not covered by CI.
+**Evidence boundary:** a Node test with an IndexedDB shim and Node's Web Locks
+checks that one default-config instance keeps the persisted PeerId across
+restarts while concurrent instances get their own. Two tabs of one profile
+synchronizing in a real browser is not covered by CI.
 
 ### No automatic replication factor
 

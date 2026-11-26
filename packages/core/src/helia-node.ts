@@ -2,7 +2,6 @@ import { createHelia, createHeliaLight } from 'helia';
 import { withBitswap } from '@helia/bitswap';
 import { withLibp2pLight } from '@helia/libp2p';
 import type { HeliaWithLibp2p } from '@helia/libp2p';
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import * as dagCbor from '@ipld/dag-cbor';
 import * as dagJson from '@ipld/dag-json';
 import type { ServiceMap } from '@libp2p/interface';
@@ -12,6 +11,8 @@ import { isLibp2p } from 'libp2p';
 import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import type { PeerborneConfig } from './peerborne-config.js';
+import { acquirePeerIdentity } from './peer-identity.js';
+import type { PeerIdentityLease } from './peer-identity.js';
 import { closeHeliaStores, openHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
 
@@ -31,6 +32,7 @@ export async function createAndStartHeliaNode(
     ? await openHeliaStores(heliaInit.datastore, heliaInit.blockstore)
     : [];
   let heliaNode: PeerborneHeliaNode | undefined;
+  let identity: PeerIdentityLease | undefined;
 
   try {
     const {
@@ -46,10 +48,10 @@ export async function createAndStartHeliaNode(
         'Helia 7 requires libp2p creation options; preconfigured libp2p nodes are not supported',
       );
     }
-    // Without a configured key, Helia reuses the PeerId persisted in the
-    // datastore, which every tab of a browser origin shares.
-    const privateKey =
-      libp2pInit?.privateKey ?? (await generateKeyPair('Ed25519'));
+    if (libp2pInit?.privateKey === undefined) {
+      identity = await acquirePeerIdentity(heliaOptions.datastore);
+    }
+    const privateKey = libp2pInit?.privateKey ?? identity?.privateKey;
     heliaNode = (
       libp2pInit
         ? withBitswap(
@@ -73,10 +75,16 @@ export async function createAndStartHeliaNode(
           )
         : createHelia({
             ...heliaOptions,
-            libp2p: { privateKey },
+            ...(privateKey && { libp2p: { privateKey } }),
             bitswap: bitswapInit,
           })
     ) as PeerborneHeliaNode;
+    if (identity) {
+      heliaNode.addMixin({
+        name: 'peerborne-peer-identity',
+        stop: identity.release,
+      });
+    }
     await heliaNode.start();
     if (!heliaNode.libp2p.services.pubsub) {
       throw new Error(
@@ -91,6 +99,7 @@ export async function createAndStartHeliaNode(
     } catch {
       // Best-effort cleanup preserves the startup error.
     }
+    identity?.release();
     await closeHeliaStores(openedStores);
     throw error;
   }

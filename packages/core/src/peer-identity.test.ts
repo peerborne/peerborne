@@ -5,7 +5,7 @@ import { describe, expect, test } from '@jest/globals';
 const execFileAsync = promisify(execFile);
 
 describe('libp2p peer identity', () => {
-  test('default-config instances sharing IndexedDB get distinct PeerIds', async () => {
+  test('one default-config instance holds the persisted PeerId and the others get their own', async () => {
     const fixture = `${__dirname}/peer-identity.fixture.mjs`;
     await expect(
       execFileAsync(process.execPath, ['--import', 'tsx', '--test', fixture], {
