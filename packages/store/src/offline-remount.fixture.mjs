@@ -101,13 +101,13 @@ test('with the default GossipSub options, a managed store keeps an edit made wit
     founding.deliveryFailure,
   );
   await unmanaged.stop();
-  const checkpoint = await founding.exportCheckpoint();
+  const checkpoint = await founding.exportPlaintextCheckpoint();
   await founding.close();
 
   const handles = [];
   const store = createDocumentStore(async () => {
     const handle = swarm.doc(path);
-    await handle.restoreCheckpoint(checkpoint);
+    await handle.restorePlaintextCheckpoint(checkpoint);
     handles.push(handle);
     return handle;
   });

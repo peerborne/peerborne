@@ -33,7 +33,7 @@ async function reopen(previous, adapter, checkpoint, index) {
     datastore: previous.datastore,
     open: false,
   });
-  await next.document.restoreCheckpoint(checkpoint);
+  await next.document.restorePlaintextCheckpoint(checkpoint);
   await next.document.open();
   return next;
 }
@@ -104,7 +104,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         const writer = await fixture(adapter, { index: 1 });
         await edit(writer, adapter, 'a', 1);
         const replica = await replicaOf(writer, 2, { adapter });
-        const accepted = await writer.document.exportCheckpoint();
+        const accepted = await writer.document.exportPlaintextCheckpoint();
         const failure = failureFor();
         inject(writer, failure);
         const undelivered = [];
@@ -143,7 +143,10 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
             assert.equal(error.cause, failure);
             assert.equal(writer.document.retired, true);
             await assert.rejects(edit(writer, adapter, 'c', 3), /retired/);
-            await assert.rejects(writer.document.exportCheckpoint(), /retired/);
+            await assert.rejects(
+              writer.document.exportPlaintextCheckpoint(),
+              /retired/,
+            );
             await writer.close();
             author = await reopen(writer, adapter, accepted, 3);
             assert.deepEqual(rootOf(author, adapter), { a: 1 });
@@ -168,7 +171,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         assert.deepEqual(rootOf(author, adapter), expected);
         assert.deepEqual(rootOf(replica, adapter), expected);
 
-        const checkpoint = await author.document.exportCheckpoint();
+        const checkpoint = await author.document.exportPlaintextCheckpoint();
         await author.close();
         const restored = await reopen(author, adapter, checkpoint, 4);
         assert.deepEqual(rootOf(restored, adapter), expected);

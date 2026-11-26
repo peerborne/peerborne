@@ -290,7 +290,7 @@ export class PeerborneNoteSession {
     const document = this.peerborne.doc(path);
     try {
       await document.setKemKeyPair(this.identity.kem);
-      await document.restoreCheckpoint(saved.checkpoint);
+      await document.restorePlaintextCheckpoint(saved.checkpoint);
       const auth = new SubtleCrypto();
       const writerIds = await Promise.all(
         (await document.getWriters()).map((key) =>
@@ -562,7 +562,7 @@ export class PeerborneNoteSession {
     const operation = this.writes
       .catch(() => undefined)
       .then(async () => {
-        const checkpoint = await document.exportCheckpoint();
+        const checkpoint = await document.exportPlaintextCheckpoint();
         try {
           this.revision = await this.store.save(
             document.documentPath,
