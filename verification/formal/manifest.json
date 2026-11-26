@@ -647,6 +647,9 @@
         "DocumentBudgetHistory",
         "AdmittedBlockChunks",
         "blockStreamBudget_domain",
+        "BlockCopyOffsets",
+        "admittedBlockCopyBound",
+        "blockCopy_domain",
         "advancePreparedDocumentChange_ensures",
         "PreparedChangeCompletions",
         "preparedChange_all_histories"

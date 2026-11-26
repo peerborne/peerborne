@@ -16,7 +16,7 @@
     },
     {
       "id": "encrypted-unixfs-block-reads",
-      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. Runtime properties cover actual UnixFS exporter traversal, raw and chunked files, observed chunk lengths, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
+      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. The layout proof checks exact flattening offsets and bounds bytes written into owned buffers to twice the accepted content. Runtime properties cover segment ownership and backing size, actual UnixFS traversal, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
       "evidence": [
         "packages/core/src/document-block-reader.fixture.mjs"
       ],
