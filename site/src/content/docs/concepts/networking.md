@@ -317,16 +317,22 @@ behind in the same way.
   requests a gap or a new peer triggered, and the periodic interval stretches
   with the number of open documents so that they plan at most half of the
   rate (beyond about 90 documents at the default interval). At most one
-  catch-up load runs at a time, and at most one per peer every 10 s.
+  catch-up load runs at a time, and at most one per peer every 10 s. A
+  catch-up load is aborted after 5 minutes, and its slot is released then
+  even if the load has not stopped.
 - Responders keep the existing limits: one reply per document every 2 s, a
   60 s freshness window and a 128-entry replay ledger, however many members
   ask.
 - Change blocks a frame cites without carrying are fetched within that
   frame's bounded fetches; the ones left unfetched, failed or waiting out a
-  retry delay are reported to catch-up as missing changes. A cross-linked
-  change whose inline copy sits below a change the replica already holds,
-  such as a snapshot boundary, is taken from the frame instead of being
-  fetched.
+  retry delay are reported to catch-up as missing changes. A missing change
+  is not held, and neither is a change that references it, so the gap stays
+  open and later replies are walked down to it until it arrives. A
+  cross-linked change whose inline copy sits below a change the replica
+  already holds, such as a snapshot boundary, is taken from the frame instead
+  of being fetched. A writer carries a concurrent branch it received inline
+  in its next change, so a reply repairs that branch after its author leaves;
+  see [which blocks a replica can serve](../storage/#which-blocks-a-replica-can-serve).
 
 ### Large catch-up
 

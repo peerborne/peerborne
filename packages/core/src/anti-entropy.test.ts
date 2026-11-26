@@ -2,6 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import {
   AntiEntropy,
   AntiEntropyBudget,
+  CATCH_UP_LOAD_DEADLINE_MS,
   defaultAntiEntropyConfig,
   resolveAntiEntropyConfig,
   type AntiEntropyClock,
@@ -545,6 +546,44 @@ describe('anti-entropy shared budget', () => {
     await time.to(35_000);
     expect(states[1]!.loads).toHaveLength(1);
     expect(states[0]!.loads).toHaveLength(1);
+  });
+
+  test('a load that ignores its deadline releases the shared slot', async () => {
+    const budget = new AntiEntropyBudget();
+    const time = fakeClock();
+    const started: number[] = [];
+    const states = Array.from({ length: 2 }, (_, index) => {
+      const fake = fakeHost();
+      fake.bind(() => time.now);
+      fake.state.pending = true;
+      fake.state.load = () => {
+        started.push(index);
+        return index === 0
+          ? new Promise<boolean>(() => {})
+          : Promise.resolve(true);
+      };
+      const events: AntiEntropyEvent[] = [];
+      new AntiEntropy(
+        resolveAntiEntropyConfig(),
+        fake.host,
+        budget,
+        (event) => events.push(event),
+        time.clock,
+      ).start();
+      return { ...fake.state, events };
+    });
+    await time.to(30_000);
+    expect(started).toEqual([0]);
+    const loadStart = states[0]!.loads[0]!.at;
+    await time.to(loadStart + CATCH_UP_LOAD_DEADLINE_MS - 1);
+    expect(started).toEqual([0]);
+    expect(states[0]!.signals[0]!.aborted).toBe(false);
+    await time.to(loadStart + CATCH_UP_LOAD_DEADLINE_MS + 5_000);
+    expect(states[0]!.signals[0]!.aborted).toBe(true);
+    expect(states[0]!.events).toContainEqual(
+      expect.objectContaining({ type: 'load', outcome: 'failed' }),
+    );
+    expect(started).toEqual([0, 1]);
   });
 });
 
