@@ -169,15 +169,57 @@ describe('relay gateway', () => {
     await once(socket, 'close')
   })
 
-  it('closes all sessions and rejects new ones after exhausting the global byte budget', async () => {
-    const { gateway } = await fixture({ ...demoGatewayLimits, totalBytes: 2048 })
-    const first = await upgrade(gateway.port, trusted())
-    const second = await upgrade(gateway.port, trusted('192.0.2.2'))
-    const closed = Promise.all([once(first.socket, 'close'), once(second.socket, 'close')])
-    first.socket.write(Buffer.alloc(2048))
+  it('rejects a client that spent its traffic share and keeps admitting other clients', async () => {
+    const { gateway } = await fixture({
+      ...demoGatewayLimits, burstBytes: 1024, clientWindowBytes: 2048, windowBytes: 65_536,
+    })
+    const flood = await upgrade(gateway.port, trusted())
+    const closed = once(flood.socket, 'close')
+    flood.socket.write(Buffer.alloc(4096))
     await closed
-    expect((await upgrade(gateway.port, trusted('192.0.2.3'))).response).toContain('503')
-    expect((await fetch(`http://127.0.0.1:${gateway.port}/readyz`)).status).toBe(200)
+    expect((await upgrade(gateway.port, trusted())).response).toContain('429')
+    expect((await upgrade(gateway.port, trusted('192.0.2.2'))).response).toContain('101')
+    const readiness = await fetch(`http://127.0.0.1:${gateway.port}/readyz`)
+    expect(readiness.status).toBe(200)
+    expect(await readiness.json()).toEqual({ status: 'ready', peerId: 'public-test-peer' })
+  })
+
+  it('reports an exhausted traffic window and admits sessions again once it refills', async () => {
+    const warnings: unknown[][] = []
+    const warn = console.warn
+    console.warn = (...args: unknown[]) => { warnings.push(args) }
+    try {
+      const { gateway } = await fixture({
+        ...demoGatewayLimits,
+        burstBytes: 1024, clientWindowBytes: 4096, windowBytes: 4096, windowMs: 2000,
+      })
+      const flood = await upgrade(gateway.port, trusted())
+      const closed = once(flood.socket, 'close')
+      flood.socket.write(Buffer.alloc(4096))
+      await closed
+      const rejected = await upgrade(gateway.port, trusted('192.0.2.2'))
+      expect(rejected.response).toContain('503')
+      expect(rejected.response).toMatch(/Retry-After: [1-9]\d*\r\n/)
+      const exhausted = await fetch(`http://127.0.0.1:${gateway.port}/readyz`)
+      expect(exhausted.status).toBe(200)
+      expect(await exhausted.json()).toEqual({
+        status: 'budget-exhausted', peerId: 'public-test-peer', retryAfterSeconds: expect.any(Number),
+      })
+      expect(warnings).toEqual([[
+        'Relay gateway traffic window exhausted; rejecting upgrades until it refills',
+        { retryAfterSeconds: expect.any(Number) },
+      ]])
+      const deadline = Date.now() + 5000
+      let status: unknown
+      while (status !== 'ready' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        status = (await (await fetch(`http://127.0.0.1:${gateway.port}/readyz`)).json()).status
+      }
+      expect(status).toBe('ready')
+      expect((await upgrade(gateway.port, trusted('192.0.2.2'))).response).toContain('101')
+    } finally {
+      console.warn = warn
+    }
   })
 
   it('fails closed when the origin credential is missing or weak', async () => {
