@@ -949,6 +949,16 @@ function createInvitationBootstrapContinuation(): InvitationBootstrapContinuatio
   });
 }
 
+function partialChangeCommitFailure(
+  changeError: unknown,
+  commitError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [changeError, commitError],
+    'Change function failed, and committing its partial edit also failed',
+  );
+}
+
 export class PeerborneDocument<
   DocType,
   ChangesType,
@@ -8456,10 +8466,14 @@ export class PeerborneDocument<
    * For immutable CRDT providers (e.g. Automerge), rollback is reliable
    * because `localChange()` returns a new document object.
    *
-   * A queued change function that throws discards the batch with Automerge.
-   * With an in-place provider (Yjs, Loro), the edits made before the throw
-   * are published as this transaction's change, then the original error is
-   * rethrown, so no later change depends on an unpublished edit.
+   * A queued change function that throws is handled as in `change()`: a
+   * coordinated document stages the batch on a private copy and leaves the
+   * document unchanged. Otherwise Automerge discards the batch, and an
+   * in-place provider (Yjs, Loro) publishes the edits made before the throw
+   * as this transaction's change and then rethrows the original error, so no
+   * later change depends on an unpublished edit. If committing that partial
+   * edit fails too, the call rejects with an `AggregateError` whose `errors`
+   * are the change function's error and the commit error.
    *
    * **Known limitation -- in-place mutating providers:** For CRDT providers
    * that mutate in place (e.g. Yjs), rollback of a publish failure does NOT
@@ -8594,8 +8608,8 @@ export class PeerborneDocument<
       }) as ChangeFnType;
 
       const applied = this._applyLocalChange(composedFn, message);
-      await this._makeChange(applied.changes);
       failure = applied.failure;
+      await this._makeChange(applied.changes);
 
       // The published change, partial or not, ends the transaction.
       this._inTransaction = false;
@@ -8649,7 +8663,7 @@ export class PeerborneDocument<
       this._recentTips = recentTipsSnapshot;
       this._inTransaction = false;
       this._pendingChangeFns = [];
-      throw err;
+      throw failure ? partialChangeCommitFailure(failure.error, err) : err;
     } finally {
       this._committing = false;
     }
@@ -8660,9 +8674,14 @@ export class PeerborneDocument<
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
    * An oversized encrypted block retires the legacy instance before publication.
-   * If `changeFn` throws, its error is rethrown. Automerge discards the edit;
-   * an in-place provider (Yjs, Loro) first publishes the edits made before
-   * the throw.
+   * If `changeFn` throws, the call rejects. A coordinated document
+   * (`peerborne.doc(path, { security })`) stages the edit on a private copy,
+   * so the document is unchanged and nothing is published. Otherwise
+   * Automerge discards the edit, and an in-place provider (Yjs, Loro)
+   * publishes the edits made before the throw and then rethrows the original
+   * error. If committing that partial edit fails too (publication, a local
+   * handler or compaction), the call rejects with an `AggregateError` whose
+   * `errors` are the change function's error and the commit error.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -8685,7 +8704,11 @@ export class PeerborneDocument<
     await this._ensureCurrentUserCanWrite();
 
     const { changes, failure } = this._applyLocalChange(changeFn, message);
-    await this._makeChange(changes);
+    try {
+      await this._makeChange(changes);
+    } catch (error) {
+      throw failure ? partialChangeCommitFailure(failure.error, error) : error;
+    }
     if (failure) throw failure.error;
   }
 

@@ -388,6 +388,38 @@ test.each([
   },
 );
 
+test('a staged change function that throws leaves the visible document unchanged', () => {
+  const provider = new YjsProvider(),
+    visible = provider.newDocument(),
+    session = provider.createDocumentSession(visible);
+  session
+    .prepareLocal('', (draft) => {
+      draft.getMap('data').set('title', 'v0');
+    })
+    .commit();
+  const failure = new Error('validation');
+  let error: unknown;
+  try {
+    session.prepareLocal('', (draft) => {
+      draft.getMap('data').set('partial', 1);
+      draft.getMap('data').delete('title');
+      throw failure;
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBe(failure);
+  expect(visible.getMap('data').toJSON()).toEqual({ title: 'v0' });
+  session
+    .prepareLocal('', (draft) => {
+      draft.getMap('data').set('title', 'v1');
+    })
+    .commit();
+  const peer = provider.newDocument();
+  applyUpdateV2(peer, provider.getSnapshot(visible));
+  expect(peer.getMap('data').toJSON()).toEqual({ title: 'v1' });
+});
+
 test('preserves known root types in mirrors and publishes new typed roots', () => {
   const provider = new YjsProvider(),
     document = provider.newDocument();
