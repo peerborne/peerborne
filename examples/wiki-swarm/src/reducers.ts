@@ -1,6 +1,11 @@
 import { combineReducers } from 'redux';
 import { WikiSwarmArticle } from './models';
-import { WikiSwarmActions, SEARCH } from './actions';
+import {
+  ARTICLE_SAVE,
+  SEARCH,
+  type ArticleSaveStatus,
+  type WikiSwarmActions,
+} from './actions';
 import { AutomergeSwarmActions, AutomergeSwarmState } from './utils';
 import { peerborneReducer } from '@peerborne/redux';
 import {
@@ -11,9 +16,11 @@ import {
 } from '@peerborne/automerge';
 import { SubtleCrypto } from '@peerborne/core';
 
-export interface WikiAppState {}
+export interface WikiAppState {
+  saves: Record<string, ArticleSaveStatus>;
+}
 
-export const wikiAppInitialState: WikiAppState = {};
+export const wikiAppInitialState: WikiAppState = { saves: {} };
 
 export function wikiAppReducer(
   state: WikiAppState = wikiAppInitialState,
@@ -23,6 +30,12 @@ export function wikiAppReducer(
     case SEARCH: {
       return {
         ...state,
+      };
+    }
+    case ARTICLE_SAVE: {
+      return {
+        ...state,
+        saves: { ...state.saves, [action.documentId]: action.status },
       };
     }
     default: {

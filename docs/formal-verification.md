@@ -626,7 +626,10 @@ outside these proofs and properties.
 Live GC additionally calls verified lease and phase guards. A lease binds the
 current tree, snapshot/boundary, recent tips and lifecycle. Each pin/deletion
 attempt owns one document mutation-queue slot through I/O settlement and yields
-before its next slot; a changed lease stops the pass. GC preserves existing pins
+before its next slot. A slot that finds the lease changed captures a fresh one
+and continues with candidates still deletable under it, trying each candidate
+at most once per pass; a fresh lease that is not current, as after close, stops
+the pass. GC preserves existing pins
 and never unpins blocks. Close permanently disables GC admission, invalidates
 the lease and waits for begun work before unregistering. Overlapping requests
 coalesce into bounded candidate
@@ -672,7 +675,7 @@ properties can invoke the same assertion more than once.
 | JavaScript number/string/byte semantics | Native UTF-16/code-unit calibration, IEEE-754 bit-order oracles, BigInt sizing/quorum/tree oracles, byte ownership, chunked framing and invalid work-counter rollback.                                                                      |
 | Reflection and parser defenses          | Wire fuzzers, accessor/cycle rejection, detached snapshots and CID-alias graph adapters against an independent saturation oracle.                                                                                                           |
 | Compaction and deletion | Actual pruner/GC-adapter ACL preservation, sparse aliases, source ownership, malformed-tree publication rollback, source-reflection counts and repeated batch histories. |
-| Live GC | Actual mutation-queue and I/O schedules, existing pins, stale leases, close quiescence, coalescing, candidate ownership/admission histories, fixed diagnostics and real offline Helia pin/blockstore behavior. |
+| Live GC | Actual mutation-queue and I/O schedules, existing pins, stale and re-captured leases with an edit between every slot, close quiescence, coalescing, candidate ownership/admission histories, failure diagnostics and real offline Helia pin/blockstore behavior. |
 | Welcome admission and expiry | Native keys/flags/clocks and byte lengths, copy-free expiry, rejected-body copy counts, pre-serialization rejection, preparation failures, serializer reentrancy, cancellation, array/Map ownership and independent ranked-victim/time BigInt oracles. |
 | Journal recovery I/O | Native row-get counts and transaction scopes, no pending/publication payload reads before rejected recovery, safe disposal of corrupt unaccepted bodies, distinct snapshot fields and post-await ownership. |
 | Journal store transitions | Strict native scalar guards, one-read reservation capture, owned metadata/payload projection, modelled operation histories across both stores, raw-row transaction rollback and encrypted duplicate-rejection recovery. |

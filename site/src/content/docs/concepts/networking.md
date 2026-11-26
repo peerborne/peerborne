@@ -165,6 +165,24 @@ snapshot, is not sent and does not use up the request or the response rate
 limit. The responder logs a warning, and the requester loads the document
 instead; see [large catch-up](#large-catch-up).
 
+### IP colocation scoring
+
+By default GossipSub penalizes every peer ID beyond the tenth that it has seen
+from one IP address, and keeps a departed peer's score for an hour. Peers behind
+one NAT share an address, and so do peers reached through a Circuit Relay
+addressed by `/ip4`, which count at the relay's address. After enough churn, the
+14th such peer fell below the graylist threshold: its subscriptions were
+ignored and it received no frames.
+
+`defaultConfig()` and `defaultNodeConfig()` therefore set GossipSub's
+`IPColocationFactorWeight` to 0. Document frames do not depend on that score:
+they are encrypted and signed, and [receive capacity](#receive-capacity) bounds
+what any sender can hold. A custom libp2p configuration that builds its own
+GossipSub service keeps the penalty unless it passes
+`scoreParams: { IPColocationFactorWeight: 0 }` or lists the shared addresses in
+`IPColocationFactorWhitelist`. Relays have their own setting; see
+[running a relay](../../cookbook/running-a-relay/).
+
 ## Peer discovery
 
 Peerborne peers find each other through several mechanisms:

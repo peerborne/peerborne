@@ -41,8 +41,13 @@ trust configuration is not needed for this local path.
 
 Wait for **Saved in this browser** before closing the tab. Failed writes remain
 visible with a retry action; missing or invalid state never silently creates a
-replacement. Writes are atomic per document, so the vault index and a secret
-are still separate writes. Only one active tab may write this browser's vaults.
+replacement. A storage failure while an edit is applied retires the Yjs
+instance, which edits in place. The example then reopens that document from its
+last checkpoint, discards the edit, and reports it until you dismiss the notice;
+if the reopen fails, it asks you to retry or reload. Writes are atomic per
+document, so the vault index and a secret are still separate writes. A new
+secret is saved before the vault index lists it. Only one active tab may write
+this browser's vaults.
 
 This is not a password lock, backup, cross-device identity transfer, or
 peer-assisted recovery. Clearing site data removes access. Authenticated old
