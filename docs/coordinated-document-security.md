@@ -180,7 +180,7 @@ Automerge stages an isolated clone. Yjs stages a private reusable mirror and
 keeps the visible document unchanged until admission succeeds. The mirror keeps
 one actor over accepted edits; it does not clone the complete document for every
 keystroke. Missing native causal dependencies are rejected before visible
-application. A direct mutation of the visible Yjs document invalidates its
+application with a `DocumentCausalDependencyError`. A direct mutation of the visible Yjs document invalidates its
 session. Staging accepts scalar values and shared `Y.Map`, `Y.Array` and `Y.Text`
 structures. Opaque object/array/binary values, subdocuments and XML child types
 are rejected because they can mutate without a tracked parent update. Application callbacks and the JavaScript environment remain trusted.
@@ -247,12 +247,25 @@ revision substitutions are rejected. An ambiguous post-commit failure poisons
 the live document and requires reconstruction; callers must not blindly rerun
 the change callback.
 
-Exact per-author sequence/hash receipts survive restart and compaction. Gaps
-and conflicting author heads are rejected; duplicate frames do not mutate or
+Exact per-author sequence/hash receipts survive restart and compaction.
+Conflicting author heads are rejected; duplicate frames do not mutate or
 rebroadcast the document. Receipt state resets at a new authenticated group
 context, keeping it bounded by the roster. A signing identity must have one
 document author at a time; independent offline branches using the same member
 ID are detected as conflicting prefixes rather than merged.
+
+A frame can arrive before its author's previous frame, or before another
+author's change that it natively depends on. After full decryption, signature,
+role and context checks, such a frame is held instead of rejected, and
+`receive` resolves `false`. Each accepted frame or catch-up merge retries the
+held frames whose author prefix is now complete, or whose dependency may have
+arrived. A retried frame goes through the whole admission path again, including
+field-scope inspection. A document holds at most 64 frames, 32 per author and
+8 MiB, and all documents in a process at most 1,024 frames and 64 MiB. A frame
+beyond those bounds is rejected. A second frame for a held author sequence with
+different content is rejected as equivocation. Held frames are memory-only and
+are dropped at a new group context and on close. A held frame whose
+predecessor never arrives stays held; nothing requests it yet.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
@@ -338,11 +351,12 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery, old-epoch edit rebasing and
-epoch-fork reconciliation remain future work. The controller checkpoint is an
-explicit application-relayed recovery path for current members. An
-unknown/stale epoch or missing native causal context is rejected, not silently
-buffered without a bound. The caller must arrange ordered control/role delivery
+Automatic anti-entropy, missing-prefix redelivery requests, old-epoch edit
+rebasing and epoch-fork reconciliation remain future work. The controller
+checkpoint is an explicit application-relayed recovery path for current
+members. A frame under an unknown or stale epoch is rejected. A frame that is
+missing its author prefix or native causal context is held only within the
+bounds above. The caller must arrange ordered control/role delivery
 and content recovery. Role records contain public identities and the document
 path; applications must protect that separate control transport. The content
 frame header guarantee does not cover application control signaling. This mode does not yet replace default document workflows.

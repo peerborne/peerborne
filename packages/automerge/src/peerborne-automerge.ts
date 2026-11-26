@@ -31,6 +31,7 @@ import {
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
+  DocumentCausalDependencyError,
   PreparedDocumentChange,
   DocumentPreparationOptions,
   DocumentWritePaths,
@@ -83,6 +84,19 @@ const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocu
 
 const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeychainEntry = canonicalKeychain.assertCanonicalKeychainEntry;
 
+// Peerborne checks a waiting change again with the same bytes, so decode each
+// change once.
+const automergeChangeHashes = new WeakMap<BinaryChange, string>();
+
+function automergeChangeHash(change: BinaryChange): string {
+  let hash = automergeChangeHashes.get(change);
+  if (hash === undefined) {
+    hash = decodeChange(change).hash;
+    automergeChangeHashes.set(change, hash);
+  }
+  return hash;
+}
+
 export type AutomergeDocumentChangeHandler<T = any> =
   PeerborneDocumentChangeHandler<Doc<T>, CryptoKey>;
 
@@ -117,7 +131,7 @@ export class AutomergeProvider<T = any>
           if (closed)
             throw new Error('Document session closed during preparation');
           if (getMissingDeps(next, []).length !== 0)
-            throw new Error('Document change has missing causal dependencies');
+            throw new DocumentCausalDependencyError();
           const staged = next;
           const changes = delta.map(
             (bytes) => new Uint8Array(bytes) as BinaryChange,
@@ -228,6 +242,12 @@ export class AutomergeProvider<T = any>
   remoteChange(document: Doc<T>, changes: BinaryChange[]): Doc<T> {
     const [newDoc] = applyChanges(document, changes);
     return newDoc;
+  }
+  hasIntegrated(document: Doc<T>, changes: BinaryChange[]): boolean {
+    // applyChanges() queues a change whose dependencies are missing, and
+    // getAllChanges() and save() leave the queue out. hasHeads() looks up
+    // applied history only, so this costs the same however long the queue is.
+    return hasHeads(document, changes.map(automergeChangeHash));
   }
   getHistory(document: Doc<T>): BinaryChange[] {
     return getAllChanges(document);
