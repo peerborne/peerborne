@@ -296,6 +296,7 @@ export class CoordinatedDocument<
     refilledAt: 0,
   };
   private heldAdded = 0;
+  private staleRedeliveries = 0;
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -948,8 +949,11 @@ export class CoordinatedDocument<
     if (
       body.issuedAt <= (state.issued.get(requester) ?? -1) ||
       Math.abs(now - body.issuedAt) > REDELIVERY_FRESHNESS_MS
-    )
+    ) {
+      if (Math.abs(now - body.issuedAt) > REDELIVERY_FRESHNESS_MS)
+        this.staleRedeliveries++;
       return none;
+    }
     state.issued.set(requester, body.issuedAt);
     const bound = (map: Map<string, number>) => {
       if (map.size > 256) map.delete(map.keys().next().value!);
@@ -998,7 +1002,10 @@ export class CoordinatedDocument<
           return { own, others, since: now, rank };
         state.tokens--;
         bytes += entry.frame.length;
-        if (author === local) own.push(entry.frame.slice());
+        if (author === local) {
+          entry.observedAt = now;
+          own.push(entry.frame.slice());
+        }
         else others.push({ author, sequence: entry.sequence });
       }
     }
@@ -1013,8 +1020,16 @@ export class CoordinatedDocument<
       const entry = retained.authors
         .get(author)
         ?.find((frame) => frame.sequence === sequence);
-      return entry && entry.observedAt <= answer.since ? [entry.frame.slice()] : [];
+      if (!entry || entry.observedAt > answer.since) return [];
+      // This replica does not receive its own publications, so mark them here.
+      entry.observedAt = Date.now();
+      return [entry.frame.slice()];
     });
+  }
+
+  /** Authenticated requests ignored because their issue time was over 60 s from this clock. */
+  get staleRedeliveryRequests(): number {
+    return this.staleRedeliveries;
   }
 
   createCatchUpRequest(): Promise<Uint8Array> {

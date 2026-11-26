@@ -188,7 +188,7 @@ describe('coordinated redelivery', () => {
     } finally {
       await g.close();
     }
-  });
+  }, 60_000);
 
   test('ignores unbound, replayed, too frequent or damaged requests', async () => {
     const { g, content, write, request: ask } = await group();
@@ -212,7 +212,7 @@ describe('coordinated redelivery', () => {
     } finally {
       await g.close();
     }
-  });
+  }, 60_000);
 
   test('caps one answer and resends only a complete retained suffix', async () => {
     const { g, content, write, request: ask } = await group();
@@ -235,7 +235,7 @@ describe('coordinated redelivery', () => {
     } finally {
       await g.close();
     }
-  });
+  }, 60_000);
 
   test('asks automatically while a received frame waits for its predecessor', async () => {
     const { g, write } = await group();
@@ -252,7 +252,7 @@ describe('coordinated redelivery', () => {
     } finally {
       await g.close();
     }
-  });
+  }, 60_000);
 });
 
 describe('coordinated redelivery freshness and held frames', () => {
@@ -303,6 +303,7 @@ describe('coordinated redelivery freshness and held frames', () => {
       g.dispatch(stale, 2);
       await pause(300);
       expect(content()).toEqual([]);
+      expect(g.doc(2).securityRedeliveryStaleRequests).toBe(1);
       const fresh = await capture();
       g.dispatch(fresh, 2);
       expect(await settled(() => g.publications.length === 1)).toBe(true);

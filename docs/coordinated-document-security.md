@@ -305,9 +305,14 @@ responder answers only when:
 
 - GossipSub's signed sender is that PeerId, so a member cannot replay another
   member's request from its own peer;
-- the issue time is within 60 s; and
+- the issue time is within 60 s of the responder's clock; and
 - the issue time is newer than the last one it accepted from that member, so a
   captured request cannot be replayed later.
+
+Redelivery therefore needs member clocks within 60 s of each other. A member
+whose clock is further off gets no answers and answers no one, without an
+error; `securityRedeliveryStaleRequests` counts the requests a document
+ignored for that reason.
 
 Requests go out about a second after open. One also goes out when a peer
 subscribes to the topic (at most once per peer every 30 s), and when a frame
@@ -320,7 +325,8 @@ exact encrypted frames it retains after each of the requester's heads. It
 does so only when it holds the complete suffix, its own frame at that head has
 the same hash, and the requester does not already hold the frame. The author
 resends its own frames at once. Other members wait in roster order, 200 ms
-apart, and skip frames another member resent in the meantime. Each replica
+apart (at most 1.6 s), and skip frames another member or they themselves
+resent in the meantime. Each replica
 answers a member at most once every 2 s. One answer is at most 64 frames and
 4 MiB, and all answers share a budget of 64 frames, refilled at 32 per second.
 Resent frames are ordinary frames: receivers admit them through the full path,

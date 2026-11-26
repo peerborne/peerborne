@@ -291,6 +291,7 @@ const REDELIVERY_SETTLE_MS = [200, 800] as const;
 const REDELIVERY_PERIOD_MS = [30_000, 60_000] as const;
 /** Non-authors answer in roster order, one step apart, so the first answer suppresses the rest. */
 const REDELIVERY_RESPONSE_STEP_MS = 200;
+const REDELIVERY_RESPONSE_MAX_RANK = 8;
 const REDELIVERY_RESPONSE_JITTER_MS = [100, 200] as const;
 
 function jitter([low, high]: readonly [number, number]): number {
@@ -7651,6 +7652,14 @@ export class PeerborneDocument<
    * while frames wait for predecessors, and every 30-60 s. The request is
    * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
    */
+  /**
+   * Redelivery requests from members ignored because their issue time was more
+   * than 60 s from this node's clock. Redelivery needs clocks within that range.
+   */
+  public get securityRedeliveryStaleRequests(): number {
+    return this._coordinated?.staleRedeliveryRequests ?? 0;
+  }
+
   public async requestSecurityRedelivery(): Promise<void> {
     const engine = this._coordinated;
     if (!engine || !this._subscribed || this._gcClosed)
@@ -7714,7 +7723,8 @@ export class PeerborneDocument<
       unrefTimer(
         setTimeout(
           resolve,
-          answer.rank * REDELIVERY_RESPONSE_STEP_MS +
+          Math.min(answer.rank, REDELIVERY_RESPONSE_MAX_RANK) *
+            REDELIVERY_RESPONSE_STEP_MS +
             jitter(REDELIVERY_RESPONSE_JITTER_MS),
         ),
       ),
