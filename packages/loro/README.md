@@ -27,7 +27,7 @@ including when an application selects current-only key delivery.
 
 Loro holds an imported change whose causal dependencies are missing outside its
 oplog, and snapshot exports omit that change. `hasIntegrated` reports it as not
-yet integrated, so a caller can keep it eligible for redelivery instead of
+yet integrated, so Peerborne keeps it eligible for redelivery instead of
 recording it as applied.
 
 Focused tests cover concurrent edits, out-of-order delivery, replay, snapshot

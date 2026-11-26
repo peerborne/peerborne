@@ -65,11 +65,12 @@ interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
 ```
 
 Four required methods (`newDocument`, `localChange`, `remoteChange`, `getHistory`)
-and two optional snapshot methods. Automerge buffers a remote change until its
-causal dependencies arrive and leaves buffered changes out of its history, so
-its provider implements `hasIntegrated`. Peerborne records such a change,
-notifies handlers about it and serves it only once a delivery finds it
-integrated, so a checkpoint never claims it and a later message delivers it
+and two optional snapshot methods. Automerge and the experimental Loro provider
+buffer a remote change until its causal dependencies arrive and leave buffered
+changes out of their history, so their providers implement `hasIntegrated`.
+Peerborne records such a change, notifies handlers about it and serves it only
+once it integrates, together with any node that references it in a delivered
+tree. A checkpoint therefore never claims it, and a later message delivers it
 again. Yjs keeps its pending updates in the state it encodes, including
 checkpoints.
 
