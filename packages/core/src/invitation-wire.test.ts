@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 
 import { SubtleCrypto } from './auth-subtlecrypto.js';
+import { p384SignatureTwin } from './__testutils__/ecdsa-signature-twin.js';
 import {
   assertInvitationBootstrapEpochBinding,
   DEFAULT_INVITATION_CLOCK_SKEW_MS,
@@ -25,6 +26,7 @@ import {
   decodeInvitationAcceptance,
   decodeInvitationJoinRequest,
   decodeInvitationOffer,
+  digestInvitationAcceptance,
   digestInvitationJoinRequest,
   digestInvitationOffer,
   encodeInvitationAcceptance,
@@ -713,6 +715,47 @@ describe('public invitation expiry and binding', () => {
       () => assertInvitationJoinMatchesOffer(wrongRole, offer),
       'binding-mismatch',
     );
+  });
+
+  test('identifies join requests and acceptances independently of signature bytes', async () => {
+    const issuer = await signingIdentity();
+    const recipient = await signingIdentity();
+    const offer = await makeOffer(issuer);
+    const request = await makeJoinRequest(offer, recipient);
+    const requestTwin = {
+      ...request,
+      signature: p384SignatureTwin(request.signature),
+    };
+    await expect(
+      verifyInvitationJoinRequest(requestTwin, recipient.keys.publicKey, auth),
+    ).resolves.toBe(true);
+    expect(await digestInvitationJoinRequest(requestTwin)).toEqual(
+      await digestInvitationJoinRequest(request),
+    );
+    const otherRequest = await makeJoinRequest(offer, recipient, {
+      requestId: bytes(32, 9),
+    });
+    expect(await digestInvitationJoinRequest(otherRequest)).not.toEqual(
+      await digestInvitationJoinRequest(request),
+    );
+
+    const acceptance = await makeAcceptance(offer, requestTwin, issuer);
+    await expect(
+      assertInvitationAcceptanceMatches(acceptance, offer, request),
+    ).resolves.toBeUndefined();
+    const acceptanceTwin = {
+      ...acceptance,
+      signature: p384SignatureTwin(acceptance.signature),
+    };
+    await expect(
+      verifyInvitationAcceptance(acceptanceTwin, issuer.keys.publicKey, auth),
+    ).resolves.toBe(true);
+    expect(await digestInvitationAcceptance(acceptanceTwin)).toEqual(
+      await digestInvitationAcceptance(acceptance),
+    );
+    expect(() =>
+      digestInvitationJoinRequest({ ...request, signature: new Uint8Array() }),
+    ).toThrow(InvitationWireError);
   });
 
   test('binds acceptance to recipient identity, KEM key, and offer lifetime', async () => {

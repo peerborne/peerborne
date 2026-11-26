@@ -85,7 +85,11 @@ export interface InvitationAcceptanceV1 {
   readonly acceptanceId: Uint8Array;
   /** SHA-256 of the complete, signed canonical offer envelope. */
   readonly offerDigest: Uint8Array;
-  /** SHA-256 of the complete, signed canonical join-request envelope. */
+  /**
+   * SHA-256 of the join request's signing bytes. The signature is excluded:
+   * ECDSA signatures are malleable, so a second valid signature over the same
+   * request must not change its identity.
+   */
   readonly requestDigest: Uint8Array;
   readonly documentId: string;
   /** Canonical serialization of the inviter's signing public key. */
@@ -834,16 +838,20 @@ export function digestInvitationOffer(
   return sha256(encodeInvitationOffer(offer));
 }
 
+/** Signature-independent identity of a valid signed join request. */
 export function digestInvitationJoinRequest(
   request: InvitationJoinRequestV1,
 ): Promise<Uint8Array> {
-  return sha256(encodeInvitationJoinRequest(request));
+  encodeInvitationJoinRequest(request);
+  return sha256(invitationJoinRequestSigningBytes(request));
 }
 
+/** Signature-independent identity of a valid signed acceptance. */
 export function digestInvitationAcceptance(
   acceptance: InvitationAcceptanceV1,
 ): Promise<Uint8Array> {
-  return sha256(encodeInvitationAcceptance(acceptance));
+  assertValidInvitationAcceptance(acceptance);
+  return sha256(invitationAcceptanceSigningBytes(acceptance));
 }
 
 function assertUsableWindow(

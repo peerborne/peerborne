@@ -23,9 +23,17 @@ jest.mock('./helia-node.js', () => ({
 
 import { Peerborne } from './peerborne.js';
 import { createAndStartHeliaNode } from './helia-node.js';
+import { SubtleCrypto } from './auth-subtlecrypto.js';
+import { p384SignatureTwin } from './__testutils__/ecdsa-signature-twin.js';
 import {
   INVITATION_ID_LENGTH,
+  type InvitationAcceptanceV1,
+  type InvitationJoinRequestV1,
   type InvitationOfferV1,
+  assertInvitationAcceptanceMatches,
+  digestInvitationOffer,
+  signInvitationJoinRequest,
+  verifyInvitationJoinRequest,
 } from './invitation-wire.js';
 
 const MAX_ACTIVE_INVITATION_OFFERS = 128;
@@ -523,4 +531,91 @@ describe('unsent invitation acceptance rollback', () => {
       }
     },
   );
+});
+
+describe('invitation join signature twins', () => {
+  test('answers a signature twin and the genuine request with one acceptance the recipient accepts', async () => {
+    const auth = new SubtleCrypto();
+    const generate = () =>
+      crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        true,
+        ['sign', 'verify'],
+      ) as Promise<CryptoKeyPair>;
+    const [founderKeys, recipientKeys, kemKeys] = await Promise.all([
+      generate(),
+      generate(),
+      crypto.subtle.generateKey(
+        { name: 'ECDH', namedCurve: 'P-256' },
+        true,
+        ['deriveBits'],
+      ) as Promise<CryptoKeyPair>,
+    ]);
+    const founder = new Peerborne(
+      founderKeys.privateKey,
+      founderKeys.publicKey,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      auth as never,
+      {} as never,
+      {} as never,
+    );
+    const buildInvitationBootstrap = jest.fn(async () => ({
+      welcomeEpochId: new Uint8Array(32).fill(5),
+      sealedWelcome: new Uint8Array(125).fill(6),
+      encryptedBootstrap: new Uint8Array(64).fill(7),
+    }));
+    const document = {
+      documentPath: '/signature-twins',
+      historyVisibility: 'full_history',
+      readerRevocationCount: 0,
+      assertCanCreateInitialInvitation: async () => {},
+      getKemPublicKeyRaw: () => new Uint8Array([4]),
+      buildInvitationBootstrap,
+    };
+    (founder as any)._documentRegistry.set(document.documentPath, document);
+    const offer = await founder.createInvitationForDocument(document as never, {
+      role: 'reader',
+      rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
+      beforeAcceptance: async () => {},
+    });
+    const request = await signInvitationJoinRequest(
+      {
+        version: 1,
+        offerDigest: await digestInvitationOffer(offer),
+        requestId: new Uint8Array(INVITATION_ID_LENGTH).fill(2),
+        documentId: offer.documentId,
+        role: offer.role,
+        recipient: await auth.serializePublicKey(recipientKeys.publicKey),
+        recipientKemPublicKey: new Uint8Array(
+          await crypto.subtle.exportKey('raw', kemKeys.publicKey),
+        ),
+      },
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+      auth,
+    );
+    const twin: InvitationJoinRequestV1 = {
+      ...request,
+      signature: p384SignatureTwin(request.signature),
+    };
+    await expect(
+      verifyInvitationJoinRequest(twin, recipientKeys.publicKey, auth),
+    ).resolves.toBe(true);
+
+    const process = (joinRequest: InvitationJoinRequestV1) =>
+      (founder as any)._processInvitationJoin(
+        joinRequest,
+      ) as Promise<InvitationAcceptanceV1>;
+    const fromTwin = await process(twin);
+    const fromRequest = await process(request);
+
+    expect(fromRequest).toBe(fromTwin);
+    expect(buildInvitationBootstrap).toHaveBeenCalledTimes(1);
+    await expect(
+      assertInvitationAcceptanceMatches(fromRequest, offer, request),
+    ).resolves.toBeUndefined();
+  });
 });
