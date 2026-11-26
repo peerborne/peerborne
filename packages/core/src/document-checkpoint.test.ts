@@ -1,0 +1,166 @@
+import { describe, expect, jest, test } from '@jest/globals';
+import { crdtDocumentChangeNode } from './crdt-change-node.js';
+import {
+  assertCheckpointChangeHistory,
+  checkpointEncode,
+  decodeCheckpointState,
+  encodeCheckpointState,
+  type DocumentCheckpointState,
+} from './document-checkpoint.js';
+
+jest.mock(
+  'multiformats',
+  () => ({
+    CID: {
+      parse: (value: string) => ({ toString: () => value.toLowerCase() }),
+    },
+  }),
+  { virtual: true },
+);
+
+const LIMIT = 100_000;
+const cids = (count: number, prefix = 'cid-') =>
+  Array.from({ length: count }, (_, index) => `${prefix}${index}`);
+
+function state(
+  overrides: Partial<DocumentCheckpointState> = {},
+): DocumentCheckpointState {
+  const bytes = checkpointEncode(new Uint8Array([1]));
+  return {
+    format: 'peerborne/local-document-checkpoint/2',
+    documentPath: '/checkpoint',
+    owner: 'owner',
+    document: bytes,
+    readers: bytes,
+    writers: bytes,
+    keychain: bytes,
+    message: bytes,
+    hashes: ['cid-root'],
+    ancestors: [],
+    recentTips: [['cid-root', 'document']],
+    documentChangeCount: 1,
+    changesSinceSnapshot: 1,
+    historyVisibility: 'full_history',
+    invitationEpoch: null,
+    beekem: null,
+    readerLeaves: [],
+    readerKemKeys: [],
+    welcomes: [],
+    ...overrides,
+  };
+}
+
+describe('document checkpoint state', () => {
+  test('encodes a bounded state that decodes unchanged', () => {
+    const value = state({
+      hashes: cids(LIMIT),
+      ancestors: cids(LIMIT),
+      recentTips: [['cid-1', 'document']],
+    });
+    expect(decodeCheckpointState(encodeCheckpointState(value))).toEqual(value);
+  });
+
+  test.each([
+    ['too many known hashes', { hashes: cids(LIMIT + 1) }, /collection/],
+    ['too many ancestors', { ancestors: cids(LIMIT + 1) }, /collection/],
+    ['a duplicate hash', { hashes: ['cid-root', 'cid-root'] }, /Duplicate/],
+    ['a duplicate ancestor', { ancestors: ['cid-a', 'cid-a'] }, /Duplicate/],
+    [
+      'a non-canonical CID',
+      { ancestors: ['cid-NotCanonical'] },
+      /Invalid checkpoint CID/,
+    ],
+    ['no known hashes', { hashes: [], recentTips: [] }, /no document history/],
+    [
+      'a tip that is no longer known',
+      { recentTips: [['cid-forgotten', 'document']] as [string, string][] },
+      /Invalid checkpoint tip/,
+    ],
+  ])('refuses to encode a state with %s', (_name, overrides, error) => {
+    const value = state(overrides as Partial<DocumentCheckpointState>);
+    expect(() => encodeCheckpointState(value)).toThrow(error);
+    expect(() =>
+      decodeCheckpointState(new TextEncoder().encode(JSON.stringify(value))),
+    ).toThrow(error);
+  });
+});
+
+describe('checkpoint change history', () => {
+  const message = {
+    documentId: '/checkpoint',
+    signatureContext: 'ordinary-sync-v1' as const,
+    changeId: 'cid-head',
+    changes: {
+      kind: crdtDocumentChangeNode,
+      change: 'head',
+      children: {
+        'cid-parent': {
+          kind: crdtDocumentChangeNode,
+          change: 'parent',
+          children: { 'cid-tip': { kind: crdtDocumentChangeNode } },
+        },
+      },
+    },
+  };
+  const retained = ['cid-head', 'cid-parent', 'cid-tip'];
+
+  test('accepts a retained tree whose older history was forgotten', () => {
+    expect(() =>
+      assertCheckpointChangeHistory('/checkpoint', message, new Set(retained)),
+    ).not.toThrow();
+  });
+
+  test.each([
+    [
+      'a forgotten retained node',
+      retained.filter((cid) => cid !== 'cid-parent'),
+      message,
+      /incomplete change history/,
+    ],
+    [
+      'a forgotten cross-link leaf',
+      retained.filter((cid) => cid !== 'cid-tip'),
+      message,
+      /incomplete change history/,
+    ],
+    ['a forgotten root', retained.slice(1), message, /change root/],
+    [
+      'another document',
+      retained,
+      { ...message, documentId: '/other' },
+      /change root/,
+    ],
+    [
+      'no change tree',
+      retained,
+      { ...message, changes: undefined },
+      /change root/,
+    ],
+    [
+      'no root CID',
+      retained,
+      { ...message, changeId: undefined },
+      /change root/,
+    ],
+  ])('rejects %s', (_name, known, candidate, error) => {
+    expect(() =>
+      assertCheckpointChangeHistory('/checkpoint', candidate, new Set(known)),
+    ).toThrow(error);
+  });
+
+  test('rejects a non-canonical node identifier', () => {
+    expect(() =>
+      assertCheckpointChangeHistory(
+        '/checkpoint',
+        {
+          ...message,
+          changes: {
+            ...message.changes,
+            children: { 'cid-NotCanonical': { kind: crdtDocumentChangeNode } },
+          },
+        },
+        new Set([...retained, 'cid-NotCanonical']),
+      ),
+    ).toThrow(/canonical CID/);
+  });
+});

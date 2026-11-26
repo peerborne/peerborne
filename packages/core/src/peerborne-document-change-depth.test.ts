@@ -20,7 +20,11 @@ import {
   type CRDTChangeNode,
 } from './crdt-change-node.js';
 import { JSONSerializer } from './json-serializer.js';
+import { KNOWN_CHANGE_GENERATION } from './known-changes.js';
+import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import { tipsHashToHex } from './tips-hash.js';
+import { fixtureLoadCommitments } from './__testutils__/load-session.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock(
@@ -293,5 +297,235 @@ describe('change tree depth bound', () => {
 
     expect(document._latestSnapshot).toBeUndefined();
     expect(retainedDepth(document)).toBe(CHANGE_TREE_COMPACTION_DEPTH + 10);
+  });
+});
+
+describe('known-change sets', () => {
+  let log: ReturnType<typeof jest.spyOn>;
+  beforeEach(() => {
+    log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+  afterEach(() => log.mockRestore());
+
+  const serializer = new JSONSerializer<unknown>();
+  const decode = (frame: Uint8Array) =>
+    serializer.deserializeSyncMessage(frame.slice(32 + 12)) as any;
+
+  // One generation of known, already-referenced remote CIDs, as a long remote
+  // history leaves behind.
+  const generationSize = KNOWN_CHANGE_GENERATION + 1;
+  function learnRemoteHistory(document: any, generation: number): void {
+    for (let index = 0; index < generationSize; index++) {
+      const cid = `remote-${generation}-${index}`;
+      document._hashes.add(cid);
+      document._referencedAncestors.add(cid);
+    }
+  }
+
+  const sorted = (cids: string[]) => [...cids].sort();
+
+  async function servedDigest(document: any): Promise<string> {
+    const message = document._lastSyncMessage;
+    const manifest = new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(
+          JSON.stringify([
+            message?.changeId,
+            message?.changes,
+            document._latestSnapshot?.lastChangeNodeCID,
+          ]),
+        ),
+      ),
+    );
+    return tipsHashToHex(
+      await loadAdvertisementHash(
+        document.documentPath,
+        sorted(document._servedFrontier()),
+        fixtureLoadCommitments(),
+        manifest,
+      ),
+    );
+  }
+
+  function receiver(document: any) {
+    const remoteChange = jest.fn((current: unknown) => current);
+    const notify = jest.fn(async () => undefined);
+    document._crdtProvider.remoteChange = remoteChange;
+    document._fireOrDeferRemoteUpdateHandlers = notify;
+    document._getBlock = jest.fn(async () => {
+      throw new Error('unexpected block fetch');
+    });
+    return { remoteChange, notify };
+  }
+
+  // A generation of remote history arrives and one more remote change syncs.
+  async function syncRemoteGeneration(document: any, generation: number) {
+    learnRemoteHistory(document, generation);
+    await document._syncDocumentChanges(`remote-head-${generation}`, {
+      kind: crdtDocumentChangeNode,
+      change: { generation },
+      ...(generation === 0
+        ? {}
+        : {
+            children: {
+              [`remote-head-${generation - 1}`]: {
+                kind: crdtDocumentChangeNode,
+              },
+            },
+          }),
+    });
+  }
+
+  test('stay bounded through a long history and keep the frontier and served digest', async () => {
+    const { document } = writerDocument();
+    receiver(document);
+    for (let index = 0; index < 5; index++)
+      await document._makeChange({ index }, crdtDocumentChangeNode);
+    await syncRemoteGeneration(document, 0);
+    expect(document._hashes.has('remote-0-0')).toBe(true);
+    learnRemoteHistory(document, 1);
+
+    const frontier = sorted(document._currentFrontier());
+    const served = sorted(document._servedFrontier());
+    const digest = await servedDigest(document);
+    const message = document._lastSyncMessage;
+    document._trimKnownChanges();
+
+    expect(document._hashes.has('remote-0-0')).toBe(false);
+    expect(document._referencedAncestors.has('remote-0-0')).toBe(false);
+    expect(document._hashes.has('remote-1-0')).toBe(true);
+    expect(document._hashes.has(message.changeId)).toBe(true);
+    expect(sorted(document._currentFrontier())).toEqual(frontier);
+    expect(sorted(document._servedFrontier())).toEqual(served);
+    expect(await servedDigest(document)).toBe(digest);
+    expect(document._lastSyncMessage).toBe(message);
+
+    for (let generation = 2; generation < 8; generation++) {
+      await syncRemoteGeneration(document, generation);
+      await document._makeChange({ generation }, crdtDocumentChangeNode);
+      expect(document._hashes.size).toBeLessThanOrEqual(
+        2 * KNOWN_CHANGE_GENERATION + 32,
+      );
+      expect(document._referencedAncestors.size).toBeLessThanOrEqual(
+        2 * KNOWN_CHANGE_GENERATION + 32,
+      );
+    }
+    expect(document._hashes.has('remote-5-0')).toBe(false);
+    expect(document._hashes.has('remote-7-0')).toBe(true);
+  });
+
+  test('a replay within the window or beneath a retained CID is not applied again', async () => {
+    const { document, published } = writerDocument();
+    for (let index = 0; index < CHANGE_TREE_COMPACTION_DEPTH + 40; index++)
+      await document._makeChange({ index }, crdtDocumentChangeNode);
+    expect(document._latestSnapshot).toBeDefined();
+    const messages = published.map(decode);
+    learnRemoteHistory(document, 0);
+    document._trimKnownChanges();
+    learnRemoteHistory(document, 1);
+    document._trimKnownChanges();
+
+    const forgotten = messages[10].changeId;
+    expect(document._hashes.has(forgotten)).toBe(false);
+    const retained = messages.at(-1).changeId;
+    expect(document._hashes.has(retained)).toBe(true);
+    const deepRetained = messages.find(
+      (message: any) =>
+        document._hashes.has(message.changeId) &&
+        Object.keys(message.changes.children ?? {}).some(
+          (cid) => !document._hashes.has(cid),
+        ),
+    );
+    expect(deepRetained).toBeDefined();
+
+    const { remoteChange, notify } = receiver(document);
+    const hashes = [...document._hashes];
+    const count = document._documentChangeCount;
+    const frontier = sorted(document._currentFrontier());
+    for (const message of [messages.at(-1), deepRetained]) {
+      await document._syncDocumentChanges(message.changeId, message.changes);
+    }
+    expect(remoteChange).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect([...document._hashes]).toEqual(hashes);
+    expect(document._documentChangeCount).toBe(count);
+    expect(sorted(document._currentFrontier())).toEqual(frontier);
+
+    await document._syncDocumentChanges('remote-head', {
+      kind: crdtDocumentChangeNode,
+      change: { remote: true },
+      children: { [deepRetained.changeId]: deepRetained.changes },
+    });
+    expect(remoteChange).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(['remote-head']);
+    expect(document._documentChangeCount).toBe(count + 1);
+    expect(document._hashes.has(forgotten)).toBe(false);
+  });
+
+  test('a message older than the window is applied again without changing what is served', async () => {
+    const { document, published } = writerDocument();
+    for (let index = 0; index < CHANGE_TREE_COMPACTION_DEPTH + 40; index++)
+      await document._makeChange({ index }, crdtDocumentChangeNode);
+    const old = decode(published[10]);
+    learnRemoteHistory(document, 0);
+    document._trimKnownChanges();
+    learnRemoteHistory(document, 1);
+    document._trimKnownChanges();
+    expect(document._hashes.has(old.changeId)).toBe(false);
+
+    const { remoteChange } = receiver(document);
+    const served = sorted(document._servedFrontier());
+    const digest = await servedDigest(document);
+    const message = document._lastSyncMessage;
+    await document._syncDocumentChanges(old.changeId, old.changes);
+
+    expect(remoteChange).toHaveBeenCalledTimes(11);
+    expect(document._lastSyncMessage).toBe(message);
+    expect(sorted(document._servedFrontier())).toEqual(served);
+    expect(await servedDigest(document)).toBe(digest);
+  });
+
+  test('a reader trims as remote changes arrive without taking a snapshot', async () => {
+    const { document } = writerDocument({}, false);
+    receiver(document);
+    await syncRemoteGeneration(document, 0);
+    await syncRemoteGeneration(document, 1);
+
+    expect(document._latestSnapshot).toBeUndefined();
+    expect(document._hashes.has('remote-0-0')).toBe(false);
+    expect(document._hashes.has('remote-1-0')).toBe(true);
+    expect(document._hashes.size).toBeLessThanOrEqual(generationSize + 2);
+  });
+
+  test('a writer that only edits locally trims at its depth-bound snapshots', async () => {
+    const { document } = writerDocument();
+    learnRemoteHistory(document, 0);
+    let changes = 0;
+    while (document._latestSnapshot === undefined)
+      await document._makeChange({ index: changes++ }, crdtDocumentChangeNode);
+    const first = document._latestSnapshot;
+    expect(document._hashes.has('remote-0-0')).toBe(true);
+    learnRemoteHistory(document, 1);
+    while (document._latestSnapshot === first)
+      await document._makeChange({ index: changes++ }, crdtDocumentChangeNode);
+
+    expect(document._hashes.has('remote-0-0')).toBe(false);
+    expect(document._hashes.has('remote-1-0')).toBe(true);
+    expect(document._hashes.has(cidFor(1))).toBe(false);
+    expect(document._hashes.has(document._lastSyncMessage.changeId)).toBe(true);
+  });
+
+  test('does not trim while bootstrap state application is pending', () => {
+    const { document } = writerDocument();
+    learnRemoteHistory(document, 0);
+    document._trimKnownChanges();
+    learnRemoteHistory(document, 1);
+    document._bootstrapLoadApplicationState = 'pending';
+    document._trimKnownChanges();
+    expect(document._hashes.size).toBe(2 * generationSize);
+    document._bootstrapLoadApplicationState = 'complete';
+    document._trimKnownChanges();
+    expect(document._hashes.size).toBe(generationSize);
   });
 });

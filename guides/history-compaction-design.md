@@ -28,13 +28,27 @@ it does not reapply its ancestors.
 Pruning does not delete Helia blocks by default. With `gcAfterPrune: true`, an
 asynchronous GC pass unpins and deletes eligible pruned blocks. It excludes
 blocks still reachable from the retained tree and the snapshot boundary. GC
-errors do not fail the document mutation. `_hashes` retains known CIDs for
-deduplication even after a corresponding block is deleted.
+errors do not fail the document mutation. `_hashes` can keep a known CID for
+deduplication after its block is deleted.
+
+`_hashes` and `_referencedAncestors` are bounded for writers and readers alike.
+After each remote sync and each snapshot, including a writer's depth-bound
+snapshot, a set that has gained more than 1,024 CIDs (one generation) is
+trimmed. The document keeps
+the retained tree, the snapshot boundary, the recent tips, the frontier heads
+and the current generation, and forgets the older entries. An older referenced
+ancestor stays while it is still a known hash, so trimming never changes the
+frontier, and served frontiers and quorum digests do not read these sets. A
+forgotten change that is delivered again is merged again; the merges are
+idempotent, as for a peer that loaded the same snapshot. Load completeness
+checks require only the CIDs that the merge will apply: nothing at or below a
+CID that was known before the sync. Checkpoints persist both sets, so their
+size no longer grows with history.
 
 `hasChange(cid)` checks that known-CID set. `loadChangeBlock(cid)` loads and
-decrypts a known block, returning `undefined` for an unknown or unavailable
-block. Malformed CIDs throw. It does not automatically recover missing blocks
-from another peer.
+decrypts a known block, returning `undefined` for an unknown, forgotten or
+unavailable block. Malformed CIDs throw. It does not automatically recover
+missing blocks from another peer.
 
 ## Current load protocols
 

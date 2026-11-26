@@ -135,6 +135,42 @@ async function fixture(forkStore?: DurableBeeKEMForkStore) {
   return { document, created, signing, kem, traffic };
 }
 
+const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
+
+// A canonical CIDv1 (raw, sha2-256) whose digest encodes `index`.
+function syntheticCid(index: number): string {
+  const bytes = new Uint8Array(36);
+  bytes.set([0x01, 0x55, 0x12, 0x20]);
+  new DataView(bytes.buffer).setUint32(32, index);
+  let encoded = 'b';
+  let bits = 0;
+  let value = 0;
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      encoded += BASE32[(value >>> bits) & 31];
+    }
+    value &= (1 << bits) - 1;
+  }
+  return bits > 0 ? encoded + BASE32[(value << (5 - bits)) & 31] : encoded;
+}
+
+// Record known, already-referenced changes as a long edit history leaves
+// them, without creating each change.
+function learnHistory(document: PeerborneDocument, from: number, count: number) {
+  const known = document as unknown as {
+    _hashes: Set<string>;
+    _referencedAncestors: Set<string>;
+  };
+  for (let index = from; index < from + count; index++) {
+    const cid = syntheticCid(index);
+    known._hashes.add(cid);
+    known._referencedAncestors.add(cid);
+  }
+}
+
 function decryptBroadcast(frame: Uint8Array, key: CryptoKey) {
   const auth = new SubtleCrypto();
   const nonceStart = new YjsKeychainProvider().keyIDLength;
@@ -249,6 +285,119 @@ test('rejects malformed signed state atomically and permits a subsequent valid r
   assert.equal(candidate.historySize(), 0);
   await candidate.restoreCheckpoint(checkpoint);
   assert.equal((await candidate.getWriters()).length, 1);
+});
+
+test('a document that has seen more than 100,000 changes still exports and restores', async () => {
+  const { document, created, kem } = await fixture();
+  // A writer that keeps editing snapshots every 128 changes at the latest.
+  learnHistory(created, 0, 100_001);
+  await created.change((doc) => doc.getText('fixture').insert(0, 'one '));
+  await created.snapshot();
+  // One more generation (1,024 CIDs) lets the next snapshot forget the first.
+  learnHistory(created, 100_001, 1_025);
+  await created.change((doc) => doc.getText('fixture').insert(0, 'two '));
+  await created.snapshot();
+
+  const checkpoint = await created.exportCheckpoint();
+  const restored = document();
+  await restored.setKemKeyPair(kem);
+  await restored.restoreCheckpoint(checkpoint);
+  assert.equal(
+    restored.document.getText('fixture').toString(),
+    'two one before restart',
+  );
+  assert.ok(created.historySize() < 2_048);
+  assert.equal(created.hasChange(syntheticCid(0)), false);
+  assert.equal(created.hasChange(syntheticCid(100_001)), true);
+  assert.equal(restored.historySize(), created.historySize());
+  await restored.open();
+  await restored.change((doc) => doc.getText('fixture').insert(0, 'three '));
+  const reopened = document();
+  await reopened.setKemKeyPair(kem);
+  await reopened.restoreCheckpoint(await restored.exportCheckpoint());
+  assert.equal(
+    reopened.document.getText('fixture').toString(),
+    'three two one before restart',
+  );
+});
+
+test('refuses to export a checkpoint that could not be restored', async () => {
+  const { document, created, kem } = await fixture();
+  const saved = await created.exportCheckpoint();
+  learnHistory(created, 0, 100_001);
+  await assert.rejects(
+    created.exportCheckpoint(),
+    /Invalid checkpoint collection/,
+  );
+  const restored = document();
+  await restored.setKemKeyPair(kem);
+  await restored.restoreCheckpoint(saved);
+  assert.equal(restored.document.getText('fixture').toString(), 'before restart');
+});
+
+test('rejects a signed checkpoint that forgot a CID of its retained change tree', async () => {
+  const { document, created, signing } = await fixture();
+  await created.change((doc) => doc.getText('fixture').insert(0, 'next '));
+  const checkpoint = await created.exportCheckpoint();
+  const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
+  const message = new YjsJSONSerializer().deserializeSyncMessage(
+    Buffer.from(state.message, 'base64'),
+  );
+  const [parent] = Object.keys(message.changes!.children!);
+  state.hashes = state.hashes.filter((cid: string) => cid !== parent);
+  state.recentTips = state.recentTips.filter(
+    ([cid]: [string, string]) => cid !== parent,
+  );
+  const payload = new TextEncoder().encode(JSON.stringify(state));
+  const signature = new Uint8Array(
+    await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-384' },
+      signing.privateKey,
+      payload,
+    ),
+  );
+  const candidate = document();
+  await assert.rejects(
+    candidate.restoreCheckpoint({ payload, signature }),
+    /incomplete change history/,
+  );
+  assert.equal(candidate.historySize(), 0);
+  await candidate.restoreCheckpoint(checkpoint);
+  assert.equal(
+    candidate.document.getText('fixture').toString(),
+    'next before restart',
+  );
+});
+
+test('a restored document ignores a replay of a change it still knows after trimming', async () => {
+  const { document, created, kem, traffic } = await fixture();
+  learnHistory(created, 0, 1_025);
+  await created.change((doc) => doc.getText('fixture').insert(0, 'one '));
+  await created.snapshot();
+  learnHistory(created, 1_025, 1_025);
+  await created.change((doc) => doc.getText('fixture').insert(0, 'two '));
+  await created.snapshot();
+  assert.equal(created.hasChange(syntheticCid(0)), false);
+  const { broadcasts, keychain } = traffic.get(created)!;
+  const [, key] = await keychain.current();
+  const replay = new YjsJSONSerializer().deserializeSyncMessage(
+    await decryptBroadcast(broadcasts.at(-1)!, key),
+  );
+
+  const restored = document();
+  await restored.setKemKeyPair(kem);
+  await restored.restoreCheckpoint(await created.exportCheckpoint());
+  await restored.open();
+  const historySize = restored.historySize();
+  let updates = 0;
+  restored.subscribe('replay', () => updates++, 'all');
+  assert.equal(await restored.sync(replay as never), true);
+  assert.equal(restored.historySize(), historySize);
+  assert.equal(updates, 0);
+  assert.equal(
+    restored.document.getText('fixture').toString(),
+    'two one before restart',
+  );
 });
 
 test('preserves membership state so a restored founder can remove an existing reader', async () => {

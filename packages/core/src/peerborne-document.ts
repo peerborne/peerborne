@@ -25,6 +25,7 @@ import {
   syncResponseAllowed,
 } from './policy/sync-request.js';
 import {
+  assertCheckpointChangeHistory,
   captureDocumentCheckpoint,
   checkpointDecode,
   checkpointEncode,
@@ -113,6 +114,11 @@ import {
   treeContainsCid,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
+import {
+  knownChangesNeedTrim,
+  retainedKnownChanges,
+  trimKnownChanges,
+} from './known-changes.js';
 import {
   CRDTSyncMessage,
   type OrdinarySyncMessage,
@@ -1340,7 +1346,10 @@ export class PeerborneDocument<
   // Last sync message (for populating load requests).
   private _lastSyncMessage?: CRDTSyncMessage<ChangesType>;
 
-  // Set of already-merged change blocks.
+  // Insertion-ordered set of known change CIDs, used to skip already-merged
+  // changes during sync. `_trimKnownChanges()` keeps it bounded: it keeps the
+  // retained tree, snapshot boundary, recent tips, frontier heads and every
+  // CID learned in the current generation, and forgets older CIDs.
   private _hashes = new Set<string>();
 
   // Fail-closed bootstrap admission state. A bootstrap load can mutate
@@ -1402,6 +1411,9 @@ export class PeerborneDocument<
   // pruned -- those ancestors are not added to `_referencedAncestors`,
   // which is correct: the snapshot boundary IS the local "oldest" head
   // from the loader's view of the DAG.
+  //
+  // Trimmed with `_hashes`: an older entry stays while it names a retained
+  // CID or a still-known hash, so trimming never changes the frontier.
   private _referencedAncestors = new Set<string>();
 
   // Bounded list of recently-known change CIDs paired with their node kind.
@@ -2326,9 +2338,9 @@ export class PeerborneDocument<
    *     is NOT in `_referencedAncestors`, so it correctly appears as a
    *     head.
    *   - Pruned ancestors: irrelevant. Pruning removes CIDs from the
-   *     in-memory change tree but leaves them in `_hashes` for dedup;
-   *     they were already in `_referencedAncestors`, so they remain
-   *     marked as non-heads.
+   *     in-memory change tree, and `_trimKnownChanges()` later forgets
+   *     them from both sets together; they were never heads, and every
+   *     head is retained.
    *
    * Returns a fresh array so callers can't mutate internal state. Digest
    * helpers sort independently, so we don't sort here.
@@ -2432,6 +2444,35 @@ export class PeerborneDocument<
    */
   private _trackTip(cid: string, kind: CRDTChangeNodeKind): void {
     trackTipInList(this._recentTips, { cid, kind }, MAX_RECENT_TIPS);
+  }
+
+  /**
+   * Forget known CIDs that are older than one generation and no longer
+   * retained, so `_hashes` and `_referencedAncestors` stay bounded however
+   * long a document is edited. Runs after each remote sync and each snapshot,
+   * including the depth-bound snapshot a writer takes as it keeps editing. A
+   * change whose CID was forgotten is applied again if it is delivered again;
+   * CRDT, ACL and keychain merges are idempotent, exactly as for a peer that
+   * loaded the same snapshot.
+   */
+  private _trimKnownChanges(): void {
+    if (
+      this._isStateApplicationBlocked() ||
+      !knownChangesNeedTrim(this._hashes, this._referencedAncestors)
+    ) {
+      return;
+    }
+    trimKnownChanges(
+      this._hashes,
+      this._referencedAncestors,
+      retainedKnownChanges(
+        this._lastSyncMessage?.changeId,
+        this._lastSyncMessage?.changes,
+        this._latestSnapshot?.lastChangeNodeCID,
+        this._recentTips.map(({ cid }) => cid),
+        this._currentFrontier(),
+      ),
+    );
   }
 
   private async _syncDocumentChanges(
@@ -2868,6 +2909,7 @@ export class PeerborneDocument<
     } else {
       await this._maybeCompact();
     }
+    this._trimKnownChanges();
   }
 
   /**
@@ -5591,16 +5633,17 @@ export class PeerborneDocument<
             return syncTrackedLoadMessageUnlocked();
           });
         };
-        const unknownLoadCids = async (
-          cids: readonly string[],
-        ): Promise<string[] | undefined> => {
+        // CIDs the sync will skip, with everything beneath them.
+        const knownLoadCids = async (): Promise<Set<string> | undefined> => {
+          if (message.changeId === undefined && message.changes === undefined)
+            return new Set();
           // Snapshot only committed-known hashes while serialized with state
           // mutation. Reading the live Set outside the queue could observe a
           // hash installed by a mutation that later rolls back, skip its
           // prefetch, and let sync partially mutate before discovering the
           // block is unavailable. Invitation catch-up already owns this
           // queue slot, so its direct snapshot is equally stable.
-          const knownHashes = continuingInvitationBootstrap
+          return continuingInvitationBootstrap
             ? canUseCurrentBootstrapState()
               ? new Set(this._hashes)
               : undefined
@@ -5609,9 +5652,6 @@ export class PeerborneDocument<
                   ? new Set(this._hashes)
                   : undefined,
               );
-          return knownHashes === undefined
-            ? undefined
-            : cids.filter((cid) => !knownHashes.has(cid));
         };
         const prefetchLoadBlocks = async (
           cidsToPrefetch: readonly string[],
@@ -5826,15 +5866,20 @@ export class PeerborneDocument<
           // and `load()` report success. After `sync()` we re-check that
           // every captured CID is now in `_hashes`; any missing CID is
           // surfaced as a per-peer bind failure so the loader can retry
-          // the next peer in the agreeing cohort.
+          // the next peer in the agreeing cohort. A CID known before the
+          // sync is not captured, nor is anything beneath it: the merge
+          // stops there, and its older ancestors may have been forgotten.
           const provenSnapshotBoundariesBeforeSync =
             this._latestSnapshot?.lastChangeNodeCID === undefined
               ? new Set<string>()
               : new Set([this._latestSnapshot.lastChangeNodeCID]);
+          const knownBeforeSync = await knownLoadCids();
+          if (knownBeforeSync === undefined) return false;
           const expectedCids = collectInvitationCidsToInstall(
             message.changeId,
             message.changes,
             provenSnapshotBoundariesBeforeSync,
+            knownBeforeSync,
           );
 
           stripInlineChanges(message.changes);
@@ -5908,11 +5953,7 @@ export class PeerborneDocument<
           // the loader. Block bytes are cached locally on success; the
           // subsequent `sync()` call only does local lookups for those
           // CIDs and applies them.
-          const cidsToPrefetch =
-            expectedCids.length > 0
-              ? await unknownLoadCids(expectedCids)
-              : [];
-          if (cidsToPrefetch === undefined) return false;
+          const cidsToPrefetch = expectedCids;
           if (cidsToPrefetch.length > 0) {
             const { missingCids, limitExceeded } =
               await prefetchLoadBlocks(cidsToPrefetch);
@@ -6010,6 +6051,11 @@ export class PeerborneDocument<
 
         const snapshotBoundaryBeforeSync =
           this._latestSnapshot?.lastChangeNodeCID;
+        const knownBeforeSync =
+          requireCompleteCids || trackedBootstrapLoad
+            ? await knownLoadCids()
+            : new Set<string>();
+        if (knownBeforeSync === undefined) return false;
         if (trackedBootstrapLoad) {
           // Tracked loads cannot recover from a partial application, so fetch
           // every hash-only node before state application. A peer whose
@@ -6045,11 +6091,16 @@ export class PeerborneDocument<
           hashOnlyCids = hashOnlyCids.filter(
             (cid) => cid !== servedSnapshotBoundary,
           );
-          const cidsToPrefetch =
-            hashOnlyCids.length > 0
-              ? await unknownLoadCids(hashOnlyCids)
-              : [];
-          if (cidsToPrefetch === undefined) return false;
+          // The merge stops at known CIDs, so nothing at or beneath one is needed.
+          const needed = new Set(
+            collectInvitationCidsToInstall(
+              message.changeId,
+              message.changes,
+              stopBelowNodeIds,
+              knownBeforeSync,
+            ),
+          );
+          const cidsToPrefetch = hashOnlyCids.filter((cid) => needed.has(cid));
           if (cidsToPrefetch.length > 0) {
             const { missingCids, limitExceeded } =
               await prefetchLoadBlocks(cidsToPrefetch);
@@ -6074,6 +6125,7 @@ export class PeerborneDocument<
                   snapshotBoundaryBeforeSync === undefined
                     ? undefined
                     : new Set([snapshotBoundaryBeforeSync]),
+                knownBeforeSync,
                 isSnapshotApplied: () =>
                   this._isLatestSnapshotFrom(message),
               },
@@ -6917,6 +6969,7 @@ export class PeerborneDocument<
           ? {}
           : { snapshot: this._latestSnapshot }),
       };
+      assertCheckpointChangeHistory(this.documentPath, message, this._hashes);
       if (this._beekemInitialized && !this._kemKeyPair)
         throw new Error('Checkpoint requires the persistent KEM identity');
       const beekem =
@@ -7094,25 +7147,7 @@ export class PeerborneDocument<
         'ordinary-sync-v1',
       );
       const hashes = new Set(state.hashes);
-      if (
-        message.documentId !== this.documentPath ||
-        !message.changeId ||
-        !message.changes ||
-        !hashes.has(message.changeId)
-      )
-        throw new Error('Invalid checkpoint change root');
-      const tree = snapshotBoundedChangeTree(
-        message.changeId,
-        message.changes,
-        { canonicalizeNodeId: (value) => CID.parse(value).toString() },
-      );
-      validateRemoteSyncTreeAliases(message.changeId, tree.root);
-      if (
-        tree.entries.some(
-          (entry) => entry.nodeId === undefined || !hashes.has(entry.nodeId),
-        )
-      )
-        throw new Error('Checkpoint has incomplete change history');
+      assertCheckpointChangeHistory(this.documentPath, message, hashes);
       const beekem = state.beekem === null ? null : new BeeKEM();
       if (beekem !== null && state.beekem !== null) {
         if (!this._kemKeyPair)
@@ -8760,7 +8795,8 @@ export class PeerborneDocument<
    * returned `ChangesType` is the deserialized, decrypted payload.
    *
    * Returns `undefined` when:
-   * - The CID is not in `_hashes` (we have never seen this change).
+   * - The CID is not in `_hashes`: this document never saw the change, or
+   *   forgot it after it left the retained tree (see `hasChange`).
    * - The block is missing from the blockstore (e.g. it was GC'd locally and
    *   no peer has re-served it yet). Callers that need stronger guarantees can
    *   fall back to dialing peers via the existing sync protocols.
@@ -8798,9 +8834,13 @@ export class PeerborneDocument<
    * Note: returning `true` only proves the CID has been observed (it is
    * tracked in `_hashes` for sync-message dedup). It does NOT guarantee the
    * underlying block is locally available -- after `gcAfterPrune` runs, the
-   * CID remains in `_hashes` even though the block has been removed from the
-   * blockstore. Callers should therefore still handle `loadChangeBlock(cid)`
-   * resolving to `undefined` (and may need to fall back to dialing peers).
+   * CID can remain in `_hashes` even though the block has been removed from
+   * the blockstore. Callers should therefore still handle
+   * `loadChangeBlock(cid)` resolving to `undefined` (and may need to fall
+   * back to dialing peers). `_hashes` is bounded: a CID outside the retained
+   * tree, the snapshot boundary, the recent tips and the frontier is
+   * forgotten once roughly 1,024 to 2,048 newer CIDs are known, after which
+   * this returns `false`.
    */
   public hasChange(cid: string): boolean {
     this._assertNoIncompleteBootstrapLoad();
@@ -8918,6 +8958,7 @@ export class PeerborneDocument<
       `Created snapshot for ${this.documentPath}: ${snapshotNode.compactedCount} nodes compacted`,
     );
 
+    this._trimKnownChanges();
     return snapshotNode;
   }
 
