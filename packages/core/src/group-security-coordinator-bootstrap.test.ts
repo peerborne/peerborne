@@ -243,7 +243,7 @@ describe('GroupSecurityCoordinator bootstrap', () => {
         createGroupInput,
         { operationId: id(1), subjectId: spoofedValue.identities.actorId },
       ),
-    ).rejects.toThrow(/invalid length or backing buffer/);
+    ).rejects.toThrow(/must be a genuine Uint8Array/);
     expect(spoofedValue.provider.createGroupCalls).toBe(0);
   });
 

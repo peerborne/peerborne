@@ -4,7 +4,7 @@ import {
   crdtChangeNodeDeferred,
 } from './crdt-change-node.js';
 import { collectBoundedChangeTree } from './change-tree-walk.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 /**
  * Maximum number of recent tips to track for Merkle-CRDT cross-linking

@@ -16,11 +16,9 @@ import {
   InMemoryDocumentJournalRollbackAnchor,
 } from './document-replay-journal.js';
 import { InMemoryDocumentJournalStore } from './document-journal-store.js';
-import {
-  DocumentBinaryWriter,
-  documentBytesEqual,
-  documentBytesId,
-} from './internal/document-binary.js';
+import { DocumentBinaryWriter } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
+import { equalBytes } from './internal/bytes.js';
 import {
   decodeDocumentCatchUpCheckpoint,
   decodeDocumentCatchUpRequest,
@@ -290,9 +288,9 @@ test('enforces the exact receipt and snapshot caps for encoding and decoding', (
         } else {
           const encoded = encodeDocumentCatchUpCheckpoint(checkpoint);
           const decoded = decodeDocumentCatchUpCheckpoint(encoded);
-          expect(documentBytesEqual(encoded, independent)).toBe(true);
+          expect(equalBytes(encoded, independent)).toBe(true);
           expect(decoded.receipts).toEqual(receipts);
-          expect(documentBytesEqual(decoded.snapshot, snapshot)).toBe(true);
+          expect(equalBytes(decoded.snapshot, snapshot)).toBe(true);
         }
       },
     ),
@@ -333,7 +331,7 @@ async function setup() {
   );
   const roster = members.map((memberId, index) => ({
     memberId,
-    publicKey: documentBytesId(memberId),
+    publicKey: bytesToHex(memberId),
     role: index === 0 ? (3 as const) : (2 as const),
   }));
   const providers: GroupSecurityProvider[] = [source.provider, target.provider];
@@ -533,7 +531,7 @@ async function setup() {
       ),
     );
     const claimed = decodeDocumentCatchUpCheckpoint(signed.unsigned);
-    expect(documentBytesEqual(claimed.controllerId, members[0])).toBe(true);
+    expect(equalBytes(claimed.controllerId, members[0])).toBe(true);
     const unsigned = encodeDocumentCatchUpCheckpoint(edit(claimed));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt(

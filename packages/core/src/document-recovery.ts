@@ -6,10 +6,10 @@ import {
   canPublishDocumentRecovery,
   classifyDocumentRecovery,
 } from './policy/document-recovery.js';
-import {
-  copyUnsharedUint8Array,
-  snapshotEnumerableOwnDataObject,
-} from './utils.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
+import { sha256 } from './internal/digest.js';
+import { bytesToHex } from './internal/hex.js';
 
 const MAX_TEXT_BYTES = 4096;
 const MAX_CONTENT_BYTES = 16 * 1024 * 1024;
@@ -147,12 +147,7 @@ function sameLocator(
 }
 
 async function hashBytes(bytes: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>),
-  );
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join(
-    '',
-  );
+  return bytesToHex(await sha256(bytes));
 }
 
 /** Commit to up to 16 MiB of application content selected for recovery. */

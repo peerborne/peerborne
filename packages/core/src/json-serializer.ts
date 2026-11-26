@@ -2,11 +2,11 @@ import { Base64 } from 'js-base64';
 import { EPOCH_ID_LENGTH } from './epoch.js';
 import { TIPS_HASH_LENGTH } from './tips-hash.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
+import { tryDecodeCanonicalBase64 } from './internal/base64.js';
 import {
-  copyUnsharedUint8Array,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  tryDecodeCanonicalBase64,
-} from './utils.js';
+} from './shared-protocol-request.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import {
   serializeLoadSecurityCommitmentsForWire,
   deserializeLoadSecurityCommitmentsFromWire,

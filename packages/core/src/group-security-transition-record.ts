@@ -5,8 +5,15 @@ import {
   deserializeMembershipControlRecord,
   serializeMembershipControlRecord,
 } from './membership-control-record.js';
-import { copyUnsharedUint8Array } from './utils.js';
 import { boundedFieldEnd } from './policy/frame-layout.js';
+import {
+  bufferOf,
+  byteLengthOf,
+  byteOffsetOf,
+  copyUnsharedUint8Array,
+  equalBytes,
+  setBytes,
+} from './internal/bytes.js';
 
 const reflectApply = Reflect.apply;
 const reflectOwnKeys = Reflect.ownKeys;
@@ -19,40 +26,15 @@ const stringCharCodeAt = String.prototype.charCodeAt;
 const stringFromCharCode = String.fromCharCode;
 const uint8ArrayConstructor = Uint8Array;
 const dataViewConstructor = DataView;
-const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-const typedArrayByteLengthGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteLength',
-)?.get;
-const typedArrayByteOffsetGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteOffset',
-)?.get;
-const typedArrayBufferGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'buffer',
-)?.get;
-const uint8ArraySet = Uint8Array.prototype.set;
 const dataViewGetUint16 = DataView.prototype.getUint16;
 const dataViewGetUint32 = DataView.prototype.getUint32;
 const dataViewSetUint16 = DataView.prototype.setUint16;
 const dataViewSetUint32 = DataView.prototype.setUint32;
 
-if (
-  typedArrayByteLengthGetterValue === undefined ||
-  typedArrayByteOffsetGetterValue === undefined ||
-  typedArrayBufferGetterValue === undefined
-) {
-  throw new Error('group-security transition byte intrinsics are unavailable');
-}
-const typedArrayByteLengthGetter = typedArrayByteLengthGetterValue;
-const typedArrayByteOffsetGetter = typedArrayByteOffsetGetterValue;
-const typedArrayBufferGetter = typedArrayBufferGetterValue;
-
 const GROUP_SECURITY_TRANSITION_MAGIC = new Uint8Array([
   0x50, 0x42, 0x47, 0x54, 0x52, 0x30, 0x30, 0x31,
 ]);
-const GROUP_SECURITY_TRANSITION_MAGIC_BYTES = byteLength(
+const GROUP_SECURITY_TRANSITION_MAGIC_BYTES = byteLengthOf(
   GROUP_SECURITY_TRANSITION_MAGIC,
 );
 
@@ -120,9 +102,9 @@ export function serializeGroupSecurityTransitionRecord(
   const record = snapshotTransitionRecord(value);
   const codecId = record.deliveryCodec.idBytes;
   const controlRecord = record.controlBytes;
-  const codecIdLength = byteLength(codecId);
-  const controlLength = byteLength(controlRecord);
-  const deliveryLength = byteLength(record.deliveryPayload);
+  const codecIdLength = byteLengthOf(codecId);
+  const controlLength = byteLengthOf(controlRecord);
+  const deliveryLength = byteLengthOf(record.deliveryPayload);
   const output = new uint8ArrayConstructor(
     FRAME_FIXED_BYTES + codecIdLength + controlLength + deliveryLength,
   );
@@ -162,7 +144,7 @@ export function deserializeGroupSecurityTransitionRecord(
     MAX_GROUP_SECURITY_TRANSITION_RECORD_BYTES,
     'group-security transition record',
   );
-  const inputLength = byteLength(input);
+  const inputLength = byteLengthOf(input);
   const view = dataView(input);
   let offset = 0;
   for (let index = 0; index < GROUP_SECURITY_TRANSITION_MAGIC_BYTES; index++) {
@@ -376,7 +358,7 @@ function encodeDeliveryCodecId(value: string): Uint8Array {
 }
 
 function decodeDeliveryCodecId(value: Uint8Array): string {
-  const length = byteLength(value);
+  const length = byteLengthOf(value);
   let result = '';
   for (let index = 0; index < length; index++) {
     const code = value[index];
@@ -402,42 +384,12 @@ function isCodecIdCode(code: number, first: boolean): boolean {
   );
 }
 
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  const leftLength = byteLength(left);
-  if (leftLength !== byteLength(right)) return false;
-  let difference = 0;
-  for (let index = 0; index < leftLength; index++) {
-    difference |= left[index] ^ right[index];
-  }
-  return difference === 0;
-}
-
-function byteLength(value: Uint8Array): number {
-  return reflectApply(typedArrayByteLengthGetter, value, []) as number;
-}
-
-function byteOffset(value: Uint8Array): number {
-  return reflectApply(typedArrayByteOffsetGetter, value, []) as number;
-}
-
-function buffer(value: Uint8Array): ArrayBufferLike {
-  return reflectApply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
-}
-
 function dataView(value: Uint8Array): DataView {
   return new dataViewConstructor(
-    buffer(value),
-    byteOffset(value),
-    byteLength(value),
+    bufferOf(value),
+    byteOffsetOf(value),
+    byteLengthOf(value),
   );
-}
-
-function setBytes(
-  target: Uint8Array,
-  source: Uint8Array,
-  offset: number,
-): void {
-  reflectApply(uint8ArraySet, target, [source, offset]);
 }
 
 function copyRange(
@@ -453,5 +405,5 @@ function copyRange(
 
 // Only for private, already bounded input; never expose the enclosing frame.
 function rangeView(input: Uint8Array, offset: number, length: number): Uint8Array {
-  return new uint8ArrayConstructor(buffer(input), byteOffset(input) + offset, length);
+  return new uint8ArrayConstructor(bufferOf(input), byteOffsetOf(input) + offset, length);
 }

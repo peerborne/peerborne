@@ -16,17 +16,17 @@ import {
   eciesOpen,
   ECIES_P256_PUBLIC_KEY_LENGTH,
 } from '../ecies.js';
-import {
-  snapshotDeepEnumerableData,
-  copyUnsharedUint8Array,
-} from '../utils.js';
-import type { DeepDataSnapshotLimits } from '../utils.js';
+import { snapshotDeepEnumerableData } from '../internal/data-snapshot.js';
+import type { DeepDataSnapshotLimits } from '../internal/data-snapshot.js';
+import { copyUnsharedUint8Array, equalBytes } from '../internal/bytes.js';
 import {
   beeKEMLeafTransitionAllowed,
   classifyBeeKEMGeneration,
   isAppendOnlyLeafCount,
   isCompetingBeeKEMEpoch,
 } from '../policy/beekem-transition.js';
+import { bytesToHex } from '../internal/hex.js';
+import { asciiBytes } from '../internal/big-endian.js';
 
 /** ECDH curve used for tree key pairs. */
 const isArrayBufferView = ArrayBuffer.isView;
@@ -56,18 +56,6 @@ const SINGLE_MEMBER_ROOT_V2_DOMAIN = asciiBytes(
   'peerborne:beekem:single-member-root:v2',
 );
 
-function asciiBytes(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length);
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit > 0x7f) {
-      throw new TypeError('BeeKEM domain separators must be ASCII');
-    }
-    bytes[index] = codeUnit;
-  }
-  return bytes;
-}
-
 interface PrivatePathKey {
   nodeIndex: number;
   privateKey: CryptoKey;
@@ -79,23 +67,6 @@ function toBuffer(data: Uint8Array): ArrayBuffer {
     data.byteOffset,
     data.byteOffset + data.byteLength,
   );
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  let difference = 0;
-  for (let i = 0; i < left.byteLength; i++) {
-    difference |= left[i] ^ right[i];
-  }
-  return difference === 0;
-}
-
-function bytesFingerprint(bytes: Uint8Array): string {
-  let fingerprint = '';
-  for (let index = 0; index < bytes.byteLength; index++) {
-    fingerprint += bytes[index].toString(16).padStart(2, '0');
-  }
-  return fingerprint;
 }
 
 function snapshotBeeKEMRuntimeInput<T extends object>(
@@ -611,7 +582,7 @@ export class BeeKEM {
       update.generation,
       update.generation === this._generation &&
         !!this._lastAppliedV2UpdateDigest &&
-        bytesEqual(this._lastAppliedV2UpdateDigest, updateDigest),
+        equalBytes(this._lastAppliedV2UpdateDigest, updateDigest),
     );
     // Another device may have advanced the same leaf. Observe a public
     // sibling claim but still disallow applying any update from our own leaf.
@@ -661,7 +632,7 @@ export class BeeKEM {
       this._nodes,
       this._numLeaves,
     );
-    if (!bytesEqual(currentTreeHash, update.parentTreeHash)) {
+    if (!equalBytes(currentTreeHash, update.parentTreeHash)) {
       throw new Error('BeeKEM v2 update parent tree hash mismatch');
     }
     await this._validatePathUpdateLeafTransition(update);
@@ -794,13 +765,13 @@ export class BeeKEM {
   ): Promise<boolean> {
     const sameAcceptedParent =
       this._lastAppliedParentTreeHash !== null &&
-      bytesEqual(this._lastAppliedParentTreeHash, update.parentTreeHash);
+      equalBytes(this._lastAppliedParentTreeHash, update.parentTreeHash);
     if (!sameAcceptedParent) return false;
     const currentTreeHash = await this._computeTreeHashV2(
       this._nodes,
       this._numLeaves,
     );
-    if (bytesEqual(currentTreeHash, update.treeHash)) return false;
+    if (equalBytes(currentTreeHash, update.treeHash)) return false;
 
     // This checks only the public successor. Authenticating the document
     // writer is the caller's job, and no predecessor private keys are kept.
@@ -811,7 +782,7 @@ export class BeeKEM {
         currentGeneration,
         update.generation,
         sameAcceptedParent,
-        !bytesEqual(currentTreeHash, snapshotHash),
+        !equalBytes(currentTreeHash, snapshotHash),
       );
     } catch {
       // This update still receives the generic same-generation rejection.
@@ -841,7 +812,7 @@ export class BeeKEM {
       nextNodes,
       update.numLeaves,
     );
-    if (!bytesEqual(snapshotHash, update.treeHash)) {
+    if (!equalBytes(snapshotHash, update.treeHash)) {
       throw new Error('BeeKEM v2 tree snapshot hash mismatch');
     }
 
@@ -1752,7 +1723,7 @@ export class BeeKEM {
     const exported = new Uint8Array(
       await crypto.subtle.exportKey('raw', publicKey),
     );
-    return bytesEqual(exported, raw);
+    return equalBytes(exported, raw);
   }
 
   private async _publicKeysEqual(
@@ -1763,7 +1734,7 @@ export class BeeKEM {
       crypto.subtle.exportKey('raw', left),
       crypto.subtle.exportKey('raw', right),
     ]);
-    return bytesEqual(new Uint8Array(leftRaw), new Uint8Array(rightRaw));
+    return equalBytes(new Uint8Array(leftRaw), new Uint8Array(rightRaw));
   }
 
   private async _pathKeyPairMatches(
@@ -1812,7 +1783,7 @@ export class BeeKEM {
           256,
         ),
       );
-      return bytesEqual(privateSide, publicSide);
+      return equalBytes(privateSide, publicSide);
     } finally {
       privateSide.fill(0);
       publicSide?.fill(0);
@@ -2043,7 +2014,7 @@ export class BeeKEM {
         TreeMath.leafToNodeIndex(leafPosition),
       );
       if (publicKey === null || publicKey === undefined) continue;
-      const fingerprint = bytesFingerprint(publicKey);
+      const fingerprint = bytesToHex(publicKey);
       if (nextLiveLeafKeys.has(fingerprint)) {
         throw new Error(
           'BeeKEM v2 tree contains duplicate live leaf public keys',
@@ -2302,7 +2273,7 @@ export class BeeKEM {
         await crypto.subtle.exportKey('raw', node.publicKey),
       );
       if (TreeMath.isLeaf(nodeIndex)) {
-        const fingerprint = bytesFingerprint(publicKey);
+        const fingerprint = bytesToHex(publicKey);
         if (liveLeafPublicKeys.has(fingerprint)) {
           throw new Error(
             'BeeKEM v2 tree contains duplicate live leaf public keys',

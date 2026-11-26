@@ -3,44 +3,17 @@ import {
   isRemovalAnchorTransitionAllowed,
 } from './policy/anchor-advance.js';
 import { trackQueuedOperation } from './queued-operation.js';
-import type { GroupSecurityProtocol } from './group-security-provider.js';
 import type { GroupStateStoreKey } from './group-state-store.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
+import { MAX_U64 } from './internal/big-endian.js';
+import { bytesToHex } from './internal/hex.js';
+import { ownDataProperty } from './internal/data-property.js';
+import { snapshotPlainDataObject } from './internal/plain-data.js';
+import { snapshotCanonicalProtocol } from './internal/protocol-identifier.js';
 
-const MAX_U64 = (1n << 64n) - 1n;
 const CONTROL_HEAD_LENGTH = 32;
 const STORE_COMMITMENT_LENGTH = 32;
 const FORK_EVIDENCE_HASH_LENGTH = 32;
-
-const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-const typedArrayByteLengthGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteLength',
-)?.get;
-const typedArrayBufferGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'buffer',
-)?.get;
-const typedArrayTagGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  Symbol.toStringTag,
-)?.get;
-const uint8ArraySet = Uint8Array.prototype.set;
-const sharedArrayBufferByteLengthGetter =
-  typeof SharedArrayBuffer === 'undefined'
-    ? undefined
-    : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')
-        ?.get;
-
-if (
-  typedArrayByteLengthGetterValue === undefined ||
-  typedArrayBufferGetterValue === undefined ||
-  typedArrayTagGetterValue === undefined
-) {
-  throw new Error('Uint8Array intrinsic accessors are unavailable');
-}
-const typedArrayByteLengthGetter = typedArrayByteLengthGetterValue;
-const typedArrayBufferGetter = typedArrayBufferGetterValue;
-const typedArrayTagGetter = typedArrayTagGetterValue;
 
 /**
  * Monotonic state kept outside the rollbackable group-state database.
@@ -417,13 +390,13 @@ function validateIntentBase(
 }
 
 function cloneAndValidateIntent(value: unknown): GroupSecurityRollbackIntent {
-  const object = exactPlainObject(
+  const object = snapshotPlainDataObject(
     value,
     ['baseRevision', 'baseStoreCommitment', 'next'],
     'rollback anchor intent',
   );
-  const baseRevision = dataProperty(object, 'baseRevision');
-  const baseStoreCommitment = dataProperty(object, 'baseStoreCommitment');
+  const baseRevision = ownDataProperty(object, 'baseRevision');
+  const baseStoreCommitment = ownDataProperty(object, 'baseStoreCommitment');
   if (!Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0) {
     throw new Error(
       'rollback anchor intent base revision must be a non-negative safe integer',
@@ -435,7 +408,7 @@ function cloneAndValidateIntent(value: unknown): GroupSecurityRollbackIntent {
     );
   }
   const next = cloneAndValidateAnchor(
-    dataProperty(object, 'next') as GroupSecurityRollbackAnchorValue,
+    ownDataProperty(object, 'next') as GroupSecurityRollbackAnchorValue,
   );
   if (next.forkPoison !== undefined || next.removal !== undefined) {
     throw new Error('rollback anchor intent must name an active value');
@@ -515,7 +488,7 @@ function intentEqual(
 function cloneAndValidateAnchor(
   value: GroupSecurityRollbackAnchorValue,
 ): GroupSecurityRollbackAnchorValue {
-  const object = exactPlainObject(
+  const object = snapshotPlainDataObject(
     value,
     [
       'revision',
@@ -527,12 +500,12 @@ function cloneAndValidateAnchor(
     ],
     'rollback anchor',
   );
-  const revision = dataProperty(object, 'revision');
-  const epoch = dataProperty(object, 'epoch');
-  const controlHead = dataProperty(object, 'controlHead');
-  const storeCommitment = dataProperty(object, 'storeCommitment');
-  const forkPoison = dataProperty(object, 'forkPoison');
-  const removal = dataProperty(object, 'removal');
+  const revision = ownDataProperty(object, 'revision');
+  const epoch = ownDataProperty(object, 'epoch');
+  const controlHead = ownDataProperty(object, 'controlHead');
+  const storeCommitment = ownDataProperty(object, 'storeCommitment');
+  const forkPoison = ownDataProperty(object, 'forkPoison');
+  const removal = ownDataProperty(object, 'removal');
   if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
     throw new Error('rollback anchor revision must be a positive safe integer');
   }
@@ -598,32 +571,32 @@ function optionalAnchorEqual(
 }
 
 function cloneRemoval(value: unknown): GroupSecurityRollbackRemoval {
-  const object = exactPlainObject(
+  const object = snapshotPlainDataObject(
     value,
     ['epoch', 'parentRecordId', 'recordId', 'memberId'],
     'rollback anchor removal',
   );
-  const epoch = dataProperty(object, 'epoch');
+  const epoch = ownDataProperty(object, 'epoch');
   if (typeof epoch !== 'bigint' || epoch < 1n || epoch > MAX_U64) {
     throw new Error('removal epoch must be a positive unsigned 64-bit bigint');
   }
   return {
     epoch,
     parentRecordId: cloneExactBytes(
-      dataProperty(object, 'parentRecordId'),
+      ownDataProperty(object, 'parentRecordId'),
       'removal parent',
       CONTROL_HEAD_LENGTH,
     ),
     recordId: cloneExactBytes(
-      dataProperty(object, 'recordId'),
+      ownDataProperty(object, 'recordId'),
       'removal record',
       CONTROL_HEAD_LENGTH,
     ),
-    memberId: cloneBoundedBytes(
-      dataProperty(object, 'memberId'),
-      'removed member',
+    memberId: copyUnsharedUint8Array(
+      ownDataProperty(object, 'memberId'),
       1,
       512,
+      'removed member',
     ),
   };
 }
@@ -642,7 +615,7 @@ function optionalRemovalEqual(
 }
 
 function cloneForkPoison(value: unknown): GroupSecurityRollbackForkPoison {
-  const snapshot = exactPlainObject(
+  const snapshot = snapshotPlainDataObject(
     value,
     [
       'epoch',
@@ -653,29 +626,29 @@ function cloneForkPoison(value: unknown): GroupSecurityRollbackForkPoison {
     ],
     'rollback anchor fork poison',
   );
-  const epoch = dataProperty(snapshot, 'epoch');
+  const epoch = ownDataProperty(snapshot, 'epoch');
   if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
     throw new Error('rollback anchor fork epoch must be unsigned 64-bit');
   }
   const forkPoison = {
     epoch,
     parentRecordId: cloneExactBytes(
-      dataProperty(snapshot, 'parentRecordId'),
+      ownDataProperty(snapshot, 'parentRecordId'),
       'rollback anchor fork parentRecordId',
       CONTROL_HEAD_LENGTH,
     ),
     firstRecordId: cloneExactBytes(
-      dataProperty(snapshot, 'firstRecordId'),
+      ownDataProperty(snapshot, 'firstRecordId'),
       'rollback anchor fork firstRecordId',
       CONTROL_HEAD_LENGTH,
     ),
     secondRecordId: cloneExactBytes(
-      dataProperty(snapshot, 'secondRecordId'),
+      ownDataProperty(snapshot, 'secondRecordId'),
       'rollback anchor fork secondRecordId',
       CONTROL_HEAD_LENGTH,
     ),
     evidenceHash: cloneExactBytes(
-      dataProperty(snapshot, 'evidenceHash'),
+      ownDataProperty(snapshot, 'evidenceHash'),
       'rollback anchor fork evidenceHash',
       FORK_EVIDENCE_HASH_LENGTH,
     ),
@@ -700,133 +673,13 @@ function optionalForkPoisonEqual(
   );
 }
 
-function exactPlainObject(
-  value: unknown,
-  expectedKeys: ReadonlyArray<string>,
-  field: string,
-): Record<PropertyKey, unknown> {
-  const object = snapshotPlainObject(value, field);
-  requireExactKeys(object, expectedKeys, field);
-  return object;
-}
-
-function snapshotPlainObject(
-  value: unknown,
-  field: string,
-): Record<PropertyKey, unknown> {
-  let prototype: object | null;
-  let keys: PropertyKey[];
-  try {
-    prototype =
-      value !== null && typeof value === 'object'
-        ? Object.getPrototypeOf(value)
-        : null;
-    keys =
-      value !== null && typeof value === 'object' ? Reflect.ownKeys(value) : [];
-  } catch {
-    throw new Error(`${field} must be a plain data object`);
-  }
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    (prototype !== Object.prototype && prototype !== null)
-  ) {
-    throw new Error(`${field} must be a plain object`);
-  }
-  const snapshot = Object.create(null) as Record<PropertyKey, unknown>;
-  for (const key of keys) {
-    let descriptor: PropertyDescriptor | undefined;
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key);
-    } catch {
-      throw new Error(`${field} must contain only own data properties`);
-    }
-    if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !('value' in descriptor)
-    ) {
-      throw new Error(`${String(key)} must be an enumerable own data property`);
-    }
-    snapshot[key] = descriptor.value;
-  }
-  return snapshot;
-}
-
-function requireExactKeys(
-  object: Record<PropertyKey, unknown>,
-  expectedKeys: ReadonlyArray<string>,
-  field: string,
-): void {
-  const keys = Reflect.ownKeys(object);
-  if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key))
-  ) {
-    throw new Error(`${field} has unexpected or missing fields`);
-  }
-}
-
-function dataProperty(
-  object: Record<PropertyKey, unknown>,
-  key: string,
-): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(object, key);
-  if (
-    descriptor === undefined ||
-    !descriptor.enumerable ||
-    !('value' in descriptor)
-  ) {
-    throw new Error(`${key} must be an enumerable own data property`);
-  }
-  return descriptor.value;
-}
-
-function cloneBytes(
-  value: unknown,
-  field: string,
-  minimumLength: number,
-  maximumLength: number,
-): Uint8Array {
-  let length: number;
-  let buffer: ArrayBufferLike;
-  let tag: unknown;
-  try {
-    length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-    buffer = Reflect.apply(
-      typedArrayBufferGetter,
-      value,
-      [],
-    ) as ArrayBufferLike;
-    tag = Reflect.apply(typedArrayTagGetter, value, []);
-  } catch {
-    throw new Error(`${field} must be a genuine Uint8Array`);
-  }
-  if (
-    tag !== 'Uint8Array' ||
-    !Number.isSafeInteger(length) ||
-    length < minimumLength ||
-    length > maximumLength ||
-    isSharedBuffer(buffer)
-  ) {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  const output = new Uint8Array(length);
-  try {
-    Reflect.apply(uint8ArraySet, output, [value]);
-  } catch {
-    throw new Error(`${field} could not be copied safely`);
-  }
-  return output;
-}
-
 function cloneExactBytes(
   value: unknown,
   field: string,
   expectedLength: number,
 ): Uint8Array {
   try {
-    return cloneBytes(value, field, expectedLength, expectedLength);
+    return copyUnsharedUint8Array(value, expectedLength, expectedLength, field);
   } catch (error) {
     throw new Error(`${field} must contain ${expectedLength} unshared bytes`, {
       cause: error,
@@ -834,81 +687,25 @@ function cloneExactBytes(
   }
 }
 
-function cloneBoundedBytes(
-  value: unknown,
-  field: string,
-  minimumLength: number,
-  maximumLength: number,
-): Uint8Array {
-  return cloneBytes(value, field, minimumLength, maximumLength);
-}
-
 function cloneAndValidateKey(key: GroupStateStoreKey): GroupStateStoreKey {
-  const keySnapshot = exactPlainObject(
+  const keySnapshot = snapshotPlainDataObject(
     key,
     ['protocol', 'groupId'],
     'rollback anchor key',
   );
-  const protocol = cloneAndValidateProtocol(
-    dataProperty(keySnapshot, 'protocol'),
+  const protocol = snapshotCanonicalProtocol(
+    ownDataProperty(keySnapshot, 'protocol'),
+    'rollback anchor protocol',
   );
-  const groupId = cloneBoundedBytes(
-    dataProperty(keySnapshot, 'groupId'),
-    'rollback anchor groupId',
+  const groupId = copyUnsharedUint8Array(
+    ownDataProperty(keySnapshot, 'groupId'),
     1,
     1024,
+    'rollback anchor groupId',
   );
   return { protocol, groupId };
 }
 
-function cloneAndValidateProtocol(value: unknown): GroupSecurityProtocol {
-  const protocol = exactPlainObject(
-    value,
-    ['id', 'version'],
-    'rollback anchor protocol',
-  );
-  const id = dataProperty(protocol, 'id');
-  const version = dataProperty(protocol, 'version');
-  if (
-    typeof id !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(id) ||
-    !Number.isInteger(version) ||
-    (version as number) < 0 ||
-    (version as number) > 0xffff
-  ) {
-    throw new Error('invalid canonical rollback anchor protocol identifier');
-  }
-  return { id, version: version as number };
-}
-
-function isSharedBuffer(buffer: unknown): boolean {
-  if (sharedArrayBufferByteLengthGetter === undefined) return false;
-  try {
-    Reflect.apply(sharedArrayBufferByteLengthGetter, buffer, []);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function encodeKey(key: GroupStateStoreKey): string {
-  return `${key.protocol.id}:${key.protocol.version}:${toHex(key.groupId)}`;
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  let different = 0;
-  for (let index = 0; index < left.byteLength; index++) {
-    different |= left[index] ^ right[index];
-  }
-  return different === 0;
-}
-
-function toHex(value: Uint8Array): string {
-  let result = '';
-  const length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-  for (let index = 0; index < length; index++) {
-    result += value[index].toString(16).padStart(2, '0');
-  }
-  return result;
+  return `${key.protocol.id}:${key.protocol.version}:${bytesToHex(key.groupId)}`;
 }

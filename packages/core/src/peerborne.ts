@@ -63,12 +63,14 @@ import {
   snapshotLoadV4,
   securityAdvertiseV1,
 } from './wire-protocols.js';
+import { readFirstDeserializable } from './internal/stream-read.js';
 import {
   MAX_DOCUMENT_PATH_LENGTH,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  readFirstDeserializable,
   readPathPrefixedProtocolHeader,
-} from './utils.js';
+} from './shared-protocol-request.js';
+
+export { MAX_DOCUMENT_PATH_LENGTH } from './shared-protocol-request.js';
 import { writeStream } from './stream-write.js';
 import { closeHeliaStores } from './store-lifecycle.js';
 import type { OpenableStore } from './store-lifecycle.js';
@@ -122,8 +124,7 @@ import type {
   SharedProtocolHandlerAdmission,
   SharedProtocolMutationResult,
 } from './shared-protocol-admission.js';
-
-export { MAX_DOCUMENT_PATH_LENGTH } from './utils.js';
+import { bytesToHex } from './internal/hex.js';
 
 /** Match the default per-peer load-quorum probe budget. */
 const DEFAULT_SHARED_PROTOCOL_REQUEST_TIMEOUT_MS = 5000;
@@ -159,14 +160,6 @@ export interface CreateInvitationOptions {
 
 /** Let a retry that raced the offer's expiry settle before rolling back. */
 const UNSENT_ACCEPTANCE_ROLLBACK_GRACE_MS = 1_000;
-
-function bytesToHex(bytes: Uint8Array): string {
-  let result = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    result += bytes[i].toString(16).padStart(2, '0');
-  }
-  return result;
-}
 
 /** Minimal stream shape used by shared protocol handlers. */
 type ProtocolStream = Pick<

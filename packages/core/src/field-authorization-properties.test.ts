@@ -33,7 +33,7 @@ import {
   flushAndCollect,
 } from './__testutils__/group-security-coordinator.js';
 import { GroupSecurityCoordinator } from './group-security-coordinator.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { DocumentBinaryWriter } from './internal/document-binary.js';
 import {
   encodeSignedDocumentContent,
@@ -224,11 +224,11 @@ test('authority leases detach field grants and reject provider accessors before 
       const member = { ...source.members[0], writePaths: mutable };
       const captured = captureDocumentAuthorityLease(
         { ...source, members: [member] },
-        documentBytesId(f.identity),
+        bytesToHex(f.identity),
       );
       mutable.push(['escape']);
       mutable[0].push('escape');
-      expect(captured.writePaths.get(documentBytesId(f.identity))).toEqual([
+      expect(captured.writePaths.get(bytesToHex(f.identity))).toEqual([
         grant,
       ]);
       let invoked = 0;
@@ -241,7 +241,7 @@ test('authority leases detach field grants and reject provider accessors before 
       expect(() =>
         captureDocumentAuthorityLease(
           { ...source, members: [member] },
-          documentBytesId(f.identity),
+          bytesToHex(f.identity),
         ),
       ).toThrow();
       expect(invoked).toBe(0);
@@ -311,7 +311,7 @@ test('field grants are authenticated by the pinned append-only role history acro
         const members = (writePaths: readonly (readonly string[])[]) => [
           {
             memberId: f.identities.actorId,
-            publicKey: documentBytesId(f.identities.actorId),
+            publicKey: bytesToHex(f.identities.actorId),
             role: 3 as const,
             writePaths,
           },
@@ -400,7 +400,7 @@ test('current signed authority wire rejects malformed scope markers, lengths, te
       writer
         .integer(1, 2)
         .fixed(f.identities.actorId)
-        .text(documentBytesId(f.identities.actorId), 4096)
+        .text(bytesToHex(f.identities.actorId), 4096)
         .integer(3, 1);
       writer.integer(mode === 0 ? 2 : mode === 4 || mode === 6 ? 0 : 1, 1);
       if (mode === 1) writer.integer(65, 2);

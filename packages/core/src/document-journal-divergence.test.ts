@@ -13,10 +13,8 @@ import {
   IndexedDBDocumentJournalStore,
 } from './document-journal-store.js';
 import { documentFixture } from './__testutils__/coordinated-document.js';
-import {
-  DocumentBinaryWriter,
-  documentBytesId,
-} from './internal/document-binary.js';
+import { DocumentBinaryWriter } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { writeDocumentContext } from './document-security-wire.js';
 import {
   MAX_RECORDED_OPERATION_PATHS,
@@ -94,7 +92,7 @@ async function setup(kind: 'memory' | 'indexeddb' = 'memory') {
     make,
     checkpoint,
     entry,
-    storageKey: documentBytesId(f.authority.genesisId),
+    storageKey: bytesToHex(f.authority.genesisId),
     close: async () => {
       if (store instanceof IndexedDBDocumentJournalStore) await store.close();
     },

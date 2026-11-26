@@ -6,6 +6,7 @@ import {
 } from './candidate-source.js';
 import { DistributedSearchAuthorizer, DistributedSearchSigner } from './distributed-auth.js';
 import { canonicalBytes } from './distributed-codec.js';
+import { sha256Hex } from './encoding.js';
 import { VerifiedDistributedIndexManifest } from './distributed-manifest.js';
 import {
   createDistributedSearchRequestId,
@@ -120,7 +121,7 @@ export class DistributedPeerCandidateSource implements QueryCandidateSource {
       candidateLimit,
       payload,
     }, manifest, this._options.signer, issuedAt);
-    const requestHash = await sha256Canonical(signed.request);
+    const requestHash = await sha256Hex(canonicalBytes(signed.request));
     const requestBytes = encodeDistributedSearchRequest(signed);
     if (requestBytes.byteLength > manifest.manifest.limits.maxRequestBytes) {
       throw new RangeError('distributed search request exceeds the manifest byte limit');
@@ -146,12 +147,4 @@ export class DistributedPeerCandidateSource implements QueryCandidateSource {
       exhausted: verified.response.exhausted,
     };
   }
-}
-
-async function sha256Canonical(value: unknown): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest(
-    'SHA-256',
-    canonicalBytes(value).buffer as ArrayBuffer,
-  );
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

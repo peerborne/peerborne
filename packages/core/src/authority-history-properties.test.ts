@@ -20,11 +20,9 @@ import {
   flushAndCollect,
 } from './__testutils__/group-security-coordinator.js';
 import { testAuth } from './__testutils__/coordinated-document.js';
-import {
-  DocumentBinaryWriter,
-  documentBytesId,
-  documentBytesEqual,
-} from './internal/document-binary.js';
+import { DocumentBinaryWriter } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
+import { equalBytes } from './internal/bytes.js';
 import {
   decodeSignedDocumentContent,
   encodeSignedDocumentContent,
@@ -37,9 +35,9 @@ const digest = async (bytes: Uint8Array) =>
   );
 const ordered = <T extends { memberId: Uint8Array }>(members: T[]) =>
   [...members].sort((a, b) =>
-    documentBytesId(a.memberId) < documentBytesId(b.memberId)
+    bytesToHex(a.memberId) < bytesToHex(b.memberId)
       ? -1
-      : documentBytesId(a.memberId) === documentBytesId(b.memberId)
+      : bytesToHex(a.memberId) === bytesToHex(b.memberId)
         ? 0
         : 1,
   );
@@ -60,12 +58,12 @@ async function fixture() {
   const members: DocumentMemberAuthority[] = [
     {
       memberId: f.identities.actorId,
-      publicKey: documentBytesId(f.identities.actorId),
+      publicKey: bytesToHex(f.identities.actorId),
       role: 3,
     },
     {
       memberId: f.identities.attackerId,
-      publicKey: documentBytesId(f.identities.attackerId),
+      publicKey: bytesToHex(f.identities.attackerId),
       role: 1,
     },
   ];
@@ -162,12 +160,12 @@ test('preserves signed controller bindings through transfers and rejects histori
           const roster = ordered([
             {
               memberId: nextController,
-              publicKey: documentBytesId(nextController),
+              publicKey: bytesToHex(nextController),
               role: 3,
             },
             {
               memberId: nextOther,
-              publicKey: documentBytesId(nextOther),
+              publicKey: bytesToHex(nextOther),
               role: 1,
             },
           ]);
@@ -221,10 +219,10 @@ test('preserves signed controller bindings through transfers and rejects histori
           f,
           reusedContext,
           ordered([
-            { memberId: other, publicKey: documentBytesId(other), role: 3 },
+            { memberId: other, publicKey: bytesToHex(other), role: 3 },
             {
               memberId: controller,
-              publicKey: documentBytesId(controller),
+              publicKey: bytesToHex(controller),
               role: 1,
             },
           ]),
@@ -379,7 +377,7 @@ test.each([0, 1])(
         });
         f.auth.verify = async (...args) => {
           const index = unsignedFrames.findIndex((value) =>
-            documentBytesEqual(value, args[0]),
+            equalBytes(value, args[0]),
           );
           if (index < 0)
             throw new Error('Unexpected authority signature input');
@@ -421,8 +419,8 @@ test.each([0, 1])(
               .capture(context)
               .members.find(
                 (member) =>
-                  documentBytesId(member.memberId) ===
-                  documentBytesId(f.f.identities.attackerId),
+                  bytesToHex(member.memberId) ===
+                  bytesToHex(f.f.identities.attackerId),
               )!.role,
           ).toBe(expectedRole);
           expect(f.log.controllerAtHead(prior.controlHead)).toEqual(

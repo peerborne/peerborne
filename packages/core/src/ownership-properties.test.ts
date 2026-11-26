@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
-import { copyUnsharedUint8Array, snapshotDeepEnumerableData } from './utils.js';
+import { snapshotDeepEnumerableData } from './internal/data-snapshot.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 const scalar = fc.oneof(
   fc.string({ maxLength: 50 }),

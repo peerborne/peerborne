@@ -89,6 +89,34 @@ import {
   serializeMembershipControlRecord,
   signMembershipControlRecord,
 } from './membership-control-record.js';
+import { bytesToHex, tryDecodeLowercaseHex } from './internal/hex.js';
+import { requireIntrinsicGetter } from './internal/data-property.js';
+import {
+  bufferOf,
+  byteLengthOf,
+  byteOffsetOf,
+  concatBytes,
+  equalBytes,
+  isSharedArrayBuffer,
+  optionalEqualBytes,
+  setBytes,
+  typedArrayTagOf,
+  unsharedUint8ArrayByteLength,
+} from './internal/bytes.js';
+import {
+  asciiBytes,
+  encodeU16,
+  encodeU64,
+  lengthPrefixed16,
+  lengthPrefixed32,
+  MAX_U64,
+  requireU64,
+} from './internal/big-endian.js';
+import {
+  isCanonicalIdentifier,
+  isCanonicalProtocol,
+  sameProtocol,
+} from './internal/protocol-identifier.js';
 
 const COMMIT_DOMAIN = asciiBytes(
   'peerborne/group-security-commit/v1\0',
@@ -108,18 +136,6 @@ const KEY_PACKAGE_REQUEST_DOMAIN = asciiBytes(
 const FORK_POISON_DOMAIN = asciiBytes(
   'peerborne/group-security-fork-poison/v1\0',
 );
-
-function asciiBytes(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length);
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit > 0x7f) {
-      throw new TypeError('group-security domain separators must be ASCII');
-    }
-    bytes[index] = codeUnit;
-  }
-  return bytes;
-}
 
 export const GROUP_SECURITY_OUTBOX_KIND = 'group-security.transition.v1';
 export const DEFAULT_GROUP_SECURITY_MAX_OUTBOX_ENTRIES = 256;
@@ -151,50 +167,12 @@ type TrackControlWork = (
   failure?: 'bad-signature' | 'unauthorized-control',
 ) => void;
 type ControlRecheck = 'none' | 'signatures' | 'authorization';
-const MAX_U64 = (1n << 64n) - 1n;
-const mapSizeGetterValue = Object.getOwnPropertyDescriptor(
+const mapSizeGetter = requireIntrinsicGetter(
   Map.prototype,
   'size',
-)?.get;
+  'Map.prototype.size',
+);
 const mapEntries = Map.prototype.entries;
-const uint8ArraySet = Uint8Array.prototype.set;
-const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-const typedArrayByteLengthGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteLength',
-)?.get;
-const typedArrayByteOffsetGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteOffset',
-)?.get;
-const typedArrayBufferGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'buffer',
-)?.get;
-const typedArrayTagGetterValue = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  Symbol.toStringTag,
-)?.get;
-const sharedArrayBufferByteLengthGetter =
-  typeof SharedArrayBuffer === 'undefined'
-    ? undefined
-    : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')
-        ?.get;
-
-if (
-  mapSizeGetterValue === undefined ||
-  typedArrayByteLengthGetterValue === undefined ||
-  typedArrayByteOffsetGetterValue === undefined ||
-  typedArrayBufferGetterValue === undefined ||
-  typedArrayTagGetterValue === undefined
-) {
-  throw new Error('required collection/byte intrinsics are unavailable');
-}
-const mapSizeGetter = mapSizeGetterValue;
-const typedArrayByteLengthGetter = typedArrayByteLengthGetterValue;
-const typedArrayByteOffsetGetter = typedArrayByteOffsetGetterValue;
-const typedArrayBufferGetter = typedArrayBufferGetterValue;
-const typedArrayTagGetter = typedArrayTagGetterValue;
 
 export interface GroupSecurityDelivery {
   readonly controlRecord: MembershipControlRecord;
@@ -692,7 +670,7 @@ export class GroupSecurityCoordinator {
       assertActive();
       const ids = snapshotExactArray(value, 'authenticated group members', 1, 256)
         .map((id) =>
-          toHex(copyControlRecordBytes(
+          bytesToHex(copyControlRecordBytes(
             id as Uint8Array,
             'authenticated document member',
             32,
@@ -720,9 +698,9 @@ export class GroupSecurityCoordinator {
     )
       throw new GroupDocumentOperationError('invalid-preparation');
     const path = new TextEncoder().encode(documentId);
-    const context = concat([
+    const context = concatBytes([
       new TextEncoder().encode('peerborne/document-key-context/v1\0'),
-      bytes16(path),
+      lengthPrefixed16(path),
       canonicalGroupSecurityState(expected.state),
       expected.controlHead,
     ]);
@@ -1374,7 +1352,7 @@ export class GroupSecurityCoordinator {
           snapshot?.outbox ?? [],
           joinedState.epoch,
           this.replayWindowEpochs,
-        ).map(toHex),
+        ).map(bytesToHex),
       );
       const expectedJoinSnapshot: GroupStateStoreSnapshot = {
         revision: baseRevision + 1,
@@ -1401,7 +1379,7 @@ export class GroupSecurityCoordinator {
         ],
         outbox: snapshot?.outbox ?? [],
         replay: unprunedJoinReplay.filter(
-          (entry) => !joinPruneSet.has(toHex(entry.recordId)),
+          (entry) => !joinPruneSet.has(bytesToHex(entry.recordId)),
         ),
         forkEvidence: snapshot?.forkEvidence,
       };
@@ -1585,9 +1563,9 @@ export class GroupSecurityCoordinator {
       encryptedState.state.epoch,
       this.replayWindowEpochs,
     );
-    const pruneSet = new Set(pruneIds.map(toHex));
+    const pruneSet = new Set(pruneIds.map(bytesToHex));
     const projectedReplay = snapshot.replay.filter(
-      (entry) => !pruneSet.has(toHex(entry.recordId)),
+      (entry) => !pruneSet.has(bytesToHex(entry.recordId)),
     );
     let effectiveView = await this.buildVerifiedView(
       encryptedState.state,
@@ -1963,7 +1941,7 @@ export class GroupSecurityCoordinator {
     validateControlInput(controlValue);
     const control = cloneGroupSecurityControlInput(controlValue);
     const existingRecordHex = this.view.operationToRecord.get(
-      toHex(control.operationId),
+      bytesToHex(control.operationId),
     );
     if (existingRecordHex !== undefined) {
       const existing = this.view.recordsById.get(existingRecordHex);
@@ -2281,7 +2259,7 @@ export class GroupSecurityCoordinator {
         expectedOutbox,
         publicState.epoch,
         this.replayWindowEpochs,
-      ).map(toHex),
+      ).map(bytesToHex),
     );
     const revision = this.storeRevision + 1;
     const expectedTransitionCommitment =
@@ -2293,7 +2271,7 @@ export class GroupSecurityCoordinator {
         consumedKeyPackageRefs: baseSnapshot.consumedKeyPackageRefs,
         outbox: expectedOutbox,
         replay: unprunedReplay.filter(
-          (entry) => !expectedPruneSet.has(toHex(entry.recordId)),
+          (entry) => !expectedPruneSet.has(bytesToHex(entry.recordId)),
         ),
         forkEvidence: baseSnapshot.forkEvidence,
       }, this.storeKey);
@@ -2434,11 +2412,11 @@ export class GroupSecurityCoordinator {
         continue;
       }
       const accepted = winnerView.recordsById.get(
-        toHex(acceptedEntry.recordId),
+        bytesToHex(acceptedEntry.recordId),
       );
       if (
         accepted === undefined ||
-        !optionalBytesEqual(
+        !optionalEqualBytes(
           accepted.parentRecordId,
           candidate.parentRecordId,
         )
@@ -2495,7 +2473,7 @@ export class GroupSecurityCoordinator {
           this.outboxCodec.decode(new Uint8Array(entry.payload)),
         );
         await this.verifyControlAuthenticity(delivery.controlRecord);
-        const accepted = this.view.recordsById.get(toHex(entry.id));
+        const accepted = this.view.recordsById.get(bytesToHex(entry.id));
         if (
           accepted === undefined ||
           !equalBytes(
@@ -2508,7 +2486,7 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         fail(
           'malformed-state',
-          `durable outbox entry ${toHex(entry.id)} is malformed`,
+          `durable outbox entry ${bytesToHex(entry.id)} is malformed`,
           error,
         );
       }
@@ -2524,7 +2502,7 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         throw new GroupSecurityCoordinatorError(
           'delivery-failed',
-          `delivery was not durably accepted for outbox entry ${toHex(entry.id)}`,
+          `delivery was not durably accepted for outbox entry ${bytesToHex(entry.id)}`,
           { cause: error },
         );
       }
@@ -2547,7 +2525,7 @@ export class GroupSecurityCoordinator {
           expectedAckOutbox,
           ackEncryptedState.state.epoch,
           this.replayWindowEpochs,
-        ).map(toHex),
+        ).map(bytesToHex),
       );
       const revision = this.storeRevision + 1;
       const expectedAckCommitment =
@@ -2561,7 +2539,7 @@ export class GroupSecurityCoordinator {
           outbox: expectedAckOutbox,
           replay: ackBaseSnapshot.replay.filter(
             (candidate) =>
-              !expectedAckPruneSet.has(toHex(candidate.recordId)),
+              !expectedAckPruneSet.has(bytesToHex(candidate.recordId)),
           ),
           forkEvidence: ackBaseSnapshot.forkEvidence,
         }, this.storeKey);
@@ -2677,11 +2655,11 @@ export class GroupSecurityCoordinator {
   ): Promise<VerifiedJoinInvitation> {
     validateKeyPackage(pendingPackage, this.storeKey);
     validateIdentity(invitation.subjectId, 'invitation subjectId');
-    validateBytes(
+    unsharedUint8ArrayByteLength(
       invitation.keyPackageRef,
-      'invitation keyPackageRef',
       1,
       MAX_IDENTITY_BYTES,
+      'invitation keyPackageRef',
     );
     if (!equalBytes(invitation.keyPackageRef, pendingPackage.reference)) {
       fail(
@@ -2919,18 +2897,18 @@ export class GroupSecurityCoordinator {
       if (error instanceof GroupSecurityCoordinatorError) throw error;
       fail('control-mismatch', 'signed control semantics are malformed', error);
     }
-    const recordHex = toHex(recordId);
+    const recordHex = bytesToHex(recordId);
     const acceptedAtEpoch = this.view.replay.find(
       (entry) => entry.epoch === record.epoch,
     );
     if (acceptedAtEpoch !== undefined) {
       const acceptedRecord = this.view.recordsById.get(
-        toHex(acceptedAtEpoch.recordId),
+        bytesToHex(acceptedAtEpoch.recordId),
       );
       if (
         acceptedRecord !== undefined &&
         !equalBytes(acceptedAtEpoch.recordId, recordId) &&
-        optionalBytesEqual(
+        optionalEqualBytes(
           acceptedRecord.parentRecordId,
           record.parentRecordId,
         )
@@ -2939,7 +2917,7 @@ export class GroupSecurityCoordinator {
         const parentRecord =
           parentId === undefined
             ? undefined
-            : this.view.recordsById.get(toHex(parentId));
+            : this.view.recordsById.get(bytesToHex(parentId));
         if (parentId !== undefined && parentRecord === undefined) {
           fail(
             'malformed-state',
@@ -2995,7 +2973,7 @@ export class GroupSecurityCoordinator {
     }
     if (this.view.recordIds.has(recordHex)) {
       if (
-        this.view.operationToRecord.get(toHex(record.operationId)) !== recordHex
+        this.view.operationToRecord.get(bytesToHex(record.operationId)) !== recordHex
       ) {
         fail('operation-conflict', 'duplicate has inconsistent operationId');
       }
@@ -3005,7 +2983,7 @@ export class GroupSecurityCoordinator {
         stateCommitment: binding,
       };
     }
-    if (this.view.operationToRecord.has(toHex(record.operationId))) {
+    if (this.view.operationToRecord.has(bytesToHex(record.operationId))) {
       fail('operation-conflict', 'operationId belongs to another record');
     }
     const expectedEpoch = incrementEpoch(this.view.publicState.epoch);
@@ -3182,8 +3160,8 @@ export class GroupSecurityCoordinator {
           'durable replay metadata exceeds its aggregate byte bound',
         );
       }
-      const recordId = toHex(entry.recordId);
-      const operationId = toHex(entry.operationId!);
+      const recordId = bytesToHex(entry.recordId);
+      const operationId = bytesToHex(entry.operationId!);
       const epoch = entry.epoch.toString();
       if (
         replayRecordIds.has(recordId) ||
@@ -3203,7 +3181,7 @@ export class GroupSecurityCoordinator {
     const commitmentsById = new Map<string, GroupSecurityStateCommitment>();
     const recordIds = new Set<string>();
     const byEpoch = new Map<bigint, GroupStateReplayEntry>();
-    const pending = new Set(outbox.map((entry) => toHex(entry.id)));
+    const pending = new Set(outbox.map((entry) => bytesToHex(entry.id)));
 
     for (const entry of replay) {
       validateReplayEntry(entry);
@@ -3240,7 +3218,7 @@ export class GroupSecurityCoordinator {
           validateGenesisControlPayload(record, this.storeKey);
         } else {
           commitmentsById.set(
-            toHex(entry.recordId),
+            bytesToHex(entry.recordId),
             parseControlBinding(record),
           );
         }
@@ -3254,8 +3232,8 @@ export class GroupSecurityCoordinator {
       if (recheck === 'none') await this.verifySelfUpdateBinding(record);
       else await this.verifyControlAuthenticity(record);
 
-      const recordHex = toHex(entry.recordId);
-      const operationHex = toHex(record.operationId);
+      const recordHex = bytesToHex(entry.recordId);
+      const operationHex = bytesToHex(record.operationId);
       const epochKey = entry.epoch;
       if (
         recordIds.has(recordHex) ||
@@ -3294,7 +3272,7 @@ export class GroupSecurityCoordinator {
       }
       if (
         entry.epoch < retainedFloor &&
-        !pending.has(toHex(entry.recordId))
+        !pending.has(bytesToHex(entry.recordId))
       ) {
         fail('malformed-state', 'stale replay metadata was not pruned');
       }
@@ -3302,7 +3280,7 @@ export class GroupSecurityCoordinator {
 
     for (let index = 0; index < replay.length; index++) {
       const entry = replay[index];
-      const record = recordsById.get(toHex(entry.recordId))!;
+      const record = recordsById.get(bytesToHex(entry.recordId))!;
       if (record.action === 'create') {
         if (record.epoch !== 0n || record.parentRecordId !== undefined) {
           fail('malformed-state', 'persisted genesis linkage is invalid');
@@ -3323,7 +3301,7 @@ export class GroupSecurityCoordinator {
     if (recheck === 'authorization') {
       for (const entry of replay) {
         if (entry.epoch < authorizationFloor) continue;
-        const record = recordsById.get(toHex(entry.recordId))!;
+        const record = recordsById.get(bytesToHex(entry.recordId))!;
         if (record.action === 'create') {
           await this.authorizeControlRecord(
             record,
@@ -3340,7 +3318,7 @@ export class GroupSecurityCoordinator {
             'authorization window is missing its previous-record anchor',
           );
         }
-        const previousRecord = recordsById.get(toHex(previousEntry.recordId));
+        const previousRecord = recordsById.get(bytesToHex(previousEntry.recordId));
         if (previousRecord === undefined) {
           fail('malformed-state', 'authorization anchor record is missing');
         }
@@ -3357,7 +3335,7 @@ export class GroupSecurityCoordinator {
     if (head === undefined) {
       fail('malformed-state', 'replay metadata has no current head');
     }
-    const lastControlRecord = recordsById.get(toHex(head.recordId));
+    const lastControlRecord = recordsById.get(bytesToHex(head.recordId));
     if (lastControlRecord === undefined) {
       fail('malformed-state', 'current control record is unavailable');
     }
@@ -3371,7 +3349,7 @@ export class GroupSecurityCoordinator {
         fail('malformed-state', 'genesis does not bind restored public state');
       }
     } else {
-      const commitment = commitmentsById.get(toHex(head.recordId));
+      const commitment = commitmentsById.get(bytesToHex(head.recordId));
       if (
         commitment === undefined ||
         !equalBytes(
@@ -3823,7 +3801,7 @@ export class GroupSecurityCoordinator {
     view: CoordinatorView,
   ): Promise<void> {
     try {
-      validateU64(evidence.epoch, 'fork epoch');
+      requireU64(evidence.epoch, 'fork epoch');
       validateFixedId(evidence.parentRecordId, 'fork parentRecordId');
       validateFixedId(evidence.firstRecordId, 'fork firstRecordId');
       validateFixedId(evidence.secondRecordId, 'fork secondRecordId');
@@ -3908,7 +3886,7 @@ export class GroupSecurityCoordinator {
         : evidence.firstRecordId;
       const parent = genesisFork
         ? undefined
-        : view.recordsById.get(toHex(evidence.parentRecordId));
+        : view.recordsById.get(bytesToHex(evidence.parentRecordId));
       if (!genesisFork && parent === undefined) {
         throw new Error('fork evidence authorization parent is unavailable');
       }
@@ -4739,14 +4717,14 @@ export function canonicalGroupSecurityCommit(
   commit: GroupSecurityCommit,
 ): Uint8Array {
   const snapshot = cloneCommit(commit);
-  return concat([
+  return concatBytes([
     COMMIT_DOMAIN,
-    bytes16(new TextEncoder().encode(snapshot.protocol.id)),
-    u16(snapshot.protocol.version),
-    bytes16(snapshot.groupId),
-    u64(snapshot.priorEpoch),
-    u64(snapshot.epoch),
-    bytes32(snapshot.payload),
+    lengthPrefixed16(new TextEncoder().encode(snapshot.protocol.id)),
+    encodeU16(snapshot.protocol.version),
+    lengthPrefixed16(snapshot.groupId),
+    encodeU64(snapshot.priorEpoch),
+    encodeU64(snapshot.epoch),
+    lengthPrefixed32(snapshot.payload),
   ]);
 }
 
@@ -4767,11 +4745,11 @@ export async function canonicalGroupSecurityControlPayload(
   ) {
     throw new Error('resulting state does not match the commit');
   }
-  return concat([
+  return concatBytes([
     CONTROL_BINDING_DOMAIN,
     new Uint8Array(requestDigest),
-    bytes16(resultingState.confirmedTranscriptHash),
-    bytes16(resultingState.treeHash),
+    lengthPrefixed16(resultingState.confirmedTranscriptHash),
+    lengthPrefixed16(resultingState.treeHash),
     await appliedGroupMembershipDeltaHash(appliedMembership),
     await welcomeSetHash(welcomes, commitSnapshot),
     canonicalGroupSecurityCommit(commitSnapshot),
@@ -4782,14 +4760,14 @@ export function canonicalGroupSecurityState(
   state: GroupSecurityPublicState,
 ): Uint8Array {
   validatePublicState(state);
-  return concat([
+  return concatBytes([
     GENESIS_DOMAIN,
-    bytes16(new TextEncoder().encode(state.protocol.id)),
-    u16(state.protocol.version),
-    bytes16(state.groupId),
-    u64(state.epoch),
-    bytes16(state.confirmedTranscriptHash),
-    bytes16(state.treeHash),
+    lengthPrefixed16(new TextEncoder().encode(state.protocol.id)),
+    encodeU16(state.protocol.version),
+    lengthPrefixed16(state.groupId),
+    encodeU64(state.epoch),
+    lengthPrefixed16(state.confirmedTranscriptHash),
+    lengthPrefixed16(state.treeHash),
   ]);
 }
 
@@ -5138,14 +5116,14 @@ function pruneReplayTransaction(
   currentEpoch: bigint,
   window: bigint,
 ): void {
-  const pending = new Set(transaction.outbox.map((entry) => toHex(entry.id)));
+  const pending = new Set(transaction.outbox.map((entry) => bytesToHex(entry.id)));
   for (const entry of transaction.replay) {
     if (
       shouldPruneReplay(
         entry.epoch,
         currentEpoch,
         window,
-        pending.has(toHex(entry.recordId)),
+        pending.has(bytesToHex(entry.recordId)),
       )
     ) {
       if (transaction.removeReplay(entry.recordId) !== true) {
@@ -5161,14 +5139,14 @@ function replayIdsToPrune(
   currentEpoch: bigint,
   window: bigint,
 ): Uint8Array[] {
-  const pending = new Set(outbox.map((entry) => toHex(entry.id)));
+  const pending = new Set(outbox.map((entry) => bytesToHex(entry.id)));
   return replay
     .filter((entry) =>
       shouldPruneReplay(
         entry.epoch,
         currentEpoch,
         window,
-        pending.has(toHex(entry.recordId)),
+        pending.has(bytesToHex(entry.recordId)),
       ),
     )
     .map((entry) => new Uint8Array(entry.recordId));
@@ -5222,11 +5200,11 @@ function snapshotCoordinatorConfig(
     [],
     true,
   ) as unknown as GroupSecurityProtocol;
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     rawStoreKey.groupId,
-    'groupId',
     1,
     MAX_GROUP_ID_BYTES,
+    'groupId',
   );
   validateIdentity(rawConfig.actorId, 'actorId');
   const snapshot: GroupSecurityCoordinatorConfig = {
@@ -5256,7 +5234,7 @@ function snapshotCoordinatorConfig(
 
 function validateCoordinatorConfig(config: GroupSecurityCoordinatorConfig): void {
   validateProtocol(config.storeKey.protocol);
-  validateBytes(config.storeKey.groupId, 'groupId', 1, MAX_GROUP_ID_BYTES);
+  unsharedUint8ArrayByteLength(config.storeKey.groupId, 1, MAX_GROUP_ID_BYTES, 'groupId');
   validateIdentity(config.actorId, 'actorId');
   if (
     config.rollbackAnchor === null ||
@@ -5345,11 +5323,11 @@ function validateRequestedMembershipIntent(
     );
   }
   if (input.authenticatedData !== undefined) {
-    validateBytes(
+    unsharedUint8ArrayByteLength(
       input.authenticatedData,
-      'commit authenticatedData',
       0,
       MAX_PROTOCOL_PAYLOAD_BYTES,
+      'commit authenticatedData',
     );
   }
   if (input.changes.length === 0) {
@@ -5708,15 +5686,9 @@ function captureInputBytes(
   minimum: number,
   maximum: number,
 ): Uint8Array {
-  validateBytes(value as Uint8Array, field, minimum, maximum);
-  const length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-  const offset = Reflect.apply(typedArrayByteOffsetGetter, value, []) as number;
-  const buffer = Reflect.apply(
-    typedArrayBufferGetter,
-    value,
-    [],
-  ) as ArrayBuffer;
-  return new Uint8Array(buffer, offset, length);
+  const length = unsharedUint8ArrayByteLength(value, minimum, maximum, field);
+  const bytes = value as Uint8Array;
+  return new Uint8Array(bufferOf(bytes), byteOffsetOf(bytes), length);
 }
 
 function captureInputProtocol(
@@ -6058,33 +6030,17 @@ function copyControlRecordBytes(
   let buffer: ArrayBufferLike;
   let tag: unknown;
   try {
-    length = Reflect.apply(typedArrayByteLengthGetter, value, []) as number;
-    byteOffset = Reflect.apply(
-      typedArrayByteOffsetGetter,
-      value,
-      [],
-    ) as number;
-    buffer = Reflect.apply(
-      typedArrayBufferGetter,
-      value,
-      [],
-    ) as ArrayBufferLike;
-    tag = Reflect.apply(typedArrayTagGetter, value, []);
+    const bytes = value as Uint8Array;
+    length = byteLengthOf(bytes);
+    byteOffset = byteOffsetOf(bytes);
+    buffer = bufferOf(bytes);
+    tag = typedArrayTagOf(bytes);
   } catch {
     throw new Error(`${field} must be a Uint8Array`);
   }
-  let isShared = false;
-  if (sharedArrayBufferByteLengthGetter !== undefined) {
-    try {
-      Reflect.apply(sharedArrayBufferByteLengthGetter, buffer, []);
-      isShared = true;
-    } catch {
-      isShared = false;
-    }
-  }
   if (
     tag !== 'Uint8Array' ||
-    isShared ||
+    isSharedArrayBuffer(buffer) ||
     !Number.isSafeInteger(length) ||
     length < minimum ||
     length > maximum
@@ -6092,9 +6048,8 @@ function copyControlRecordBytes(
     throw new Error(`${field} must be a bounded unshared Uint8Array`);
   }
   try {
-    const stableView = new Uint8Array(buffer, byteOffset, length);
     const out = new Uint8Array(length);
-    Reflect.apply(uint8ArraySet, out, [stableView]);
+    setBytes(out, new Uint8Array(buffer, byteOffset, length));
     return out;
   } catch {
     throw new Error(`${field} must be a readable Uint8Array`);
@@ -6386,26 +6341,26 @@ function validateKeyPackage(
   ) {
     fail('protocol-mismatch', 'key package protocol does not match group');
   }
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     keyPackage.groupId,
-    'keyPackage.groupId',
     1,
     MAX_GROUP_ID_BYTES,
+    'keyPackage.groupId',
   );
   if (!equalBytes(keyPackage.groupId, storeKey.groupId)) {
     fail('group-mismatch', 'key package is bound to a different group');
   }
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     keyPackage.reference,
-    'keyPackage.reference',
     1,
     MAX_IDENTITY_BYTES,
+    'keyPackage.reference',
   );
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     keyPackage.payload,
-    'keyPackage.payload',
     1,
     MAX_PROTOCOL_PAYLOAD_BYTES,
+    'keyPackage.payload',
   );
 }
 
@@ -6449,23 +6404,23 @@ function cloneKeyPackage(keyPackage: GroupKeyPackage): GroupKeyPackage {
     ),
   };
   validateProtocol(snapshot.protocol);
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     snapshot.groupId,
-    'KeyPackage groupId',
     1,
     MAX_GROUP_ID_BYTES,
+    'KeyPackage groupId',
   );
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     snapshot.reference,
-    'KeyPackage reference',
     1,
     MAX_IDENTITY_BYTES,
+    'KeyPackage reference',
   );
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     snapshot.payload,
-    'KeyPackage payload',
     1,
     MAX_PROTOCOL_PAYLOAD_BYTES,
+    'KeyPackage payload',
   );
   return snapshot;
 }
@@ -6534,14 +6489,14 @@ function validateCommit(commit: GroupSecurityCommit): void {
     throw new Error('group commit must be an object');
   }
   validateProtocol(commit.protocol);
-  validateBytes(commit.groupId, 'commit.groupId', 1, MAX_GROUP_ID_BYTES);
-  validateU64(commit.priorEpoch, 'commit.priorEpoch');
-  validateU64(commit.epoch, 'commit.epoch');
-  validateBytes(
+  unsharedUint8ArrayByteLength(commit.groupId, 1, MAX_GROUP_ID_BYTES, 'commit.groupId');
+  requireU64(commit.priorEpoch, 'commit.priorEpoch');
+  requireU64(commit.epoch, 'commit.epoch');
+  unsharedUint8ArrayByteLength(
     commit.payload,
-    'commit.payload',
     1,
     MAX_PROTOCOL_PAYLOAD_BYTES,
+    'commit.payload',
   );
 }
 
@@ -6550,15 +6505,15 @@ function validatePublicState(state: GroupSecurityPublicState): void {
     throw new Error('group public state must be an object');
   }
   validateProtocol(state.protocol);
-  validateBytes(state.groupId, 'state.groupId', 1, MAX_GROUP_ID_BYTES);
-  validateU64(state.epoch, 'state.epoch');
-  validateBytes(
+  unsharedUint8ArrayByteLength(state.groupId, 1, MAX_GROUP_ID_BYTES, 'state.groupId');
+  requireU64(state.epoch, 'state.epoch');
+  unsharedUint8ArrayByteLength(
     state.confirmedTranscriptHash,
-    'transcript hash',
     state.epoch === 0n ? 0 : 1,
     128,
+    'transcript hash',
   );
-  validateBytes(state.treeHash, 'tree hash', 1, 128);
+  unsharedUint8ArrayByteLength(state.treeHash, 1, 128, 'tree hash');
 }
 
 function validateWelcomes(
@@ -6582,17 +6537,17 @@ function validateWelcomes(
     ) {
       throw new Error('Welcome metadata does not match commit');
     }
-    validateBytes(
+    unsharedUint8ArrayByteLength(
       welcome.recipientKeyPackageRef,
-      'recipientKeyPackageRef',
       1,
       MAX_IDENTITY_BYTES,
+      'recipientKeyPackageRef',
     );
-    validateBytes(
+    unsharedUint8ArrayByteLength(
       welcome.payload,
-      'welcome payload',
       1,
       MAX_PROTOCOL_PAYLOAD_BYTES,
+      'welcome payload',
     );
     canonicalLength +=
       2 +
@@ -6650,7 +6605,7 @@ function snapshotWelcome(value: unknown, label: string): GroupWelcome {
     ),
   };
   validateProtocol(welcome.protocol);
-  validateU64(welcome.epoch, `${label} epoch`);
+  requireU64(welcome.epoch, `${label} epoch`);
   return welcome;
 }
 
@@ -6663,19 +6618,19 @@ async function welcomeSetHash(
   }
   const snapshots =
     commit === undefined ? [] : validateWelcomes(welcomes, commit);
-  const parts: Uint8Array[] = [WELCOME_SET_DOMAIN, u16(snapshots.length)];
+  const parts: Uint8Array[] = [WELCOME_SET_DOMAIN, encodeU16(snapshots.length)];
   for (const welcome of snapshots) {
     parts.push(
-      bytes16(new TextEncoder().encode(welcome.protocol.id)),
-      u16(welcome.protocol.version),
-      bytes16(welcome.groupId),
-      u64(welcome.epoch),
-      bytes16(welcome.recipientKeyPackageRef),
-      bytes32(welcome.payload),
+      lengthPrefixed16(new TextEncoder().encode(welcome.protocol.id)),
+      encodeU16(welcome.protocol.version),
+      lengthPrefixed16(welcome.groupId),
+      encodeU64(welcome.epoch),
+      lengthPrefixed16(welcome.recipientKeyPackageRef),
+      lengthPrefixed32(welcome.payload),
     );
   }
   return new Uint8Array(
-    await crypto.subtle.digest('SHA-256', concat(parts) as BufferSource),
+    await crypto.subtle.digest('SHA-256', concatBytes(parts) as BufferSource),
   );
 }
 
@@ -6686,11 +6641,11 @@ async function pendingKeyPackageRequestCommitment(
   const parts: Uint8Array[] = [
     KEY_PACKAGE_REQUEST_DOMAIN,
     input.operationId,
-    bytes16(new TextEncoder().encode(storeKey.protocol.id)),
-    u16(storeKey.protocol.version),
-    bytes16(input.groupId),
-    bytes16(input.memberId),
-    bytes32(input.credential),
+    lengthPrefixed16(new TextEncoder().encode(storeKey.protocol.id)),
+    encodeU16(storeKey.protocol.version),
+    lengthPrefixed16(input.groupId),
+    lengthPrefixed16(input.memberId),
+    lengthPrefixed32(input.credential),
   ];
   if (input.extensions === undefined) {
     parts.push(new Uint8Array([0]));
@@ -6698,13 +6653,13 @@ async function pendingKeyPackageRequestCommitment(
     const extensions = [...input.extensions].sort(
       ([left], [right]) => left - right,
     );
-    parts.push(new Uint8Array([1]), u16(extensions.length));
+    parts.push(new Uint8Array([1]), encodeU16(extensions.length));
     for (const [type, value] of extensions) {
-      parts.push(u16(type), bytes32(value));
+      parts.push(encodeU16(type), lengthPrefixed32(value));
     }
   }
   return new Uint8Array(
-    await crypto.subtle.digest('SHA-256', concat(parts) as BufferSource),
+    await crypto.subtle.digest('SHA-256', concatBytes(parts) as BufferSource),
   );
 }
 
@@ -6721,19 +6676,19 @@ async function rollbackForkPoison(
       controlRecord: new Uint8Array(evidence.secondControlRecord),
     },
   ].sort((left, right) =>
-    toHex(left.recordId).localeCompare(toHex(right.recordId)),
+    bytesToHex(left.recordId).localeCompare(bytesToHex(right.recordId)),
   );
   const evidenceHash = new Uint8Array(
     await crypto.subtle.digest(
       'SHA-256',
-      concat([
+      concatBytes([
         FORK_POISON_DOMAIN,
-        u64(evidence.epoch),
+        encodeU64(evidence.epoch),
         new Uint8Array(evidence.parentRecordId),
         branches[0].recordId,
-        bytes32(branches[0].controlRecord),
+        lengthPrefixed32(branches[0].controlRecord),
         branches[1].recordId,
-        bytes32(branches[1].controlRecord),
+        lengthPrefixed32(branches[1].controlRecord),
       ]) as BufferSource,
     ),
   );
@@ -6794,12 +6749,12 @@ function validateReplayEntry(entry: GroupStateReplayEntry): void {
     fail('malformed-state', 'replay operationId is required');
   }
   validateFixedId(entry.operationId, 'replay operationId');
-  validateU64(entry.epoch, 'replay epoch');
-  validateBytes(
+  requireU64(entry.epoch, 'replay epoch');
+  unsharedUint8ArrayByteLength(
     entry.controlRecord,
-    'replay controlRecord',
     1,
     4 * 1024 * 1024,
+    'replay controlRecord',
   );
 }
 
@@ -6808,20 +6763,19 @@ function validateOutboxEntry(entry: GroupStateOutboxEntry): void {
     fail('malformed-state', 'outbox entry must be an object');
   }
   validateFixedId(entry.id, 'outbox id');
-  validateU64(entry.epoch, 'outbox epoch');
+  requireU64(entry.epoch, 'outbox epoch');
   if (
-    typeof entry.kind !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(entry.kind) ||
+    !isCanonicalIdentifier(entry.kind) ||
     !Number.isSafeInteger(entry.createdAt) ||
     entry.createdAt < 0
   ) {
     fail('malformed-state', 'outbox metadata is invalid');
   }
-  validateBytes(
+  unsharedUint8ArrayByteLength(
     entry.payload,
-    'outbox payload',
     1,
     MAX_OUTBOX_PAYLOAD_BYTES,
+    'outbox payload',
   );
 }
 
@@ -6829,65 +6783,18 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
   if (
     protocol === null ||
     typeof protocol !== 'object' ||
-    typeof protocol.id !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(protocol.id) ||
-    !Number.isInteger(protocol.version) ||
-    protocol.version < 0 ||
-    protocol.version > 0xffff
+    !isCanonicalProtocol(protocol.id, protocol.version)
   ) {
     throw new Error('invalid canonical group-security protocol identifier');
   }
 }
 
 function validateIdentity(value: Uint8Array, field: string): void {
-  validateBytes(value, field, 1, MAX_IDENTITY_BYTES);
+  unsharedUint8ArrayByteLength(value, 1, MAX_IDENTITY_BYTES, field);
 }
 
 function validateFixedId(value: Uint8Array, field: string): void {
-  validateBytes(value, field, FIXED_ID_LENGTH, FIXED_ID_LENGTH);
-}
-
-function validateBytes(
-  value: Uint8Array,
-  field: string,
-  minimum: number,
-  maximum: number,
-): void {
-  let length: unknown;
-  let buffer: unknown;
-  let tag: unknown;
-  try {
-    length = Reflect.apply(typedArrayByteLengthGetter, value, []);
-    buffer = Reflect.apply(typedArrayBufferGetter, value, []);
-    tag = Reflect.apply(typedArrayTagGetter, value, []);
-  } catch {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  let isShared = false;
-  if (sharedArrayBufferByteLengthGetter !== undefined) {
-    try {
-      Reflect.apply(sharedArrayBufferByteLengthGetter, buffer, []);
-      isShared = true;
-    } catch {
-      isShared = false;
-    }
-  }
-  if (
-    tag !== 'Uint8Array' ||
-    typeof length !== 'number' ||
-    !Number.isSafeInteger(length) ||
-    length < minimum ||
-    length > maximum ||
-    isShared
-  ) {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-}
-
-function validateU64(value: bigint, field: string): void {
-  if (typeof value !== 'bigint' || value < 0n || value > MAX_U64) {
-    throw new Error(`${field} must be an unsigned 64-bit bigint`);
-  }
+  unsharedUint8ArrayByteLength(value, FIXED_ID_LENGTH, FIXED_ID_LENGTH, field);
 }
 
 function assertPublicStateMatchesKey(
@@ -6945,7 +6852,7 @@ function assertEnvelopeMatchesKey(
 }
 
 function incrementEpoch(epoch: bigint): bigint {
-  validateU64(epoch, 'epoch');
+  requireU64(epoch, 'epoch');
   if (epoch === MAX_U64) fail('epoch-mismatch', 'group epoch is exhausted');
   return epoch + 1n;
 }
@@ -7322,29 +7229,6 @@ function cloneReplayEntry(entry: GroupStateReplayEntry): GroupStateReplayEntry {
   };
 }
 
-function sameProtocol(
-  a: GroupSecurityProtocol,
-  b: GroupSecurityProtocol,
-): boolean {
-  return a.id === b.id && a.version === b.version;
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
-  let different = 0;
-  for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
-  return different === 0;
-}
-
-function optionalBytesEqual(
-  first: Uint8Array | undefined,
-  second: Uint8Array | undefined,
-): boolean {
-  return first === undefined || second === undefined
-    ? first === second
-    : equalBytes(first, second);
-}
-
 function compareReplayEntries(
   a: GroupStateReplayEntry,
   b: GroupStateReplayEntry,
@@ -7358,67 +7242,13 @@ function compareOutboxEntries(
 ): number {
   if (a.epoch !== b.epoch) return a.epoch < b.epoch ? -1 : 1;
   if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-  return toHex(a.id).localeCompare(toHex(b.id));
-}
-
-function bytes16(value: Uint8Array): Uint8Array {
-  return concat([u16(value.byteLength), value]);
-}
-
-function bytes32(value: Uint8Array): Uint8Array {
-  return concat([u32(value.byteLength), value]);
-}
-
-function u16(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
-    throw new Error('value does not fit in u16');
-  }
-  const out = new Uint8Array(2);
-  new DataView(out.buffer).setUint16(0, value, false);
-  return out;
-}
-
-function u32(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-    throw new Error('value does not fit in u32');
-  }
-  const out = new Uint8Array(4);
-  new DataView(out.buffer).setUint32(0, value, false);
-  return out;
-}
-
-function u64(value: bigint): Uint8Array {
-  validateU64(value, 'u64');
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, value, false);
-  return out;
-}
-
-function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  const out = new Uint8Array(
-    parts.reduce((total, part) => total + part.byteLength, 0),
-  );
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
-  }
-  return out;
-}
-
-function toHex(bytes: Uint8Array): string {
-  let result = '';
-  for (const value of bytes) result += value.toString(16).padStart(2, '0');
-  return result;
+  return bytesToHex(a.id).localeCompare(bytesToHex(b.id));
 }
 
 function fromHex(hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('invalid fixed hex id');
-  const out = new Uint8Array(FIXED_ID_LENGTH);
-  for (let index = 0; index < out.length; index++) {
-    out[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
-  }
-  return out;
+  const bytes = tryDecodeLowercaseHex(hex, FIXED_ID_LENGTH);
+  if (bytes === undefined) throw new Error('invalid fixed hex id');
+  return bytes;
 }
 
 async function withProviderLifecycle<T>(

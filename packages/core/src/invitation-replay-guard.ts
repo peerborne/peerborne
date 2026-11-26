@@ -29,6 +29,7 @@ import {
   encodeInvitationJoinRequest,
   encodeInvitationOffer,
 } from './invitation-wire.js';
+import { bytesToHex } from './internal/hex.js';
 
 export const DEFAULT_INVITATION_REPLAY_GUARD_ENTRIES = 1024;
 export const MAX_INVITATION_REPLAY_GUARD_ENTRIES = 65_536;
@@ -142,11 +143,11 @@ export class InMemoryInvitationReplayGuard {
     assertInvitationOfferUsable(offerSnapshot, committedAt);
     this._pruneExpired(committedAt);
     return this._recordJoin(
-      toHex(offerSnapshot.invitationId),
-      toHex(offerDigest),
+      bytesToHex(offerSnapshot.invitationId),
+      bytesToHex(offerDigest),
       offerSnapshot.expiresAtMs,
-      toHex(requestSnapshot.requestId),
-      toHex(requestDigest),
+      bytesToHex(requestSnapshot.requestId),
+      bytesToHex(requestDigest),
     );
   }
 
@@ -186,12 +187,12 @@ export class InMemoryInvitationReplayGuard {
         digestInvitationJoinRequest(requestSnapshot),
         digestInvitationAcceptance(acceptanceSnapshot),
       ]);
-    const offerDigest = toHex(offerDigestBytes);
-    const invitationId = toHex(offerSnapshot.invitationId);
-    const requestId = toHex(requestSnapshot.requestId);
-    const requestDigest = toHex(requestDigestBytes);
-    const acceptanceId = toHex(acceptanceSnapshot.acceptanceId);
-    const acceptanceDigest = toHex(acceptanceDigestBytes);
+    const offerDigest = bytesToHex(offerDigestBytes);
+    const invitationId = bytesToHex(offerSnapshot.invitationId);
+    const requestId = bytesToHex(requestSnapshot.requestId);
+    const requestDigest = bytesToHex(requestDigestBytes);
+    const acceptanceId = bytesToHex(acceptanceSnapshot.acceptanceId);
+    const acceptanceDigest = bytesToHex(acceptanceDigestBytes);
 
     const committedAt = this._observeTime(nowMs);
     assertInvitationOfferUsable(offerSnapshot, committedAt);
@@ -371,12 +372,4 @@ export class InMemoryInvitationReplayGuard {
     );
     return this._observedAtMs;
   }
-}
-
-function toHex(bytes: Uint8Array): string {
-  let result = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    result += bytes[i].toString(16).padStart(2, '0');
-  }
-  return result;
 }

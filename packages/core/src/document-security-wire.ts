@@ -2,9 +2,8 @@ import type { GroupSecurityDocumentContext } from './group-security-coordinator.
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
-  documentBytesEqual,
 } from './internal/document-binary.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
 
 export const MAX_DOCUMENT_CONTENT_BYTES = 512 * 1024;
 export const MAX_DOCUMENT_SECURITY_FRAME_BYTES = 1024 * 1024;
@@ -71,7 +70,7 @@ export function documentContextsMatch(
   writeDocumentContext(x, a);
   const y = new DocumentBinaryWriter();
   writeDocumentContext(y, b);
-  return documentBytesEqual(x.finish(), y.finish());
+  return equalBytes(x.finish(), y.finish());
 }
 
 export function documentContentAAD(
@@ -118,7 +117,7 @@ export function encodeDocumentContent(frame: DocumentContentFrame): Uint8Array {
 
 export function decodeDocumentContent(value: Uint8Array): DocumentContentFrame {
   const reader = new DocumentBinaryReader(value);
-  if (!documentBytesEqual(reader.fixed(MAGIC.length), MAGIC))
+  if (!equalBytes(reader.fixed(MAGIC.length), MAGIC))
     throw new TypeError('Invalid document content domain');
   const documentId = reader.text(),
     genesisId = reader.fixed(32),
@@ -186,7 +185,7 @@ export function decodeEncryptedDocumentContent(value: Uint8Array): {
   ciphertext: Uint8Array;
 } {
   const reader = new DocumentBinaryReader(value);
-  if (!documentBytesEqual(reader.fixed(4), ENCRYPTED_MAGIC))
+  if (!equalBytes(reader.fixed(4), ENCRYPTED_MAGIC))
     throw new TypeError('Invalid encrypted document domain');
   const epochTag = reader.fixed(16),
     nonce = reader.fixed(12),

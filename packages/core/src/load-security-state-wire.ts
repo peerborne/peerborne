@@ -7,7 +7,8 @@ import {
   cloneLoadSecurityCommitments,
   validateLoadSecurityCommitments,
 } from './load-security-state.js';
-import { isPaddedBase64, snapshotEnumerableOwnDataObject } from './utils.js';
+import { isPaddedBase64 } from './internal/base64.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
 
 export interface LoadSecurityCommitmentsWire {
   version: typeof LOAD_SECURITY_STATE_VERSION;

@@ -2,7 +2,7 @@ import {
   GroupStateCiphertext,
   GroupStateProtector,
 } from './group-security-provider.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 export const WEBCRYPTO_GROUP_STATE_ALGORITHM = 'AES-256-GCM';
 export const WEBCRYPTO_GROUP_STATE_NONCE_LENGTH = 12;

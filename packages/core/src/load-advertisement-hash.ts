@@ -5,7 +5,7 @@ import {
   loadSecurityStateHash,
   loadSecurityStateHashToHex,
 } from './load-security-state.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import { concatenate, encodeUtf8 } from './internal/canonical-encoding.js';
 
 const SECURITY_LOAD_ADVERTISEMENT_DOMAIN =

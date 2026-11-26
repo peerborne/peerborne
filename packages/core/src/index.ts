@@ -76,10 +76,7 @@ import {
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
 } from './merkle-dag-serialization.js';
-import {
-  EPOCH_ID_LENGTH,
-  toHex,
-} from './epoch.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
 import {
   CAP_DOC_ADMIN,
   CAP_DOC_WRITE,
@@ -134,7 +131,8 @@ import {
   decodeWelcomeSealedPayloadV2,
   encodeWelcomeSealedPayloadV2,
 } from './welcome-sealed-payload.js';
-import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { TIPS_HASH_LENGTH } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   decideLoadQuorum,
   effectiveK,
@@ -212,7 +210,7 @@ export {
   PartialLocalChangeError,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
-  toHex,
+  bytesToHex as toHex,
   Keychain,
   PreparedKeychainAddition,
   PreparedKeychainEpoch,
@@ -275,7 +273,6 @@ export {
   encodeWelcomeSealedPayloadV2,
   decodeWelcomeSealedPayloadV2,
   // Initial-load quorum (#189 §5.4.2)
-  tipsHashToHex,
   TIPS_HASH_LENGTH,
   decideLoadQuorum,
   effectiveK,
@@ -449,13 +446,14 @@ export type {
   ACLState,
   SerializePublicKey,
 } from './acl-chain.js';
+export { snapshotDeepEnumerableData } from './internal/data-snapshot.js';
+
+export type { DeepDataSnapshotLimits } from './internal/data-snapshot.js';
 export {
-  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   assertSharedProtocolRequestSize,
-  copyUnsharedUint8Array,
-  snapshotDeepEnumerableData,
-} from './utils.js';
-export type { DeepDataSnapshotLimits } from './utils.js';
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
+export { copyUnsharedUint8Array } from './internal/bytes.js';
 export {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,

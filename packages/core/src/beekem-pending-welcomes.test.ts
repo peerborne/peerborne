@@ -14,7 +14,9 @@ import {
   PENDING_WELCOMES_MAX_RETAINED_BYTES,
   PENDING_WELCOMES_TTL_MS,
 } from './pending-welcome-buffer.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 
 /**

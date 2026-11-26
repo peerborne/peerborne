@@ -10,11 +10,13 @@ import {
 } from './change-tree-walk.js';
 import {
   isNativeCryptoKey,
-  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
   snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
   snapshotStringBytes,
-} from './utils.js';
+} from './internal/data-snapshot.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 
 const reflectOwnKeys = Reflect.ownKeys;
 

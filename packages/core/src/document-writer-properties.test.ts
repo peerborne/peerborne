@@ -1,7 +1,7 @@
 import { expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
 import { DocumentBinaryWriter } from './internal/document-binary.js';
-import * as byteUtilities from './utils.js';
+import * as byteUtilities from './internal/bytes.js';
 
 function copies() {
   const original = byteUtilities.copyUnsharedUint8Array;

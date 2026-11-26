@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from '@jest/globals';
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import type { AesAlgorithmName } from './auth-provider.js';
-import { importSymmetricKey } from './utils.js';
 
 const nativeCryptoDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -383,8 +382,14 @@ describe('cross-algorithm failure', () => {
     // Use the same raw key material imported under both algorithms
     const rawKeyBytes = new Uint8Array(32);
     crypto.getRandomValues(rawKeyBytes);
-    const gcmKey = await importSymmetricKey(rawKeyBytes, 'raw', 'AES-GCM');
-    const ctrKey = await importSymmetricKey(rawKeyBytes, 'raw', 'AES-CTR');
+    const [gcmKey, ctrKey] = await Promise.all(
+      (['AES-GCM', 'AES-CTR'] as const).map((algorithm) =>
+        crypto.subtle.importKey('raw', rawKeyBytes, algorithm, true, [
+          'encrypt',
+          'decrypt',
+        ]),
+      ),
+    );
 
     const { data, nonce } = await gcm.encrypt(new Uint8Array([1, 2, 3]), gcmKey);
     // Same key material but different algorithm = failure

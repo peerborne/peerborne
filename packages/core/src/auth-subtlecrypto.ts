@@ -1,5 +1,5 @@
 import { AuthProvider, AesAlgorithmName } from './auth-provider.js';
-import { concatUint8Arrays } from './utils.js';
+import { concatBytes } from './internal/bytes.js';
 import { Base64 } from 'js-base64';
 import { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 import { decodeCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
@@ -369,7 +369,7 @@ export class SubtleCrypto
 
       // Verify HMAC before decrypting (encrypt-then-MAC)
       const hmacKey = await this._deriveHmacKey(documentKey);
-      const macInput = concatUint8Arrays(nonce!, ciphertext);
+      const macInput = concatBytes([nonce!, ciphertext]);
       const valid = await crypto.subtle.verify(
         'HMAC',
         hmacKey,
@@ -428,7 +428,7 @@ export class SubtleCrypto
       // Encrypt-then-MAC: HMAC-SHA256(nonce || ciphertext)
       const hmacKey = await this._deriveHmacKey(documentKey);
       const nonce = this._extractNonce(algorithmParams);
-      const macInput = concatUint8Arrays(nonce, ciphertext);
+      const macInput = concatBytes([nonce, ciphertext]);
       const tag = new Uint8Array(
         await crypto.subtle.sign(
           'HMAC',
@@ -437,7 +437,7 @@ export class SubtleCrypto
         ),
       );
       return {
-        data: concatUint8Arrays(ciphertext, tag),
+        data: concatBytes([ciphertext, tag]),
         nonce,
       };
     }

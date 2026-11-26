@@ -7,7 +7,7 @@ import { JSONSerializer } from './json-serializer.js';
 import { LoadQuorumFailedError } from './load-quorum.js';
 import { PeerborneDocument } from './peerborne-document.js';
 import { fixtureLoadCommitments } from './__testutils__/load-session.js';
-import { concatUint8Arrays } from './utils.js';
+import { concatBytes } from './internal/bytes.js';
 import {
   documentLoadV4,
   securityAdvertiseV1,
@@ -92,7 +92,7 @@ function clientStream(protocol: string, respond: Respond) {
     abort: () => undefined,
     async *[Symbol.asyncIterator]() {
       await closed.promise;
-      const response = await respond(protocol, concatUint8Arrays(...sent));
+      const response = await respond(protocol, concatBytes(sent));
       if (response.length > 0) yield response;
     },
   };
@@ -175,7 +175,7 @@ async function networkFixture() {
     }
     const stream = collectingStream();
     await node.document[handlers[protocol]](request, stream);
-    return concatUint8Arrays(...stream.chunks);
+    return concatBytes(stream.chunks);
   }
 
   const relayed = deferred();

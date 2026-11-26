@@ -5,7 +5,7 @@ import { coordinatedGroupFixture } from '../../core/src/__testutils__/coordinate
 import { createGroupSecurityDurableAcceptance } from '../../core/src/group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from '../../core/src/group-security-coordinator.js';
 import { DocumentDivergedError } from '../../core/src/coordinated-document.js';
-import { documentBytesId } from '../../core/src/internal/document-binary.js';
+import { bytesToHex } from '../../core/src/internal/hex.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
 
@@ -38,12 +38,12 @@ async function restrict(g: any, writePaths: string[][]) {
     [
       {
         memberId: g.members[0],
-        publicKey: documentBytesId(g.members[0]),
+        publicKey: bytesToHex(g.members[0]),
         role: 3,
       },
       {
         memberId: g.members[1],
-        publicKey: documentBytesId(g.members[1]),
+        publicKey: bytesToHex(g.members[1]),
         role: 2,
         writePaths,
       },

@@ -38,6 +38,7 @@
  */
 
 import type { AuthProvider } from './auth-provider.js';
+import { equalBytes } from './internal/bytes.js';
 
 /**
  * Canonical serialization of a public key for use as a stable identifier.
@@ -314,26 +315,6 @@ function canonicalEntryPayloadFromBytes<ChangesType>(
   out.set(changeBytes, off);
 
   return out;
-}
-
-/**
- * Constant-time byte equality for equal-length inputs.
- *
- * Returns `false` immediately when the lengths differ -- timing then
- * reveals only that the lengths differ, which is not secret here:
- * every call site compares values with publicly-known structural lengths
- * (canonical serialized public keys, SHA-256 hash digests). When the
- * lengths *do* match, the comparison runs a fixed-length XOR loop so we
- * don't leak which byte differs -- relevant since hashes and signature
- * key ids are compared on the hot path.
- */
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
-  let diff = 0;
-  for (let i = 0; i < a.byteLength; i++) {
-    diff |= a[i] ^ b[i];
-  }
-  return diff === 0;
 }
 
 /**
@@ -667,7 +648,7 @@ export class ACLChain<ChangesType, PrivateKey, PublicKey> {
         index,
       };
     }
-    if (!bytesEqual(declared, actual)) {
+    if (!equalBytes(declared, actual)) {
       return {
         ok: false,
         reason: 'unknown-signer-key',
@@ -707,7 +688,7 @@ export class ACLChain<ChangesType, PrivateKey, PublicKey> {
           index,
         };
       }
-      if (!bytesEqual(head, entry.parentHash)) {
+      if (!equalBytes(head, entry.parentHash)) {
         return {
           ok: false,
           reason: 'parent-hash-mismatch',
@@ -1045,7 +1026,7 @@ export class ACLChain<ChangesType, PrivateKey, PublicKey> {
     const candidateBytes = await this._config.serializeKey(candidate);
     for (const allowed of this._config.genesisAuthorizedKeys) {
       const allowedBytes = await this._config.serializeKey(allowed);
-      if (bytesEqual(candidateBytes, allowedBytes)) {
+      if (equalBytes(candidateBytes, allowedBytes)) {
         return true;
       }
     }

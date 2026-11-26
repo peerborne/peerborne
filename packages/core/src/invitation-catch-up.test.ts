@@ -12,7 +12,7 @@ import {
   MAX_CHANGE_TREE_DEPTH,
   MAX_CHANGE_TREE_NODES,
 } from './change-tree-walk.js';
-import { readUint8Iterable } from './utils.js';
+import { readUint8Iterable } from './internal/stream-read.js';
 
 describe('invitation catch-up', () => {
   function deepTree(length: number) {

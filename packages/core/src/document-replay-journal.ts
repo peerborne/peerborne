@@ -11,9 +11,8 @@ import {
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
-  documentBytesEqual,
-  documentBytesId,
 } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   readDocumentContext,
   writeDocumentContext,
@@ -24,7 +23,7 @@ import {
   MAX_RECORDED_OPERATION_PATHS,
   type DocumentWritePaths,
 } from './document-field-authorization.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
 
 export class DocumentJournalCapacityError extends Error {
   constructor() {
@@ -188,7 +187,7 @@ function encodeItem(
         32,
         'journal member',
       ),
-      id = documentBytesId(member);
+      id = bytesToHex(member);
     if (
       seen.has(id) ||
       !Number.isSafeInteger(receipt.sequence) ||
@@ -258,7 +257,7 @@ function decodeItem(
     const memberId = reader.fixed(32),
       sequence = reader.number(8),
       hash = reader.fixed(32),
-      id = documentBytesId(memberId);
+      id = bytesToHex(memberId);
     if (!sequence || seen.has(id)) throw new Error('Invalid journal receipt');
     seen.add(id);
     receipts.push({ memberId, sequence, hash });
@@ -388,7 +387,7 @@ export function documentJournalAnchorsEqual(
     ? b === undefined
     : b !== undefined &&
         a.revision === b.revision &&
-        documentBytesEqual(a.commitment, b.commitment);
+        equalBytes(a.commitment, b.commitment);
 }
 const digest = async (value: Uint8Array) =>
   new Uint8Array(
@@ -417,7 +416,7 @@ export class DocumentReplayJournal {
     private readonly anchor: DocumentJournalRollbackAnchor,
   ) {
     this.genesis = copyUnsharedUint8Array(genesis, 32, 32, 'journal genesis');
-    this.storageKey = documentBytesId(this.genesis);
+    this.storageKey = bytesToHex(this.genesis);
     if (
       key.type !== 'secret' ||
       key.algorithm.name !== 'AES-GCM' ||
@@ -431,7 +430,7 @@ export class DocumentReplayJournal {
   assertBinding(documentId: string, genesis: Uint8Array): void {
     if (
       this.documentId !== documentId ||
-      !documentBytesEqual(genesis, this.genesis)
+      !equalBytes(genesis, this.genesis)
     )
       throw new Error('Document journal binding mismatch');
   }
@@ -493,11 +492,11 @@ export class DocumentReplayJournal {
           !revision ||
           marker > DIVERGED ||
           (previous &&
-            (!documentBytesEqual(previous, parent) ||
+            (!equalBytes(previous, parent) ||
               revision !== previousRevision + 1)) ||
           (!previous &&
             marker !== CHECKPOINT &&
-            (revision !== 1 || !documentBytesEqual(parent, ZERO)))
+            (revision !== 1 || !equalBytes(parent, ZERO)))
         )
           throw new Error('Journal causal chain is invalid');
         const acceptedMarker = await this.verifyAcceptedMarker(
@@ -536,7 +535,7 @@ export class DocumentReplayJournal {
         if (previous && item.checkpoint)
           throw new Error('Noninitial journal checkpoint');
         for (const binding of item.publicationBindings) {
-          const token = documentBytesId(binding.token);
+          const token = bytesToHex(binding.token);
           if (
             !canRecordDocumentPublicationBinding(
               acceptedBindings,
@@ -571,7 +570,7 @@ export class DocumentReplayJournal {
         snapshot.revision,
         anchored?.revision ?? 0,
         documentJournalAnchorsEqual(anchored, stored),
-        !!last && documentBytesEqual(last.parent, anchored?.commitment ?? ZERO),
+        !!last && equalBytes(last.parent, anchored?.commitment ?? ZERO),
         authenticated,
       );
       if (recovery === 'reject')
@@ -677,7 +676,7 @@ export class DocumentReplayJournal {
           : [];
       if (checkpoint) {
         const pending = [...this.pendingPublicationBindings.values()].map(
-          (value) => documentBytesId(value.token),
+          (value) => bytesToHex(value.token),
         );
         if (!canRetainDocumentPublicationBindings(beforeBindings, pending, 16))
           throw new Error('Invalid pending publication bindings');
@@ -688,7 +687,7 @@ export class DocumentReplayJournal {
         );
       }
       if (binding) {
-        const bindingId = documentBytesId(binding.token);
+        const bindingId = bytesToHex(binding.token);
         if (
           beforeBindings.has(bindingId) ||
           !canRecordDocumentPublicationBinding(
@@ -769,7 +768,7 @@ export class DocumentReplayJournal {
               );
             if (publication && binding)
               this.pendingPublicationBindings.set(
-                documentBytesId(publication.id),
+                bytesToHex(publication.id),
                 binding,
               );
             this.head = next;
@@ -940,7 +939,7 @@ export class DocumentReplayJournal {
     if (
       actual.revision !== revision ||
       !actual.entry ||
-      !documentBytesEqual(
+      !equalBytes(
         await digest(
           copyUnsharedUint8Array(
             actual.entry,
@@ -1047,8 +1046,8 @@ export class DocumentReplayJournal {
         nonce = reader.fixed(12),
         ciphertext = reader.bytes(1024 * 1024 + 16);
       reader.end();
-      const id = documentBytesId(publication.id),
-        tokenId = documentBytesId(token);
+      const id = bytesToHex(publication.id),
+        tokenId = bytesToHex(token);
       if (
         !isAcceptedDocumentPublicationToken(
           accepted,
@@ -1081,7 +1080,7 @@ export class DocumentReplayJournal {
         1024 * 1024,
         'accepted publication',
       );
-      if (!documentBytesEqual(await digest(frame), publication.id))
+      if (!equalBytes(await digest(frame), publication.id))
         throw new Error('Publication commitment mismatch');
       result.push(frame);
       revisions.push(revision);
@@ -1167,7 +1166,7 @@ export class DocumentReplayJournal {
       throw new Error('Journal store lacks publication support');
     const id = await digest(frame);
     await this.store.publicationSent(this.storageKey, id);
-    this.pendingPublicationBindings.delete(documentBytesId(id));
+    this.pendingPublicationBindings.delete(bytesToHex(id));
   }
 
   private acceptanceAAD(revision: number, commitment: Uint8Array): Uint8Array {

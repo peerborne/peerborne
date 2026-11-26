@@ -4,6 +4,28 @@
  * Implementations may wrap a reviewed group-security protocol. These types do
  * not implement or claim interoperability with any particular protocol.
  */
+import { defineEnumerableDataProperty } from './internal/data-property.js';
+import {
+  bufferOf,
+  byteLengthOf,
+  byteOffsetOf,
+  concatBytes,
+  copyUnsharedUint8Array,
+  equalBytes,
+} from './internal/bytes.js';
+import {
+  asciiBytes,
+  encodeU16,
+  encodeU32,
+  encodeU64,
+  lengthPrefixed16,
+  lengthPrefixed32,
+  requireU64,
+} from './internal/big-endian.js';
+import {
+  isCanonicalIdentifier,
+  isCanonicalProtocol,
+} from './internal/protocol-identifier.js';
 
 const ENCRYPTED_GROUP_STATE_MAGIC = new Uint8Array([
   0x53, 0x57, 0x4d, 0x47, 0x53, 0x30, 0x30, 0x31,
@@ -14,18 +36,6 @@ const ENCRYPTED_KEY_PACKAGE_STATE_MAGIC = new Uint8Array([
 const APPLIED_MEMBERSHIP_DELTA_DOMAIN = asciiBytes(
   'peerborne/group-security-applied-membership-delta/v1\0',
 );
-
-function asciiBytes(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length);
-  for (let index = 0; index < value.length; index++) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit > 0x7f) {
-      throw new TypeError('group-security domain separators must be ASCII');
-    }
-    bytes[index] = codeUnit;
-  }
-  return bytes;
-}
 
 export const ENCRYPTED_GROUP_STATE_VERSION = 1;
 export const ENCRYPTED_KEY_PACKAGE_STATE_VERSION = 1;
@@ -38,7 +48,6 @@ const MAX_KEY_PACKAGE_REFERENCE_BYTES = 512;
 const MAX_KEY_PACKAGE_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const MAX_MEMBERSHIP_CHANGES = 4096;
 const MAX_CIPHERTEXT_BYTES = 64 * 1024 * 1024;
-const MAX_U64 = (1n << 64n) - 1n;
 const MAX_PROTOCOL_ID_BYTES = 128;
 const MAX_PROTECTOR_ALGORITHM_BYTES = 128;
 const MAX_PROTECTOR_KEY_ID_BYTES = 256;
@@ -65,79 +74,14 @@ const MAX_ENCRYPTED_GROUP_STATE_SERIALIZED_BYTES =
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
-const objectDefineProperty = Object.defineProperty;
 const objectPrototype = Object.prototype;
 const objectPrototypeHasOwnProperty = objectPrototype.hasOwnProperty;
 const arrayIsArray = Array.isArray;
 const arrayPrototype = Array.prototype;
-const numberIsInteger = Number.isInteger;
 const numberIsSafeInteger = Number.isSafeInteger;
 const reflectApply = Reflect.apply;
 const reflectOwnKeys = Reflect.ownKeys;
-const uint8ArraySet = Uint8Array.prototype.set;
 const uint8ArraySubarray = Uint8Array.prototype.subarray;
-const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
-const typedArrayByteLengthValue = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteLength',
-)?.get;
-const typedArrayByteOffsetValue = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteOffset',
-)?.get;
-const typedArrayBufferValue = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'buffer',
-)?.get;
-const typedArrayTagValue = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  Symbol.toStringTag,
-)?.get;
-const sharedArrayBufferByteLength =
-  typeof SharedArrayBuffer === 'undefined'
-    ? undefined
-    : objectGetOwnPropertyDescriptor(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-      )?.get;
-
-if (
-  typedArrayByteLengthValue === undefined ||
-  typedArrayByteOffsetValue === undefined ||
-  typedArrayBufferValue === undefined ||
-  typedArrayTagValue === undefined
-) {
-  throw new Error('group-security Uint8Array intrinsics are unavailable');
-}
-const typedArrayByteLength = typedArrayByteLengthValue;
-const typedArrayByteOffset = typedArrayByteOffsetValue;
-const typedArrayBuffer = typedArrayBufferValue;
-const typedArrayTag = typedArrayTagValue;
-
-function byteLengthOf(value: Uint8Array): number {
-  return reflectApply(typedArrayByteLength, value, []) as number;
-}
-
-function byteOffsetOf(value: Uint8Array): number {
-  return reflectApply(typedArrayByteOffset, value, []) as number;
-}
-
-function bufferOf(value: Uint8Array): ArrayBufferLike {
-  return reflectApply(typedArrayBuffer, value, []) as ArrayBufferLike;
-}
-
-function defineEnumerableDataProperty(
-  target: object,
-  key: PropertyKey,
-  value: unknown,
-): void {
-  objectDefineProperty(target, key, {
-    configurable: true,
-    enumerable: true,
-    value,
-    writable: true,
-  });
-}
 
 function appendArrayValue<T>(target: T[], value: T): void {
   defineEnumerableDataProperty(target, target.length, value);
@@ -471,11 +415,11 @@ export class EncryptedKeyPackageState {
     protector: GroupStateProtector,
   ): Promise<EncryptedKeyPackageState> {
     const snapshot = cloneKeyPackage(keyPackage);
-    const privateStateSnapshot = snapshotBoundedBytes(
+    const privateStateSnapshot = copyUnsharedUint8Array(
       privateState,
-      'private KeyPackage state',
       1,
       MAX_CIPHERTEXT_BYTES,
+      'private KeyPackage state',
     );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
@@ -519,24 +463,24 @@ export class EncryptedKeyPackageState {
         this.#keyId,
       ),
     );
-    return snapshotBoundedBytes(
+    return copyUnsharedUint8Array(
       plaintext,
-      'opened private KeyPackage state',
       1,
       MAX_CIPHERTEXT_BYTES,
+      'opened private KeyPackage state',
     );
   }
 
   serialize(): Uint8Array {
-    return concat([
+    return concatBytes([
       encodeKeyPackageAssociatedData(
         this.#keyPackageValue,
         this.#algorithm,
         this.#keyId,
       ),
-      u16(byteLengthOf(this.#nonceValue)),
+      encodeU16(byteLengthOf(this.#nonceValue)),
       this.#nonceValue,
-      u32(byteLengthOf(this.#ciphertextValue)),
+      encodeU32(byteLengthOf(this.#ciphertextValue)),
       this.#ciphertextValue,
     ]);
   }
@@ -669,11 +613,11 @@ export class EncryptedGroupState {
     protector: GroupStateProtector,
   ): Promise<EncryptedGroupState> {
     const snapshot = clonePublicState(state);
-    const privateStateSnapshot = snapshotBoundedBytes(
+    const privateStateSnapshot = copyUnsharedUint8Array(
       privateState,
-      'privateState',
       1,
       MAX_CIPHERTEXT_BYTES,
+      'privateState',
     );
     const algorithm = protector.algorithm;
     const keyId = protector.keyId;
@@ -717,11 +661,11 @@ export class EncryptedGroupState {
         this.#keyId,
       ),
     );
-    return snapshotBoundedBytes(
+    return copyUnsharedUint8Array(
       plaintext,
-      'opened private group state',
       1,
       MAX_CIPHERTEXT_BYTES,
+      'opened private group state',
     );
   }
 
@@ -731,11 +675,11 @@ export class EncryptedGroupState {
       this.#algorithm,
       this.#keyId,
     );
-    return concat([
+    return concatBytes([
       associatedData,
-      u16(byteLengthOf(this.#nonceValue)),
+      encodeU16(byteLengthOf(this.#nonceValue)),
       this.#nonceValue,
-      u32(byteLengthOf(this.#ciphertextValue)),
+      encodeU32(byteLengthOf(this.#ciphertextValue)),
       this.#ciphertextValue,
     ]);
   }
@@ -841,7 +785,7 @@ export function canonicalAppliedGroupMembershipDelta(
   const snapshot = snapshotAppliedGroupMembershipDelta(delta);
   const parts: Uint8Array[] = [
     APPLIED_MEMBERSHIP_DELTA_DOMAIN,
-    u16(snapshot.changes.length),
+    encodeU16(snapshot.changes.length),
   ];
   const memberIds = new Set<string>();
   const keyPackageRefs = new Set<string>();
@@ -855,7 +799,7 @@ export function canonicalAppliedGroupMembershipDelta(
     memberIds.add(memberKey);
     if (change.kind === 'remove') {
       appendArrayValue(parts, new Uint8Array([2]));
-      appendArrayValue(parts, bytes16(change.memberId));
+      appendArrayValue(parts, lengthPrefixed16(change.memberId));
       continue;
     }
     const keyPackageRef = byteKey(change.keyPackageRef);
@@ -867,10 +811,10 @@ export function canonicalAppliedGroupMembershipDelta(
       parts,
       new Uint8Array([change.kind === 'add' ? 1 : 3]),
     );
-    appendArrayValue(parts, bytes16(change.memberId));
-    appendArrayValue(parts, bytes16(change.keyPackageRef));
+    appendArrayValue(parts, lengthPrefixed16(change.memberId));
+    appendArrayValue(parts, lengthPrefixed16(change.keyPackageRef));
   }
-  return concat(parts);
+  return concatBytes(parts);
 }
 
 function snapshotGroupStateCiphertext(
@@ -882,17 +826,17 @@ function snapshotGroupStateCiphertext(
     ['nonce', 'ciphertext'],
   );
   return {
-    nonce: snapshotBoundedBytes(
+    nonce: copyUnsharedUint8Array(
       raw.nonce,
-      'nonce',
       1,
       MAX_SHORT_BYTES,
+      'nonce',
     ),
-    ciphertext: snapshotBoundedBytes(
+    ciphertext: copyUnsharedUint8Array(
       raw.ciphertext,
-      'ciphertext',
       1,
       MAX_CIPHERTEXT_BYTES,
+      'ciphertext',
     ),
   };
 }
@@ -941,21 +885,21 @@ function snapshotAppliedMembershipChange(
     throw new Error(`${label} has an invalid kind`);
   }
   requireExactDescriptorKeys(descriptors, label, expected);
-  const memberId = snapshotBoundedBytes(
+  const memberId = copyUnsharedUint8Array(
     descriptorDataValue(descriptors, 'memberId', label),
-    `${label} memberId`,
     1,
     MAX_MEMBER_ID_BYTES,
+    `${label} memberId`,
   );
   if (kind === 'remove') return { kind, memberId };
   return {
     kind: kind as 'add' | 'update',
     memberId,
-    keyPackageRef: snapshotBoundedBytes(
+    keyPackageRef: copyUnsharedUint8Array(
       descriptorDataValue(descriptors, 'keyPackageRef', label),
-      `${label} keyPackageRef`,
       1,
       MAX_KEY_PACKAGE_REFERENCE_BYTES,
+      `${label} keyPackageRef`,
     ),
   };
 }
@@ -1105,46 +1049,6 @@ function strictArraySnapshot(
   return result;
 }
 
-function snapshotBoundedBytes(
-  value: unknown,
-  field: string,
-  minimum: number,
-  maximum: number,
-): Uint8Array {
-  let length: number;
-  let byteOffset: number;
-  let buffer: ArrayBufferLike;
-  let tag: unknown;
-  try {
-    length = reflectApply(typedArrayByteLength, value, []) as number;
-    byteOffset = reflectApply(typedArrayByteOffset, value, []) as number;
-    buffer = reflectApply(typedArrayBuffer, value, []) as ArrayBufferLike;
-    tag = reflectApply(typedArrayTag, value, []);
-  } catch {
-    throw new Error(`${field} must be a genuine Uint8Array`);
-  }
-  let shared = false;
-  if (sharedArrayBufferByteLength !== undefined) {
-    try {
-      reflectApply(sharedArrayBufferByteLength, buffer, []);
-      shared = true;
-    } catch {
-      shared = false;
-    }
-  }
-  if (tag !== 'Uint8Array' || length < minimum || length > maximum || shared) {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  try {
-    const stableView = new Uint8Array(buffer, byteOffset, length);
-    const result = new Uint8Array(length);
-    reflectApply(uint8ArraySet, result, [stableView]);
-    return result;
-  } catch {
-    throw new Error(`${field} could not be copied safely`);
-  }
-}
-
 function snapshotOwnDataFields(
   value: unknown,
   label: string,
@@ -1213,17 +1117,17 @@ function encodeAssociatedData(
 ): Uint8Array {
   validatePublicState(state);
   validateProtectorIdentity(algorithm, keyId);
-  return concat([
+  return concatBytes([
     ENCRYPTED_GROUP_STATE_MAGIC,
-    u16(ENCRYPTED_GROUP_STATE_VERSION),
-    bytes16(new TextEncoder().encode(state.protocol.id)),
-    u16(state.protocol.version),
-    bytes16(state.groupId),
-    u64(state.epoch),
-    bytes16(state.confirmedTranscriptHash),
-    bytes16(state.treeHash),
-    bytes16(new TextEncoder().encode(algorithm)),
-    bytes16(new TextEncoder().encode(keyId)),
+    encodeU16(ENCRYPTED_GROUP_STATE_VERSION),
+    lengthPrefixed16(new TextEncoder().encode(state.protocol.id)),
+    encodeU16(state.protocol.version),
+    lengthPrefixed16(state.groupId),
+    encodeU64(state.epoch),
+    lengthPrefixed16(state.confirmedTranscriptHash),
+    lengthPrefixed16(state.treeHash),
+    lengthPrefixed16(new TextEncoder().encode(algorithm)),
+    lengthPrefixed16(new TextEncoder().encode(keyId)),
   ]);
 }
 
@@ -1234,16 +1138,16 @@ function encodeKeyPackageAssociatedData(
 ): Uint8Array {
   validateKeyPackage(keyPackage);
   validateProtectorIdentity(algorithm, keyId);
-  return concat([
+  return concatBytes([
     ENCRYPTED_KEY_PACKAGE_STATE_MAGIC,
-    u16(ENCRYPTED_KEY_PACKAGE_STATE_VERSION),
-    bytes16(new TextEncoder().encode(keyPackage.protocol.id)),
-    u16(keyPackage.protocol.version),
-    bytes16(keyPackage.groupId),
-    bytes16(keyPackage.reference),
-    bytes32(keyPackage.payload),
-    bytes16(new TextEncoder().encode(algorithm)),
-    bytes16(new TextEncoder().encode(keyId)),
+    encodeU16(ENCRYPTED_KEY_PACKAGE_STATE_VERSION),
+    lengthPrefixed16(new TextEncoder().encode(keyPackage.protocol.id)),
+    encodeU16(keyPackage.protocol.version),
+    lengthPrefixed16(keyPackage.groupId),
+    lengthPrefixed16(keyPackage.reference),
+    lengthPrefixed32(keyPackage.payload),
+    lengthPrefixed16(new TextEncoder().encode(algorithm)),
+    lengthPrefixed16(new TextEncoder().encode(keyId)),
   ]);
 }
 
@@ -1263,23 +1167,23 @@ function cloneKeyPackage(keyPackage: GroupKeyPackage): GroupKeyPackage {
       id: rawProtocol.id as string,
       version: rawProtocol.version as number,
     },
-    groupId: snapshotBoundedBytes(
+    groupId: copyUnsharedUint8Array(
       raw.groupId,
-      'KeyPackage groupId',
       1,
       MAX_GROUP_ID_BYTES,
+      'KeyPackage groupId',
     ),
-    reference: snapshotBoundedBytes(
+    reference: copyUnsharedUint8Array(
       raw.reference,
-      'KeyPackage reference',
       1,
       MAX_KEY_PACKAGE_REFERENCE_BYTES,
+      'KeyPackage reference',
     ),
-    payload: snapshotBoundedBytes(
+    payload: copyUnsharedUint8Array(
       raw.payload,
-      'KeyPackage payload',
       1,
       MAX_KEY_PACKAGE_PAYLOAD_BYTES,
+      'KeyPackage payload',
     ),
   };
   validateKeyPackage(snapshot);
@@ -1335,24 +1239,24 @@ function clonePublicState(
       id: rawProtocol.id as string,
       version: rawProtocol.version as number,
     },
-    groupId: snapshotBoundedBytes(
+    groupId: copyUnsharedUint8Array(
       raw.groupId,
-      'groupId',
       1,
       MAX_GROUP_ID_BYTES,
+      'groupId',
     ),
     epoch: raw.epoch as bigint,
-    confirmedTranscriptHash: snapshotBoundedBytes(
+    confirmedTranscriptHash: copyUnsharedUint8Array(
       raw.confirmedTranscriptHash,
-      'confirmedTranscriptHash',
       raw.epoch === 0n ? 0 : 1,
       MAX_HASH_BYTES,
+      'confirmedTranscriptHash',
     ),
-    treeHash: snapshotBoundedBytes(
+    treeHash: copyUnsharedUint8Array(
       raw.treeHash,
-      'treeHash',
       1,
       MAX_HASH_BYTES,
+      'treeHash',
     ),
   };
   validatePublicState(snapshot);
@@ -1365,7 +1269,7 @@ function validatePublicState(state: GroupSecurityPublicState): void {
   }
   validateProtocol(state.protocol);
   validateBytes(state.groupId, 'groupId', 1, MAX_GROUP_ID_BYTES);
-  validateU64(state.epoch, 'epoch');
+  requireU64(state.epoch, 'epoch');
   validateBytes(
     state.confirmedTranscriptHash,
     'confirmedTranscriptHash',
@@ -1379,11 +1283,7 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
   if (
     protocol === null ||
     typeof protocol !== 'object' ||
-    typeof protocol.id !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(protocol.id) ||
-    !numberIsInteger(protocol.version) ||
-    protocol.version < 0 ||
-    protocol.version > 0xffff
+    !isCanonicalProtocol(protocol.id, protocol.version)
   ) {
     throw new Error('invalid canonical group-security protocol identifier');
   }
@@ -1391,8 +1291,7 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
 
 function validateProtectorIdentity(algorithm: string, keyId: string): void {
   if (
-    typeof algorithm !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(algorithm) ||
+    !isCanonicalIdentifier(algorithm) ||
     typeof keyId !== 'string' ||
     !/^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,255}$/.test(keyId)
   ) {
@@ -1417,66 +1316,6 @@ function validateBytes(
   }
 }
 
-function validateU64(value: bigint, field: string): void {
-  if (typeof value !== 'bigint' || value < 0n || value > MAX_U64) {
-    throw new Error(`${field} must be an unsigned 64-bit bigint`);
-  }
-}
-
-function bytes16(value: Uint8Array): Uint8Array {
-  const length = byteLengthOf(value);
-  if (length > 0xffff) throw new Error('value does not fit in u16');
-  return concat([u16(length), value]);
-}
-
-function bytes32(value: Uint8Array): Uint8Array {
-  const length = byteLengthOf(value);
-  if (length > 0xffffffff) {
-    throw new Error('value does not fit in u32');
-  }
-  return concat([u32(length), value]);
-}
-
-function u16(value: number): Uint8Array {
-  if (!numberIsInteger(value) || value < 0 || value > 0xffff) {
-    throw new Error('value does not fit in u16');
-  }
-  const out = new Uint8Array(2);
-  new DataView(bufferOf(out)).setUint16(0, value, false);
-  return out;
-}
-
-function u32(value: number): Uint8Array {
-  if (!numberIsInteger(value) || value < 0 || value > 0xffffffff) {
-    throw new Error('value does not fit in u32');
-  }
-  const out = new Uint8Array(4);
-  new DataView(bufferOf(out)).setUint32(0, value, false);
-  return out;
-}
-
-function u64(value: bigint): Uint8Array {
-  validateU64(value, 'epoch');
-  const out = new Uint8Array(8);
-  new DataView(bufferOf(out)).setBigUint64(0, value, false);
-  return out;
-}
-
-function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  let total = 0;
-  for (let index = 0; index < parts.length; index++) {
-    total += byteLengthOf(parts[index]);
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (let index = 0; index < parts.length; index++) {
-    const part = parts[index];
-    reflectApply(uint8ArraySet, out, [part, offset]);
-    offset += byteLengthOf(part);
-  }
-  return out;
-}
-
 class ByteReader {
   private offset = 0;
   private readonly bytes: Uint8Array;
@@ -1486,7 +1325,7 @@ class ByteReader {
     private readonly label: string,
     maximumLength: number,
   ) {
-    this.bytes = snapshotBoundedBytes(value, label, 0, maximumLength);
+    this.bytes = copyUnsharedUint8Array(value, 0, maximumLength, label);
   }
 
   expect(expected: Uint8Array, field: string): void {
@@ -1566,12 +1405,4 @@ class ByteReader {
       throw new Error(`${field} has an invalid length ${length}`);
     }
   }
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  const length = byteLengthOf(a);
-  if (length !== byteLengthOf(b)) return false;
-  let different = 0;
-  for (let i = 0; i < length; i++) different |= a[i] ^ b[i];
-  return different === 0;
 }

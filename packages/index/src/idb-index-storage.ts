@@ -1,4 +1,5 @@
 import { openDB, type IDBPDatabase, type OpenDBCallbacks } from 'idb';
+import { bytesToHex } from './encoding.js';
 import {
   IndexDefinition,
   IndexFieldDefinition,
@@ -47,10 +48,7 @@ function physicalIndexName(name: string): string {
 }
 
 function physicalProperty(name: string): string {
-  return `i${Array.from(
-    new TextEncoder().encode(name),
-    (byte) => byte.toString(16).padStart(2, '0'),
-  ).join('')}`;
+  return `i${bytesToHex(new TextEncoder().encode(name))}`;
 }
 
 function physicalKeys(

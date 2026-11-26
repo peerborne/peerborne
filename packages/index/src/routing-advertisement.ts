@@ -2,13 +2,11 @@ import { DistributedSearchAuthorizer, DistributedSearchSigner, validateApplicati
 import {
   assertExactKeys,
   canonicalBytes,
-  decodeBase64Url,
-  encodeBase64Url,
-  isRecord,
   parseBoundedJson,
   validateBoundedText,
   validateUint64,
 } from './distributed-codec.js';
+import { decodeBase64Url, encodeBase64Url, isRecord } from './encoding.js';
 import { VerifiedDistributedIndexManifest } from './distributed-manifest.js';
 
 const MAX_ADVERTISEMENT_BYTES = 2 * 1024 * 1024;

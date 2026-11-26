@@ -4,7 +4,7 @@ import { initialLoadRequestSignaturePayload } from './initial-load-challenge.js'
 import { cloneLoadSecurityCommitments } from './load-security-state.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
 import * as encoding from './internal/canonical-encoding.js';
-import * as byteUtilities from './utils.js';
+import * as byteUtilities from './internal/bytes.js';
 import * as treeWalk from './change-tree-walk.js';
 
 const commitments = (groupId: string) => ({
