@@ -58,7 +58,7 @@ async function until(description, predicate, timeoutMs = TIMEOUT_MS) {
 }
 
 // Subscribes to every document topic a peer joins, as relay-server does.
-async function startRelay({ autoSubscribe }) {
+async function startRelay({ autoSubscribe, forward = true }) {
   const relay = await createLibp2p({
     addresses: { listen: ['/ip4/127.0.0.1/tcp/0/ws'] },
     transports: [webSockets()],
@@ -77,7 +77,7 @@ async function startRelay({ autoSubscribe }) {
       }),
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
-        canRelayMessage: true,
+        canRelayMessage: forward,
         floodPublish: true,
         scoreParams: { IPColocationFactorWhitelist: new Set(['127.0.0.1']) },
       }),
@@ -97,7 +97,12 @@ async function startRelay({ autoSubscribe }) {
   return { relay, address: relay.getMultiaddrs()[0].toString() };
 }
 
-async function startPeer(relayAddress, trustedWriters, identity) {
+async function startPeer(
+  relayAddress,
+  trustedWriters,
+  identity,
+  antiEntropy = { enabled: false },
+) {
   identity ??= await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-384' },
     true,
@@ -143,7 +148,7 @@ async function startPeer(relayAddress, trustedWriters, identity) {
       },
     },
     pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
-    antiEntropy: { enabled: false },
+    antiEntropy,
     resolveTrustedDocumentWriters: () => trustedWriters,
     resolveLoadSecurityCommitments: commitments,
   });
@@ -158,6 +163,7 @@ async function startPeer(relayAddress, trustedWriters, identity) {
   return { swarm, identity, circuit, libp2p };
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const undelivered = (document) =>
   document.deliveryFailure?.error instanceof NoDeliveryPeersError;
 const set = (key, value) => (doc) => doc.getMap('root').set(key, value);
@@ -223,6 +229,7 @@ async function memberPair(path) {
   const document = a.swarm.doc(path);
   await document.create();
   await document.change(set('x', 1));
+  const offline = document.deliveryFailure;
   assert.ok(undelivered(document));
 
   const b = await startPeer(address, writers, a.identity);
@@ -232,39 +239,111 @@ async function memberPair(path) {
   await b.swarm.connect([a.circuit]);
   assert.equal(await replica.open(), true);
   assert.equal(valueOf(replica, 'x'), 1);
-  await until(
-    'serving the load to clear the failure',
-    () => document.deliveryFailure === undefined,
-  );
+  await delay(200);
+  assert.equal(document.deliveryFailure, offline);
   const topic = documentTopic(path, DEFAULT_DOCUMENT_TOPIC_PREFIX);
   await until('A to see B on the topic', () =>
     a.libp2p.services.pubsub
       .getSubscribers(topic)
       .some((peer) => peer.equals(b.libp2p.peerId)),
   );
-  await document.change(set('y', 2));
-  assert.ok(undelivered(document));
-  await until('B to receive y', () => valueOf(replica, 'y') === 2);
   return { document, replica };
 }
 
-test('serving a member a load, then its sync request, clears the failure, and later frames reach it', async () => {
+test('a served load is not delivery; the member sync request that names the change is, and proves its peer', async () => {
   const { document, replica } = await memberPair('/relay-delivery/sync');
   await replica.requestSync();
   await until(
     'the member sync request to clear the failure',
     () => document.deliveryFailure === undefined,
   );
-  await document.change(set('z', 3));
+  await document.change(set('y', 2));
   assert.equal(document.deliveryFailure, undefined);
-  await until('B to receive z', () => valueOf(replica, 'z') === 3);
+  await until('B to receive y', () => valueOf(replica, 'y') === 2);
 });
 
-test('a member frame that builds on the undelivered change clears it', async () => {
+test('a member frame that builds on the change clears it, but proves nothing about its publisher', async () => {
   const { document, replica } = await memberPair('/relay-delivery/frame');
+  await document.change(set('y', 2));
+  assert.ok(undelivered(document));
+  await until('B to receive y', () => valueOf(replica, 'y') === 2);
   await replica.change(set('w', 4));
   await until('A to receive w', () => valueOf(document, 'w') === 4);
   assert.equal(document.deliveryFailure, undefined);
   await document.change(set('z', 3));
-  assert.equal(document.deliveryFailure, undefined);
+  assert.ok(undelivered(document));
+  await until('B to receive z', () => valueOf(replica, 'z') === 3);
+  await replica.requestSync();
+  await until(
+    'the member sync request to clear the failure',
+    () => document.deliveryFailure === undefined,
+  );
+});
+
+async function republishScenario(path, republish) {
+  const { relay, address } = await startRelay({
+    autoSubscribe: true,
+    forward: false,
+  });
+  const writers = [];
+  const a = await startPeer(address, writers, undefined, {});
+  writers.push(a.identity.publicKey);
+  const document = a.swarm.doc(path);
+  await document.create();
+  const b = await startPeer(address, writers, a.identity, {});
+  const replica = b.swarm.doc(path);
+  replica._keychain.merge(document._keychain.history());
+  await replica._keychain.keys();
+  await b.swarm.connect([a.circuit]);
+  assert.equal(await replica.open(), true);
+  for (const connection of b.libp2p.getConnections(a.libp2p.peerId))
+    await connection.close();
+  await until(
+    'the direct link between A and B to close',
+    () => a.libp2p.getConnections(b.libp2p.peerId).length === 0,
+  );
+  const topic = documentTopic(path, DEFAULT_DOCUMENT_TOPIC_PREFIX);
+  let captured;
+  relay.services.pubsub.addEventListener('message', (event) => {
+    if (
+      event.detail.topic === topic &&
+      String(event.detail.from) === b.libp2p.peerId.toString()
+    )
+      captured ??= event.detail.data;
+  });
+  await replica.change(set('fromB', 1));
+  await until('the relay to capture B frame', () => captured);
+  if (republish) {
+    let republished = 0;
+    a.libp2p.services.pubsub.addEventListener('message', (event) => {
+      if (
+        event.detail.topic === topic &&
+        String(event.detail.from) === relay.peerId.toString()
+      )
+        republished++;
+    });
+    await relay.services.pubsub.publish(topic, captured);
+    await until('A to receive the republished frame', () => republished > 0);
+    await until(
+      'A to apply the republished frame',
+      () => valueOf(document, 'fromB') === 1,
+    );
+    await delay(300);
+  }
+  await replica.close();
+  await b.swarm.heliaNode.stop();
+  await delay(500);
+  await document.change(set('afterB', 1));
+  assert.deepEqual(a.libp2p.services.pubsub.getSubscribers(topic).map(String), [
+    relay.peerId.toString(),
+  ]);
+  assert.ok(undelivered(document));
+}
+
+test('a relay that republishes a member frame under its own PeerId is not a proven member', async () => {
+  await republishScenario('/relay-delivery/republish', true);
+});
+
+test('a relay that only holds a member frame is not a proven member', async () => {
+  await republishScenario('/relay-delivery/control', false);
 });

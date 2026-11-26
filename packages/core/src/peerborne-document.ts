@@ -4176,7 +4176,7 @@ export class PeerborneDocument<
     data: Iterable<Uint8Array>,
     bootstrapRevision: number,
     admission?: SharedProtocolHandlerAdmission,
-  ): Promise<boolean> {
+  ): Promise<void> {
     for (;;) {
       let conflict: ACLOperationInProgressError | undefined;
       const dispatch = await this._runStateMutation(async () => {
@@ -4194,20 +4194,17 @@ export class PeerborneDocument<
         }
         if (!isSharedProtocolHandlerActive(admission)) return;
         if (!authorized) {
-          return {
-            completion: writeStream(stream, [] as Iterable<Uint8Array>),
-            authorized,
-          };
+          return { completion: writeStream(stream, [] as Iterable<Uint8Array>) };
         }
         this._assertBootstrapResponseRevision(bootstrapRevision);
-        return { completion: writeStream(stream, data), authorized };
+        return { completion: writeStream(stream, data) };
       });
       if (conflict === undefined) {
         await dispatch?.completion;
-        return dispatch?.authorized === true;
+        return;
       }
       await (conflict as ACLOperationInProgressError).waitForSettlement();
-      if (!isSharedProtocolHandlerActive(admission)) return false;
+      if (!isSharedProtocolHandlerActive(admission)) return;
     }
   }
 
@@ -5325,7 +5322,7 @@ export class PeerborneDocument<
       this._setDeliveryFailure(undefined);
   }
 
-  /** `peer` served a member: it sent a member-signed request or a writer frame. */
+  /** `peer` published a sync request signed by a member's key that names it. */
   private _noteMemberPeer(peer: string): void {
     this._antiEntropy?.memberPeer(peer);
     this._memberPeers.note(peer);
@@ -5889,7 +5886,6 @@ export class PeerborneDocument<
       }
       if (!isSharedProtocolHandlerActive(admission)) return;
 
-      const covered = this._deliveryFailure;
       const loadMessage = await this._createLoadResponsePlan(message, context);
 
       // Sign new message.
@@ -5921,16 +5917,13 @@ export class PeerborneDocument<
       );
       console.log('Sending encrypted shared doc-load response');
 
-      if (
-        await this._sendAuthorizedLoadResponse(
-          message,
-          stream,
-          [assembled] as Iterable<Uint8Array>,
-          bootstrapRevision,
-          admission,
-        )
-      )
-        this._confirmDelivery(covered);
+      await this._sendAuthorizedLoadResponse(
+        message,
+        stream,
+        [assembled] as Iterable<Uint8Array>,
+        bootstrapRevision,
+        admission,
+      );
     } catch {
       console.error('Shared doc-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -9274,7 +9267,7 @@ export class PeerborneDocument<
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
       if (applied) {
-        this._noteMemberPeer(sender);
+        this._antiEntropy?.memberPeer(sender);
         this._confirmDeliveryByMessage(message);
       }
     };
@@ -10379,9 +10372,12 @@ export class PeerborneDocument<
    * a member, as reported to `subscribeDeliveryFailures()` handlers. It is
    * cleared on evidence that a member holds the change or was sent it: a
    * later local frame or sync response sent to a peer that recently proved it
-   * serves a member, a load response served to a member, a member's sync
-   * request that names the change, or a writer's frame that names it. This is
-   * evidence of delivery, not an acknowledgment that a member stored it.
+   * serves a member, a member's sync request that names the change, or a
+   * writer's frame that names it. A peer proves it serves a member only with
+   * a sync request signed by a member's key that names that peer as its
+   * publisher. This is evidence of delivery, not an acknowledgment that a
+   * member stored it. A load served to a member is not evidence until the
+   * member's next sync request names the change.
    * Local update handlers see the value after their change. A coordinated
    * document never sets it.
    */

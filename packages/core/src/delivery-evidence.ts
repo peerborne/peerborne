@@ -38,9 +38,11 @@ export const MEMBER_PEER_TTL_MS = 60 * 60 * 1000;
 export const MAX_MEMBER_PEERS = 256;
 
 /**
- * PeerIds that recently proved they serve a document member: they sent a
- * request signed by a member's key, or published a writer-signed frame. A
- * subscriber that did neither, such as a relay, is not one.
+ * PeerIds that recently proved they serve a document member: each published
+ * a sync request signed by a member's key that names it as the requester. A
+ * writer-signed frame is no proof, because any peer can republish one under
+ * its own PeerId, so a relay that only forwards or republishes frames is
+ * never one.
  */
 export class MemberPeers {
   private readonly seen = new Map<string, number>();
