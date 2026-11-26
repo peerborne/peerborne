@@ -17,6 +17,7 @@ import {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -202,6 +203,7 @@ export {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -467,6 +469,7 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+export { NoDeliveryPeersError } from './delivery-evidence.js';
 export {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,

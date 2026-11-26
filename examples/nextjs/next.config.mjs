@@ -1,4 +1,5 @@
 export default {
+  agentRules: false,
   transpilePackages: ['@peerborne/react', '@peerborne/store'],
   webpack(config, { isServer, webpack }) {
     if (!isServer) {
