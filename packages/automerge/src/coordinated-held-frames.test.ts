@@ -1,6 +1,8 @@
 import { expect, jest, test } from '@jest/globals';
 import fc from 'fast-check';
+import { change, clone, getChanges, init } from '@automerge/automerge';
 import type { Doc } from '@automerge/automerge';
+import { DocumentCausalDependencyError } from '@peerborne/core';
 import {
   AutomergeJSONSerializer,
   AutomergeProvider,
@@ -43,3 +45,34 @@ test('applies a causal chain from two Automerge authors in any arrival order', a
     },
   );
 }, 60_000);
+
+test('names missing Automerge dependencies before staging and is ready once they apply', () => {
+  const base = change(init<State>(), (draft) => {
+    draft.base = 1;
+  });
+  const first = change(clone(base), (draft) => {
+    draft.first = 1;
+  });
+  const second = change(first, (draft) => {
+    draft.second = 1;
+  });
+  const dependency = getChanges(base, first),
+    dependent = getChanges(first, second);
+  const session = new AutomergeProvider<State>().createDocumentSession(
+    clone(base),
+  );
+  let miss: unknown;
+  try {
+    session.prepareRemote(dependent);
+  } catch (error) {
+    miss = error;
+  }
+  expect(miss).toBeInstanceOf(DocumentCausalDependencyError);
+  const ready = (miss as DocumentCausalDependencyError).ready!;
+  expect(ready()).toBe(false);
+  session.prepareRemote(dependency).commit();
+  expect(ready()).toBe(true);
+  session.prepareRemote(dependent).commit();
+  expect({ ...session.document }).toEqual({ base: 1, first: 1, second: 1 });
+  session.close();
+});

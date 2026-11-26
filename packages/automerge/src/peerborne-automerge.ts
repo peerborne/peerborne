@@ -188,6 +188,24 @@ export class AutomergeProvider<T = any>
       prepareLocal: (message, fn, options) =>
         stage((base) => this.localChange(base, message, fn), options),
       prepareRemote: (changes, options) => {
+        // Name missing dependencies before cloning the document to stage them.
+        if (!closed && !active && !preparing) {
+          const hashes = new Set<string>(),
+            dependencies = new Set<string>();
+          for (const bytes of changes) {
+            const decoded = decodeChange(bytes);
+            if (decoded.hash !== undefined) hashes.add(decoded.hash);
+            for (const dependency of decoded.deps) dependencies.add(dependency);
+          }
+          const missing = [...dependencies].filter(
+            (dependency) =>
+              !hashes.has(dependency) && !hasHeads(document, [dependency]),
+          );
+          if (missing.length !== 0)
+            throw new DocumentCausalDependencyError(
+              () => !closed && hasHeads(document, missing),
+            );
+        }
         return stage((base) => {
           const owned = changes.map(
             (bytes) => new Uint8Array(bytes) as BinaryChange,
