@@ -14,7 +14,7 @@ const store = createDocumentStore(document, { manageLifecycle: false });
 const unsubscribe = store.subscribe(() => {
   const { status, data } = store.getSnapshot();
   output.textContent =
-    status === 'ready'
+    status === 'ready' && data
       ? String(data.getMap('data').get('title') ?? 'Untitled')
       : status;
 });
@@ -90,14 +90,19 @@ the store opens the handle:
 const store = createDocumentStore(async () => {
   const document = peerborne.doc('/workspace');
   const saved = await loadCheckpoint('/workspace');
-  if (saved) await document.restoreCheckpoint(saved);
+  if (saved) await document.restoreEncryptedCheckpoint(saved, storageKey);
   return document;
 });
 ```
 
-`loadCheckpoint` is application code. Export a checkpoint with
-`document.exportCheckpoint()` after each change: a restored older checkpoint
-leaves out the changes made after it.
+`loadCheckpoint` and `storageKey`, a non-extractable 256-bit AES-GCM
+`CryptoKey`, are application code. Save
+`await document.exportEncryptedCheckpoint(storageKey)` after each change: a
+restored older checkpoint leaves out the changes made after it. A checkpoint
+holds the document's state and its document keys, so keep it encrypted at
+rest and never send it to another party. `exportPlaintextCheckpoint()` returns
+it unencrypted; see
+[Local checkpoints](https://peerborne.io/concepts/storage/#local-checkpoints).
 
 - [Framework-free web guide](https://peerborne.io/getting-started/vanilla/)
 - [Runnable examples](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md)

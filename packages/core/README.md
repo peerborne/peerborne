@@ -80,7 +80,11 @@ transport still needs its relay reservation before it can serve as a rendezvous.
 
 ## Resume a saved document
 
-After restoring and opening an authenticated checkpoint, connect to the relay.
+Restore the document's latest checkpoint with
+`restoreEncryptedCheckpoint(saved, storageKey)` on a fresh instance, open it,
+and connect to the relay. Save checkpoints with
+`exportEncryptedCheckpoint(storageKey)`: a checkpoint holds the document's
+plaintext state and keys, so keep it encrypted and never transmit it.
 Open documents request missed updates automatically on open, on reconnect, on
 detected gaps and every 30 to 60 s; `document.requestSync()` sends the same
 request at once, and `antiEntropy: { enabled: false }` turns the automatic

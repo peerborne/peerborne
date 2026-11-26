@@ -10,12 +10,39 @@ import main from '../../../snippets/main.tsx?raw';
 
 Build the repository with the [source quick start](../quick-start/) first. The
 eleven `@peerborne/*` packages are unpublished workspaces. Use these files in a
-browser React/TypeScript workspace with `@peerborne/core`,
-`@peerborne/automerge`, `@peerborne/react`, React, and React DOM available.
-Automerge's browser build also needs Vite's WASM setup; the
+browser React/TypeScript project with `@peerborne/core`,
+`@peerborne/automerge`, `@peerborne/react`, React, and React DOM installed, as
+the next section shows. Automerge's browser build also needs Vite's WASM
+setup; the
 [wiki example configuration](https://github.com/Peerborne/peerborne/blob/main/examples/wiki-swarm/vite.config.ts)
 shows the required plugins. This is a local document exercise, with no relay or
 second identity required.
+
+## Use the packages in another project
+
+Create the application outside the Peerborne checkout. Adding it as a
+workspace of the checkout changes the root `yarn.lock`, so
+`yarn install --immutable` then fails. Instead, pack the libraries as
+tarballs in the checkout and install them in the application:
+
+```sh
+# In the Peerborne checkout, after yarn install --immutable and yarn build.
+# The directory must be outside the checkout; release:prepare replaces it.
+yarn release:prepare ~/peerborne-packages
+
+# In the application directory:
+npm install ~/peerborne-packages/*.tgz react-dom
+npm install --save-dev vite @vitejs/plugin-react vite-plugin-wasm typescript
+```
+
+`release:prepare` packs all eleven libraries and writes
+`release-manifest.json` beside the tarballs. Installing every tarball at once
+lets npm resolve the packages' dependencies on each other, such as
+`@peerborne/react` on `@peerborne/store`, from those files rather than the
+registry. npm also installs their peer dependencies, including React and
+Automerge; React DOM is added explicitly. Repeat both steps after pulling new
+Peerborne sources. Release validation installs the tarballs the same way in a
+clean npm project.
 
 ## The component: ten lines
 
@@ -42,8 +69,10 @@ stateful caches are required for the hook to trigger React renders.
 
 This exercise creates a fresh, non-extractable signing key on every page load.
 A reload therefore creates a **new identity**. Before building a persistent
-application, design storage for the signing identity, document keys, and KEM
-state separately; see [Identities](../../concepts/identities/). A document path
+application, design storage for the signing identity, the KEM key pair, and an
+[encrypted checkpoint](../../concepts/storage/#local-checkpoints) of each
+document, which holds its keys and state; see
+[Identities](../../concepts/identities/). A document path
 alone does not give another client its keys or access.
 
 ## Mount and change state
@@ -56,10 +85,12 @@ Click **Name this workspace**. The button becomes **Ready to ship** after the
 document subscription updates. The node starts once, outside the React render
 lifecycle.
 
-`change` currently returns `void` and drops mutation rejections. This compact
-component demonstrates the subscription API; use
-`await document.change(...)` with application error handling when a save action
-must report authorization, storage, or publication failures. See the
+`change` returns `void` and does not catch the change's promise, so a
+rejection becomes an unhandled promise rejection. This compact component
+demonstrates the subscription API; use `await document.change(...)` with
+application error handling when a save action must report authorization,
+storage, or signing failures. A committed change that does not reach a member
+resolves and is reported as `deliveryFailure` instead. See the
 [React integration guide](../../cookbook/react/) for lifecycle details.
 
 ## Connect another client

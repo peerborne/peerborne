@@ -182,7 +182,7 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
     await run.victim.document.collectGarbage();
     assert.equal(run.pruned.has(cid), true);
 
-    const checkpoint = await run.victim.document.exportCheckpoint();
+    const checkpoint = await run.victim.document.exportPlaintextCheckpoint();
     const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
     assert.ok(state.gcCandidates.length > 0);
     assert.equal(state.ownBlocks.includes(cid), false);
@@ -204,7 +204,7 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
       open: false,
     });
     await assert.rejects(
-      forged.document.restoreCheckpoint({
+      forged.document.restorePlaintextCheckpoint({
         payload,
         signature: await forged.auth.sign(payload, node.identity.privateKey),
       }),
@@ -219,7 +219,7 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
       compaction,
       open: false,
     });
-    await restored.document.restoreCheckpoint(checkpoint);
+    await restored.document.restorePlaintextCheckpoint(checkpoint);
     await restored.document.open();
     assert.deepEqual([...restored.document._gcCandidates], state.gcCandidates);
     await restored.document.collectGarbage();

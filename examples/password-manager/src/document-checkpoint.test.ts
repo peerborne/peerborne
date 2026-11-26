@@ -242,10 +242,10 @@ async function signPathUpdateWithDifferentCommitment(
 
 test('restores authenticated Yjs state, keys, history, and writer access before opening', async () => {
   const { document, created, kem } = await fixture();
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(checkpoint);
+  await restored.restorePlaintextCheckpoint(checkpoint);
   assert.equal(
     restored.document.getText('fixture').toString(),
     'before restart',
@@ -261,14 +261,14 @@ test('restores authenticated Yjs state, keys, history, and writer access before 
     'before restart and after',
   );
   await assert.rejects(
-    restored.restoreCheckpoint(checkpoint),
+    restored.restorePlaintextCheckpoint(checkpoint),
     /fresh document/,
   );
 });
 
 test('rejects tampering, another identity, and another document before installing state', async () => {
   const { document, created } = await fixture();
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const damaged = {
     payload: new Uint8Array(checkpoint.payload),
     signature: checkpoint.signature,
@@ -276,7 +276,7 @@ test('rejects tampering, another identity, and another document before installin
   damaged.payload[damaged.payload.length - 1] ^= 1;
   const candidate = document();
   await assert.rejects(
-    candidate.restoreCheckpoint(damaged),
+    candidate.restorePlaintextCheckpoint(damaged),
     /authentication failed/,
   );
   assert.equal(candidate.historySize(), 0);
@@ -286,20 +286,20 @@ test('rejects tampering, another identity, and another document before installin
     ['sign', 'verify'],
   );
   await assert.rejects(
-    document(undefined, other).restoreCheckpoint(checkpoint),
+    document(undefined, other).restorePlaintextCheckpoint(checkpoint),
     /authentication failed/,
   );
   await assert.rejects(
-    document('/another').restoreCheckpoint(checkpoint),
+    document('/another').restorePlaintextCheckpoint(checkpoint),
     /another document/,
   );
-  await candidate.restoreCheckpoint(checkpoint);
+  await candidate.restorePlaintextCheckpoint(checkpoint);
   assert.equal(candidate.historySize(), created.historySize());
 });
 
 test('rejects malformed signed state atomically and permits a subsequent valid restore', async () => {
   const { document, created, signing } = await fixture();
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
   state.hashes = [];
   const payload = new TextEncoder().encode(JSON.stringify(state));
@@ -312,11 +312,11 @@ test('rejects malformed signed state atomically and permits a subsequent valid r
   );
   const candidate = document();
   await assert.rejects(
-    candidate.restoreCheckpoint({ payload, signature }),
+    candidate.restorePlaintextCheckpoint({ payload, signature }),
     /no document history/,
   );
   assert.equal(candidate.historySize(), 0);
-  await candidate.restoreCheckpoint(checkpoint);
+  await candidate.restorePlaintextCheckpoint(checkpoint);
   assert.equal((await candidate.getWriters()).length, 1);
 });
 
@@ -331,10 +331,10 @@ test('a document that has seen more than 100,000 changes still exports and resto
   await created.change((doc) => doc.getText('fixture').insert(0, 'two '));
   await created.snapshot();
 
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(checkpoint);
+  await restored.restorePlaintextCheckpoint(checkpoint);
   assert.equal(
     restored.document.getText('fixture').toString(),
     'two one before restart',
@@ -347,7 +347,9 @@ test('a document that has seen more than 100,000 changes still exports and resto
   await restored.change((doc) => doc.getText('fixture').insert(0, 'three '));
   const reopened = document();
   await reopened.setKemKeyPair(kem);
-  await reopened.restoreCheckpoint(await restored.exportCheckpoint());
+  await reopened.restorePlaintextCheckpoint(
+    await restored.exportPlaintextCheckpoint(),
+  );
   assert.equal(
     reopened.document.getText('fixture').toString(),
     'three two one before restart',
@@ -356,22 +358,22 @@ test('a document that has seen more than 100,000 changes still exports and resto
 
 test('refuses to export a checkpoint that could not be restored', async () => {
   const { document, created, kem } = await fixture();
-  const saved = await created.exportCheckpoint();
+  const saved = await created.exportPlaintextCheckpoint();
   learnHistory(created, 0, 100_001);
   await assert.rejects(
-    created.exportCheckpoint(),
+    created.exportPlaintextCheckpoint(),
     /Invalid checkpoint collection/,
   );
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(saved);
+  await restored.restorePlaintextCheckpoint(saved);
   assert.equal(restored.document.getText('fixture').toString(), 'before restart');
 });
 
 test('rejects a signed checkpoint that forgot its change root', async () => {
   const { document, created, signing } = await fixture();
   await created.change((doc) => doc.getText('fixture').insert(0, 'next '));
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
   const message = new YjsJSONSerializer().deserializeSyncMessage(
     Buffer.from(state.message, 'base64'),
@@ -392,11 +394,11 @@ test('rejects a signed checkpoint that forgot its change root', async () => {
   );
   const candidate = document();
   await assert.rejects(
-    candidate.restoreCheckpoint({ payload, signature }),
+    candidate.restorePlaintextCheckpoint({ payload, signature }),
     /Invalid checkpoint change root/,
   );
   assert.equal(candidate.historySize(), 0);
-  await candidate.restoreCheckpoint(checkpoint);
+  await candidate.restorePlaintextCheckpoint(checkpoint);
   assert.equal(
     candidate.document.getText('fixture').toString(),
     'next before restart',
@@ -494,7 +496,9 @@ test('a document that adopts a tree naming forgotten ancestors still exports and
 
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(await created.exportCheckpoint());
+  await restored.restorePlaintextCheckpoint(
+    await created.exportPlaintextCheckpoint(),
+  );
   const text = created.document.getText('fixture').toString();
   assert.ok(text.includes('other device'));
   assert.equal(restored.document.getText('fixture').toString(), text);
@@ -502,7 +506,9 @@ test('a document that adopts a tree naming forgotten ancestors still exports and
   await restored.change((doc) => doc.getText('fixture').insert(0, 'after '));
   const reopened = document();
   await reopened.setKemKeyPair(kem);
-  await reopened.restoreCheckpoint(await restored.exportCheckpoint());
+  await reopened.restorePlaintextCheckpoint(
+    await restored.exportPlaintextCheckpoint(),
+  );
   assert.equal(
     reopened.document.getText('fixture').toString(),
     'after ' + text,
@@ -526,7 +532,9 @@ test('a restored document ignores a replay of a change it still knows after trim
 
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(await created.exportCheckpoint());
+  await restored.restorePlaintextCheckpoint(
+    await created.exportPlaintextCheckpoint(),
+  );
   await restored.open();
   const historySize = restored.historySize();
   let updates = 0;
@@ -549,7 +557,7 @@ test('preserves membership state so a restored founder can remove an existing re
   );
   const memberKem = await generateEciesKeyPair();
   await registerReader(created, member.publicKey, memberKem.publicKey);
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const localWelcome = JSON.parse(new TextDecoder().decode(checkpoint.payload))
     .beekem.welcome;
   assert.throws(
@@ -558,7 +566,7 @@ test('preserves membership state so a restored founder can remove an existing re
   );
   const restored = document();
   await restored.setKemKeyPair(kem);
-  await restored.restoreCheckpoint(checkpoint);
+  await restored.restorePlaintextCheckpoint(checkpoint);
   await restored.open();
   assert.equal(
     (await restored.getReaders()).length,
@@ -571,7 +579,9 @@ test('preserves membership state so a restored founder can remove an existing re
   );
   const afterRemoval = document();
   await afterRemoval.setKemKeyPair(kem);
-  await afterRemoval.restoreCheckpoint(await restored.exportCheckpoint());
+  await afterRemoval.restorePlaintextCheckpoint(
+    await restored.exportPlaintextCheckpoint(),
+  );
   await afterRemoval.open();
   await afterRemoval.change((doc) => {
     doc.getText('fixture').insert(0, 'current ');
@@ -586,18 +596,18 @@ test('pinned restart preserves revocation of readers and former editors', async 
   for (const schedule of [0, 1, 2, 3, 4, 5, 6, 7]) {
     const { document, created, kem, traffic } = await fixture();
     async function start(
-      checkpoint: Awaited<ReturnType<typeof created.exportCheckpoint>>,
+      checkpoint: Awaited<ReturnType<typeof created.exportPlaintextCheckpoint>>,
     ) {
       const fresh = document();
       await fresh.setKemKeyPair(kem);
-      await fresh.restoreCheckpoint(
+      await fresh.restorePlaintextCheckpoint(
         checkpoint,
         await documentCheckpointCommitment(checkpoint),
       );
       await fresh.open();
       return fresh;
     }
-    const beforeInvitation = await created.exportCheckpoint();
+    const beforeInvitation = await created.exportPlaintextCheckpoint();
     let live = schedule & 1 ? await start(beforeInvitation) : created;
     const member = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
@@ -608,7 +618,7 @@ test('pinned restart preserves revocation of readers and former editors', async 
     await registerReader(live, member.publicKey, memberKem.publicKey);
     const promoted = (schedule & 4) !== 0;
     if (promoted) await live.addWriter(member.publicKey);
-    const beforeRemoval = await live.exportCheckpoint();
+    const beforeRemoval = await live.exportPlaintextCheckpoint();
     if (schedule & 2) live = await start(beforeRemoval);
     assert.equal((await live.getReaders()).length, 2);
     assert.equal((await live.getWriters()).length, promoted ? 2 : 1);
@@ -620,19 +630,19 @@ test('pinned restart preserves revocation of readers and former editors', async 
     assert.deepEqual(removalFrame.slice(0, priorEpoch.length), priorEpoch);
     await decryptBroadcast(removalFrame, priorKey);
 
-    const checkpoint = await live.exportCheckpoint();
+    const checkpoint = await live.exportPlaintextCheckpoint();
     const trustedCommitment = await documentCheckpointCommitment(checkpoint);
     const restarted = document();
     await restarted.setKemKeyPair(kem);
     for (const older of [beforeInvitation, beforeRemoval]) {
       await assert.rejects(
-        restarted.restoreCheckpoint(older, trustedCommitment),
+        restarted.restorePlaintextCheckpoint(older, trustedCommitment),
         /checkpoint commitment mismatch/,
       );
       assert.equal(restarted.historySize(), 0);
       assert.equal((await restarted.getReaders()).length, 0);
     }
-    await restarted.restoreCheckpoint(checkpoint, trustedCommitment);
+    await restarted.restorePlaintextCheckpoint(checkpoint, trustedCommitment);
     assert.equal((await restarted.getReaders()).length, 1);
     assert.equal((await restarted.getWriters()).length, 1);
     await restarted.open();
@@ -646,7 +656,7 @@ test('pinned restart preserves revocation of readers and former editors', async 
     assert.deepEqual(currentFrame.slice(0, currentEpoch.length), currentEpoch);
     await decryptBroadcast(currentFrame, currentKey);
     await assert.rejects(decryptBroadcast(currentFrame, priorKey));
-    const resumed = await start(await restarted.exportCheckpoint());
+    const resumed = await start(await restarted.exportPlaintextCheckpoint());
     assert.equal(
       resumed.document.getText('fixture').toString(),
       'current before restart',
@@ -659,11 +669,11 @@ test('same-predecessor signed removal forks stop either branch, including after 
   for (const restartMask of [0, 1, 2, 3]) {
     const { document, created, signing, kem, traffic } = await fixture();
     async function start(
-      checkpoint: Awaited<ReturnType<typeof created.exportCheckpoint>>,
+      checkpoint: Awaited<ReturnType<typeof created.exportPlaintextCheckpoint>>,
     ) {
       const replica = document();
       await replica.setKemKeyPair(kem);
-      await replica.restoreCheckpoint(
+      await replica.restorePlaintextCheckpoint(
         checkpoint,
         await documentCheckpointCommitment(checkpoint),
       );
@@ -678,14 +688,18 @@ test('same-predecessor signed removal forks stop either branch, including after 
     const memberKem = await generateEciesKeyPair();
     await registerReader(created, member.publicKey, memberKem.publicKey);
     const first = created;
-    const second = await start(await first.exportCheckpoint());
+    const second = await start(await first.exportPlaintextCheckpoint());
     await first.removeReader(member.publicKey);
     await second.removeReader(member.publicKey);
     const firstUpdate = traffic.get(first)!.updates.at(-1)!;
     const secondUpdate = traffic.get(second)!.updates.at(-1)!;
     const replicas = [
-      restartMask & 1 ? await start(await first.exportCheckpoint()) : first,
-      restartMask & 2 ? await start(await second.exportCheckpoint()) : second,
+      restartMask & 1
+        ? await start(await first.exportPlaintextCheckpoint())
+        : first,
+      restartMask & 2
+        ? await start(await second.exportPlaintextCheckpoint())
+        : second,
     ];
     for (const [index, replica] of replicas.entries()) {
       const { keychain, broadcasts } = traffic.get(replica)!;
@@ -716,7 +730,7 @@ test('same-predecessor signed removal forks stop either branch, including after 
       assert.deepEqual((await keychain.current())[0], epochBefore);
       assert.throws(() => replica.document, /indeterminate authorization/);
       await assert.rejects(
-        replica.exportCheckpoint(),
+        replica.exportPlaintextCheckpoint(),
         /indeterminate authorization/,
       );
       await assert.rejects(
@@ -756,11 +770,11 @@ function forkAnchorFixture(
 test('guarded clean close permits pinned restore on a fresh document handle', async () => {
   const { records, store } = forkAnchorFixture();
   const { created, document, kem } = await fixture(store);
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const pin = await documentCheckpointCommitment(checkpoint);
   const concurrent = document();
   await assert.rejects(
-    concurrent.restoreCheckpoint(checkpoint, pin),
+    concurrent.restorePlaintextCheckpoint(checkpoint, pin),
     /fork anchor blocks/,
   );
   await assert.rejects(document('/missing-scope').open(), /not provisioned/);
@@ -772,7 +786,7 @@ test('guarded clean close permits pinned restore on a fresh document handle', as
   );
   const restarted = document();
   await restarted.setKemKeyPair(kem);
-  await restarted.restoreCheckpoint(checkpoint, pin);
+  await restarted.restorePlaintextCheckpoint(checkpoint, pin);
   assert.equal(await restarted.open(), true);
   assert.equal(
     restarted.document.getText('fixture').toString(),
@@ -887,17 +901,17 @@ for (const interrupt of ['none', 'before-write', 'after-write'] as const) {
     );
     const memberKem = await generateEciesKeyPair();
     await registerReader(created, member.publicKey, memberKem.publicKey);
-    const common = await created.exportCheckpoint();
+    const common = await created.exportPlaintextCheckpoint();
     const otherDevice = document(undefined, undefined, null);
     await otherDevice.setKemKeyPair(kem);
-    await otherDevice.restoreCheckpoint(
+    await otherDevice.restorePlaintextCheckpoint(
       common,
       await documentCheckpointCommitment(common),
     );
     await otherDevice.open();
     await created.removeReader(member.publicKey);
     await otherDevice.removeReader(member.publicKey);
-    const checkpoint = await created.exportCheckpoint();
+    const checkpoint = await created.exportPlaintextCheckpoint();
     const pin = await documentCheckpointCommitment(checkpoint);
 
     let streamActive = true;
@@ -930,7 +944,7 @@ for (const interrupt of ['none', 'before-write', 'after-write'] as const) {
     const restarted = document();
     assert.equal(await restarted.provisionBeeKEMForkStore(), false);
     await assert.rejects(
-      restarted.restoreCheckpoint(checkpoint, pin),
+      restarted.restorePlaintextCheckpoint(checkpoint, pin),
       /fork anchor blocks/,
     );
     assert.equal(
@@ -946,7 +960,7 @@ for (const interrupt of ['none', 'before-write', 'after-write'] as const) {
 
 test('provider decoding failures do not install staged ACLs or document keys', async () => {
   const { document, created, signing } = await fixture();
-  const checkpoint = await created.exportCheckpoint();
+  const checkpoint = await created.exportPlaintextCheckpoint();
   const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
   state.document = Buffer.from('invalid Yjs state').toString('base64');
   const payload = new TextEncoder().encode(JSON.stringify(state));
@@ -958,10 +972,12 @@ test('provider decoding failures do not install staged ACLs or document keys', a
     ),
   );
   const candidate = document();
-  await assert.rejects(candidate.restoreCheckpoint({ payload, signature }));
+  await assert.rejects(
+    candidate.restorePlaintextCheckpoint({ payload, signature }),
+  );
   assert.equal(candidate.historySize(), 0);
   assert.equal((await candidate.getWriters()).length, 0);
-  await candidate.restoreCheckpoint(checkpoint);
+  await candidate.restorePlaintextCheckpoint(checkpoint);
   assert.equal(
     candidate.document.getText('fixture').toString(),
     'before restart',
@@ -980,17 +996,17 @@ test('recovers selected content into a fresh document after an authenticated for
   );
   const memberKem = await generateEciesKeyPair();
   await registerReader(created, member.publicKey, memberKem.publicKey);
-  const common = await created.exportCheckpoint();
+  const common = await created.exportPlaintextCheckpoint();
   const competingReplica = document();
   await competingReplica.setKemKeyPair(kem);
-  await competingReplica.restoreCheckpoint(
+  await competingReplica.restorePlaintextCheckpoint(
     common,
     await documentCheckpointCommitment(common),
   );
   await competingReplica.open();
   await created.removeReader(member.publicKey);
   await competingReplica.removeReader(member.publicKey);
-  const oldCheckpoint = await created.exportCheckpoint();
+  const oldCheckpoint = await created.exportPlaintextCheckpoint();
   const oldContext = Buffer.from(
     await documentCheckpointCommitment(oldCheckpoint),
   ).toString('hex');
@@ -1021,7 +1037,7 @@ test('recovers selected content into a fresh document after an authenticated for
   const staged = new Map<
     string,
     {
-      checkpoint: Awaited<ReturnType<typeof created.exportCheckpoint>>;
+      checkpoint: Awaited<ReturnType<typeof created.exportPlaintextCheckpoint>>;
       pin: Uint8Array;
     }
   >();
@@ -1044,7 +1060,7 @@ test('recovers selected content into a fresh document after an authenticated for
         await candidate.change((draft) => {
           draft.getText('fixture').insert(0, new TextDecoder().decode(content));
         });
-        const checkpoint = await candidate.exportCheckpoint();
+        const checkpoint = await candidate.exportPlaintextCheckpoint();
         const pin = await documentCheckpointCommitment(checkpoint);
         await candidate.close();
         if (!staged.has(receipt)) staged.set(receipt, { checkpoint, pin });
@@ -1091,7 +1107,7 @@ test('recovers selected content into a fresh document after an authenticated for
   const reopened = document(accepted.locator.documentPath);
   await reopened.setKemKeyPair(replacementKem);
   const ready = staged.get(accepted.locator.receipt!)!;
-  await reopened.restoreCheckpoint(ready.checkpoint, ready.pin);
+  await reopened.restorePlaintextCheckpoint(ready.checkpoint, ready.pin);
   await reopened.open();
   assert.equal(
     reopened.document.getText('fixture').toString(),

@@ -5,11 +5,11 @@ description: Frequently asked questions about Peerborne.
 
 ## Is Peerborne production-ready?
 
-**Not yet.** Peerborne is under active development. It is suitable for experiments, prototypes, and learning about local-first systems. Several critical paths are not yet verified end-to-end, including browser restart recovery, partition/rejoin convergence, and automatic reconnect. [Peerborne Note](../../cookbook/peerborne-note/) is an initial-release demo, not evidence of production readiness. See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a complete capability map.
+**Not yet.** Peerborne is under active development. It is suitable for experiments, prototypes, and learning about local-first systems. Several critical paths are not yet verified end-to-end, including restart recovery outside the two examples that test their own encrypted checkpoints, general partition/rejoin convergence, and automatic reconnect. [Peerborne Note](../../cookbook/peerborne-note/) is an initial-release demo, not evidence of production readiness. See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/feature-audit.md) for a complete capability map.
 
 ## Can I use Peerborne with npm/pnpm/yarn install?
 
-Not yet. The `@peerborne/*` packages are **unpublished**. You must clone the repository and build from source. See the [quick start guide](../../getting-started/quick-start/).
+Not from the npm registry. The `@peerborne/*` packages are **unpublished**. Build them from a repository checkout, pack them with `yarn release:prepare <directory>`, and install the tarballs in your project with `npm install <directory>/*.tgz`. See [Use the packages in another project](../../getting-started/react-workspace/#use-the-packages-in-another-project) and the [quick start guide](../../getting-started/quick-start/).
 
 ## Why should I use Peerborne instead of Yjs or Automerge directly?
 
@@ -26,8 +26,10 @@ management is the application's responsibility.
 
 ## What happens if all peers go offline?
 
-No peer can serve a local copy while every holder is offline. IndexedDB bytes
-may survive offline, but complete close/restart reconstruction is not verified.
+No peer can serve a local copy while every holder is offline. IndexedDB keeps
+encrypted blocks, but a closed document reopens only from an
+[encrypted checkpoint](../../concepts/storage/#local-checkpoints) the
+application saved.
 Peerborne's pinning integration is **not implemented**: `PeerborneNode` does not
 implement an authenticated pinning protocol, and the normal core
 commit path has no authenticated publisher. Data is lost if every local copy is
@@ -55,28 +57,37 @@ than document plaintext.
 
 ## Does Peerborne support real-time collaborative editing?
 
-Partial. The GossipSub update path is implemented, but relay-backed live
-post-load propagation and its latency are not yet verified end to end. Presence
-(cursors and selections) is not implemented. Treat Peerborne as an experimental
-document-replication toolkit, not an evidenced low-latency collaborative editing
-service.
+Partial. A cross-NAT CI job verifies live updates in both directions between
+two Chromium processes with separate identities through a Circuit Relay, after
+an invitation, and Peerborne Note's owned-relay tests have two editors typing
+concurrently. Both use Automerge, the only adapter that supports invitations.
+Latency, larger groups and relay failover are not verified, and presence
+(cursors and selections) is not implemented. Treat Peerborne as an
+experimental document-replication toolkit, not an evidenced low-latency
+collaborative editing service.
 
 ## Can multiple people edit the same document at the same time?
 
 At the CRDT-adapter level, yes: delivered concurrent updates merge without a
 lock or leader. Each peer creates encrypted stored change payloads and can
 independently publish an encrypted sync message, signed when document signing is
-enabled. Relay-backed live post-load multi-peer convergence is not yet verified
-end to end, so applications should not treat that complete runtime path as a
-proven capability.
+enabled. Between identities this needs an Automerge document, because only
+Automerge supports invitations, and the initial release has one collaborator
+per document. Relay-backed live convergence of two such peers is verified in
+CI; larger groups and partitions are not.
 
 ## How do I share a document with another person?
 
-The core API automates one narrow online flow: the founder creates a signed
-`reader` or `editor` offer, and one distinct recipient accepts it with a P-256
-KEM key pair. The signed handshake grants the exact ACL role and transfers
-bootstrap keychain material only inside a recipient-encrypted Welcome. Peerborne
-has no separate document-owner role.
+The core API automates one narrow online flow for Automerge documents: the
+founder creates a signed `reader` or `editor` offer, and one distinct recipient
+accepts it with a P-256 KEM key pair. The signed handshake grants the exact ACL
+role and transfers bootstrap keychain material only inside a
+recipient-encrypted Welcome. Peerborne has no separate document-owner role.
+
+A Yjs or Loro document cannot be shared. Invitations require the Automerge
+provider profile, and no other path admits another identity, so a Yjs or Loro
+document has only its founder. The editor bridge and the password-manager
+example are Yjs and stay single-identity.
 
 [Peerborne Note](../../cookbook/peerborne-note/) supplies one bounded link and
 explicit-acceptance interface and persists a local browser signing identity.
@@ -97,8 +108,9 @@ sync envelopes signed only by a removed writer after that replica applies the
 writer-removal ACL update. There is no simultaneous cutover: stale replicas may
 still evaluate against an older writer set, and signing-disabled replicas skip
 that gate. Reader removal separately attempts BeeKEM key separation for future
-epochs. BeeKEM's rekey state is currently **memory-only** (does not survive
-restart), and PathUpdate delivery is best effort. See the
+epochs. BeeKEM's rekey state is held in memory and survives a restart only
+through a [checkpoint](../../concepts/storage/#local-checkpoints) the
+application saves and restores, and PathUpdate delivery is best effort. See the
 [security page](../../concepts/security/#revocation) for details.
 
 ## What browsers are supported?
@@ -119,4 +131,4 @@ storage infrastructure.
 
 ## What license is Peerborne?
 
-MIT. All six packages are licensed under MIT. You can use, modify, and distribute them freely.
+MIT. All eleven packages are licensed under MIT. You can use, modify, and distribute them freely.

@@ -88,17 +88,73 @@ const blockstore = new IDBBlockstore('/peerborne-blocks');
 ```
 
 The configured blockstore, datastore, and libp2p peer store use IndexedDB under
-the browser origin. Those backends can retain bytes across a tab refresh, but
-complete Peerborne reconstruction from that persisted state is not yet an
-end-to-end guarantee.
+the browser origin. Those backends retain encrypted blocks across a tab
+refresh, but Peerborne does not reconstruct a document from them: they hold
+neither the document keys nor the membership and CRDT state an instance needs
+to open. A document reopens locally only from a checkpoint the application
+saved.
 
 **Current status**: Local block storage works in single-session tests. The
-[password-manager example](../../cookbook/password-manager/) and Peerborne Note explicitly save
-encrypted, self-signed document checkpoints and tests reopening after Chromium
-relaunch with the same profile. This application-managed path restores keys,
-CRDT state, and membership before opening locally. Retaining blocks alone does
-not restore those things; other applications and peer-assisted recovery remain
-unverified.
+[password-manager example](../../cookbook/password-manager/) and Peerborne
+Note save encrypted, self-signed document checkpoints, and their CI suites
+reopen documents after a full Chromium relaunch with the same profile. This
+application-managed path restores keys, CRDT state, and membership before
+opening locally. Retaining blocks alone does not restore those things; other
+applications must test their own checkpoint path, and peer-assisted recovery
+remains unverified.
+
+### Local checkpoints
+
+A checkpoint is a bounded, self-signed capture of one document instance's
+local state. It holds the CRDT state, the reader and writer ACLs, BeeKEM
+membership state, and the raw document keys. Without one, a new
+`peerborne.doc(path).open()` after `close()` must load from a connected peer
+that holds the document; when no peer can serve it, `open()` rejects with
+`No document state is available`. Export a checkpoint after each committed
+change and restore it on a fresh instance before `open()`:
+
+```ts
+// A non-extractable 256-bit AES-GCM key that the application keeps, for
+// example in IndexedDB, separately from the checkpoints.
+const storageKey = await crypto.subtle.generateKey(
+  { name: 'AES-GCM', length: 256 },
+  false,
+  ['encrypt', 'decrypt'],
+);
+
+await document.change((doc) => doc.getMap('data').set('title', 'Saved'));
+await saveCheckpoint(path, await document.exportEncryptedCheckpoint(storageKey));
+
+// On the next start, before open():
+const restored = peerborne.doc(path);
+const saved = await loadCheckpoint(path);
+if (saved) await restored.restoreEncryptedCheckpoint(saved, storageKey);
+await restored.open();
+```
+
+`saveCheckpoint` and `loadCheckpoint` are application storage.
+`exportEncryptedCheckpoint()` seals the checkpoint with AES-GCM under the
+application's key, with associated data that binds it to the document path
+and checkpoint format, so it restores only under that key, into that path, for
+the identity that signed it. Restoration rejects bytes sealed under another
+key or for another path, signed by another identity, or altered in any byte. Protect the storage key as well
+as the checkpoint, and never send either to another party. A checkpoint is
+local recovery for the identity that exported it, not a backup or sharing
+format.
+
+`exportPlaintextCheckpoint()` returns the same checkpoint unencrypted: its
+payload is JSON that holds the document's state and its document keys in
+base64. Use it only when the application encrypts it at once with its own
+authenticated format. The Peerborne Note, password-manager and wiki examples
+do this in [`browser-checkpoint-store.ts`](https://github.com/Peerborne/peerborne/blob/main/examples/shared/browser-checkpoint-store.ts),
+which also binds a per-document revision so a stale save fails. Never store
+a plaintext checkpoint unencrypted and never transmit it.
+
+A signature does not prove that a checkpoint is the latest one. To reject an
+older checkpoint that storage replays, keep the
+`documentCheckpointCommitment(bytes)` of the latest saved bytes outside the
+checkpoint store and pass it as the third argument of
+`restoreEncryptedCheckpoint()`.
 
 A checkpoint is also what a retired document instance reopens from. A Yjs or
 Loro instance retires when a change cannot be stored or signed, including after
@@ -201,7 +257,7 @@ To issue new changes, a peer additionally needs:
 
 To participate in dynamic group membership (add/remove readers), a peer additionally needs:
 
-6. **The KEM state** — BeeKEM key material (memory-only currently; determining the set of active members requires this)
+6. **The KEM state** — BeeKEM key material and tree state, held in memory and carried across a restart only by a [checkpoint](#local-checkpoints) (determining the set of active members requires this)
 
 ### Configurable prerequisites
 
@@ -243,11 +299,11 @@ not apply one twice. Writers and readers bound that memory with or without
 compaction. They keep the CIDs of the retained tree, the snapshot boundary, the
 recent tips and the newest 1,024 heads, plus every CID learned in the current
 generation of 1,024. Older CIDs are forgotten when the next generation fills,
-so the encrypted checkpoint of a long-edited document stays small and
-restorable. `hasChange()` and `loadChangeBlock()` report only remembered CIDs.
-`exportCheckpoint()` rejects any state that `restoreCheckpoint()` would refuse,
-such as more than 100,000 remembered CIDs. An application that saves only after
-a successful export, as Peerborne Note does, keeps its previous checkpoint.
+so the checkpoint of a long-edited document stays small and restorable.
+`hasChange()` and `loadChangeBlock()` report only remembered CIDs. A
+checkpoint export rejects any state that restoration would refuse, such as
+more than 100,000 remembered CIDs. An application that saves only after a
+successful export, as Peerborne Note does, keeps its previous checkpoint.
 
 Snapshots can reduce replay work, but:
 
@@ -282,7 +338,7 @@ pinned, or that failed to delete, waits for the next prune or
 `document.collectGarbage()`; the first failure of each collection is logged
 with its cause. A node without a content router, such as a DHT, deletes blocks
 too: Helia refuses to cancel reproviding them, but such a node never provided
-them. The next `exportCheckpoint()` records the stored blocks and the blocks
+them. The next checkpoint export records the stored blocks and the blocks
 still waiting, and an instance restored from that checkpoint deletes them at
 its next collection. Restoration refuses a checkpoint that lists a waiting
 block the document did not store. Blocks stored after the last export are
@@ -300,7 +356,7 @@ Verified in CI:
 
 Not verified:
 
-- Browser restart and document recovery outside the password-manager checkpoint path
+- Browser restart and document recovery outside the Note and password-manager checkpoint paths
 - Multi-device and peer-assisted recovery
 - Compaction and GC with subsequent recovery
 - Pinning publisher integration

@@ -71,7 +71,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         snapshot,
       }).byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES,
     );
-    const checkpoint = await writer.document.exportCheckpoint();
+    const checkpoint = await writer.document.exportPlaintextCheckpoint();
     await writer.close();
 
     const restored = await documentFixture({
@@ -80,7 +80,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
       identity: writer.identity,
       open: false,
     });
-    await restored.document.restoreCheckpoint(checkpoint);
+    await restored.document.restorePlaintextCheckpoint(checkpoint);
     await restored.document.open();
     assert.equal(
       restored.document.latestSnapshot.lastChangeNodeCID,

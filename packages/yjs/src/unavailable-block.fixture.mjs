@@ -141,7 +141,7 @@ test('a replica missing a block whose author is offline keeps working', async (t
     PROMPT_MS,
     'change()',
   );
-  await within(g.document.exportCheckpoint(), PROMPT_MS, 'exportCheckpoint()');
+  await within(g.document.exportPlaintextCheckpoint(), PROMPT_MS, 'exportPlaintextCheckpoint()');
   await within(g.document.requestSync(), PROMPT_MS, 'requestSync()');
 
   // At the deadline G gives up on B1 and applies A2's change without it. B1

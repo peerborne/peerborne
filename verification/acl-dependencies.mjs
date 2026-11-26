@@ -159,8 +159,8 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
         path: victor.document.documentPath,
         open: false,
       });
-      await restored.document.restoreCheckpoint(
-        await victor.document.exportCheckpoint(),
+      await restored.document.restorePlaintextCheckpoint(
+        await victor.document.exportPlaintextCheckpoint(),
       );
       assert.equal(restored.document._hashes.has(orphanCid), false);
       assert.deepEqual(

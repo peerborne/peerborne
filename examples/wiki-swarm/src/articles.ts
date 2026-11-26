@@ -106,7 +106,7 @@ export class ArticleSession {
       if (saved) {
         if (mode === 'create') throw new ArticleExistsError();
         try {
-          await doc.restoreCheckpoint(saved.checkpoint);
+          await doc.restorePlaintextCheckpoint(saved.checkpoint);
         } finally {
           saved.checkpoint.payload.fill(0);
           saved.checkpoint.signature.fill(0);
@@ -155,7 +155,7 @@ export class ArticleSession {
     const operation = article.writes
       .catch(() => undefined)
       .then(async () => {
-        const checkpoint = await article.doc.exportCheckpoint();
+        const checkpoint = await article.doc.exportPlaintextCheckpoint();
         try {
           article.revision = await this.store.save(
             path,

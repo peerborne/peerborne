@@ -20,13 +20,19 @@ for (const adapter of ['automerge', 'yjs']) {
     const founder = await documentFixture({ adapter, path });
     const swarm = founder.document.swarm;
     await founder.document.change(setTitle('Founded'));
-    const checkpoint = await founder.document.exportCheckpoint();
+    const storageKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    const checkpoint =
+      await founder.document.exportEncryptedCheckpoint(storageKey);
     await founder.document.close();
 
     const handles = [];
     const store = createDocumentStore(async () => {
       const handle = swarm.doc(path);
-      await handle.restoreCheckpoint(checkpoint);
+      await handle.restoreEncryptedCheckpoint(checkpoint, storageKey);
       handles.push(handle);
       return handle;
     });

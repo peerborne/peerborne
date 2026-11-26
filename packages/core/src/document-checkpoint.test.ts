@@ -7,7 +7,10 @@ import {
   checkpointDecode,
   checkpointEncode,
   decodeCheckpointState,
+  documentCheckpointCommitment,
   encodeCheckpointState,
+  openSealedDocumentCheckpoint,
+  sealDocumentCheckpoint,
   type DocumentCheckpointState,
 } from './document-checkpoint.js';
 
@@ -286,4 +289,148 @@ describe('checkpoint change history', () => {
       ),
     ).toThrow(/conflicting descriptions/);
   });
+});
+
+describe('encrypted checkpoint', () => {
+  const path = '/encrypted';
+  const aesKey = (
+    usages: KeyUsage[] = ['encrypt', 'decrypt'],
+    length = 256,
+    name = 'AES-GCM',
+  ) =>
+    crypto.subtle.generateKey(
+      { name, length },
+      false,
+      usages,
+    ) as Promise<CryptoKey>;
+  const checkpoint = () => ({
+    payload: new TextEncoder().encode(
+      '{"keychain":"document key","x":"secret"}',
+    ),
+    signature: new Uint8Array([7, 8, 9]),
+  });
+  const contains = (haystack: Uint8Array, needle: Uint8Array) =>
+    Buffer.from(haystack).includes(Buffer.from(needle));
+
+  test('round-trips under its key and path without exposing the payload', async () => {
+    const key = await aesKey();
+    const original = checkpoint();
+    const sealed = await sealDocumentCheckpoint(original, path, key);
+    expect(contains(sealed, new TextEncoder().encode('secret'))).toBe(false);
+    expect(contains(sealed, original.payload.subarray(0, 8))).toBe(false);
+    expect(await openSealedDocumentCheckpoint(sealed, path, key)).toEqual(
+      original,
+    );
+    const again = await sealDocumentCheckpoint(original, path, key);
+    expect(Buffer.from(again).equals(Buffer.from(sealed))).toBe(false);
+  });
+
+  test('rejects another key, another path and altered bytes', async () => {
+    const key = await aesKey();
+    const sealed = await sealDocumentCheckpoint(checkpoint(), path, key);
+    const altered = sealed.slice();
+    altered[altered.length - 1] ^= 1;
+    for (const [bytes, documentPath, storageKey] of [
+      [sealed, path, await aesKey()],
+      [sealed, '/other', key],
+      [altered, path, key],
+      [sealed.subarray(0, sealed.length - 1), path, key],
+    ] as const)
+      await expect(
+        openSealedDocumentCheckpoint(bytes, documentPath, storageKey),
+      ).rejects.toThrow('Encrypted checkpoint could not be authenticated');
+    await expect(
+      openSealedDocumentCheckpoint(sealed.subarray(0, 20), path, key),
+    ).rejects.toThrow(/Encrypted checkpoint/);
+  });
+
+  test.each([
+    ['an empty payload', 0, 3],
+    ['an empty signature', 3, 0],
+    ['a length past the end', 1_000, 3],
+    ['a signature over its limit', 1, 8193],
+  ])(
+    'rejects authenticated bytes with %s',
+    async (_name, payloadLength, signatureLength) => {
+      const key = await aesKey();
+      const cleartext = new Uint8Array(
+        4 + Math.min(payloadLength, 3) + signatureLength,
+      );
+      new DataView(cleartext.buffer).setUint32(0, payloadLength);
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = new Uint8Array(
+        await crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: nonce,
+            additionalData: new TextEncoder().encode(
+              JSON.stringify([
+                'peerborne/encrypted-document-checkpoint/1',
+                path,
+              ]),
+            ),
+          },
+          key,
+          cleartext,
+        ),
+      );
+      const sealed = new Uint8Array(nonce.length + ciphertext.length);
+      sealed.set(nonce);
+      sealed.set(ciphertext, nonce.length);
+      await expect(
+        openSealedDocumentCheckpoint(sealed, path, key),
+      ).rejects.toThrow('Invalid encrypted checkpoint');
+    },
+  );
+
+  test.each([
+    ['an AES-CBC key', () => aesKey(['encrypt', 'decrypt'], 256, 'AES-CBC')],
+    ['a 128-bit key', () => aesKey(['encrypt', 'decrypt'], 128)],
+    ['a key that cannot encrypt', () => aesKey(['decrypt'])],
+  ])('refuses to seal with %s', async (_name, key) => {
+    await expect(
+      sealDocumentCheckpoint(checkpoint(), path, await key()),
+    ).rejects.toThrow('Checkpoint storage key must be a 256-bit AES-GCM key');
+  });
+
+  test('refuses to open with a key that cannot decrypt', async () => {
+    const sealed = await sealDocumentCheckpoint(
+      checkpoint(),
+      path,
+      await aesKey(),
+    );
+    await expect(
+      openSealedDocumentCheckpoint(sealed, path, await aesKey(['encrypt'])),
+    ).rejects.toThrow('that can decrypt');
+  });
+
+  test('commits to the sealed bytes', async () => {
+    const key = await aesKey();
+    const original = checkpoint();
+    const sealed = await sealDocumentCheckpoint(original, path, key);
+    expect(Buffer.from(await documentCheckpointCommitment(sealed))).toEqual(
+      Buffer.from(
+        await crypto.subtle.digest(
+          'SHA-256',
+          sealed as Uint8Array<ArrayBuffer>,
+        ),
+      ),
+    );
+    expect(Buffer.from(await documentCheckpointCommitment(original))).toEqual(
+      Buffer.from(
+        await crypto.subtle.digest(
+          'SHA-256',
+          original.payload as Uint8Array<ArrayBuffer>,
+        ),
+      ),
+    );
+  });
+
+  test('restores only under its key, path and commitment on a real document', async () => {
+    await promisify(execFile)(
+      process.execPath,
+      ['--test', `${__dirname}/encrypted-checkpoint.fixture.mjs`],
+      { timeout: 60_000 },
+    );
+  }, 70_000);
 });
