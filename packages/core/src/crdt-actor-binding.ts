@@ -408,11 +408,12 @@ export function isCRDTActorPrefix(bytes: unknown): bytes is Uint8Array {
 
 /**
  * First-seen registrations for the actors a replica has admitted. A different
- * registration for a remembered actor is rejected. Memory is bounded by
- * forgetting the least recently used binding beyond
- * {@link MAX_CRDT_ACTORS_PER_SIGNER} for one signer or
- * {@link MAX_CRDT_ACTOR_BINDINGS} in all, so honest use never stops a signer
- * from registering a new actor.
+ * registration for a remembered actor is rejected. Memory is bounded without
+ * ever refusing a registration: beyond {@link MAX_CRDT_ACTORS_PER_SIGNER} a
+ * signer's least recently used binding is forgotten, and beyond
+ * {@link MAX_CRDT_ACTOR_BINDINGS} in all the least recently used binding of
+ * the signer holding the most bindings is forgotten, taken from signers
+ * outside the preferred set (the current writers) first.
  */
 export class CRDTActorBindings {
   private readonly _actors = new Map<string, CRDTSignedActorRegistration>();
@@ -449,6 +450,7 @@ export class CRDTActorBindings {
   /** Remember pairs, refreshing ones already known. */
   record(
     entries: Iterable<readonly [string, CRDTSignedActorRegistration]>,
+    preferred?: ReadonlySet<string>,
   ): void {
     const list = [...entries];
     this.check(list);
@@ -473,8 +475,25 @@ export class CRDTActorBindings {
       if (actors.size > MAX_CRDT_ACTORS_PER_SIGNER)
         this._forget(actors.values().next().value!);
       if (this._actors.size > MAX_CRDT_ACTOR_BINDINGS)
-        this._forget(this._actors.keys().next().value!);
+        this._forgetForCapacity(preferred);
     }
+  }
+
+  private _forgetForCapacity(preferred?: ReadonlySet<string>): void {
+    let victim: Set<string> | undefined;
+    let victimPreferred = true;
+    for (const [signer, actors] of this._bySigner) {
+      const isPreferred = preferred?.has(signer) === true;
+      if (
+        victim === undefined ||
+        (victimPreferred && !isPreferred) ||
+        (victimPreferred === isPreferred && actors.size > victim.size)
+      ) {
+        victim = actors;
+        victimPreferred = isPreferred;
+      }
+    }
+    if (victim !== undefined) this._forget(victim.values().next().value!);
   }
 
   private _forget(actor: string): void {

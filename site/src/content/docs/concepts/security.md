@@ -180,10 +180,14 @@ prevent this by binding every actor to the signer that owns it:
   ordinary update, such as a shallow snapshot, is refused. Each actor must be
   the one the envelope derives. The inline changes of one message are all
   checked, concurrently, before any is applied, so a rejected change never
-  enters the live document. A message whose own head fails is rejected. A
-  failing change it relays from an earlier writer is skipped instead, so a
-  forgery that reached an honest writer cannot block that writer's own later
-  changes. Deletions of, and references to, other actors' operations are not
+  enters the live document. A message whose own head fails is rejected, as
+  is a message carrying any change that fails for a reason other than actor
+  binding, such as bytes the CRDT cannot decode. A relayed change that fails
+  actor binding is skipped instead, so a forgery that reached an honest writer
+  cannot block that writer's own later changes. The skipped change is held as
+  waiting, so the relayer's changes that build on it wait with it, and later
+  trees are walked down to it again; it is applied if a later delivery passes.
+  Deletions of, and references to, other actors' operations are not
   restricted.
 - A change therefore introduces or extends only its own signer's actors. A
   writer that re-wraps another writer's change under its own envelope, or
@@ -193,7 +197,8 @@ prevent this by binding every actor to the signer that owns it:
   own, or one it reserved with `document.reserveActor()` for a separate
   editing copy, such as the Yjs editor bridge's mirror or a template seeded
   from another `Y.Doc` whose client ID is the reserved actor. Release a
-  reservation with `document.releaseActor()`. A change function that applies
+  reservation with `document.releaseActor()`; an instance holds at most 64
+  and refuses another until one is released. A change function that applies
   operations made under any other actor, for example `Y.applyUpdate` of an
   unrelated document, is refused before anything is published. Automerge
   returns to a writable copy of the document under a new actor. Yjs and Loro
@@ -213,10 +218,15 @@ prevent this by binding every actor to the signer that owns it:
   advertisement digests cover the snapshot state without its manifest, so
   honest writers that remember different bindings still agree. Local
   checkpoints carry the remembered bindings.
-- A replica remembers at most 4,096 bindings per signer and 16,384 per
-  document, forgetting the least recently used one beyond either limit. It
-  never refuses a registration for capacity, so new sessions, restores,
-  rollbacks and editor mirrors of an honest writer always write.
+- A replica remembers at most 4,096 bindings per signer, forgetting that
+  signer's least recently used one beyond it, and 16,384 per document. Beyond
+  the document limit it forgets the least recently used binding of the signer
+  holding the most bindings, taken from signers that are not current writers
+  first, so a flood of registrations under throwaway keys forgets their own
+  bindings before an honest writer's. It never refuses a registration for
+  capacity, so new sessions, restores, rollbacks and editor mirrors of an
+  honest writer always write. Registrations whose signatures it has verified
+  are remembered separately, so a later snapshot does not verify them again.
 
 The binding costs two more signatures per new actor and one per local change,
 the matching verifications on receipt, and about 360 bytes per change before

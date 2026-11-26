@@ -32,7 +32,8 @@ function generateIdentity() {
  * `key` under `actor`), `json(document)`, `actor(document)`,
  * `hasActor(document, actor)` and optionally `squat(actor, key)`, a change
  * function that switches the document to `actor` before writing, and
- * `hashDependencies`, set when changes depend on their predecessors by hash.
+ * `hashDependencies`, set when changes depend on their predecessors by hash,
+ * and `garbage()`, bare changes the provider cannot decode.
  */
 export function actorBindingScenarios(adapter) {
   const path = `/${adapter.name}-actor-binding`;
@@ -331,11 +332,70 @@ export function actorBindingScenarios(adapter) {
     assert.ok(squatMessage.changeId in relayed.changes.children);
     assert.equal(await carol.document.sync(relayed), true);
     assert.equal(json(carol).squat, undefined);
+    assert.equal(carol.document._isWaiting(squatMessage.changeId), true);
+    assert.equal(carol.document.hasChange(relayed.changeId), false);
     // Automerge changes depend on their predecessors by hash, so Alice's later
     // change waits for the change Carol refused. Its 128-bit actors make the
     // collision this test simulates infeasible.
     if (!adapter.hashDependencies) assert.equal(json(carol).honest, 1);
     assert.equal(json(carol).bob, 1);
+  });
+
+  test(`${adapter.name}: a forged child under a valid root waits, and other failures reject the message`, async () => {
+    const { alice, bob, mallory } = await network();
+    await bob.document.change(adapter.write('bob'));
+    const forged = await authored(
+      mallory,
+      adapter.forge(alice.document.document, actorOf(bob), 'forged'),
+      await registration(mallory),
+    );
+    const forgedId = await mallory.document._putBlock(forged, 'document');
+    await mallory.document.change(adapter.write('mroot'));
+    const root = await lastMessage(mallory);
+    const tree = (child) =>
+      signed(mallory, {
+        changeId: root.changeId,
+        changes: {
+          kind: 'document',
+          change: root.changes.change,
+          children: { [forgedId]: { kind: 'document', change: child } },
+        },
+      });
+
+    const garbled = await authored(
+      mallory,
+      adapter.garbage(),
+      await registration(mallory),
+    );
+    await assert.rejects(
+      alice.document.sync(await tree(garbled)),
+      (error) => !(error instanceof CRDTActorBindingError),
+    );
+    assert.equal(json(alice).mroot, undefined);
+
+    assert.equal(await alice.document.sync(await tree(forged)), true);
+    assert.equal(json(alice).forged, undefined);
+    assert.equal(alice.document._isWaiting(forgedId), true);
+    assert.equal(alice.document.hasChange(root.changeId), false);
+    if (!adapter.hashDependencies) assert.equal(json(alice).mroot, 1);
+    assert.equal(await alice.document.sync(await lastMessage(bob)), true);
+    assert.equal(await bob.document.sync(await tree(forged)), true);
+    await exchange(alice, bob);
+    assert.equal(json(bob).forged, undefined);
+  });
+
+  test(`${adapter.name}: reservations are refused past the limit, never forgotten`, async () => {
+    const { alice } = await network();
+    const reserved = [];
+    for (let index = 0; index < 64; index++)
+      reserved.push(await alice.document.reserveActor());
+    await assert.rejects(
+      alice.document.reserveActor(),
+      bindingError(/Release one of 64/),
+    );
+    assert.equal(alice.document._reservedActors.has(reserved[0]), true);
+    alice.document.releaseActor(reserved[0]);
+    assert.equal(typeof (await alice.document.reserveActor()), 'string');
   });
 
   test(`${adapter.name}: snapshots and checkpoints keep the first registration of an actor`, async () => {

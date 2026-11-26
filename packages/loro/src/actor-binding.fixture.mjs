@@ -16,6 +16,7 @@ const h = actorBindingScenarios({
   acl: () => new YjsACLProvider(),
   keychain: () => new YjsKeychainProvider(),
   serializer: () => new YjsJSONSerializer(),
+  garbage: () => new Uint8Array([255, 255, 255]),
   write: (key) => (doc) => doc.getMap('m').set(key, 1),
   forge(document, actor, key) {
     const forger = new LoroDoc();

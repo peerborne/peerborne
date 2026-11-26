@@ -14,6 +14,7 @@ actorBindingScenarios({
   acl: () => new AutomergeACLProvider(),
   keychain: () => new AutomergeKeychainProvider(),
   serializer: () => new AutomergeJSONSerializer(),
+  garbage: () => [new Uint8Array([255, 255, 255])],
   write: (key) => (doc) => {
     doc[key] = 1;
   },

@@ -232,7 +232,7 @@ describe('first-seen actor bindings', () => {
     expect(() => bindings.check([indexed('mallory', 1)])).not.toThrow();
   });
 
-  test(`forget the least recently used binding beyond ${MAX_CRDT_ACTOR_BINDINGS} in all`, () => {
+  test(`beyond ${MAX_CRDT_ACTOR_BINDINGS} in all, forget from the signer holding the most`, () => {
     const bindings = new CRDTActorBindings();
     const signers = Math.ceil(MAX_CRDT_ACTOR_BINDINGS / 1024) + 1;
     for (let signer = 0; signer < signers; signer++)
@@ -243,8 +243,54 @@ describe('first-seen actor bindings', () => {
       );
     expect(bindings.size).toBe(MAX_CRDT_ACTOR_BINDINGS);
     expect(bindings.get('signer-0-0')).toBeUndefined();
-    expect(bindings.signerCount('signer-0')).toBe(0);
+    const counts = Array.from({ length: signers }, (_, signer) =>
+      bindings.signerCount(`signer-${signer}`),
+    );
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
     expect(bindings.get(`signer-${signers - 1}-1023`)).toBeDefined();
+  });
+
+  test("a flood from several keys forgets the flooders' bindings before a small signer's", () => {
+    const bindings = new CRDTActorBindings();
+    bindings.record([['bob', registration('bob', 1)]]);
+    for (let signer = 0; signer < 4; signer++)
+      bindings.record(
+        Array.from({ length: MAX_CRDT_ACTORS_PER_SIGNER }, (_, index) =>
+          indexed(`throwaway-${signer}`, index),
+        ),
+      );
+    expect(bindings.size).toBe(MAX_CRDT_ACTOR_BINDINGS);
+    expect(bindings.get('bob')).toEqual(registration('bob', 1));
+    expect(() => bindings.check([['bob', registration('mallory', 9)]])).toThrow(
+      /already bound/,
+    );
+  });
+
+  test("current writers' bindings are forgotten last", () => {
+    const bindings = new CRDTActorBindings();
+    const writers = new Set(['alice']);
+    bindings.record(
+      Array.from({ length: MAX_CRDT_ACTORS_PER_SIGNER }, (_, index) =>
+        indexed('alice', index),
+      ),
+      writers,
+    );
+    for (let signer = 0; signer < 4; signer++)
+      bindings.record(
+        Array.from({ length: 1024 }, (_, index) =>
+          indexed(`throwaway-${signer}`, index),
+        ),
+        writers,
+      );
+    for (let signer = 0; signer < 3; signer++)
+      bindings.record(
+        Array.from({ length: MAX_CRDT_ACTORS_PER_SIGNER }, (_, index) =>
+          indexed(`flood-${signer}`, index),
+        ),
+        writers,
+      );
+    expect(bindings.signerCount('alice')).toBe(MAX_CRDT_ACTORS_PER_SIGNER);
+    expect(bindings.size).toBe(MAX_CRDT_ACTOR_BINDINGS);
   });
 
   test('list remembered registrations only', () => {
