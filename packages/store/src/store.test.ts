@@ -126,6 +126,35 @@ describe('framework-independent document store', () => {
     await store.stop();
   });
 
+  test('exposes a committed but undelivered change until a later change is published', async () => {
+    const source = new TestDocument();
+    const store = createDocumentStore(() => source);
+    await store.start();
+    const offline = new Error('PublishError.NoPeersSubscribedToTopic');
+    source.undeliveredError = offline;
+    await store.change((data) => {
+      data.title = 'Offline';
+    });
+    expect(store.getSnapshot()).toMatchObject({
+      status: 'ready',
+      data: { title: 'Offline' },
+      error: undefined,
+      deliveryFailure: { changeId: 'cid-1', error: offline },
+    });
+
+    source.document.title = 'Remote';
+    source.emit();
+    expect(store.getSnapshot().deliveryFailure?.changeId).toBe('cid-1');
+
+    source.undeliveredError = undefined;
+    await store.change((data) => {
+      data.title = 'Online';
+    });
+    expect(store.getSnapshot().deliveryFailure).toBeUndefined();
+    await store.stop();
+    expect(source.deliveryHandlers.size).toBe(0);
+  });
+
   test('does not replace newer membership notifications with stale initialization reads', async () => {
     const source = new TestDocument();
     const gate = deferred();

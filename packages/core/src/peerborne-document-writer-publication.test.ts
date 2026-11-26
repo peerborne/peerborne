@@ -589,6 +589,37 @@ describe('writer ACL publication boundary', () => {
     );
   });
 
+  test('a writer addition whose block cannot be stored changes nothing and retries cleanly', async () => {
+    const writers = new StagedWriterACL(new Set(['owner']));
+    const publish = jest.fn(async () => undefined);
+    const {
+      document,
+      initialLastSyncMessage,
+      initialRecentTips,
+      serializedMessages,
+    } = publicationHarness(writers, publish, ['committed-add-cid']);
+    document._putBlock.mockRejectedValueOnce(new Error('QuotaExceededError'));
+
+    await expect(document.addWriter('candidate')).rejects.toThrow(
+      'QuotaExceededError',
+    );
+    expect(writers.members).toEqual(new Set(['owner']));
+    expect(document._hashes).toEqual(
+      new Set(['parent-cid', 'remote-tip-cid']),
+    );
+    expect(document._referencedAncestors).toEqual(
+      new Set(['older-ancestor-cid']),
+    );
+    expect(document._recentTips).toEqual(initialRecentTips);
+    expect(document._lastSyncMessage).toBe(initialLastSyncMessage);
+    expect(publish).not.toHaveBeenCalled();
+
+    await expect(document.addWriter('candidate')).resolves.toBeUndefined();
+    expect(writers.members).toEqual(new Set(['owner', 'candidate']));
+    expect(document._hashes).toContain('committed-add-cid');
+    expect(serializedMessages).toHaveLength(1);
+  });
+
   test('requires explicit reader authorization before writer promotion', async () => {
     const writers = new StagedWriterACL(new Set(['owner']));
     const publish = jest.fn(async () => undefined);

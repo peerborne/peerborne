@@ -80,11 +80,13 @@ coordinate their own retry, resynchronization, or acknowledgment flow. See the
 
 Documents store encrypted blocks in browser IndexedDB via Helia's blockstore. Local persistence works in single-session tests, but complete browser close → reopen → verify document state has not been proven in CI. See the [roadmap](../../community/roadmap/) for current status.
 
-### Automerge/Yjs mutation persistence on rejection
+### Local changes that fail before publication
 
-If part of the `change()` pipeline fails (e.g., storage quota exceeded), the CRDT mutation may already be applied to the local replica. The mutation persists locally even though the remote sync failed. There is no automatic undo or rollback of the CRDT state.
+A `change()` call or `endChange()` batch is committed locally once its block is stored and it is in the retained change tree. From then on the call resolves even if encrypting or publishing its frame fails, for example because a GossipSub node configured without `allowPublishToZeroTopicPeers` has no topic peers. The change stays in the document, local update handlers run, the next change's frame carries it inline, and sync and load responses serve it. The failure is reported to handlers registered with `document.subscribeDeliveryFailures(id, handler)`, which receive the document path, the change's CID and the error; use them to show that an edit has not reached peers yet, not to repeat it. A failure from a local update handler or compaction rejects the call but also keeps the change.
 
-An `endChange()` batch that fails before it is published rolls an Automerge document back to a writable copy of its state before the batch, which makes later changes under a new actor. While the document holds remote changes waiting for missing dependencies, a copy would lose them, so the batch instead retires the instance, which must be reopened from accepted state. Yjs edits in place, so its batch stays applied. A batch whose publication succeeded is kept even when a local update handler then fails.
+A change that fails before that point, because the blockstore exceeds its storage quota or signing fails, is discarded, so no later change depends on an edit that peers never received. An Automerge document returns to a writable copy of its state before the change, which makes later changes under a new actor. Yjs and Loro edit in place and cannot undo the edit, so the instance is retired instead, as is an Automerge document that holds remote changes waiting for missing dependencies. The call rejects with an error whose `cause` is the failure. A retired instance refuses further changes and checkpoints until it is reopened from accepted state, such as the last checkpoint exported before the failure.
+
+Storage and signing failures are not always permanent. A transient IndexedDB write error, or a remote or WebAuthn signer whose prompt the user cancels, also retires a Yjs or Loro instance. Reopening from the last checkpoint then loses every change made after that checkpoint that peers have not received, including changes reported to `subscribeDeliveryFailures()` handlers, because those exist only on this device. Export a checkpoint after each committed change, and always after a delivery failure, so that reopening keeps them.
 
 ## The infrastructure boundary
 
