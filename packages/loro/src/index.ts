@@ -1,4 +1,4 @@
-import { LoroDoc } from 'loro-crdt';
+import { LoroDoc, decodeImportBlobMeta } from 'loro-crdt';
 import { PartialLocalChangeError, type CRDTProvider } from '@peerborne/core';
 
 export type LoroChange = (document: LoroDoc) => void;
@@ -39,6 +39,21 @@ export class LoroProvider
   remoteChange(document: LoroDoc, changes: Uint8Array): LoroDoc {
     document.import(changes);
     return document;
+  }
+
+  /**
+   * Loro holds an imported change whose dependencies are missing outside the
+   * oplog, and snapshot exports omit it. A change is integrated once the oplog
+   * covers the end of every peer range it carries.
+   */
+  hasIntegrated(document: LoroDoc, changes: Uint8Array): boolean {
+    const integrated = document.oplogVersion();
+    for (const [peer, end] of decodeImportBlobMeta(
+      changes,
+      false,
+    ).partialEndVersionVector.toJSON())
+      if ((integrated.get(peer) ?? 0) < end) return false;
+    return true;
   }
 
   getHistory(document: LoroDoc): Uint8Array {
