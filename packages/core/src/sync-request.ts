@@ -2,14 +2,21 @@ import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import { syncRequestTimeAllowed } from './policy/sync-request.js';
 
-const domain = '\u0000peerborne/sync-request/2\u0000';
+const domain = '\u0000peerborne/sync-request/3\u0000';
 const prefix = Uint8Array.from(domain, (character) => character.charCodeAt(0));
 export const MAX_SYNC_REQUEST_BYTES = 32 * 1024;
 export const SYNC_REQUEST_LIFETIME_MS = 60_000;
+export const MAX_SYNC_REQUEST_PEER_ID_LENGTH = 128;
+const PEER_ID = /^[1-9A-HJ-NP-Za-km-z]+$/u;
 
 export interface SyncRequest {
   readonly documentId: string;
   readonly requester: string;
+  /**
+   * The requesting node's libp2p PeerId in base58btc. Members that lack the
+   * requester's head can load from this peer. It is bound by the signature.
+   */
+  readonly requesterPeer: string;
   readonly requestId: string;
   readonly issuedAtMs: number;
   readonly knownTips: readonly string[];
@@ -32,6 +39,7 @@ export function syncRequestSigningPayload(
       JSON.stringify([
         request.documentId,
         request.requester,
+        request.requesterPeer,
         request.requestId,
         request.issuedAtMs,
         request.knownTips,
@@ -49,6 +57,7 @@ export function encodeSyncRequest(request: SyncRequest): Uint8Array {
       JSON.stringify([
         request.documentId,
         request.requester,
+        request.requesterPeer,
         request.requestId,
         request.issuedAtMs,
         request.knownTips,
@@ -68,10 +77,11 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
         bytes.subarray(prefix.length),
       ),
     );
-    if (!Array.isArray(fields) || fields.length !== 7) return;
+    if (!Array.isArray(fields) || fields.length !== 8) return;
     const [
       documentId,
       requester,
+      requesterPeer,
       requestId,
       issuedAtMs,
       knownTips,
@@ -85,6 +95,9 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
       typeof requester !== 'string' ||
       requester.length < 1 ||
       requester.length > 4096 ||
+      typeof requesterPeer !== 'string' ||
+      requesterPeer.length > MAX_SYNC_REQUEST_PEER_ID_LENGTH ||
+      !PEER_ID.test(requesterPeer) ||
       typeof requestId !== 'string' ||
       !/^[0-9a-f]{32}$/u.test(requestId) ||
       !Number.isSafeInteger(issuedAtMs) ||
@@ -122,6 +135,7 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
     return Object.freeze({
       documentId,
       requester,
+      requesterPeer,
       requestId,
       issuedAtMs,
       knownTips: Object.freeze(knownTips),

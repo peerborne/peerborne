@@ -123,6 +123,22 @@ describe('an ordinary sync citing a block that no reachable peer holds', () => {
     expect(document._hashes.has('NEXT')).toBe(true);
   });
 
+  test('reports a block that fails or waits out its retry delay to catch-up', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const missingChange = jest.fn();
+    const document = fakeDocument({
+      _antiEntropy: { missingChange, remoteStateApplied: jest.fn() },
+      _getBlock: jest.fn((_cid: unknown, options: any) =>
+        wantBlock(options.signal),
+      ),
+    });
+    await boundedSync(document, 'ROOT', tree('inline', 'MISSING'));
+    expect(missingChange).toHaveBeenCalledWith('MISSING');
+    await boundedSync(document, 'NEXT', tree('next', 'MISSING'));
+    expect(document._getBlock).toHaveBeenCalledTimes(1);
+    expect(missingChange).toHaveBeenCalledTimes(2);
+  });
+
   test('close() aborts the fetch promptly without backing the block off', async () => {
     jest.spyOn(console, 'error').mockImplementation(() => {});
     let started!: () => void;
