@@ -84,6 +84,19 @@ const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocu
 
 const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeychainEntry = canonicalKeychain.assertCanonicalKeychainEntry;
 
+// Peerborne checks a waiting change again with the same bytes, so decode each
+// change once.
+const automergeChangeHashes = new WeakMap<BinaryChange, string>();
+
+function automergeChangeHash(change: BinaryChange): string {
+  let hash = automergeChangeHashes.get(change);
+  if (hash === undefined) {
+    hash = decodeChange(change).hash;
+    automergeChangeHashes.set(change, hash);
+  }
+  return hash;
+}
+
 export type AutomergeDocumentChangeHandler<T = any> =
   PeerborneDocumentChangeHandler<Doc<T>, CryptoKey>;
 
@@ -230,6 +243,12 @@ export class AutomergeProvider<T = any>
     const [newDoc] = applyChanges(document, changes);
     return newDoc;
   }
+  hasIntegrated(document: Doc<T>, changes: BinaryChange[]): boolean {
+    // applyChanges() queues a change whose dependencies are missing, and
+    // getAllChanges() and save() leave the queue out. hasHeads() looks up
+    // applied history only, so this costs the same however long the queue is.
+    return hasHeads(document, changes.map(automergeChangeHash));
+  }
   getHistory(document: Doc<T>): BinaryChange[] {
     return getAllChanges(document);
   }
@@ -246,6 +265,9 @@ export class AutomergeProvider<T = any>
     // any concurrent changes not included in the snapshot.
     const loaded = load<T>(snapshot[0] as unknown as Uint8Array);
     return merge(document, loaded);
+  }
+  hasPendingChanges(document: Doc<T>): boolean {
+    return getMissingDeps(document, []).length > 0;
   }
 }
 

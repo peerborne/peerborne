@@ -876,4 +876,55 @@ describe('snapshot-bearing invitation sync', () => {
       expect(document._changesSinceSnapshot).toBe(2);
     },
   );
+
+  test('records changes that waited for a snapshot applied after change sync', async () => {
+    const document = snapshotDocument();
+    Object.assign(document, {
+      _isSigningEnabled: () => true,
+      _encoder: new TextEncoder(),
+      _changesSerializer: { serializeChanges: () => new Uint8Array([1]) },
+      _verifySnapshotSignature: jest.fn(async () => true),
+      _changesSinceSnapshot: 0,
+      _referencedAncestors: new Set<string>(),
+      _recentTips: [],
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _crdtProvider: {
+        remoteChange: (_doc: unknown, state: unknown) => state,
+        hasIntegrated: (doc: unknown) => doc instanceof Uint8Array,
+      },
+      _syncDocumentChanges: async () => {
+        document._noteWaiting('head-cid', crdtDocumentChangeNode, {});
+        document._noteWaiting('recent-cid', crdtDocumentChangeNode, {});
+      },
+    });
+    const message = snapshotMessage('load-response-v4');
+    message.signature = 'AAAA';
+
+    await expect(
+      document._syncUnlocked(
+        message,
+        false,
+        'load-response-v4',
+        undefined,
+        false,
+        undefined,
+        { applySnapshotAfterChanges: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(document._hashes).toEqual(
+      new Set(['boundary-cid', 'head-cid', 'recent-cid']),
+    );
+    expect(document._fireOrDeferRemoteUpdateHandlers).toHaveBeenCalledWith([
+      'head-cid',
+      'recent-cid',
+      'boundary-cid',
+    ]);
+    expect(document._refreshLastSyncMessageFromSync).toHaveBeenCalledWith(
+      'head-cid',
+      [],
+    );
+    expect(document._documentChangeCount).toBe(12);
+    expect(document._changesSinceSnapshot).toBe(2);
+  });
 });

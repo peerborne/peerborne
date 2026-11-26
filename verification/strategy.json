@@ -528,6 +528,16 @@
       ]
     },
     {
+      "id": "automatic-catch-up-scheduling",
+      "formalBoundary": "No scheduler contract is proved. Generated signal histories with fake time check that at most one timer is armed, requests stay at least the minimum interval apart, quiet periods are never longer than four thirds of the periodic interval, loads stay a load interval apart, follow a request by the load delay and target only connected writer advertisers, and nothing loads without the commitment resolver. Real timers, the shared budget across documents, signature verification of advertisements and the authenticated load itself are covered by example, native and real-node tests; network delivery, UI latency and many-peer traffic are outside this evidence.",
+      "evidence": [
+        "packages/core/src/anti-entropy-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/anti-entropy.ts"
+      ]
+    },
+    {
       "id": "explicit-document-replacement",
       "formalBoundary": "The production locator classification and staged publication gate are exact. Finite histories from one pinned base prove monotone revision, at most one accepted successor and that it comes from an approved, content-matching, staged CAS attempt. Native checks cover bounded ownership, authorization and hashing, delayed preparation, distinct and identical concurrent preparations, and restart after interrupted staging or acknowledgment. The Yjs fixture reopens a fresh checkpoint and verifies selected content and a fresh epoch. The model trusts the application approval, private durable staging and independently protected atomic locator, and does not provide distributed branch selection, peer-assisted recovery, or browser storage durability.",
       "evidence": [

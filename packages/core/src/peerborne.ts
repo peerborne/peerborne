@@ -52,6 +52,7 @@ import {
   LOAD_QUORUM_TIMEOUT_MS_MAX,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
+import { resolveAntiEntropyConfig } from './anti-entropy.js';
 import {
   beekemPathUpdateV2,
   beekemWelcomeV2,
@@ -697,6 +698,7 @@ export class Peerborne<
     // exactly as `runLoadQuorum` does on every load, so a config accepted
     // here cannot fail later at load time.
     validateLoadQuorumConfig(config);
+    resolveAntiEntropyConfig(config.antiEntropy);
 
     this._loadTrustPolicy = Object.freeze({
       resolveTrustedDocumentWriters: config.resolveTrustedDocumentWriters,

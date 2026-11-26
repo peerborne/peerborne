@@ -382,6 +382,30 @@ describe('mergeRemoteSyncTree (per-message cross-link dedup)', () => {
     expect(out).toEqual([]);
   });
 
+  test('takes a cross-linked payload from below a known node instead of fetching it', () => {
+    // C is new and cross-links X. X is inline only under K, which is known
+    // locally (for example a snapshot boundary), so the walk stops at K.
+    const tree: Node = {
+      kind: docKind,
+      change: 'payload-C',
+      children: {
+        K: {
+          kind: docKind,
+          change: 'payload-K',
+          children: { X: { kind: docKind, change: 'payload-X' } },
+        },
+        X: { kind: docKind },
+        Y: { kind: docKind },
+      },
+    };
+    const out = mergeRemoteSyncTree('C', tree, undefined, new Set(['K']));
+    expect(out).toEqual([
+      ['C', docKind, 'payload-C'],
+      ['X', docKind, 'payload-X'],
+      ['Y', docKind, undefined],
+    ]);
+  });
+
   test('does not inspect malformed aliases when the remote root is already local', () => {
     expect(
       mergeRemoteSyncTree(

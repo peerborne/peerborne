@@ -80,11 +80,12 @@ transport still needs its relay reservation before it can serve as a rendezvous.
 
 ## Resume a saved document
 
-After restoring and opening an authenticated checkpoint, connect to the relay
-and call `document.requestSync()` to request missed updates. Applications can
-repeat the small request after reconnection. Current readers and writers may
-request updates; only current writers answer with ordinary signed, encrypted
-sync messages. Requests bind the document, requester, fresh nonce, timestamp,
+After restoring and opening an authenticated checkpoint, connect to the relay.
+Open documents request missed updates automatically on open, on reconnect, on
+detected gaps and every 30 to 60 s; `document.requestSync()` sends the same
+request at once, and `antiEntropy: { enabled: false }` turns the automatic
+requests off. Current readers and writers may request updates; only current
+writers answer with ordinary signed, encrypted sync messages. Requests bind the document, requester, fresh nonce, timestamp,
 and known roots, and have bounded replay memory and response rates. This uses
 the restored membership and document keys; it does not replace a fresh
 document's trusted-load configuration or recover missed key rotations.
