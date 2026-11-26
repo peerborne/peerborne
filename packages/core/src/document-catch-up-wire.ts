@@ -8,6 +8,7 @@ import {
 } from './internal/document-binary.js';
 import {
   MAX_DOCUMENT_CONTENT_BYTES,
+  MAX_DOCUMENT_SECURITY_FRAME_BYTES,
   readDocumentContext,
   writeDocumentContext,
 } from './document-security-wire.js';
@@ -20,7 +21,8 @@ const MAX_RECEIPTS = 256;
 export const MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES = 32 * 1024;
 /** Signed author frames proving that an offered receipt extends the requester's. */
 export const MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES = 256;
-export const MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES = 256 * 1024;
+/** The sealed checkpoint frame bounds the suffix together with the snapshot. */
+export const MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES = MAX_DOCUMENT_SECURITY_FRAME_BYTES;
 
 export interface DocumentCatchUpBinding {
   readonly documentId: string;

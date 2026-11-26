@@ -224,6 +224,11 @@ interface SealedStage {
 
 const MAX_RETAINED_FRAMES_PER_AUTHOR = 64;
 const MAX_RETAINED_BYTES = 16 * 1024 * 1024;
+const MAX_RETAINED_PROCESS_BYTES = 64 * 1024 * 1024;
+/** Retained bytes across every coordinated document in this module instance. */
+let retainedProcessBytes = 0;
+/** Room kept for the signature, AEAD tag and outer framing of a checkpoint. */
+const CHECKPOINT_SEAL_BYTES = 4096;
 
 /** True when a verified suffix may replace a conflicting receipt, beside the proved policy. */
 function catchUpReceiptExtends(
@@ -672,26 +677,45 @@ export class CoordinatedDocument<
     if (
       !this.retained ||
       !documentContextsMatch(this.retained.context, context)
-    )
+    ) {
+      this.dropRetained();
       this.retained = { context, authors: new Map(), bytes: 0, order: 0 };
+    }
     const retained = this.retained;
+    const size = (frame: Pick<RetainedFrame, 'signed' | 'frame'>) =>
+      frame.signed.length + frame.frame.length;
     const frames = retained.authors.get(author) ?? [];
     frames.push({ ...value, order: retained.order++, observedAt: Date.now() });
     retained.authors.set(author, frames);
-    retained.bytes += value.signed.length + value.frame.length;
-    const evict = (list: RetainedFrame[], owner: string) => {
+    retained.bytes += size(value);
+    retainedProcessBytes += size(value);
+    const evict = (owner: string) => {
+      const list = retained.authors.get(owner)!;
       const [oldest] = list.splice(0, 1);
-      retained.bytes -= oldest.signed.length + oldest.frame.length;
+      retained.bytes -= size(oldest);
+      retainedProcessBytes -= size(oldest);
       if (list.length === 0) retained.authors.delete(owner);
     };
-    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(frames, author);
-    while (retained.bytes > MAX_RETAINED_BYTES) {
-      let owner: string | undefined;
-      for (const [id, list] of retained.authors)
-        if (owner === undefined || list[0].order < retained.authors.get(owner)![0].order)
-          owner = id;
-      evict(retained.authors.get(owner!)!, owner!);
+    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(author);
+    // Over budget, the author holding the most bytes gives up its oldest frame.
+    while (
+      retained.bytes > 0 &&
+      (retained.bytes > MAX_RETAINED_BYTES ||
+        retainedProcessBytes > MAX_RETAINED_PROCESS_BYTES)
+    ) {
+      let owner: string | undefined,
+        most = -1;
+      for (const [id, list] of retained.authors) {
+        const bytes = list.reduce((total, frame) => total + size(frame), 0);
+        if (bytes > most) [owner, most] = [id, bytes];
+      }
+      evict(owner!);
     }
+  }
+
+  private dropRetained(): void {
+    retainedProcessBytes -= this.retained?.bytes ?? 0;
+    this.retained = undefined;
   }
 
   /** Retained frames of `author` after `sequence`, if they form its complete suffix. */
@@ -703,8 +727,13 @@ export class CoordinatedDocument<
     head: number,
   ): RetainedFrame[] | undefined {
     const retained = this.retained;
-    if (!retained || !documentContextsMatch(retained.context, context))
+    if (!retained) return undefined;
+    if (!documentContextsMatch(retained.context, context)) {
+      if (!documentContextsMatch(context, this.options.coordinator.documentContext))
+        return undefined;
+      this.dropRetained();
       return undefined;
+    }
     const frames = retained.authors.get(author) ?? [];
     const base = frames.find((frame) => frame.sequence === sequence);
     if (base && !documentBytesEqual(base.hash, hash)) return undefined;
@@ -976,7 +1005,7 @@ export class CoordinatedDocument<
     return this.enqueueCatchUp(
       request,
       MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
-      MAX_DOCUMENT_CONTENT_BYTES,
+      MAX_DOCUMENT_CONTENT_BYTES + MAX_DOCUMENT_SECURITY_FRAME_BYTES,
       (input) =>
         this.runCatchUp(input, async (stage) => {
           const controllerId = this.options.coordinator.localMemberId;
@@ -996,20 +1025,29 @@ export class CoordinatedDocument<
             this.crdt.getSnapshot!(this.session.document),
           );
           const { receipts: requested, ...request } = body;
+          const base = {
+            ...request,
+            controllerId,
+            receipts: receiptEntries(receipts),
+            suffixes: [],
+            snapshot,
+          };
+          const { offered, suffixes } = this.catchUpSuffixes(
+            stage.binding.context,
+            receipts,
+            requested,
+            body.requesterId,
+            MAX_DOCUMENT_SECURITY_FRAME_BYTES -
+              CHECKPOINT_SEAL_BYTES -
+              encodeDocumentCatchUpCheckpoint(base).length,
+          );
           const value = await this.sealCatchUp(
             stage,
             'checkpoint',
             encodeDocumentCatchUpCheckpoint({
-              ...request,
-              controllerId,
-              receipts: receiptEntries(receipts),
-              suffixes: this.catchUpSuffixes(
-                stage.binding.context,
-                receipts,
-                requested,
-                body.requesterId,
-              ),
-              snapshot,
+              ...base,
+              receipts: receiptEntries(offered),
+              suffixes,
             }),
             controller,
           );
@@ -1414,7 +1452,21 @@ export class CoordinatedDocument<
           sequence,
           extended.has(id),
         );
-      if (admission === 'conflict' && !extends_)
+      // An offer below a head accepted since the request is kept when it is
+      // one of the frames this replica retains for that author.
+      const behind =
+        admission === 'conflict' &&
+        current !== undefined &&
+        sequence < current.sequence &&
+        this.retained !== undefined &&
+        documentContextsMatch(this.retained.context, context) &&
+        this.retained.authors
+          .get(id)
+          ?.some(
+            (frame) =>
+              frame.sequence === sequence && documentBytesEqual(frame.hash, hash),
+          ) === true;
+      if (admission === 'conflict' && !extends_ && !behind)
         throw new Error(
           'Document catch-up receipt conflicts with the accepted head',
         );
@@ -1434,32 +1486,58 @@ export class CoordinatedDocument<
     );
   }
 
-  /** Retained signed frames that extend each of the requester's shorter heads. */
+  /**
+   * Retained signed frames that extend each of the requester's shorter heads,
+   * within `room` bytes. A suffix that does not fit, or is not retained, is
+   * offered only up to its last included frame, or at the requester's own head,
+   * so the requester advances over later rounds instead of conflicting. A
+   * retained fork keeps the controller's head and still conflicts.
+   */
   private catchUpSuffixes(
     context: GroupSecurityDocumentContext,
     receipts: ReadonlyMap<string, Receipt>,
     requested: readonly DocumentReplayReceipt[],
     requesterId: Uint8Array,
-  ): Uint8Array[] {
+    room: number,
+  ): { offered: Map<string, Receipt>; suffixes: Uint8Array[] } {
     const requester = documentBytesId(requesterId);
+    const offered = new Map(receipts);
     const suffixes: Uint8Array[] = [];
     let bytes = 0;
     for (const { memberId, sequence, hash } of requested) {
       const author = documentBytesId(memberId);
       const head = receipts.get(author)?.sequence ?? 0;
       if (author === requester || sequence >= head) continue;
-      const suffix = this.retainedSuffix(context, author, sequence, hash, head);
-      if (!suffix) continue;
-      const size = suffix.reduce((total, frame) => total + frame.signed.length, 0);
-      if (
-        suffixes.length + suffix.length > MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
-        bytes + size > MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES
-      )
-        continue;
-      suffixes.push(...suffix.map((frame) => frame.signed.slice()));
-      bytes += size;
+      const base = this.retained?.authors
+        .get(author)
+        ?.find((frame) => frame.sequence === sequence);
+      if (base && !documentBytesEqual(base.hash, hash)) continue;
+      const suffix =
+        this.retainedSuffix(context, author, sequence, hash, head) ?? [];
+      let included = 0;
+      for (const frame of suffix) {
+        const cost = frame.signed.length + 4;
+        if (
+          suffixes.length >= MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
+          bytes + cost > room
+        )
+          break;
+        suffixes.push(frame.signed.slice());
+        bytes += cost;
+        included++;
+      }
+      if (included < suffix.length || suffix.length === 0)
+        offered.set(
+          author,
+          included === 0
+            ? { sequence, hash }
+            : {
+                sequence: suffix[included - 1].sequence,
+                hash: suffix[included - 1].hash,
+              },
+        );
     }
-    return suffixes;
+    return { offered, suffixes };
   }
 
   /**
@@ -2106,6 +2184,7 @@ export class CoordinatedDocument<
               commit: () => {
                 this.receipts = new Map();
                 this.receiptsContext = captured;
+                this.dropRetained();
               },
             };
           })();
@@ -2194,7 +2273,7 @@ export class CoordinatedDocument<
     this.closed = true;
     this.activated = false;
     this.clearHeld();
-    this.retained = undefined;
+    this.dropRetained();
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
     this.material = undefined;

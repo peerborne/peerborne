@@ -62,6 +62,9 @@ async function group() {
   await g.addMember(1);
   await g.addMember(2);
   for (let index = 0; index < 3; index++) await g.open(index);
+  // Let the requests sent shortly after open go out before each scenario starts.
+  await pause(900);
+  g.take();
   const content = () => g.take().filter((publication) => !isRequest(publication));
   /** Member 2 writes `count` frames; member 1 receives only `kept` of them. */
   const write = async (count: number, kept: (index: number) => boolean) => {
