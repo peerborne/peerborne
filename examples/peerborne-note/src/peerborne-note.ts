@@ -545,7 +545,8 @@ export class PeerborneNoteSession {
           },
         });
       if (!this.sharingActive) return;
-      await this.requireDocument().requestSync();
+      // Reconnecting is enough: Peerborne's automatic catch-up asks for
+      // missed updates when the relay re-announces the note's topic.
       this.sharingFailed = false;
     } catch {
       if (this.sharingActive && !this.sharingFailed) {
