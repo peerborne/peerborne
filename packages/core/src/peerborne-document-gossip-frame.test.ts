@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { mergeCompactionConfig } from './compaction-config.js';
+import { CHANGE_TREE_COMPACTION_DEPTH } from './change-tree-walk.js';
 import {
   crdtDocumentChangeNode,
   crdtWriterChangeNode,
@@ -12,7 +13,6 @@ import {
 } from './gossip-frame.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { JSONSerializer } from './json-serializer.js';
-import { loadResponseManifestHash } from './load-response-manifest.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -131,13 +131,6 @@ function writerDocument(name: string, inPlace = false) {
 const decode = (frame: Uint8Array) =>
   serializer.deserializeSyncMessage(frame.slice(KEY_AND_NONCE));
 
-const manifest = (changeId: string, changes: Node) =>
-  loadResponseManifestHash({
-    changeId,
-    changes,
-    serializeChange: (change: unknown) => serializer.serializeChanges(change),
-  });
-
 /** Nodes that name a change by CID while still carrying its ancestry. */
 function payloadsSentByCid(root: Node): number {
   let count = 0;
@@ -175,7 +168,7 @@ test('frames stay within GossipSub with every change inline while history grows'
   }
 });
 
-test('a writer that adopts each published tree prunes it exactly like its author', async () => {
+test('a writer that adopts each published tree prunes it to the same tree as its author', async () => {
   const author = writerDocument('author');
   const receiver = writerDocument('receiver');
   for (let index = 0; index < 20; index++) {
@@ -193,19 +186,45 @@ test('a writer that adopts each published tree prunes it exactly like its author
   }
   expect(author.document._latestSnapshot).toBeDefined();
   expect(receiver.document._latestSnapshot).toBeDefined();
+  // Load digests can still differ: each writer signs its own snapshot.
   expect(receiver.document._lastSyncMessage.changeId).toBe(
     author.document._lastSyncMessage.changeId,
   );
+  expect(receiver.document._lastSyncMessage.changes).toEqual(
+    author.document._lastSyncMessage.changes,
+  );
+});
+
+test('a depth-bound prune of a large tree also keeps it within the size bound', async () => {
+  const { document, published } = writerDocument('a');
+  let changeId = 'remote-0';
+  let changes: Node = { kind: crdtDocumentChangeNode, change: { remote: 0 } };
+  for (let level = 1; level < CHANGE_TREE_COMPACTION_DEPTH + 4; level++) {
+    const parent = changeId;
+    changeId = `remote-${level}`;
+    changes = {
+      kind: crdtDocumentChangeNode,
+      change: { level, text: 'd'.repeat(20_000) },
+      children: { [parent]: changes },
+    };
+  }
+  document._refreshLastSyncMessageFromSync(changeId, changes);
+  const frameBytes = serializer.serializeSyncMessage({
+    documentId: '/gossip-frame',
+    signatureContext: 'ordinary-sync-v1',
+    changeId,
+    changes,
+  }).byteLength;
+  expect(frameBytes).toBeGreaterThan(MAX_GOSSIP_SYNC_MESSAGE_BYTES);
+  await document._maybeCompact(undefined, frameBytes);
+  // The next change at the per-change limit still fits one frame.
   await expect(
-    manifest(
-      receiver.document._lastSyncMessage.changeId,
-      receiver.document._lastSyncMessage.changes,
-    ),
-  ).resolves.toEqual(
-    await manifest(
-      author.document._lastSyncMessage.changeId,
-      author.document._lastSyncMessage.changes,
-    ),
+    document.change(() => ({
+      text: 'n'.repeat(MAX_CHANGE_FRAME_BYTES - 4096),
+    })),
+  ).resolves.toBeUndefined();
+  expect(published.at(-1)!.byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
+    MAX_GOSSIP_SYNC_MESSAGE_BYTES,
   );
 });
 
@@ -220,11 +239,16 @@ test.each([
     const hashes = [...document._hashes];
     const tree = document._lastSyncMessage;
     const tips = [...document._recentTips];
+    const blocks = document._putBlock.mock.calls.length;
     const error = await document
       .change(() => ({ text: 'z'.repeat(MAX_CHANGE_FRAME_BYTES) }))
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GossipFrameLimitError);
     expect((error as GossipFrameLimitError).limit).toBe(MAX_CHANGE_FRAME_BYTES);
+    expect((error as GossipFrameLimitError).retired).toBe(true);
+    expect((error as Error).message).toContain('instance was retired');
+    expect(document._putBlock.mock.calls.length).toBe(blocks);
+    expect(document._signAsWriter.mock.calls.length).toBe(1);
     expect([...document._hashes]).toEqual(hashes);
     expect(document._lastSyncMessage).toBe(tree);
     expect(document._recentTips).toEqual(tips);
@@ -326,4 +350,7 @@ test('a sync reply too large for GossipSub is reported instead of published', as
   expect(warn).toHaveBeenCalledWith(
     'Sync response for /gossip-frame exceeds the GossipSub frame limit; the requester must load the document',
   );
+  expect(document._syncRequestsSeen.size).toBe(0);
+  expect(document._lastSyncResponseAt).toBe(0);
+  expect(document._signAsWriter).not.toHaveBeenCalled();
 });

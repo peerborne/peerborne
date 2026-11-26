@@ -73,24 +73,27 @@ Every frame carries the retained change tree inline, so the cap is split in
 half:
 
 - **One change** may need at most 1.75 MiB on its own
-  (`MAX_CHANGE_FRAME_BYTES`). A larger one makes `change()` or `endChange()`
-  reject with `GossipFrameLimitError` and is rolled back. With a provider that
-  returns a new document, such as Automerge, the document is unchanged and
-  keeps working. A provider that edits in place, such as Yjs, cannot undo the
-  edit, so the instance is retired as for an oversized block; reopen it from
-  accepted state and split the edit.
-- **The retained tree** is compacted once the frame that carried it passes
-  1.75 MiB: the writer snapshots and keeps only its newest changes, up to
-  512 KiB of payload. A writer that adopts a published tree prunes it the same
-  way, so author and writer replicas hold the same tree and load digests. A
-  reader keeps the larger tree, as with depth-bound compaction. A peer that
+  (`MAX_CHANGE_FRAME_BYTES`). A larger one is refused before a block is
+  stored: `change()` or `endChange()` rejects with `GossipFrameLimitError`
+  and nothing reaches history. The edit is already in the local document,
+  because Yjs edits in place and Automerge marks the previous document
+  outdated, so the instance is retired as for an oversized block; reopen it
+  from accepted state and split the edit.
+- **The retained tree** is compacted once the change frame that carried it
+  passes 1.75 MiB: the writer snapshots and keeps only its newest changes, up
+  to 512 KiB of payload, and a depth-bound compaction keeps no more than that
+  either. A writer that adopts a published change frame prunes the same tree
+  the same way. A `requestSync()` reply does not trigger this, since it can
+  carry a snapshot the author never published. Retained trees then match, but
+  load digests can still differ, because each writer signs its own snapshot.
+  A reader keeps the larger tree, as with depth-bound compaction. A peer that
   missed the pruned changes recovers them with `requestSync()` or a load.
 - **A membership change** is never refused for retained size: if its frame
   would not fit, the tree is compacted first and the change published again.
 
 A `requestSync()` reply that does not fit GossipSub, usually because of its
-snapshot, is not sent. The responder logs a warning, and the requester must
-load the document.
+snapshot, is not sent and does not use up the request or the response rate
+limit. The responder logs a warning, and the requester must load the document.
 
 ## Peer discovery
 

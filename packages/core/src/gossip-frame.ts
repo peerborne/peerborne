@@ -27,8 +27,15 @@ export class GossipFrameLimitError extends RangeError {
   constructor(
     readonly byteLength: number,
     readonly limit: number,
+    /** The local edit could not be undone, so the instance was retired. */
+    readonly retired = false,
   ) {
-    super(`Sync frame of ${byteLength} bytes exceeds the ${limit}-byte limit`);
+    super(
+      `Sync frame of ${byteLength} bytes exceeds the ${limit}-byte limit` +
+        (retired
+          ? '; the document instance was retired, reopen it from accepted state'
+          : ''),
+    );
     this.name = 'GossipFrameLimitError';
   }
 }

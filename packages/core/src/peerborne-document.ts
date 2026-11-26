@@ -4102,6 +4102,13 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
+    // Every later frame carries this change inline, so one change may use at
+    // most half a frame. Refuse it before a block is stored or signed.
+    if (kind === crdtDocumentChangeNode) {
+      const ownFrameBytes = this._changeFrameBytes(changes, kind);
+      if (ownFrameBytes > MAX_CHANGE_FRAME_BYTES)
+        throw new GossipFrameLimitError(ownFrameBytes, MAX_CHANGE_FRAME_BYTES);
+    }
     try {
       // Store changes in blockstore.
       hash = await this._putBlock(changes, kind);
@@ -4169,21 +4176,9 @@ export class PeerborneDocument<
 
       const serializedUpdate =
         this._syncMessageSerializer.serializeSyncMessage(updateMessage);
-      // GossipSub would silently drop a longer frame, and every later frame
-      // carries this change inline, so one change may use at most half a
-      // frame. Both are refused, and rolled back below, before the change
-      // becomes part of the retained tree.
-      if (
-        kind === crdtDocumentChangeNode &&
-        serializedUpdate.byteLength > MAX_CHANGE_FRAME_BYTES
-      ) {
-        const ownFrameBytes = this._changeFrameBytes(changes, kind);
-        if (ownFrameBytes > MAX_CHANGE_FRAME_BYTES)
-          throw new GossipFrameLimitError(
-            ownFrameBytes,
-            MAX_CHANGE_FRAME_BYTES,
-          );
-      }
+      // GossipSub would silently drop a longer frame; this happens only when
+      // compaction could not bound the retained tree. It is rolled back below
+      // before the change becomes part of the retained tree.
       if (serializedUpdate.byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
         throw new GossipFrameLimitError(
           serializedUpdate.byteLength,
@@ -4363,8 +4358,8 @@ export class PeerborneDocument<
     // GossipSub frame. A writer that adopts a published tree measures the same
     // frame and prunes it the same way as its author, so their trees, and
     // load digests, stay identical.
-    const sizeBound =
-      canBound && !depthBound && frameBytes > RETAINED_TREE_HIGH_BYTES;
+    const oversized = canBound && frameBytes > RETAINED_TREE_HIGH_BYTES;
+    const sizeBound = oversized && !depthBound;
     if (
       !depthBound &&
       !sizeBound &&
@@ -4395,7 +4390,9 @@ export class PeerborneDocument<
       await this._snapshotUnlocked(
         signal,
         depthBound || sizeBound,
-        sizeBound ? this._sizeBoundKeepCount() : undefined,
+        oversized
+          ? Math.min(CHANGE_TREE_COMPACTION_KEEP, this._sizeBoundKeepCount())
+          : undefined,
       );
     } catch (error) {
       // The triggering change is already published. A failed bounded
@@ -6977,6 +6974,24 @@ export class PeerborneDocument<
         )
       )
         return;
+      const message: CRDTSyncMessage<ChangesType> = {
+        documentId: this.documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        changeId: previous!.changeId,
+        changes: previous!.changes,
+        ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
+      };
+      // A reply GossipSub would drop is not sent, and does not use up the
+      // request's replay entry or the response rate limit.
+      const unsignedBytes =
+        this._syncMessageSerializer.serializeSyncMessage(message).byteLength +
+        FRAME_SIGNATURE_PLACEHOLDER.length;
+      if (unsignedBytes > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+        console.warn(
+          `Sync response for ${this.documentPath} exceeds the GossipSub frame limit; the requester must load the document`,
+        );
+        return;
+      }
       const id = JSON.stringify([request.requester, request.requestId]);
       this._syncRequestsSeen = rememberSyncRequest(
         this._syncRequestsSeen,
@@ -6986,24 +7001,9 @@ export class PeerborneDocument<
       );
       this._lastSyncResponseAt = now;
       try {
-        const message: CRDTSyncMessage<ChangesType> = {
-          documentId: this.documentPath,
-          signatureContext: 'ordinary-sync-v1',
-          changeId: previous!.changeId,
-          changes: previous!.changes,
-          ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
-        };
         message.signature = await this._signAsWriter(message);
-        const reply =
-          this._syncMessageSerializer.serializeSyncMessage(message);
-        if (reply.byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
-          console.warn(
-            `Sync response for ${this.documentPath} exceeds the GossipSub frame limit; the requester must load the document`,
-          );
-          return;
-        }
         await this._publishSyncBytes(
-          reply,
+          this._syncMessageSerializer.serializeSyncMessage(message),
           () => {
             const dispatch = this._observeSyncRequestClock();
             return (
@@ -7721,7 +7721,12 @@ export class PeerborneDocument<
                   if (!receiveAdmission.active)
                     throw new Error('GossipSub receive subscription closed');
                 },
-                frameBytes: rawContent.byteLength,
+                // A reply carrying a snapshot is not a frame the author
+                // published, so it must not trigger size-bound compaction.
+                frameBytes:
+                  message.snapshot === undefined
+                    ? rawContent.byteLength
+                    : undefined,
               },
             );
           });
@@ -8759,9 +8764,9 @@ export class PeerborneDocument<
       try {
         await this._makeChange(applied.changes);
       } catch (error) {
-        if (error instanceof GossipFrameLimitError)
-          this._retireAfterOversizedLocalChange();
-        throw error;
+        throw error instanceof GossipFrameLimitError
+          ? this._retireAfterOversizedLocalChange(error)
+          : error;
       }
 
       // The published change, partial or not, ends the transaction.
@@ -8860,9 +8865,11 @@ export class PeerborneDocument<
     try {
       await this._makeChange(changes);
     } catch (error) {
-      if (error instanceof GossipFrameLimitError)
-        this._retireAfterOversizedLocalChange();
-      throw failure ? partialChangeCommitFailure(failure.error, error) : error;
+      const thrown =
+        error instanceof GossipFrameLimitError
+          ? this._retireAfterOversizedLocalChange(error)
+          : error;
+      throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
     }
     if (failure) throw failure.error;
   }
@@ -8874,12 +8881,15 @@ export class PeerborneDocument<
    * instance is retired, as for an oversized block, and must be reopened
    * from accepted state. The DAG was rolled back, so nothing reached history.
    */
-  private _retireAfterOversizedLocalChange(): void {
+  private _retireAfterOversizedLocalChange(
+    error: GossipFrameLimitError,
+  ): GossipFrameLimitError {
     this._bootstrapLoadApplicationRevision++;
     this._oversizedEditClose ??= Promise.resolve().then(() =>
       this._closeDocument(),
     );
     void this._oversizedEditClose.catch(() => {});
+    return new GossipFrameLimitError(error.byteLength, error.limit, true);
   }
 
   /** Publish a partial in-place edit before its change function's error is rethrown. */

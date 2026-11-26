@@ -235,3 +235,29 @@ test('a closing subscriber stops an authenticated frame whose verification is st
     await fixture.document.close();
   }
 });
+
+test('only a frame without a snapshot reports its size for size-bound compaction', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  fixture.deserialize.mockImplementation((data: Uint8Array) => ({
+    documentId: '/document',
+    signatureContext: 'ordinary-sync-v1',
+    changeId: String(data[0]),
+    signature: 'AQ==',
+    ...(data[0] === 9 ? { snapshot: { state: 'large' } } : {}),
+  }));
+  try {
+    await fixture.document.open();
+    fixture.deliver(frame(8));
+    fixture.deliver(frame(9));
+    for (let index = 0; index < 5; index++) await turn();
+    const sizes = fixture.sync.mock.calls.map(
+      (call) => (call[6] as { frameBytes?: number }).frameBytes,
+    );
+    expect(sizes).toEqual([1, undefined]);
+  } finally {
+    await fixture.document.close();
+  }
+});

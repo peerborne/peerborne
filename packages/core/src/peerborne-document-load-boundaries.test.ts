@@ -124,6 +124,7 @@ test.each(['single', 'batch'])(
         },
       },
       _changesSerializer: { serializeChanges: (value: Uint8Array) => value },
+      _syncMessageSerializer: { serializeSyncMessage: () => new Uint8Array(1) },
       _keychain: { current: async () => [new Uint8Array(32), {}] },
       _authProvider: {
         encrypt: async () => ({
