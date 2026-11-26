@@ -116,7 +116,7 @@ await document.setKemKeyPair(kemKeyPair);
 
 - **Readers** receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold. `addReader()` requires the recipient's KEM public key and rejects a call without it before changing the ACL.
 - **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so onboard it with `addReader(peerSigningPublicKey, readerKemPublicKeyBytes)` before promotion. The identity-to-KEM binding is held in memory by the document instance that added the reader, so readers added before a restart cannot currently be promoted. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
-- Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas.
+- Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas. A retried ACL change can leave two additions of the same identity in the history, because a publication rejected after delivery is rolled back only locally. When a removal observes only one of them, the Automerge ACL applies the removal on every replica, and a later addition that observes the removal restores the identity.
 - **Ordinary document sync signing is configurable.** Initial loads, security advertisements, and BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 Where the receiving operation verifies a sync-message signature, that
@@ -233,7 +233,7 @@ challenge it sent to that responder. A peer that speaks the load protocols but
 holds no document key therefore cannot forward a loader's request to a writer
 and return the writer's signed answer as its own vote. It can neither fill a
 probe slot that way nor pair a forwarded answer with the writer's later direct
-answer to abort the load as an equivocating authority.
+answer to abort the load as a divergent authority.
 
 V4 loading also requires trusted writer identities and locally resolved
 control/group commitments. Configure
@@ -248,14 +248,42 @@ compares this tuple but does not yet replay an MLS control log.
 `loadQuorumK` bounds queried transport peers. A connected peer whose identify
 record omits the document-load protocol, such as a relay, is identified once
 more and is not a candidate if it still omits it; a peer that has not completed
-identify remains one. `loadQuorumQ` requires
-that many independent trusted signing authorities to agree on one complete response
-manifest and security-state digest. The manifest binds the snapshot signature
-as well as its state, so a responder cannot substitute one after agreement.
-One credential contributes only one vote,
-even through multiple PeerIds. An explicit Q is never lowered when fewer peers
-are available. Distinct compromised authorities can still collude; independent
+identify remains one. `loadQuorumQ` requires that many independent trusted
+signing authorities to agree on one response-manifest and security-state
+digest. The digest covers the served frontier, each change CID with its kind
+and edges, the snapshot's state bytes and boundary CID, and keychain changes.
+It omits inline change payloads, which a quorum-bound load discards before
+fetching every CID from the blockstore, and the snapshot's signature,
+timestamp and compacted count, because each writer signs its own snapshot of
+the same state. A quorum-bound first load can verify its snapshot only after
+the response's CID-validated writer blocks establish the writer ACL, when the
+instance can no longer fall back to another peer. Before applying any state,
+the loader therefore decodes those blocks into an isolated ACL and checks that
+one of its writers signed the snapshot, the same rule the apply-time check
+uses. An agreeing responder can substitute neither other snapshot bytes nor a
+snapshot that would fail after application began; it is skipped instead. A
+later load ignores a snapshot that does not verify against the current writer
+ACL. The snapshot's compacted count is signed advisory metadata: snapshot
+creation clamps it to the 32-bit limit, so an inflated count cannot stop a
+writer from compacting. One credential contributes only one vote, even
+through multiple PeerIds; when devices sharing a credential advertise different
+digests in a document with several trusted writers, the load fails as
+`divergent-authority`. An explicit Q is never lowered when fewer peers are
+available. Distinct compromised authorities can still collude; independent
 trust configuration is essential.
+
+When the trusted writer set captured for a load has exactly one authority, no
+second authority can agree, so the default quorum could never pass for a
+user's second device. The loader then accepts one valid response from that
+authority, from any of its devices and without `loadQuorumAllowSinglePeer`.
+Challenge, tuple, responder, signature, frontier, manifest and snapshot checks
+still apply. Devices that advertise different digests are out of sync, not
+equivocating. A digest does not show which state is newer, so the loader tries
+the state most devices advertise first, keeping probe order on a tie, and falls
+back to each other device bound to the digest it advertised; live sync then
+merges the remaining changes. Every holder of that writer's key is trusted,
+and the first loaded state can be older than another device's. An explicit
+`loadQuorumQ` above 1 cannot be met by such a document.
 
 `loadQuorumEnabled: false` permits one authenticated V4 response and retains
 challenge, tuple, signature, and frontier checks. Unsigned loads are rejected.

@@ -270,7 +270,7 @@ describe('generated native quorum boundaries', () => {
               reason = 'insufficient-responses';
             else if (k === 1 && !allowSinglePeer)
               reason = 'insufficient-responses';
-            else if (equivocating) reason = 'equivocating-authority';
+            else if (equivocating) reason = 'divergent-authority';
             else if (winningDigests.length > 1) reason = 'conflicting-quorum';
             else if (winningDigests.length === 0)
               reason =
