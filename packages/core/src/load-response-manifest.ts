@@ -17,7 +17,7 @@ import {
   uint32,
 } from './internal/canonical-encoding.js';
 
-const LOAD_RESPONSE_MANIFEST_DOMAIN = 'peerborne/load-response-manifest/v1\0';
+const LOAD_RESPONSE_MANIFEST_DOMAIN = 'peerborne/load-response-manifest/v2\0';
 
 export const LOAD_RESPONSE_MANIFEST_HASH_LENGTH = 32;
 export const MAX_LOAD_RESPONSE_MANIFEST_NODES = 4096;
@@ -30,16 +30,12 @@ export const MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const LOAD_RESPONSE_MANIFEST_INPUT_FIELDS = [
   'changeId',
   'changes',
-  'serializeChange',
   'snapshot',
   'keychainChangesBytes',
 ] as const;
 const LOAD_RESPONSE_MANIFEST_SNAPSHOT_FIELDS = [
   'stateBytes',
   'lastChangeNodeCID',
-  'compactedCount',
-  'timestamp',
-  'signature',
 ] as const;
 const arrayIsArray = Array.isArray;
 const objectCreate = Object.create;
@@ -48,27 +44,26 @@ const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectPrototype = Object.prototype;
 const reflectApply = Reflect.apply;
 
+/**
+ * The snapshot state a load response would apply. The signer, signature,
+ * timestamp and compacted count are deliberately absent: honest writers sign
+ * their own snapshots of the same state, and the loader authenticates the
+ * signature separately against the document's writers.
+ */
 export interface LoadResponseManifestSnapshot {
   readonly stateBytes: Uint8Array;
   readonly lastChangeNodeCID: string;
-  readonly compactedCount: number;
-  readonly timestamp: number;
-  readonly signature: Uint8Array;
 }
 
 export interface LoadResponseManifestInput<ChangesType> {
   readonly changeId?: string;
   readonly changes?: CRDTChangeNode<ChangesType>;
-  /** Canonical wire serializer for each inline CRDT change payload. */
-  readonly serializeChange?: (change: ChangesType) => Uint8Array;
   readonly snapshot?: LoadResponseManifestSnapshot;
   readonly keychainChangesBytes?: Uint8Array;
 }
 
 interface NodeDescriptor {
   readonly kind: CRDTChangeNodeKind;
-  readonly hasInlineChange: boolean;
-  readonly inlineChangeBytes?: Uint8Array;
   readonly childrenMode: 0 | 1 | 2;
   readonly childIds: readonly string[];
 }
@@ -80,12 +75,6 @@ interface NodeRecord {
 
 function uint8(value: number): Uint8Array {
   return new Uint8Array([value]);
-}
-
-function uint64(value: number): Uint8Array {
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
-  return out;
 }
 
 function requireString(
@@ -152,21 +141,8 @@ function requirePlainNode<ChangesType>(
 
 function describeNode<ChangesType>(
   node: CRDTChangeNode<ChangesType>,
-  serializeChange: ((change: ChangesType) => Uint8Array) | undefined,
 ): NodeDescriptor {
   requirePlainNode(node);
-  let inlineChangeBytes: Uint8Array | undefined;
-  if (node.change !== undefined) {
-    if (serializeChange === undefined) {
-      throw new TypeError(
-        'load response manifest requires serializeChange for inline changes',
-      );
-    }
-    inlineChangeBytes = snapshotPayloadBytes(
-      'inline changes',
-      serializeChange(node.change),
-    );
-  }
   let childrenMode: 0 | 1 | 2 = 0;
   let childIds: string[] = [];
   if (node.children === crdtChangeNodeDeferred) {
@@ -180,29 +156,14 @@ function describeNode<ChangesType>(
   }
   return {
     kind: node.kind,
-    hasInlineChange: node.change !== undefined,
-    inlineChangeBytes,
     childrenMode,
     childIds,
   };
 }
 
-function sameBytes(
-  first: Uint8Array | undefined,
-  second: Uint8Array | undefined,
-): boolean {
-  if (first === undefined || second === undefined) return first === second;
-  return (
-    first.byteLength === second.byteLength &&
-    first.every((byte, index) => byte === second[index])
-  );
-}
-
 function sameDescriptor(a: NodeDescriptor, b: NodeDescriptor): boolean {
   if (
     a.kind !== b.kind ||
-    a.hasInlineChange !== b.hasInlineChange ||
-    !sameBytes(a.inlineChangeBytes, b.inlineChangeBytes) ||
     a.childrenMode !== b.childrenMode ||
     a.childIds.length !== b.childIds.length
   ) {
@@ -212,7 +173,7 @@ function sameDescriptor(a: NodeDescriptor, b: NodeDescriptor): boolean {
 }
 
 function isSparseDescriptor(descriptor: NodeDescriptor): boolean {
-  return !descriptor.hasInlineChange && descriptor.childrenMode === 0;
+  return descriptor.childrenMode === 0;
 }
 
 function canonicalDescriptor(record: NodeRecord): NodeDescriptor {
@@ -220,8 +181,6 @@ function canonicalDescriptor(record: NodeRecord): NodeDescriptor {
     record.full ??
     ({
       kind: record.kind,
-      hasInlineChange: false,
-      inlineChangeBytes: undefined,
       childrenMode: 0,
       childIds: [],
     } satisfies NodeDescriptor)
@@ -231,18 +190,9 @@ function canonicalDescriptor(record: NodeRecord): NodeDescriptor {
 function descriptorParts(descriptor: NodeDescriptor): Uint8Array[] {
   const parts: Uint8Array[] = [
     uint8(kindByte(descriptor.kind)),
-    uint8(descriptor.hasInlineChange ? 1 : 0),
-  ];
-  if (descriptor.inlineChangeBytes !== undefined) {
-    parts.push(
-      uint32(descriptor.inlineChangeBytes.byteLength),
-      descriptor.inlineChangeBytes,
-    );
-  }
-  parts.push(
     uint8(descriptor.childrenMode),
     uint32(descriptor.childIds.length),
-  );
+  ];
   for (const childId of descriptor.childIds) {
     parts.push(...stringParts(childId));
   }
@@ -334,24 +284,29 @@ function snapshotPayloadBytes(name: string, value: unknown): Uint8Array {
 }
 
 /**
- * Hash the complete state-mutating plan carried by one V4 load response.
+ * Hash the state a V4 load response would apply, independent of how the
+ * holder happens to represent it.
  *
  * The canonical manifest binds root identity, every named node's CID and
- * classification, directed child edges, canonically serialized inline change
- * bytes, the canonical full representation of each CID, snapshot state,
- * signature and metadata, and keychain changes. Sparse cross-link aliases are
- * reconciled with that full representation. The response bytes are never
- * trusted as a precomputed manifest: advertisers and loaders using this
- * protocol must independently derive this digest from the actual plan they
- * would serve or apply.
+ * classification, directed child edges and deferred-children markers, the
+ * snapshot's boundary CID and state bytes, and keychain changes. A change CID
+ * addresses its encrypted block, so it binds the change content; inline
+ * payloads are not hashed because a quorum-bound load discards them and
+ * fetches every CID from the blockstore. Sparse cross-link aliases are
+ * reconciled with the full representation of their CID. The snapshot's
+ * signature, timestamp and compacted count are excluded so writers that
+ * signed their own snapshot of one state agree; loaders verify that signature
+ * against the document's writers before applying the snapshot. The response
+ * bytes are never trusted as a precomputed manifest: advertisers and loaders
+ * must independently derive this digest from the actual plan they would serve
+ * or apply.
  */
 export async function loadResponseManifestHash<ChangesType>(
   input: LoadResponseManifestInput<ChangesType>,
 ): Promise<Uint8Array> {
   // Capture all known input fields through own data descriptors before
-  // invoking serializeChange or crossing an async digest boundary. Reading
-  // properties directly would let accessors synthesize a manifest from states
-  // that never coexisted.
+  // crossing an async digest boundary. Reading properties directly would let
+  // accessors synthesize a manifest from states that never coexisted.
   const inputFields = snapshotManifestOwnDataFields(
     input,
     LOAD_RESPONSE_MANIFEST_INPUT_FIELDS,
@@ -361,8 +316,6 @@ export async function loadResponseManifestHash<ChangesType>(
   const changeId = inputFields.changeId as string | undefined;
   const changes = inputFields.changes as
     CRDTChangeNode<ChangesType> | undefined;
-  const serializeChange = inputFields.serializeChange as
-    ((change: ChangesType) => Uint8Array) | undefined;
   if (changes === undefined && changeId !== undefined) {
     throw new TypeError(
       'load response manifest cannot name a change root without a tree',
@@ -386,35 +339,12 @@ export async function loadResponseManifestHash<ChangesType>(
       snapshotFields.lastChangeNodeCID,
       { allowEmpty: true },
     );
-    const compactedCount = snapshotFields.compactedCount;
-    if (
-      typeof compactedCount !== 'number' ||
-      !Number.isInteger(compactedCount) ||
-      compactedCount < 0 ||
-      compactedCount > 0xffffffff
-    )
-      throw new RangeError('snapshot compactedCount must be a uint32');
-    const timestamp = snapshotFields.timestamp;
-    if (
-      typeof timestamp !== 'number' ||
-      !Number.isSafeInteger(timestamp) ||
-      timestamp < 0
-    )
-      throw new RangeError(
-        'snapshot timestamp must be a non-negative safe integer',
-      );
     snapshot = {
       stateBytes: snapshotPayloadBytes(
         'snapshot state',
         snapshotFields.stateBytes,
       ),
       lastChangeNodeCID,
-      compactedCount,
-      timestamp,
-      signature: snapshotPayloadBytes(
-        'snapshot signature',
-        snapshotFields.signature,
-      ),
     };
   }
   const inputKeychainChangesBytes = inputFields.keychainChangesBytes;
@@ -446,7 +376,6 @@ export async function loadResponseManifestHash<ChangesType>(
   let edgeCount = 0;
   let occurrenceCount = 0;
   let traversedEdgeCount = 0;
-  let inlineChangeByteCount = 0;
 
   const accountOccurrence = (): void => {
     occurrenceCount++;
@@ -462,12 +391,6 @@ export async function loadResponseManifestHash<ChangesType>(
     if (traversedEdgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
       throw new RangeError(
         `load response manifest exceeds ${MAX_LOAD_RESPONSE_MANIFEST_EDGES} traversed edges`,
-      );
-    }
-    inlineChangeByteCount += descriptor.inlineChangeBytes?.byteLength ?? 0;
-    if (inlineChangeByteCount > MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES) {
-      throw new RangeError(
-        `load response manifest inline changes exceed ${MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES} bytes`,
       );
     }
   };
@@ -514,7 +437,7 @@ export async function loadResponseManifestHash<ChangesType>(
         );
       }
       accountOccurrence();
-      const descriptor = describeNode(node, serializeChange);
+      const descriptor = describeNode(node);
       accountDescriptor(descriptor);
       let record = records.get(cid);
       if (record === undefined) {
@@ -571,7 +494,7 @@ export async function loadResponseManifestHash<ChangesType>(
   if (changesSnapshot !== undefined) {
     if (changeId === undefined) {
       accountOccurrence();
-      anonymousRoot = describeNode(changesSnapshot, serializeChange);
+      anonymousRoot = describeNode(changesSnapshot);
       accountDescriptor(anonymousRoot);
       edgeCount += anonymousRoot.childIds.length;
       if (edgeCount > MAX_LOAD_RESPONSE_MANIFEST_EDGES) {
@@ -620,18 +543,11 @@ export async function loadResponseManifestHash<ChangesType>(
   if (snapshot === undefined) {
     parts.push(uint8(0));
   } else {
-    const snapshotCid = snapshot.lastChangeNodeCID;
-    const compactedCount = snapshot.compactedCount;
-    const timestamp = snapshot.timestamp;
     parts.push(
       uint8(1),
-      ...stringParts(snapshotCid),
-      uint32(compactedCount),
-      uint64(timestamp),
+      ...stringParts(snapshot.lastChangeNodeCID),
       uint32(snapshot.stateBytes.byteLength),
       await sha256(snapshot.stateBytes),
-      uint32(snapshot.signature.byteLength),
-      await sha256(snapshot.signature),
     );
   }
 

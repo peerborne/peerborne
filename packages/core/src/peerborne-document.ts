@@ -7,6 +7,10 @@ import {
   readDocumentBlock,
   type DocumentBlockReadOptions,
 } from './document-block-reader.js';
+import {
+  RemoteBlockFetches,
+  type RemoteBlockFetchScope,
+} from './remote-block-fetch.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -39,7 +43,13 @@ import { canCommitBeeKEMPathUpdate, checkpointCommitmentPermitsRestore } from '.
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
-import { identifyInitialLoadSigner, verifyInitialLoadAuthentication, InitialLoadAuthenticationBudget } from './initial-load-auth.js';
+import {
+  identifyInitialLoadSigner,
+  verifyInitialLoadAuthentication,
+  InitialLoadAuthenticationBudget,
+  MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+  MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+} from './initial-load-auth.js';
 import { createInitialLoadChallenge, cloneInitialLoadChallenge, initialLoadChallengeEquals, initialLoadRequestSignaturePayload, validateInitialLoadResponder } from './initial-load-challenge.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
@@ -826,6 +836,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly maxAggregateBlockBytes?: number;
   readonly aggregateBudget?: DocumentChangeFetchBudget;
   readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
+  /** Bounds for blocks not prefetched; a sync without one starts its own. */
+  readonly remoteFetches?: RemoteBlockFetchScope;
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
@@ -882,6 +894,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
 
 /** Bound encrypted advertisements, including escaped identifiers and signatures. */
 const MAX_SECURITY_ADVERTISE_RESPONSE_SIZE = 64 * 1024;
+
+const MAX_SNAPSHOT_COMPACTED_COUNT = 0xffffffff;
 
 /** Bound ordinary encrypted snapshot/document responses before decoding. */
 export const MAX_DOCUMENT_LOAD_RESPONSE_SIZE = 10 * 1024 * 1024;
@@ -1036,6 +1050,8 @@ export class PeerborneDocument<
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
   private _oversizedEditClose?: Promise<void>;
+  // Why a retired instance refuses work, when not for an oversized edit.
+  private _retirementReason?: string;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1509,6 +1525,7 @@ export class PeerborneDocument<
   private _redeliveryHeldSeen = 0;
   private readonly _redeliveryPeers = new Map<string, number>();
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
+  private _remoteBlockFetches?: RemoteBlockFetches;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
@@ -1545,6 +1562,9 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
+  // CID of the last local change whose frame publication resolved. A failed
+  // transaction compares it to tell a published change from one to roll back.
+  private _lastPublishedChange?: string;
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -1760,8 +1780,9 @@ export class PeerborneDocument<
   private _assertDocumentStateNotPoisoned(): void {
     if (this._oversizedEditClose) {
       throw new Error(
-        `Document ${this.documentPath} was retired after an oversized edit; ` +
-          'open a fresh instance from accepted state before continuing',
+        this._retirementReason ??
+          `Document ${this.documentPath} was retired after an oversized edit; ` +
+            'open a fresh instance from accepted state before continuing',
       );
     }
     if (this._bootstrapLoadApplicationState === 'poisoned') {
@@ -2074,6 +2095,10 @@ export class PeerborneDocument<
       options?.signal,
       getKey,
     );
+  }
+
+  private _blockFetches(): RemoteBlockFetches {
+    return (this._remoteBlockFetches ??= new RemoteBlockFetches());
   }
 
   private async _putBlock(
@@ -2656,61 +2681,76 @@ export class PeerborneDocument<
     assertStillActive();
 
     // First apply changes that were sent directly.
+    const documentBeforeSync = this._document;
     let newDocument = this._document;
     let appliedDocumentChanges = 0;
     const newDocumentHashes: string[] = [];
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
-    for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
-      assertStillActive();
-      if (sentChanges) {
-        switch (sentChangeKind) {
-          case crdtDocumentChangeNode: {
-            // Apply the changes that were sent directly.
-            newDocument = this._crdtProvider.remoteChange(
-              newDocument,
-              sentChanges,
-            );
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            appliedDocumentChanges++;
-            break;
+    try {
+      for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
+        assertStillActive();
+        if (sentChanges) {
+          switch (sentChangeKind) {
+            case crdtDocumentChangeNode: {
+              // Apply the changes that were sent directly.
+              newDocument = this._crdtProvider.remoteChange(
+                newDocument,
+                sentChanges,
+              );
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              appliedDocumentChanges++;
+              break;
+            }
+            case crdtReaderChangeNode: {
+              // Apply the changes that were sent directly. Use the
+              // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
+              // drained immediately after the ACL update lands.
+              await this._mergeReaders(
+                sentChanges,
+                assertStillActive,
+                signal,
+              ).catch(rejectCertifiedACLMerge);
+              appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              assertStillActive();
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              break;
+            }
+            case crdtWriterChangeNode: {
+              // Apply the changes that were sent directly.
+              await this._mergeWriters(
+                sentChanges,
+                assertStillActive,
+                signal,
+              ).catch(rejectCertifiedACLMerge);
+              appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              assertStillActive();
+              newDocumentHashes.push(sentHash);
+              newDocumentTips.push([sentHash, sentChangeKind]);
+              break;
+            }
           }
-          case crdtReaderChangeNode: {
-            // Apply the changes that were sent directly. Use the
-            // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
-            // drained immediately after the ACL update lands.
-            await this._mergeReaders(
-              sentChanges,
-              assertStillActive,
-              signal,
-            ).catch(rejectCertifiedACLMerge);
-            appliedDirectACLNodes.set(sentHash, sentChangeKind);
-            assertStillActive();
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            break;
-          }
-          case crdtWriterChangeNode: {
-            // Apply the changes that were sent directly.
-            await this._mergeWriters(
-              sentChanges,
-              assertStillActive,
-              signal,
-            ).catch(rejectCertifiedACLMerge);
-            appliedDirectACLNodes.set(sentHash, sentChangeKind);
-            assertStillActive();
-            newDocumentHashes.push(sentHash);
-            newDocumentTips.push([sentHash, sentChangeKind]);
-            break;
-          }
+        } else {
+          missingDocumentHashes.push([sentHash, sentChangeKind]);
         }
-      } else {
-        missingDocumentHashes.push([sentHash, sentChangeKind]);
       }
+      if (newDocumentHashes.length) assertStillActive();
+    } catch (error) {
+      // Automerge outdated the document these entries consumed, so restore a
+      // writable copy of the state the sync started from. When no faithful
+      // copy exists, keep the applied entries: they are published remote
+      // changes, and they stay unrecorded, so a redelivery records them.
+      if (newDocument !== documentBeforeSync) {
+        this._document =
+          (this._crdtProvider.cloneDocument
+            ? this._crdtProvider.cloneDocument(documentBeforeSync)
+            : documentBeforeSync) ?? newDocument;
+      }
+      throw error;
     }
     if (newDocumentHashes.length) {
-      assertStillActive();
       this._document = newDocument;
       this._documentChangeCount += appliedDocumentChanges;
       this._changesSinceSnapshot += appliedDocumentChanges;
@@ -2754,6 +2794,9 @@ export class PeerborneDocument<
     // abandoning an opaque sibling merge would poison the document. Remote
     // update handlers are notified of what those siblings applied before the
     // rejection propagates, because a retry skips their recorded hashes.
+    // A block that was not prefetched is read within the message's
+    // `RemoteBlockFetches` bounds, when it has them; one they leave unread
+    // stays missing.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
@@ -2780,6 +2823,17 @@ export class PeerborneDocument<
         assertStillActive();
         throwIfLoadAborted(fetchSignal);
       };
+      const fetchMissingBlock = (cid: CID, missingHash: string) => {
+        const read = (readSignal: AbortSignal) =>
+          this._getBlock(
+            cid,
+            { signal: readSignal, maxBlockBytes, consumeBytes },
+            fetchOptions.getKey,
+          );
+        return fetchOptions.remoteFetches === undefined
+          ? read(fetchSignal)
+          : fetchOptions.remoteFetches.fetch(missingHash, read, fetchSignal);
+      };
       let certifiedACLRejection: ACLMergeRejectedError | undefined;
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded && !certifiedACLRejection) {
@@ -2799,18 +2853,13 @@ export class PeerborneDocument<
                     fetchSignal,
                     fetchOptions.getKey,
                   )
-                : this._getBlock(
-                    cid,
-                    {
-                      signal: fetchSignal,
-                      maxBlockBytes,
-                      consumeBytes,
-                    },
-                    fetchOptions.getKey,
-                  ),
+                : fetchMissingBlock(cid, missingHash),
               fetchSignal,
             );
             assertWorkerActive();
+            // A block the message's fetch bounds left unread stays a missing
+            // dependency.
+            if (missingChanges === undefined) continue;
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
               continue;
@@ -3343,13 +3392,9 @@ export class PeerborneDocument<
     return loadResponseManifestHash({
       changeId: message.changeId,
       changes: message.changes,
-      serializeChange: (change) => this._changesSerializer.serializeChanges(change),
       snapshot: message.snapshot === undefined ? undefined : {
         stateBytes: this._changesSerializer.serializeChanges(message.snapshot.state),
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
-        compactedCount: message.snapshot.compactedCount,
-        timestamp: message.snapshot.timestamp,
-        signature: message.snapshot.signature,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
         this._changesSerializer.serializeChanges(message.keychainChanges),
@@ -3913,6 +3958,120 @@ export class PeerborneDocument<
     );
   }
 
+  /**
+   * Check, before any state is applied, that a quorum-bound first load's
+   * snapshot will pass the apply-time check: a signature by a writer that the
+   * response's CID-validated writer blocks establish. The blocks are decoded
+   * into an isolated ACL with keys from a staged, uncommitted keychain merge,
+   * so no live state changes. The payload is charged to the session budget
+   * once and verified against each distinct writer key, the response signer
+   * first.
+   */
+  private async _isServedSnapshotSignedByServedWriter(
+    session: InitialLoadSession<PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
+    prefetchedBlocks: ReadonlyMap<string, Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    const snapshot = message.snapshot;
+    if (snapshot === undefined) return false;
+    let payload: Uint8Array;
+    let signature: Uint8Array;
+    try {
+      payload = this._buildSnapshotSignPayload(
+        this._changesSerializer.serializeChanges(snapshot.state),
+        snapshot.lastChangeNodeCID,
+        snapshot.timestamp,
+        snapshot.compactedCount,
+      );
+      signature = copyUnsharedUint8Array(
+        snapshot.signature,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+        'Load snapshot signature',
+      );
+    } catch {
+      return false;
+    }
+    if (
+      payload.byteLength > MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES ||
+      !session.authenticationBudget.reserve(payload.byteLength)
+    ) {
+      return false;
+    }
+    try {
+      const writers = await this._writersEstablishedByLoadResponse(
+        message,
+        prefetchedBlocks,
+        signal,
+      );
+      const serialize = requireSerializePublicKey(
+        this._authProvider,
+        'Load snapshot signer',
+      );
+      const seen = new Set<string>();
+      const candidates: PublicKey[] = [];
+      for (const writer of writers) {
+        const authority = await serialize(writer);
+        if (seen.has(authority)) continue;
+        seen.add(authority);
+        if (authority === message.signerAuthority) candidates.unshift(writer);
+        else candidates.push(writer);
+      }
+      for (const writer of candidates) {
+        throwIfLoadAborted(signal);
+        if (
+          (await this._authProvider.verify(
+            new Uint8Array(payload),
+            writer,
+            new Uint8Array(signature),
+          )) === true
+        ) {
+          return true;
+        }
+      }
+    } catch {
+      throwIfLoadAborted(signal);
+    }
+    return false;
+  }
+
+  /**
+   * The writer set that applying a load response's writer blocks to an empty
+   * ACL would produce, computed in an isolated ACL instance.
+   */
+  private async _writersEstablishedByLoadResponse(
+    message: CRDTSyncMessage<ChangesType>,
+    prefetchedBlocks: ReadonlyMap<string, Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<PublicKey[]> {
+    const staged =
+      message.keychainChanges === undefined
+        ? undefined
+        : this._keychain.prepareMerge(message.keychainChanges);
+    if (staged !== undefined) {
+      await awaitLoadWork(staged.hydrateKeys(), signal);
+    }
+    const getKey = (keyID: Uint8Array): DocumentKey | undefined =>
+      staged?.getKey(keyID) ?? this._keychain.getKey(keyID);
+    const writers = this._aclProvider.initialize();
+    if (message.changes !== undefined) {
+      for (const { nodeId, kind } of collectBoundedChangeTree(
+        message.changeId,
+        message.changes,
+      )) {
+        if (kind !== crdtWriterChangeNode || nodeId === undefined) continue;
+        const block = prefetchedBlocks.get(nodeId);
+        if (block === undefined) continue;
+        writers.merge(
+          await this._decodeBlock(CID.parse(nodeId), block, signal, getKey),
+        );
+      }
+    }
+    return writers.users();
+  }
+
   private async _signAsWriter(
     message: CRDTSyncMessage<ChangesType>,
   ): Promise<string> {
@@ -4288,6 +4447,7 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
+      this._lastPublishedChange = hash;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -6160,6 +6320,28 @@ export class PeerborneDocument<
             }
           }
 
+          // The agreed digest binds the snapshot's state and boundary but not
+          // who signed it. A first load verifies the snapshot only after its
+          // writer blocks merge, when the instance can no longer try another
+          // peer, so check the same rule here before any state application.
+          if (
+            requiresServedSnapshot &&
+            !(await awaitLoadWork(
+              this._isServedSnapshotSignedByServedWriter(
+                session,
+                message,
+                prefetchedBlocks,
+                signal,
+              ),
+              signal,
+            ))
+          ) {
+            throw new _QuorumBindCheckFailedError(
+              '(untrusted-snapshot-signature)',
+              'Quorum-bound first-load snapshot is not signed by a writer its ACL establishes',
+            );
+          }
+
           const syncResult = await syncLoadMessage();
           throwIfLoadAborted(signal);
           if (syncResult !== true) {
@@ -6636,12 +6818,16 @@ export class PeerborneDocument<
    * resolveLoadSecurityCommitments. A remote response cannot supply its own
    * trust root. Signing is mandatory.
    *
-   * Quorum selection counts each authenticated authority once. The selected
-   * response must match the captured challenge and tuple; its derived frontier
-   * and complete manifest must match the agreed digest before mutation.
-   * Quorum loads prefetch the served tree's CIDs before applying state. With
-   * loadQuorumEnabled false, one trusted signed V4 response may be selected;
-   * challenge, tuple, signature, and frontier checks still apply.
+   * Quorum selection counts each authenticated authority once. When the
+   * captured trusted writer set has exactly one authority, a valid response
+   * from any of its devices is accepted without a second vote; devices that
+   * advertise different states are tried, most-advertised state first, each
+   * bound to its own digest. The selected response must match the captured
+   * challenge and tuple, and its derived frontier and manifest must match the
+   * bound digest, before mutation. A first load also checks, before mutation,
+   * that a writer its writer blocks establish signed its snapshot. Quorum loads prefetch the served tree's CIDs before applying
+   * state. With loadQuorumEnabled false, one trusted signed V4 response may be
+   * selected; challenge, tuple, signature, and frontier checks still apply.
    *
    * @param preferredPeer Optional peer to try first (typically a PeerId from a
    *   pubsub message sender), matched against the last `/p2p/<id>` segment of
@@ -6723,6 +6909,7 @@ export class PeerborneDocument<
         );
       },
       documentPath: this.documentPath,
+      trustedAuthorities: session.authorities.map(({ authorityId }) => authorityId),
       config: {
         enabled: this.swarm.config?.loadQuorumEnabled ?? true,
         k: this.swarm.config?.loadQuorumK ?? DEFAULT_LOAD_QUORUM_K,
@@ -6734,6 +6921,10 @@ export class PeerborneDocument<
     });
 
     let winningHashHex: string | null = null;
+    const boundHashHexes = new Map<
+      import('@multiformats/multiaddr').Multiaddr,
+      string
+    >();
     if ('skipped' in quorumResult) {
 
       const quorumWasEnabled = this.swarm.config?.loadQuorumEnabled ?? true;
@@ -6746,6 +6937,9 @@ export class PeerborneDocument<
       winningHashHex = quorumResult.winningHashHex;
       orderedPeers.length = 0;
       orderedPeers.push(...quorumResult.narrowedPeers);
+      quorumResult.narrowedPeers.forEach((peer, index) =>
+        boundHashHexes.set(peer, quorumResult.boundHashHexes[index]),
+      );
     }
 
     const narrowedCohortSize = orderedPeers.length;
@@ -6766,7 +6960,7 @@ export class PeerborneDocument<
             request.session,
             snapshotStream,
             request.serializedRequest,
-            winningHashHex,
+            boundHashHexes.get(peer) ?? winningHashHex,
           );
           if (loaded) {
             this._assertNoIncompleteBootstrapLoad();
@@ -6803,7 +6997,7 @@ export class PeerborneDocument<
           request.session,
           docStream,
           request.serializedRequest,
-          winningHashHex,
+          boundHashHexes.get(peer) ?? winningHashHex,
         );
         if (loaded) {
           this._assertNoIncompleteBootstrapLoad();
@@ -7931,27 +8125,13 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
-      await this._runStateMutation(async () => {
-        if (!receiveAdmission.active) return;
-        await this._syncUnlocked(
-          message,
-          true,
-          'ordinary-sync-v1',
-          undefined,
-          false,
-          undefined,
-          {
-            assertStillActive: () => {
-              if (!receiveAdmission.active)
-                throw new Error('GossipSub receive subscription closed');
-            },
-            // A reply carrying a snapshot is not a frame the author
-            // published, so it must not trigger size-bound compaction.
-            frameBytes:
-              message.snapshot === undefined ? rawContent.byteLength : undefined,
-          },
-        );
-      });
+      await this._syncGossipMessage(
+        message,
+        () => receiveAdmission.active,
+        // A reply carrying a snapshot is not a frame the author published,
+        // so it must not trigger size-bound compaction.
+        message.snapshot === undefined ? rawContent.byteLength : undefined,
+      );
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
@@ -8192,6 +8372,7 @@ export class PeerborneDocument<
   private async _closeResources(): Promise<void> {
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
+    this._remoteBlockFetches?.abortAll();
     this._gcClosed = true;
     this._gcLifecycle = {};
     if (this._redeliveryTimer !== undefined) clearTimeout(this._redeliveryTimer);
@@ -8268,6 +8449,126 @@ export class PeerborneDocument<
     }
     return this._runStateMutation(() =>
       this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
+    );
+  }
+
+  /**
+   * Apply an ordinary sync frame received over GossipSub. Blocks the frame
+   * cites without their changes are fetched outside the state queue, only
+   * after its writer signature verifies, so a block that no reachable peer
+   * holds cannot stall local changes, other frames or `close()`.
+   */
+  private async _syncGossipMessage(
+    message: CRDTSyncMessage<ChangesType>,
+    isActive: () => boolean,
+    frameBytes?: number,
+  ): Promise<void> {
+    let remoteFetches: RemoteBlockFetchScope | undefined;
+    let prefetchedBlocks: ReadonlyMap<string, Uint8Array> | undefined;
+    try {
+      if (this._unknownDeferredCids(message, false).length > 0) {
+        const cids = await this._runStateMutation(async () =>
+          isActive() && (await this._verifyOrdinarySyncSignature(message))
+            ? this._unknownDeferredCids(message, true)
+            : undefined,
+        );
+        if (cids === undefined) return;
+        if (cids.length > 0) {
+          // The scope starts no fetch after the prefetch, so the frame then
+          // applies without the blocks it could not prefetch.
+          remoteFetches = this._blockFetches().begin();
+          prefetchedBlocks = await remoteFetches.prefetch(
+            cids,
+            (cid, signal, consumeBytes) =>
+              this._readBlock(CID.parse(cid), { signal, consumeBytes }),
+            LOAD_PREFETCH_MAX_CONCURRENCY,
+          );
+        }
+      }
+      await this._runStateMutation(async () => {
+        if (!isActive()) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!isActive())
+                throw new Error('GossipSub receive subscription closed');
+            },
+            frameBytes,
+            prefetchedBlocks,
+            remoteFetches,
+          },
+        );
+      });
+    } finally {
+      remoteFetches?.end();
+    }
+  }
+
+  private async _verifyOrdinarySyncSignature(
+    message: CRDTSyncMessage<ChangesType>,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    const signature = message.signature;
+    if (!signature) return false;
+    const unsigned = this._serializeUnsignedForVerification(
+      message,
+      'ordinary-sync-v1',
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    return (
+      unsigned !== undefined &&
+      (await this._verifyWriterSignature(unsigned.raw, signature)) === true &&
+      unsigned.unchanged()
+    );
+  }
+
+  /**
+   * CIDs a sync tree cites without their changes that this replica lacks.
+   * `validate` checks and canonicalizes the tree first, as `_syncUnlocked()`
+   * will, and ignores history below a snapshot newer than the latest one.
+   */
+  private _unknownDeferredCids(
+    message: CRDTSyncMessage<ChangesType>,
+    validate: boolean,
+  ): string[] {
+    const { changeId, changes } = message;
+    if (changeId === undefined || changes === undefined) return [];
+    const boundary =
+      validate &&
+      message.snapshot !== undefined &&
+      this._supersedesLatestSnapshot(message.snapshot)
+        ? message.snapshot.lastChangeNodeCID
+        : undefined;
+    const known = boundary ? new Set(this._hashes).add(boundary) : this._hashes;
+    try {
+      return mergeRemoteSyncTree(
+        changeId,
+        validate ? this._collectACLFromTree(changes, changeId).changes : changes,
+        this._lastSyncMessage?.changeId,
+        known,
+      )
+        .filter(([, , change]) => change === undefined)
+        .map(([cid]) => cid);
+    } catch {
+      return [];
+    }
+  }
+
+  private _supersedesLatestSnapshot(
+    incoming: NonNullable<CRDTSyncMessage<ChangesType>['snapshot']>,
+  ): boolean {
+    return (
+      !this._latestSnapshot ||
+      incoming.compactedCount > this._latestSnapshot.compactedCount ||
+      (incoming.compactedCount === this._latestSnapshot.compactedCount &&
+        String(incoming.lastChangeNodeCID ?? '') >
+          String(this._latestSnapshot.lastChangeNodeCID ?? ''))
     );
   }
 
@@ -8645,13 +8946,7 @@ export class PeerborneDocument<
           }
         } catch {}
       }
-      if (
-        !this._latestSnapshot ||
-        incoming.compactedCount > this._latestSnapshot.compactedCount ||
-        (incoming.compactedCount === this._latestSnapshot.compactedCount &&
-          String(incoming.lastChangeNodeCID ?? '') >
-            String(this._latestSnapshot.lastChangeNodeCID ?? ''))
-      ) {
+      if (this._supersedesLatestSnapshot(incoming)) {
         // Verify the snapshot signature against the deterministic payload
         // by trying all authorized writers.
         // When signing is disabled, skip serialization and signature
@@ -8732,11 +9027,24 @@ export class PeerborneDocument<
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
     if (changeTreePreflight) {
       beginStateApplication();
-      await this._syncDocumentChanges(
-        message.changeId,
-        changeTreePreflight.changes,
-        changeFetchOptions,
-      );
+      // An ordinary sync bounds the block fetches it starts. Loads and
+      // invitations need every block and bound them with their own deadlines.
+      const remoteFetches =
+        context === 'ordinary-sync-v1' &&
+        changeFetchOptions.remoteFetches === undefined
+          ? this._blockFetches().begin()
+          : undefined;
+      try {
+        await this._syncDocumentChanges(
+          message.changeId,
+          changeTreePreflight.changes,
+          remoteFetches === undefined
+            ? changeFetchOptions
+            : { ...changeFetchOptions, remoteFetches },
+        );
+      } finally {
+        remoteFetches?.end();
+      }
       assertStillActive();
     }
 
@@ -8856,10 +9164,19 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * On failure (from any step: write check, CRDT apply, or network publish),
-   * the transaction is aborted and the document reference is rolled back.
-   * For immutable CRDT providers (e.g. Automerge), rollback is reliable
-   * because `localChange()` returns a new document object.
+   * A failure before the change is published (write check, CRDT apply,
+   * block storage, signing, encryption or the publish call) aborts the
+   * transaction and rolls it back: the document returns to its state when
+   * `endChange()` was called, and the attempt's history bookkeeping is
+   * removed. Automerge outdates the document a change consumes, so the
+   * rollback restores a writable copy from `CRDTProvider.cloneDocument()`,
+   * which makes later changes under a new actor. While Automerge holds remote
+   * changes waiting for missing dependencies, a copy would lose them, so the
+   * call instead retires the instance and rejects with an error whose `cause`
+   * is the failure; reopen it from accepted state. A failure after
+   * publication, from a local update handler or compaction, keeps the
+   * published change and its bookkeeping, ends the transaction and rejects
+   * with that error, as `change()` does.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -8882,54 +9199,22 @@ export class PeerborneDocument<
    * An oversized encrypted block retires the instance before publication.
    * Reopen from accepted state before retrying the edit in smaller changes.
    *
-   * **Known limitation -- concurrent remote changes during rollback:** The
-   * rollback sets `_document` back to the snapshot captured when
-   * `endChange()` is called (before applying the pending change functions).
-   * Because `_makeChange()` is async and the node remains
-   * subscribed to pubsub throughout, remote sync messages may arrive and be
-   * applied to `_document` between the start of the transaction and the
-   * point of failure. Rolling back to the original snapshot **reverts those
-   * remote changes as well**, not just the local batch. This is acceptable
-   * because the CRDT layer guarantees eventual consistency -- the reverted
-   * remote changes will be re-applied on the next sync cycle or document
-   * load. If transaction failure is critical, callers should re-sync the
-   * document after a failed transaction (e.g. call `load()` or wait for
-   * the next pubsub round) to ensure remote state is promptly restored.
+   * **Known limitation -- ambiguous publication:** A publish call that
+   * rejects after the transport accepted the frame is rolled back like an
+   * unpublished change, so a peer may hold a change this replica discarded.
+   * For Automerge, the copy's new actor keeps later local changes from
+   * colliding with it.
    *
-   * **Known limitation -- partial internal state on failure:** If
-   * `_makeChange()` fails partway through (e.g. encryption succeeds but
-   * pubsub publish throws), `_hashes` may retain CIDs for the rolled-back
-   * change (see below). Other counters and bookkeeping fields
-   * (`_lastSyncMessage`, `_documentChangeCount`, `_changesSinceSnapshot`,
-   * `_recentTips`) ARE restored from snapshots captured before
-   * `_makeChange()` -- see the "Internal metadata rollback" section below
-   * for details.
-   *
-   * **Specifically, `_hashes` may retain CIDs for the rolled-back change.**
-   * Because `_hashes` is used to skip already-seen changes during sync,
-   * any CID added before the failure will cause that change to be silently
-   * skipped if it arrives again via pubsub or `load()`. This means the
-   * rolled-back change is effectively "lost" from this peer's perspective
-   * until `_hashes` is rebuilt. **Callers should call `load()` after a
-   * failed transaction** to re-sync the full document state from a peer
-   * and restore consistency. A new transaction must be started after a
-   * failure.
-   *
-   * **Internal metadata rollback:** On failure, `_lastSyncMessage`,
+   * **Internal metadata rollback:** On a rollback, `_lastSyncMessage`,
    * `_documentChangeCount`, `_changesSinceSnapshot`, and `_recentTips`
    * are restored from snapshots captured before `_makeChange()`.
    * (`_recentTips` is bounded to `MAX_RECENT_TIPS` entries so the snapshot
    * is a cheap shallow array copy.) For `_hashes` and
    * `_referencedAncestors`, all entries added to each Set after its
-   * pre-attempt size are removed. Because the node remains
-   * subscribed to pubsub during the async transaction, this may include
-   * CIDs appended by concurrent remote syncs, not just local ones.
-   * This is acceptable because CRDT convergence guarantees those remote
-   * CIDs will be re-added on the next sync cycle or document load.
-   * The approach is O(n) iteration but O(delta) memory -- no full
-   * array clone -- and avoids disrupting any concurrent sync iteration
-   * that `clear()` would break. A new transaction must be started after
-   * a failure.
+   * pre-attempt size are removed. The document's state queue keeps remote
+   * syncs out of the transaction, so those entries are the attempt's own.
+   * The approach is O(n) iteration but O(delta) memory. A new transaction
+   * must be started after a failure.
    *
    * @throws {Error} If any step in the commit pipeline fails.
    */
@@ -8976,6 +9261,7 @@ export class PeerborneDocument<
     }
 
     const originalDocument = this._document;
+    const lastPublishedBefore = this._lastPublishedChange;
     // Snapshot internal metadata so we can restore on failure.
     // Only track the Set size (O(1)) instead of cloning the entire Set (O(n)):
     // _makeChange adds at most one CID, and JS Sets iterate in insertion order,
@@ -9017,9 +9303,26 @@ export class PeerborneDocument<
       this._pendingChangeFns = [];
     } catch (err) {
       // Abort transaction on ANY error (ensureWrite, localChange, or makeChange).
+      this._inTransaction = false;
+      this._pendingChangeFns = [];
+      const thrown = failure
+        ? partialChangeCommitFailure(failure.error, err)
+        : err;
+      // A local update handler or compaction failed after publication. Peers
+      // hold the change, so it and its bookkeeping stay, as for `change()`.
+      if (this._lastPublishedChange !== lastPublishedBefore) throw thrown;
       // Roll back document and internal metadata (best-effort for in-place
-      // mutating providers like Yjs).
-      this._document = originalDocument;
+      // mutating providers like Yjs). Automerge outdated `originalDocument`
+      // when it made the change, so restore a writable copy of it instead.
+      // A retired instance is closed and keeps its document.
+      if (this._document !== originalDocument && !this._oversizedEditClose) {
+        const restored = this._crdtProvider.cloneDocument
+          ? this._crdtProvider.cloneDocument(originalDocument)
+          : originalDocument;
+        if (restored === undefined)
+          throw this._retireAfterUnrecoverableRollback(thrown);
+        this._document = restored;
+      }
       // Remove only the CIDs appended by _makeChange instead of clearing and
       // re-populating the entire Set. This avoids mutating the Set during
       // concurrent sync (clear() would disrupt any in-progress iteration)
@@ -9062,9 +9365,7 @@ export class PeerborneDocument<
       this._documentChangeCount = changeCountSnapshot;
       this._changesSinceSnapshot = compactionCountSnapshot;
       this._recentTips = recentTipsSnapshot;
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-      throw failure ? partialChangeCommitFailure(failure.error, err) : err;
+      throw thrown;
     } finally {
       this._committing = false;
     }
@@ -9115,6 +9416,25 @@ export class PeerborneDocument<
       throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
     }
     if (failure) throw failure.error;
+  }
+
+  /**
+   * A failed local change that the provider cannot roll back without losing
+   * state, such as Automerge changes waiting for missing dependencies, stays
+   * in the document unpublished. A later change would depend on it, so the
+   * instance is retired and must be reopened from accepted state.
+   */
+  private _retireAfterUnrecoverableRollback(cause: unknown): Error {
+    this._retirementReason =
+      `Document ${this.documentPath} was retired because a failed change ` +
+      'could not be rolled back; open a fresh instance from accepted state ' +
+      'before continuing';
+    this._bootstrapLoadApplicationRevision++;
+    this._oversizedEditClose ??= Promise.resolve().then(() =>
+      this._closeDocument(),
+    );
+    void this._oversizedEditClose.catch(() => {});
+    return new Error(this._retirementReason, { cause });
   }
 
   /**
@@ -9283,8 +9603,13 @@ export class PeerborneDocument<
     // Use _documentChangeCount (document-kind changes only) rather than
     // _hashes.size (which includes ACL nodes) to keep the semantic consistent.
     // Binary layout with length prefixes avoids ambiguity and is efficient
-    // for large state blobs (no JSON/Array.from overhead).
-    const compactedCount = this._documentChangeCount;
+    // for large state blobs (no JSON/Array.from overhead). The count is
+    // advisory metadata, and an adopted remote snapshot can raise it to the
+    // uint32 limit, so clamp it rather than let a later snapshot fail.
+    const compactedCount = Math.min(
+      this._documentChangeCount,
+      MAX_SNAPSHOT_COMPACTED_COUNT,
+    );
     const stateBytes = this._changesSerializer.serializeChanges(state);
     let signature: Uint8Array;
     if (this._isSigningEnabled()) {

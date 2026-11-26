@@ -27,10 +27,19 @@ const node = (
 });
 
 const textEncoder = new TextEncoder();
-const serializeChange = (change: unknown) =>
-  textEncoder.encode(JSON.stringify(change));
 const hash = (input: Parameters<typeof loadResponseManifestHash>[0]) =>
-  loadResponseManifestHash({ serializeChange, ...input });
+  loadResponseManifestHash(input);
+const signedSnapshot = (
+  overrides: Record<string, unknown> = {},
+): Parameters<typeof loadResponseManifestHash>[0]['snapshot'] =>
+  ({
+    stateBytes: new Uint8Array([1, 2, 3]),
+    lastChangeNodeCID: 'SNAP',
+    compactedCount: 4,
+    timestamp: 5,
+    signature: new Uint8Array([7]),
+    ...overrides,
+  }) as Parameters<typeof loadResponseManifestHash>[0]['snapshot'];
 
 describe('loadResponseManifestHash', () => {
   test('is canonical across child insertion order', async () => {
@@ -75,8 +84,13 @@ describe('loadResponseManifestHash', () => {
       { changeId: 'ROOT', changes: node({ children: false }) },
     ],
     [
-      'inline change marker',
-      { changeId: 'ROOT', changes: node({ change: { value: 1 } }) },
+      'a deferred child in place of a leaf',
+      {
+        changeId: 'ROOT',
+        changes: node({
+          children: { A: node({ children: false }), B: node() },
+        }),
+      },
     ],
   ])('binds %s', async (_name, changed) => {
     const baseline = {
@@ -88,7 +102,7 @@ describe('loadResponseManifestHash', () => {
     await expect(hash(changed)).resolves.not.toEqual(await hash(baseline));
   });
 
-  test('encodes node descriptors as kind, inline change, and child edges', async () => {
+  test('encodes node descriptors as kind and child edges', async () => {
     const u32 = (value: number): number[] => [
       (value >>> 24) & 0xff,
       (value >>> 16) & 0xff,
@@ -99,9 +113,8 @@ describe('loadResponseManifestHash', () => {
       const bytes = [...textEncoder.encode(value)];
       return [...u32(bytes.length), ...bytes];
     };
-    const inline = [...serializeChange({ value: 1 })];
     const expected = new Uint8Array([
-      ...textEncoder.encode('peerborne/load-response-manifest/v1\0'),
+      ...textEncoder.encode('peerborne/load-response-manifest/v2\0'),
       2,
       ...encodeString('ROOT'),
       ...u32(2),
@@ -109,13 +122,9 @@ describe('loadResponseManifestHash', () => {
       ...encodeString('A'),
       2,
       0,
-      0,
       ...u32(0),
       ...encodeString('ROOT'),
       0,
-      1,
-      ...u32(inline.length),
-      ...inline,
       2,
       ...u32(1),
       ...encodeString('A'),
@@ -137,95 +146,66 @@ describe('loadResponseManifestHash', () => {
     ).resolves.toEqual(digest);
   });
 
-  test('binds canonical inline change bytes, not only their presence', async () => {
-    const baseline = await hash({
-      changeId: 'ROOT',
-      changes: node({ change: { value: 1 } }),
-    });
-    const substituted = await hash({
-      changeId: 'ROOT',
-      changes: node({ change: { value: 2 } }),
-    });
-    expect(substituted).not.toEqual(baseline);
-  });
+  test('agrees across inline and stripped copies of one change tree', async () => {
+    const authored = () =>
+      node({
+        change: { value: 'head' },
+        children: {
+          PARENT: node({
+            change: { value: 'parent' },
+            children: { WRITER: node({ kind: 'writer', change: { acl: 1 } }) },
+          }),
+          CROSS: node(),
+        },
+      });
+    const replica = stripInlineChanges(authored())!;
+    expect(replica.change).toBeUndefined();
 
-  test('fails closed when an inline change has no canonical serializer', async () => {
-    await expect(
-      loadResponseManifestHash({
-        changeId: 'ROOT',
-        changes: node({ change: { value: 1 } }),
-      }),
-    ).rejects.toThrow(/requires serializeChange/);
-  });
-
-  test('copies serialized inline bytes before hashing', async () => {
-    const serialized = new Uint8Array([1, 2, 3]);
-    const pending = hash({
-      changeId: 'ROOT',
-      changes: node({ change: { value: 1 } }),
-      serializeChange: () => serialized,
-    });
-    serialized.fill(9);
-    await expect(pending).resolves.toEqual(
-      await hash({
-        changeId: 'ROOT',
-        changes: node({ change: { value: 1 } }),
-        serializeChange: () => new Uint8Array([1, 2, 3]),
-      }),
+    await expect(hash({ changeId: 'ROOT', changes: replica })).resolves.toEqual(
+      await hash({ changeId: 'ROOT', changes: authored() }),
     );
   });
 
-  test('accepts cross-realm serialized changes and rejects shared backing', async () => {
-    const crossRealm = runInNewContext(
-      'new Uint8Array([1, 2, 3])',
-    ) as Uint8Array;
-    expect(crossRealm instanceof Uint8Array).toBe(false);
-    await expect(
-      hash({
-        changeId: 'ROOT',
-        changes: node({ change: { value: 1 } }),
-        serializeChange: () => crossRealm,
-      }),
-    ).resolves.toHaveLength(32);
-
-    if (typeof SharedArrayBuffer !== 'undefined') {
-      await expect(
-        hash({
-          changeId: 'ROOT',
-          changes: node({ change: { value: 1 } }),
-          serializeChange: () =>
-            new Uint8Array(new SharedArrayBuffer(3)),
-        }),
-      ).rejects.toThrow(/unshared Uint8Array/);
-    }
+  test('does not bind inline payloads, which quorum-bound loads discard', async () => {
+    const digests = await Promise.all(
+      [{ value: 1 }, { value: 2 }, undefined].map((change) =>
+        hash({ changeId: 'ROOT', changes: node({ change }) }),
+      ),
+    );
+    expect(digests[1]).toEqual(digests[0]);
+    expect(digests[2]).toEqual(digests[0]);
   });
 
-  test('snapshots the complete tree before a serializer can mutate it', async () => {
-    const originalChild = node({ kind: 'reader' });
-    const originalRoot = node({
-      change: { trigger: true },
-      children: { CHILD: originalChild },
-    });
-    const actual = await hash({
-      changeId: 'ROOT',
-      changes: originalRoot,
-      serializeChange: () => {
-        originalChild.kind = 'writer';
-        originalRoot.children = { ATTACKER: node() };
-        return new Uint8Array([7]);
+  test('never reads or serializes inline payloads', async () => {
+    const change = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('inline payload must not be read');
+        },
+        ownKeys() {
+          throw new Error('inline payload must not be enumerated');
+        },
       },
-    });
-
+    );
     await expect(
-      hash({
+      hash({ changeId: 'ROOT', changes: node({ change }) }),
+    ).resolves.toEqual(await hash({ changeId: 'ROOT', changes: node() }));
+  });
+
+  test('snapshots the complete tree before the first digest yields', async () => {
+    const originalChild = node({ kind: 'reader' });
+    const originalRoot = node({ children: { CHILD: originalChild } });
+    const pending = hash({ changeId: 'ROOT', changes: originalRoot });
+    originalChild.kind = 'writer';
+    originalRoot.children = { ATTACKER: node() };
+
+    await expect(pending).resolves.toEqual(
+      await hash({
         changeId: 'ROOT',
-        changes: node({
-          change: { trigger: true },
-          children: { CHILD: node({ kind: 'reader' }) },
-        }),
-        serializeChange: () => new Uint8Array([7]),
+        changes: node({ children: { CHILD: node({ kind: 'reader' }) } }),
       }),
-    ).resolves.toEqual(actual);
+    );
   });
 
   test('rejects change-tree accessors without invoking them', async () => {
@@ -245,24 +225,15 @@ describe('loadResponseManifestHash', () => {
     expect(getterCalls).toBe(0);
   });
 
-  test('binds snapshot bytes, signature and every applied metadata field', async () => {
-    const baseline = {
-      snapshot: {
-        stateBytes: new Uint8Array([1, 2, 3]),
-        lastChangeNodeCID: 'SNAP',
-        compactedCount: 4,
-        timestamp: 5,
-        signature: new Uint8Array([7]),
-      },
-    };
-    const baselineHash = await hash(baseline);
+  test('binds snapshot presence, state bytes and boundary', async () => {
+    const baselineHash = await hash({ snapshot: signedSnapshot() });
+    await expect(hash({})).resolves.not.toEqual(baselineHash);
     for (const changed of [
-      { ...baseline.snapshot, stateBytes: new Uint8Array([1, 2, 4]) },
-      { ...baseline.snapshot, lastChangeNodeCID: 'OTHER' },
-      { ...baseline.snapshot, compactedCount: 3 },
-      { ...baseline.snapshot, timestamp: 6 },
-      { ...baseline.snapshot, signature: new Uint8Array([8]) },
-      { ...baseline.snapshot, signature: new Uint8Array([7, 0]) },
+      signedSnapshot({ stateBytes: new Uint8Array([1, 2, 4]) }),
+      signedSnapshot({ stateBytes: new Uint8Array([1, 2, 3, 0]) }),
+      signedSnapshot({ stateBytes: new Uint8Array(0) }),
+      signedSnapshot({ lastChangeNodeCID: 'OTHER' }),
+      signedSnapshot({ lastChangeNodeCID: '' }),
     ]) {
       await expect(hash({ snapshot: changed })).resolves.not.toEqual(
         baselineHash,
@@ -270,26 +241,48 @@ describe('loadResponseManifestHash', () => {
     }
   });
 
-  test('rejects a missing or non-byte snapshot signature', async () => {
-    const snapshot = {
-      stateBytes: new Uint8Array([1, 2, 3]),
-      lastChangeNodeCID: 'SNAP',
-      compactedCount: 4,
-      timestamp: 5,
-    };
+  test('agrees across writers that signed their own snapshot of one state', async () => {
+    const authored = await hash({ snapshot: signedSnapshot() });
+    for (const resigned of [
+      signedSnapshot({ signature: new Uint8Array([8, 9]) }),
+      signedSnapshot({ timestamp: 6 }),
+      signedSnapshot({ compactedCount: 3 }),
+      {
+        stateBytes: new Uint8Array([1, 2, 3]),
+        lastChangeNodeCID: 'SNAP',
+      },
+    ]) {
+      await expect(hash({ snapshot: resigned })).resolves.toEqual(authored);
+    }
+  });
+
+  test('rejects a missing or non-byte snapshot state and boundary', async () => {
     await expect(
       hash({
-        snapshot: snapshot as unknown as Parameters<typeof hash>[0]['snapshot'],
+        snapshot: { lastChangeNodeCID: 'SNAP' } as unknown as Parameters<
+          typeof hash
+        >[0]['snapshot'],
       }),
-    ).rejects.toThrow(/signature must be an enumerable own data property/);
+    ).rejects.toThrow(/stateBytes must be an enumerable own data property/);
     await expect(
       hash({
-        snapshot: {
-          ...snapshot,
-          signature: 'signature' as unknown as Uint8Array,
-        },
+        snapshot: { stateBytes: new Uint8Array([1]) } as unknown as Parameters<
+          typeof hash
+        >[0]['snapshot'],
       }),
-    ).rejects.toThrow(/snapshot signature .* not an unshared Uint8Array/);
+    ).rejects.toThrow(
+      /lastChangeNodeCID must be an enumerable own data property/,
+    );
+    await expect(
+      hash({
+        snapshot: signedSnapshot({
+          stateBytes: 'state' as unknown as Uint8Array,
+        }),
+      }),
+    ).rejects.toThrow(/snapshot state .* not an unshared Uint8Array/);
+    await expect(
+      hash({ snapshot: signedSnapshot({ lastChangeNodeCID: 7 }) }),
+    ).rejects.toThrow(/lastChangeNodeCID/);
   });
 
   test('binds keychain presence and serialized bytes', async () => {
@@ -306,21 +299,12 @@ describe('loadResponseManifestHash', () => {
 
   test('snapshots snapshot and keychain bytes before the first digest yields', async () => {
     const stateBytes = new Uint8Array([1, 2, 3]);
-    const signature = new Uint8Array([7]);
     const keychainChangesBytes = new Uint8Array([4, 5, 6]);
-    const pending = hash({
-      snapshot: {
-        stateBytes,
-        lastChangeNodeCID: 'SNAP',
-        compactedCount: 1,
-        timestamp: 2,
-        signature,
-      },
-      keychainChangesBytes,
-    });
+    const snapshot = { stateBytes, lastChangeNodeCID: 'SNAP' };
+    const pending = hash({ snapshot, keychainChangesBytes });
 
     stateBytes.fill(9);
-    signature.fill(9);
+    snapshot.lastChangeNodeCID = 'OTHER';
     keychainChangesBytes.fill(9);
 
     await expect(pending).resolves.toEqual(
@@ -328,9 +312,6 @@ describe('loadResponseManifestHash', () => {
         snapshot: {
           stateBytes: new Uint8Array([1, 2, 3]),
           lastChangeNodeCID: 'SNAP',
-          compactedCount: 1,
-          timestamp: 2,
-          signature: new Uint8Array([7]),
         },
         keychainChangesBytes: new Uint8Array([4, 5, 6]),
       }),
@@ -356,7 +337,7 @@ describe('loadResponseManifestHash', () => {
         throw new Error('snapshot property read must not run');
       },
     });
-    const input = new Proxy({ ...stable, snapshot, serializeChange }, {
+    const input = new Proxy({ ...stable, snapshot }, {
       get() {
         inputReads++;
         throw new Error('input property read must not run');
@@ -372,7 +353,6 @@ describe('loadResponseManifestHash', () => {
 
   test('does not consult an inherited setter while capturing input fields', async () => {
     const input = {
-      serializeChange,
       snapshot: {
         stateBytes: new Uint8Array([1, 2, 3]),
         lastChangeNodeCID: 'SNAP',
@@ -427,7 +407,7 @@ describe('loadResponseManifestHash', () => {
         return 'SNAP';
       },
     });
-    const input = { snapshot, serializeChange } as Record<string, unknown>;
+    const input = { snapshot } as Record<string, unknown>;
     Object.defineProperty(input, 'keychainChangesBytes', {
       enumerable: true,
       get() {
@@ -539,19 +519,43 @@ describe('loadResponseManifestHash', () => {
     },
   );
 
-  test.each(['attacker-first', 'canonical-first'] as const)(
-    'rejects substituted inline bytes for one repeated CID in %s order',
+  test.each(['inline-first', 'stripped-first'] as const)(
+    'reconciles inline and stripped copies of one repeated CID in %s order',
     async (order) => {
-      const canonical = node({
-        children: { SHARED: node({ change: { value: 'canonical' } }) },
+      const inline = node({
+        children: { SHARED: node({ change: { value: 'shared' } }) },
       });
-      const attacker = node({
-        children: { SHARED: node({ change: { value: 'attacker' } }) },
+      const stripped = node({ children: { SHARED: node() } });
+      const children =
+        order === 'inline-first'
+          ? { A: inline, Z: stripped }
+          : { A: stripped, Z: inline };
+      const sharedLeaf = () => node({ children: { SHARED: node() } });
+
+      await expect(
+        hash({ changeId: 'ROOT', changes: node({ children }) }),
+      ).resolves.toEqual(
+        await hash({
+          changeId: 'ROOT',
+          changes: node({ children: { A: sharedLeaf(), Z: sharedLeaf() } }),
+        }),
+      );
+    },
+  );
+
+  test.each(['deferred-first', 'explicit-first'] as const)(
+    'rejects deferred and explicit children for one repeated CID in %s order',
+    async (order) => {
+      const deferred = node({
+        children: { SHARED: node({ children: false }) },
+      });
+      const explicit = node({
+        children: { SHARED: node({ children: { PARENT: node() } }) },
       });
       const children =
-        order === 'attacker-first'
-          ? { A: attacker, Z: canonical }
-          : { A: canonical, Z: attacker };
+        order === 'deferred-first'
+          ? { A: deferred, Z: explicit }
+          : { A: explicit, Z: deferred };
 
       await expect(
         hash({ changeId: 'ROOT', changes: node({ children }) }),
@@ -765,25 +769,10 @@ describe('loadResponseManifestHash', () => {
       MAX_LOAD_RESPONSE_MANIFEST_PAYLOAD_BYTES + 1,
     );
     await expect(
-      hash({
-        snapshot: {
-          stateBytes: oversized,
-          lastChangeNodeCID: 'SNAP',
-          compactedCount: 1,
-          timestamp: 1,
-          signature: new Uint8Array([7]),
-        },
-      }),
+      hash({ snapshot: signedSnapshot({ stateBytes: oversized }) }),
     ).rejects.toThrow(/snapshot state exceeds/);
     await expect(
       hash({ keychainChangesBytes: oversized }),
     ).rejects.toThrow(/keychain changes exceed/);
-    await expect(
-      hash({
-        changeId: 'ROOT',
-        changes: node({ change: { oversized: true } }),
-        serializeChange: () => oversized,
-      }),
-    ).rejects.toThrow(/inline changes exceed/);
   });
 });

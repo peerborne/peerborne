@@ -198,6 +198,42 @@ const welcomeSerializer = {
   },
 };
 
+/**
+ * Let the pre-application snapshot check decode the served writer blocks into
+ * an isolated ACL. Each decoded writer block names the writers it adds.
+ */
+function servedWriterACL(
+  document: any,
+  writersByCid: Record<string, readonly string[]>,
+) {
+  const scratchACLs: Array<{ users: () => Promise<string[]> }> = [];
+  document._decodeBlock = jest.fn(async (cid: { toString(): string }) => ({
+    writers: writersByCid[cid.toString()] ?? [],
+  }));
+  document._aclProvider = {
+    initialize: () => {
+      const users = new Set<string>();
+      const acl = {
+        merge: (change: { writers: readonly string[] }) => {
+          for (const writer of change.writers) users.add(writer);
+        },
+        users: async () => [...users],
+      };
+      scratchACLs.push(acl);
+      return acl;
+    },
+  };
+  document._authProvider.serializePublicKey = async (key: string) =>
+    key === 'bootstrap-writer' ? 'fixture-writer-0' : `serialized:${key}`;
+  const staged = { commit: jest.fn(), claimCommit: jest.fn() };
+  document._keychain.prepareMerge = jest.fn(() => ({
+    ...staged,
+    hydrateKeys: async () => [],
+    getKey: () => undefined,
+  }));
+  return { scratchACLs, staged };
+}
+
 function signedLoadHarness(
   getWriterKeys: () => Promise<string[]>,
   verify: (...args: unknown[]) => Promise<boolean>,
@@ -214,6 +250,7 @@ function signedLoadHarness(
   const document = fakeDocument({
     documentPath: message.documentId,
     _fixtureLoadResponse: contextMessage,
+    _encoder: new TextEncoder(),
     _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     swarm: {
       config: { enableSigning: true, loadQuorumTimeoutMs: 1000 },
@@ -1611,6 +1648,7 @@ describe('document load response boundaries', () => {
         users: jest.fn(async () => []),
         check: async () => false,
       };
+      servedWriterACL(document, { WRITER: ['bootstrap-writer'] });
       const applied: Array<{ snapshot: unknown; afterChanges: unknown }> = [];
       document._syncUnlocked = jest.fn(
         async (
@@ -1662,8 +1700,8 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('rejects a re-signed snapshot outside the agreed manifest before state application', async () => {
-    const message = {
+  describe('quorum-bound snapshot substitution', () => {
+    const agreed = () => ({
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
@@ -1675,6 +1713,12 @@ describe('document load response boundaries', () => {
           BOUNDARY: {
             kind: crdtDocumentChangeNode,
             change: { inline: 'boundary' },
+            children: {
+              WRITER: {
+                kind: crdtWriterChangeNode,
+                change: { inline: 'writer' },
+              },
+            },
           },
         },
       },
@@ -1685,35 +1729,234 @@ describe('document load response boundaries', () => {
         signature: new Uint8Array([4]),
         timestamp: 1,
       },
+      keychainChanges: { keys: ['agreed'] },
+    });
+    const capturedWriterSignature = 4;
+    const untrustedSignature = 5;
+    const aclOnlyWriterSignature = 7;
+    const signerOf: Record<number, string> = {
+      [capturedWriterSignature]: 'bootstrap-writer',
+      [aclOnlyWriterSignature]: 'acl-only-writer',
     };
-    const { document, stream } = signedLoadHarness(
-      async () => [],
-      async () => true,
-      message,
-    );
-    document._writers = {
-      users: jest.fn(async () => []),
-      check: async () => false,
-    };
-    document._syncUnlocked = jest.fn(async () => true);
-    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
-    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
-      currentLoadResponse({
-        ...message,
-        snapshot: { ...message.snapshot, signature: new Uint8Array([5]) },
-      }),
-    );
 
-    await expect(
-      document._sendLoadRequestAndSync(
-        await loadSessionFixture(document, undefined),
+    async function serveSubstitute(
+      substitute: (message: ReturnType<typeof agreed>) => unknown,
+      options: {
+        authenticationAttempts?: number;
+        servedWriters?: readonly string[];
+      } = {},
+    ) {
+      const message = agreed();
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async (_payload, key, signature) => {
+          const bytes = signature as Uint8Array;
+          return bytes.length === 3 || signerOf[bytes[0]] === key;
+        },
+        message,
+      );
+      document._writers = {
+        users: jest.fn(async () => []),
+        check: async () => false,
+      };
+      const served = servedWriterACL(document, {
+        WRITER: options.servedWriters ?? [
+          'bootstrap-writer',
+          'acl-only-writer',
+        ],
+      });
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _context: string,
+          onStateApplicationStart?: () => void,
+        ) => {
+          onStateApplicationStart?.();
+          for (const cid of ['HEAD', 'BOUNDARY', 'WRITER']) {
+            document._hashes.add(cid);
+          }
+          document._latestSnapshot = appliedMessage.snapshot;
+          document._latestSnapshotSource = appliedMessage.snapshot;
+          return true;
+        },
+      );
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+      document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+        currentLoadResponse(substitute(message)),
+      );
+      const session = await loadSessionFixture(document, undefined);
+      expect(session.authorities.map(({ publicKey }) => publicKey)).toEqual([
+        'bootstrap-writer',
+      ]);
+      const reserve = jest.fn(
+        session.authenticationBudget.reserve.bind(session.authenticationBudget),
+      );
+      if (options.authenticationAttempts !== undefined) {
+        let remaining = options.authenticationAttempts;
+        reserve.mockImplementation(() => remaining-- > 0);
+      }
+      session.authenticationBudget.reserve = reserve;
+      const load = document._sendLoadRequestAndSync(
+        session,
         stream,
         new Uint8Array([1]),
         expectedTipsHash,
-      ),
-    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
-    expect(document._syncUnlocked).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      );
+      return { document, load, reserve, ...served };
+    }
+
+    const resigned =
+      (signature: number, extra: Record<string, unknown> = {}) =>
+      (message: ReturnType<typeof agreed>) => ({
+        ...message,
+        snapshot: {
+          ...message.snapshot,
+          signature: new Uint8Array([signature]),
+          ...extra,
+        },
+      });
+
+    test.each([
+      [
+        'a re-signature no writer made',
+        resigned(untrustedSignature),
+        '(untrusted-snapshot-signature)',
+      ],
+      [
+        'different state bytes under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, state: { compacted: 'forged' } },
+        }),
+        undefined,
+      ],
+      [
+        'a different boundary under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, lastChangeNodeCID: 'HEAD' },
+        }),
+        undefined,
+      ],
+    ])(
+      'rejects %s before state application',
+      async (_label, substitute, advertisedHex) => {
+        const { document, load } = await serveSubstitute(substitute);
+
+        await expect(load).rejects.toMatchObject({
+          name: '_QuorumBindCheckFailedError',
+          ...(advertisedHex === undefined ? {} : { advertisedHex }),
+        });
+        expect(document._syncUnlocked).not.toHaveBeenCalled();
+        expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      },
+    );
+
+    test('accepts a trusted writer that signed its own snapshot of the agreed state', async () => {
+      const { document, load } = await serveSubstitute(
+        resigned(capturedWriterSignature, {
+          timestamp: 2,
+          compactedCount: 119,
+        }),
+      );
+
+      await expect(load).resolves.toBe(true);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(document._latestSnapshot).toMatchObject({
+        signature: new Uint8Array([capturedWriterSignature]),
+        timestamp: 2,
+      });
+    });
+
+    test('accepts a snapshot signed by a writer the served ACL establishes outside the captured set', async () => {
+      const { document, load, scratchACLs, staged } = await serveSubstitute(
+        resigned(aclOnlyWriterSignature),
+      );
+
+      await expect(load).resolves.toBe(true);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(document._decodeBlock).toHaveBeenCalledWith(
+        expect.objectContaining({ toString: expect.any(Function) }),
+        expect.any(Uint8Array),
+        undefined,
+        expect.any(Function),
+      );
+      expect(scratchACLs).toHaveLength(1);
+      expect(document._keychain.prepareMerge).toHaveBeenCalledWith({
+        keys: ['agreed'],
+      });
+      expect(staged.commit).not.toHaveBeenCalled();
+      expect(staged.claimCommit).not.toHaveBeenCalled();
+      expect(scratchACLs[0]).not.toBe(document._writers);
+    });
+
+    test('rejects a captured writer that the served ACL does not establish, as the apply-time check would', async () => {
+      const { document, load } = await serveSubstitute(
+        resigned(capturedWriterSignature),
+        { servedWriters: ['acl-only-writer'] },
+      );
+
+      await expect(load).rejects.toMatchObject({
+        name: '_QuorumBindCheckFailedError',
+        advertisedHex: '(untrusted-snapshot-signature)',
+      });
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    });
+
+    test('charges the snapshot to the shared session budget once, however many writers it tries', async () => {
+      const servedWriters = [
+        ...Array.from({ length: 40 }, (_, index) => `writer-${index}`),
+        'acl-only-writer',
+      ];
+      const accepted = await serveSubstitute(resigned(aclOnlyWriterSignature), {
+        authenticationAttempts: 2,
+        servedWriters,
+      });
+      await expect(accepted.load).resolves.toBe(true);
+      expect(accepted.reserve).toHaveBeenCalledTimes(2);
+
+      const exhausted = await serveSubstitute(
+        resigned(aclOnlyWriterSignature),
+        { authenticationAttempts: 1, servedWriters },
+      );
+      await expect(exhausted.load).rejects.toMatchObject({
+        name: '_QuorumBindCheckFailedError',
+        advertisedHex: '(untrusted-snapshot-signature)',
+      });
+      expect(exhausted.document._syncUnlocked).not.toHaveBeenCalled();
+    });
+  });
+
+  test('clamps an adopted compacted count so local snapshot creation keeps working', async () => {
+    const signatures: Uint8Array[] = [];
+    const document = fakeDocument({
+      documentPath: '/load-race',
+      swarm: { config: { enableSigning: true } },
+      _encoder: new TextEncoder(),
+      _documentChangeCount: 0xffffffff + 3,
+      _bootstrapLoadApplicationState: 'complete',
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _recentTips: [],
+      _ensureCurrentUserCanWrite: async () => undefined,
+      _crdtProvider: { getSnapshot: () => ({ state: 'current' }) },
+      _changesSerializer: { serializeChanges: fixtureSerializeChanges },
+      _authProvider: {
+        sign: async (payload: Uint8Array) => {
+          signatures.push(payload);
+          return new Uint8Array([1]);
+        },
+      },
+      _compactionConfig: { pruneAfterSnapshot: false },
+    });
+
+    const snapshot = await document._snapshotUnlocked();
+
+    expect(snapshot.compactedCount).toBe(0xffffffff);
+    expect(signatures).toHaveLength(1);
+    expect(document._latestSnapshot).toBe(snapshot);
   });
 
   test('rejects a snapshot-only quorum-bound first load before state application', async () => {

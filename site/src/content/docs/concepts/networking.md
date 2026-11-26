@@ -171,6 +171,10 @@ The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data v
 
 Relayed connections are limited connections in libp2p. Peerborne runs Bitswap on them by default (`helia.bitswap.runOnLimitedConnections: true`), so a peer reachable only through a relay can still fetch change blocks within the relay's circuit data and duration limits. Setting it to `false` stops block fetches over relays, which can stall loads and invitations.
 
+Streams that accept limited connections, Bitswap included, open on the existing relayed connection to the peer. On its own, libp2p reuses only unlimited connections and dials a new circuit for each such stream. libp2p limits inbound connections per host, five per second by default, and counts every relayed connection against the relay's host, so a burst of block requests would be refused and the load would stall. The stream opens on the relayed connection at once. When the peer also has a direct or WebRTC address that this node has a transport for, one libp2p dial per relayed connection runs in the background to upgrade it, and later streams use the unlimited connection if that dial succeeds. Streams that need an unlimited connection always get the libp2p dial, and DCUtR upgrades are unaffected.
+
+Different peers that arrive through one relay share that per-host budget. `defaultConfig` and `defaultNodeConfig` therefore set `connectionManager.inboundConnectionThreshold` to `DEFAULT_INBOUND_CONNECTION_THRESHOLD` (128 per second). libp2p still bounds open connections with `maxConnections`, and refuses a new inbound connection while 10 upgrades are pending (`maxIncomingPendingConnections`), so more than ten peers arriving at the same moment still see refusals. A custom libp2p config should set the same option; with the libp2p default, the sixth peer to join or reconnect through a relay within a second is refused.
+
 ### DCUtR (Direct Connection Upgrade through Relay)
 
 After an initial relayed connection, peers attempt to establish a direct WebRTC connection using DCUtR. The relay facilitates the hole-punching handshake; if successful, peers communicate directly, reducing relay load and latency.

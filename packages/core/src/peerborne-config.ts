@@ -88,6 +88,19 @@ export const DEFAULT_WEBRTC_ICE_SERVERS: ReadonlyArray<Readonly<IceServer>> =
   ]);
 
 /**
+ * Inbound connections per second that the default configs accept from one
+ * host, in place of libp2p's default of 5.
+ *
+ * libp2p attributes a relayed connection to the relay's host, so every peer
+ * that arrives through one relay shares this budget. With the libp2p default,
+ * a sixth peer joining or reconnecting through a relay in the same second is
+ * refused, and its Noise handshake times out. libp2p still refuses inbound
+ * connections while `maxIncomingPendingConnections` (10) upgrades are pending,
+ * and beyond `maxConnections`.
+ */
+export const DEFAULT_INBOUND_CONNECTION_THRESHOLD = 128;
+
+/**
  * Returns a deep-enough copy of an {@link IceServer} so callers can hand the
  * result to libp2p (which expects a mutable `RTCIceServer`) without sharing
  * any inner references with the source object.
@@ -217,6 +230,9 @@ export const defaultConfig = (
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
+        connectionManager: {
+          inboundConnectionThreshold: DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+        },
         // @libp2p/bootstrap rejects an empty list during construction. A
         // brand-new/offline swarm is valid, so omit that discovery service
         // until at least one bootstrap address is configured.
@@ -377,10 +393,28 @@ export interface PeerborneConfig {
 
   /**
    * Require Q distinct trusted signing authorities to agree on one V4
-   * security-state and complete response-manifest digest. Every vote and
-   * selected response must match the locally captured trust tuple and fresh
-   * request challenge. An explicit Q is a hard floor, independent of peer
+   * security-state and response-manifest digest. Every vote and selected
+   * response must match the locally captured trust tuple and fresh request
+   * challenge. An explicit Q is a hard floor, independent of peer
    * availability. Distinct transport identities do not create extra votes.
+   *
+   * The digest covers the served frontier, every change CID with its kind and
+   * edges, the snapshot's state bytes and boundary, and keychain changes. It
+   * does not cover inline payloads, which quorum-bound loads discard before
+   * fetching each CID-addressed block, or who signed the snapshot, so holders
+   * with the same state agree. On a first load, the selected response's
+   * snapshot must still be signed by a writer that its CID-validated writer
+   * blocks establish, checked before any state is applied.
+   *
+   * When the trusted writer set captured for the load (the existing writer
+   * ACL, or `resolveTrustedDocumentWriters` on a first load) has exactly one
+   * authority, a second agreeing authority cannot exist. One valid response
+   * from that authority is accepted, from any of its devices, and
+   * {@link loadQuorumAllowSinglePeer} is not needed. Devices that advertise
+   * different states are out of sync rather than equivocating: the state most
+   * of them advertise is loaded first and each other state is a fallback
+   * bound to its own digest. Live sync then merges the rest. Documents with
+   * two or more trusted writers keep the Q-of-K quorum.
    *
    * Setting false permits selection of one trusted signed V4 response while
    * retaining challenge, tuple, and frontier validation. It provides no
@@ -417,7 +451,11 @@ export interface PeerborneConfig {
    *
    * When Q is omitted, it is the strict numerical majority
    * `Math.floor(effectiveK / 2) + 1`, derived from the effective K after
-   * limiting the configured K to the known-peer count.
+   * limiting the configured K to the known-peer count. Votes count distinct
+   * writer authorities, so a document with one trusted writer instead
+   * accepts one response from any of its devices (see
+   * {@link loadQuorumEnabled}). An explicit Q above 1 still applies to such a
+   * document and cannot be met by it.
    *
    * Worked examples (`effectiveK -> default Q`):
    *   - effectiveK=1 -> Q=1 (single-peer pass-through; requires
@@ -466,9 +504,11 @@ export interface PeerborneConfig {
    * selects single-peer trust semantics regardless of which advertisement
    * protocol is negotiated. A warning is logged when this path is taken.
    *
-   * When `false` (the default), any effective-K=1 load fails with
-   * `LoadQuorumFailedError`. Callers that intentionally use one probe should
-   * either disable the quorum gate or enable this flag and accept the warning.
+   * When `false` (the default), any effective-K=1 load of a document with
+   * two or more trusted writers fails with `LoadQuorumFailedError`. Callers
+   * that intentionally use one probe should either disable the quorum gate or
+   * enable this flag and accept the warning. A document with one trusted
+   * writer does not need this flag (see {@link loadQuorumEnabled}).
    *
    * @default false
    */

@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import {
   constantTimeHexEquals,
   decideLoadQuorum,
+  decideSingleWriterLoad,
   dedupePeersByPeerId,
   defaultQuorumQ,
   effectiveK,
@@ -1006,6 +1007,152 @@ describe('LoadQuorumFailedError', () => {
     });
     expect(err.agreeingPeerBindFailures).toBeInstanceOf(Map);
     expect(err.agreeingPeerBindFailures.size).toBe(0);
+  });
+});
+
+describe('decideSingleWriterLoad', () => {
+  const WRITER = 'writer';
+  const vote = (peerId: string, hash: unknown, signerAuthority = WRITER) => ({
+    peerId,
+    hash: hash as Uint8Array,
+    signerAuthority,
+  });
+
+  test('accepts one device and binds it to its own digest', () => {
+    expect(decideSingleWriterLoad([vote('phone', HASH_A)], WRITER)).toEqual({
+      ok: true,
+      winningHashHex: 'aa'.repeat(32),
+      cohort: [{ index: 0, peerId: 'phone', hashHex: 'aa'.repeat(32) }],
+      respondingCount: 1,
+      stateCount: 1,
+    });
+  });
+
+  test('orders states by device count, then first appearance', () => {
+    const decision = decideSingleWriterLoad(
+      [
+        vote('c1', HASH_C),
+        vote('b1', HASH_B),
+        vote('a1', HASH_A),
+        vote('b2', HASH_B),
+        vote('a2', HASH_A),
+      ],
+      WRITER,
+    );
+    expect(decision).toMatchObject({
+      ok: true,
+      winningHashHex: 'bb'.repeat(32),
+      respondingCount: 5,
+      stateCount: 3,
+    });
+    if (!decision.ok) throw new Error('expected a decision');
+    expect(decision.cohort.map(({ peerId }) => peerId)).toEqual([
+      'b1',
+      'b2',
+      'a1',
+      'a2',
+      'c1',
+    ]);
+    expect(decision.cohort.map(({ index }) => index)).toEqual([1, 3, 2, 4, 0]);
+  });
+
+  test('ignores other authorities, absent and malformed digests, and repeated peers', () => {
+    const shared =
+      typeof SharedArrayBuffer === 'undefined'
+        ? null
+        : new Uint8Array(new SharedArrayBuffer(32));
+    const decision = decideSingleWriterLoad(
+      [
+        vote('reader', HASH_B, 'reader'),
+        vote('impostor', HASH_B, 'writer '),
+        { peerId: 'unsigned', hash: HASH_B },
+        vote('silent', null),
+        vote('short', HASH_B.slice(1)),
+        vote('shared', shared),
+        vote('text', 'bb'.repeat(32)),
+        vote('phone', HASH_A),
+        vote('phone', HASH_B),
+      ],
+      WRITER,
+    );
+    expect(decision).toMatchObject({
+      ok: true,
+      winningHashHex: 'aa'.repeat(32),
+      cohort: [{ index: 7, peerId: 'phone', hashHex: 'aa'.repeat(32) }],
+      respondingCount: 1,
+      stateCount: 1,
+    });
+  });
+
+  test('fails closed without a valid response from the writer', () => {
+    expect(
+      decideSingleWriterLoad(
+        [vote('reader', HASH_A, 'reader'), vote('silent', null)],
+        WRITER,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: 'insufficient-responses',
+      respondingCount: 0,
+    });
+    expect(decideSingleWriterLoad([], WRITER)).toMatchObject({ ok: false });
+  });
+
+  test('every accepted peer appears once, bound to the digest it advertised', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            peer: fc.integer({ min: 0, max: 5 }),
+            state: fc.option(fc.integer({ min: 0, max: 2 }), { nil: null }),
+            trusted: fc.boolean(),
+          }),
+          { maxLength: 12 },
+        ),
+        (specs) => {
+          const hashes = [HASH_A, HASH_B, HASH_C];
+          const votes = specs.map(({ peer, state, trusted }) =>
+            vote(
+              `p${peer}`,
+              state === null ? null : hashes[state],
+              trusted ? WRITER : 'other',
+            ),
+          );
+          const decision = decideSingleWriterLoad(votes, WRITER);
+          const accepted = new Map<string, number>();
+          votes.forEach((candidate, index) => {
+            if (
+              candidate.hash !== null &&
+              candidate.signerAuthority === WRITER &&
+              !accepted.has(candidate.peerId)
+            )
+              accepted.set(candidate.peerId, index);
+          });
+          if (accepted.size === 0) {
+            expect(decision.ok).toBe(false);
+            return;
+          }
+          if (!decision.ok) throw new Error('expected a decision');
+          expect(decision.cohort).toHaveLength(accepted.size);
+          for (const { index, peerId, hashHex } of decision.cohort) {
+            expect(accepted.get(peerId)).toBe(index);
+            expect(hashHex).toBe(
+              Array.from(votes[index].hash!, (byte) =>
+                byte.toString(16).padStart(2, '0'),
+              ).join(''),
+            );
+          }
+          const counts = decision.cohort.map(
+            ({ hashHex }) =>
+              decision.cohort.filter((entry) => entry.hashHex === hashHex)
+                .length,
+          );
+          expect(decision.cohort[0].hashHex).toBe(decision.winningHashHex);
+          expect(Math.max(...counts)).toBe(counts[0]);
+        },
+      ),
+      { seed: 6620001, numRuns: 200 },
+    );
   });
 });
 
