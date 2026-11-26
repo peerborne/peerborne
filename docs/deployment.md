@@ -110,9 +110,9 @@ All configuration is done through environment variables on the relay process.
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
 | `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
 | `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer. Each subscription costs its name length plus 1024 bytes |
-| `TRUSTED_PROXY_IPS` | (unset) | Comma-separated exact proxy IPs exempt from GossipSub IP-colocation scoring, or `*` when every connection arrives through a proxy. See [Reverse proxies](#reverse-proxies-and-gossipsub-ip-scoring) |
+| `TRUSTED_PROXY_IPS` | (unset) | Comma-separated proxy IPs or CIDR ranges exempt from GossipSub IP-colocation scoring, or `*` when every connection arrives through a proxy. Invalid entries stop startup. See [Reverse proxies](#reverse-proxies-and-gossipsub-ip-scoring) |
 | `MAX_CONNECTIONS` | `256` | Global ceiling for established libp2p transport connections |
-| `RELAY_MAX_RESERVATIONS` | `128` | Maximum active Circuit Relay v2 reservations. A peer's reservation is freed when its last connection closes |
+| `RELAY_MAX_RESERVATIONS` | `128` | Maximum active Circuit Relay v2 reservations. A peer's reservation is freed when its last connection closes and lasts one TTL from its latest renewal |
 | `RELAY_RESERVATION_TTL_MS` | `600000` | Reservation lifetime before renewal, in milliseconds |
 | `RELAY_MAX_CIRCUIT_DURATION_MS` | `1800000` | Per-circuit duration limit, in milliseconds |
 | `RELAY_MAX_CIRCUIT_BYTES` | `16777216` | Per-circuit data limit, in bytes |
@@ -171,13 +171,20 @@ the graylist threshold and the relay silently ignores their subscriptions.
 
 Set `TRUSTED_PROXY_IPS` on every proxied relay:
 
-- `*` disables IP-colocation scoring entirely. The checked-in Fly and
-  Docker+Caddy configurations use it because every browser connection arrives
-  through the proxy.
-- A comma-separated list of exact IPv4 or IPv6 addresses, such as the proxy
-  container's pinned address, exempts only those addresses. Peers that connect
-  directly, for example over TCP 9002, keep IP scoring. Invalid entries are
-  ignored; CIDR ranges and hostnames are not supported.
+- `*` disables IP-colocation scoring entirely. The checked-in Fly
+  configuration and the Kubernetes example use it because every connection they
+  accept arrives through the proxy.
+- A comma-separated list of IPv4 or IPv6 addresses or CIDR ranges, such as
+  `172.30.0.2` or `10.0.0.0/8`, exempts only matching addresses. Peers that
+  connect directly, for example over TCP 9002, keep IP scoring. The
+  Docker+Caddy compose file pins Caddy at `172.30.0.2` and lists only that
+  address, because it also publishes TCP 9002. Hostnames, `*` inside a list and
+  other unparseable entries stop the relay at startup rather than being
+  ignored.
+
+Do not use `*` on a relay that also accepts direct connections. IP-colocation
+scoring is GossipSub's only Sybil defence there: without it, one host can open
+enough identities to fill `MAX_AUTO_TOPICS`.
 
 When every libp2p listener is loopback-only, as in the Render gateway, the relay
 exempts `127.0.0.1` and `::1` automatically.
@@ -294,9 +301,10 @@ both directions, including traffic outside document GossipSub topics:
 
 | Limit | Demo value |
 | --- | --- |
-| Simultaneous WebSocket connections | 16 total, 4 per client IP |
-| Upgrade attempts | 6/minute and 3/10 seconds per IP, then 30/minute total |
-| Tracked IP rate-limit records | 512, expiring after the minute window |
+| Simultaneous WebSocket connections | 16 total, 4 per client |
+| Upgrade attempts | 6/minute and 3/10 seconds per client |
+| New clients admitted | 30 distinct clients/minute; their reconnects are not counted again |
+| Tracked client rate-limit records | 512, expiring after the minute window; when full, the least recently seen client without a session is forgotten |
 | Rejected upgrade lifetime | 1 second to drain the response, then closed |
 | Session lifetime / inactivity | 10 minutes / 60 seconds |
 | Total bytes per session | 2 MiB across both directions |
@@ -306,11 +314,21 @@ both directions, including traffic outside document GossipSub topics:
 | Circuit Relay reservations / individual circuit bytes | 16 / 1 MiB |
 | Individual circuit lifetime | 5 minutes |
 
-Per-IP limits are checked before the shared budget: only an attempt that passes
-its IP's limits and finds a free session counts toward the 30-attempt total, so
-one client cannot exhaust it for everyone. The reservation cap matches the 16
-sessions, and reservations are freed when a client disconnects, so it is not the
-first limit reached.
+A client is one IPv4 address or one IPv6 /64, so rotating addresses inside a
+/64 does not create new clients. Per-client limits are checked first, and the
+shared budget counts distinct clients admitted in the current minute rather than
+sessions. A few clients reconnecting cannot exhaust it, and a client already
+admitted this minute can reconnect after the budget is spent. A full rate-limit
+registry forgets idle clients instead of rejecting unseen ones.
+
+This bounds rather than removes lockout. An attacker that controls 30 or more
+IPv4 addresses or IPv6 /64s, which one IPv6 /56 provides, can still prevent new
+clients from connecting for the rest of each minute. Sessions that are already
+open and clients admitted earlier in that minute are unaffected. Stopping that
+needs limits upstream of the gateway, such as Cloudflare rate-limiting rules.
+
+The reservation cap matches the 16 sessions, and reservations are freed when a
+client disconnects, so it is not the first limit reached.
 
 IP headers are trusted only after checking the origin secret. The gateway never
 forwards that credential to libp2p or logs credentials, IP addresses, or payloads.
@@ -446,8 +464,13 @@ Caddy (or your own load balancer) at their IP addresses.
 - Tune the global transport-connection cap, reservation cap/TTL, per-connection
   HOP/STOP stream limits, and per-circuit duration/data limits for measured
   capacity. The relay frees a peer's reservation when its last connection
-  closes; otherwise reservations expire at their TTL. These are resource
-  controls, not a scale guarantee.
+  closes. A connected client renews its reservation 5 minutes before expiry,
+  or 30 seconds after the previous renewal if that is later, and each renewal
+  extends it by one TTL. The relay project patches
+  `retimeable-signal@1.0.1`, whose `reset()` otherwise left the first renewal's
+  timer armed. That expired a connected peer's reservation, and cut its
+  circuits, one TTL after its first renewal. These are resource controls, not a
+  scale guarantee.
 - Set `TRUSTED_PROXY_IPS` on relays behind a reverse proxy and enforce
   per-client limits at that proxy.
 - Run the relay as a non-root user (the Dockerfiles already do this).

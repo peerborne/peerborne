@@ -1,0 +1,30 @@
+diff --git a/dist/src/index.js b/dist/src/index.js
+index 86b6c70589c9cfc68e8495a9f8073e9ffef2a784..e94bb9326dd844f1f46ab40b703ac449ea27a6c7 100644
+--- a/dist/src/index.js
++++ b/dist/src/index.js
+@@ -58,9 +58,7 @@ export function retimeableSignal(ms, opts) {
+     retimerSignal.reset = (newMs) => {
+         signal?.removeEventListener('abort', abortHandler);
+         signal = AbortSignal.timeout(newMs ?? ms);
+-        signal.addEventListener('abort', () => {
+-            controller.abort(error);
+-        });
++        signal.addEventListener('abort', abortHandler);
+     };
+     retimerSignal.clear = () => {
+         signal?.removeEventListener('abort', abortHandler);
+diff --git a/src/index.ts b/src/index.ts
+index 1f426b1a79b327209413e6d9884078d25f77d330..4520bd33a03252bea762e856db5984589cb60f39 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -98,9 +98,7 @@ export function retimeableSignal (ms: number, opts?: RetimerSignalOptions): Reti
+   retimerSignal.reset = (newMs?: number): void => {
+     signal?.removeEventListener('abort', abortHandler)
+     signal = AbortSignal.timeout(newMs ?? ms)
+-    signal.addEventListener('abort', () => {
+-      controller.abort(error)
+-    })
++    signal.addEventListener('abort', abortHandler)
+   }
+   retimerSignal.clear = (): void => {
+     signal?.removeEventListener('abort', abortHandler)

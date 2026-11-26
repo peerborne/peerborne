@@ -260,12 +260,25 @@ describe('loadConfig', () => {
       expect(loadConfig({ TRUSTED_PROXY_IPS: ' * ' }).trustedProxyIps).toBe('*')
     })
 
-    it('keeps only valid IPv4 and IPv6 addresses', () => {
+    it('canonicalizes addresses and CIDR ranges to the form GossipSub compares', () => {
       expect(
         loadConfig({
-          TRUSTED_PROXY_IPS: ' 172.16.0.2, fdaa::3 ,caddy,10.0.0.0/8,,*',
+          TRUSTED_PROXY_IPS: ' 172.16.0.2, FDAA:0:0::3 ,10.0.0.0/8,,2001:DB8::/032,::ffff:10.0.0.1',
         }).trustedProxyIps,
-      ).toEqual(['172.16.0.2', 'fdaa::3'])
+      ).toEqual(['172.16.0.2', 'fdaa::3', '10.0.0.0/8', '2001:db8::/32', '::ffff:a00:1'])
+    })
+
+    it.each([
+      'caddy',
+      '172.16.0.2,*',
+      '10.0.0.0/33',
+      '2001:db8::/129',
+      '10.0.0.0/8/1',
+      '10.0.0.0/',
+      'fe80::1%eth0',
+      '010.0.0.1',
+    ])('rejects the unusable entry %j instead of ignoring it', (value) => {
+      expect(() => loadConfig({ TRUSTED_PROXY_IPS: value })).toThrow('TRUSTED_PROXY_IPS entry')
     })
   })
 

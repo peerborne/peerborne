@@ -5,7 +5,7 @@
  * unit-tested without spinning up a libp2p stack.
  */
 
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2'
 import type { GossipsubOpts } from '@libp2p/gossipsub'
 
@@ -111,8 +111,9 @@ export interface RelayConfig {
   /** Global ceiling for established libp2p transport connections. */
   readonly maxConnections: number
   /**
-   * Reverse-proxy source addresses exempt from GossipSub IP-colocation
-   * scoring, or `'*'` when every inbound connection arrives through a proxy.
+   * Reverse-proxy source addresses and CIDR ranges exempt from GossipSub
+   * IP-colocation scoring, in GossipSub's canonical form, or `'*'` when every
+   * inbound connection arrives through a proxy.
    */
   readonly trustedProxyIps: readonly string[] | '*'
   /**
@@ -196,11 +197,32 @@ function parseTopicAllowlist(value: string | undefined): string[] | null {
   return parseCsv(value) ?? []
 }
 
+// GossipSub compares the host string of each connection's multiaddr, which
+// renders IPv6 with WHATWG URL serialization, so entries are stored that way.
+function parseTrustedProxy(entry: string): string {
+  const [address, prefix, ...rest] = entry.split('/')
+  const family = isIP(address)
+  if (
+    family === 0 || address.includes('%') || rest.length > 0 ||
+    (prefix !== undefined &&
+      !(/^\d{1,3}$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128)))
+  ) {
+    throw new Error(
+      `TRUSTED_PROXY_IPS entry "${entry}" must be an IPv4 or IPv6 address or ` +
+        'CIDR range; use "*" on its own to trust every connection',
+    )
+  }
+  const canonical = family === 6
+    ? new URL(`http://[${address}]`).hostname.slice(1, -1)
+    : address
+  return prefix === undefined ? canonical : `${canonical}/${Number(prefix)}`
+}
+
 function parseTrustedProxyIps(value: string | undefined): string[] | '*' {
   if (value?.trim() === '*') {
     return '*'
   }
-  return (parseCsv(value) ?? []).filter((address) => isIP(address) !== 0)
+  return (parseCsv(value) ?? []).map(parseTrustedProxy)
 }
 
 /**
@@ -310,6 +332,29 @@ export function listenAddresses(config: RelayConfig): string[] {
   ]
 }
 
+/** GossipSub reads its colocation whitelist only through `has()`. */
+class TrustedProxyAddresses extends Set<string> {
+  readonly #ranges = new BlockList()
+
+  constructor(entries: Iterable<string>) {
+    super()
+    for (const entry of entries) {
+      const [address, prefix] = entry.split('/')
+      if (prefix === undefined) {
+        this.add(address)
+      } else {
+        this.#ranges.addSubnet(address, Number(prefix), isIP(address) === 4 ? 'ipv4' : 'ipv6')
+      }
+    }
+  }
+
+  override has(address: string): boolean {
+    if (super.has(address)) return true
+    const family = isIP(address)
+    return family !== 0 && this.#ranges.check(address, family === 4 ? 'ipv4' : 'ipv6')
+  }
+}
+
 /**
  * Keep proxy transport addresses from becoming client Sybil identities.
  *
@@ -328,17 +373,19 @@ export function relayPubsubOptions(config: RelayConfig): Partial<GossipsubOpts> 
   if (config.trustedProxyIps === '*') {
     return { ...options, scoreParams: { IPColocationFactorWeight: 0 } }
   }
-  const whitelist = new Set(config.trustedProxyIps)
+  const trusted = [...config.trustedProxyIps]
   const loopbackOnly = listenAddresses(config).every(address =>
     address.startsWith('/ip4/127.0.0.1/') || address.startsWith('/ip6/::1/'),
   )
   if (loopbackOnly) {
     // Only a local proxy, such as the Render gateway, can reach these listeners.
-    whitelist.add('127.0.0.1')
-    whitelist.add('::1')
+    trusted.push('127.0.0.1', '::1')
   }
-  return whitelist.size > 0
-    ? { ...options, scoreParams: { IPColocationFactorWhitelist: whitelist } }
+  return trusted.length > 0
+    ? {
+        ...options,
+        scoreParams: { IPColocationFactorWhitelist: new TrustedProxyAddresses(trusted) },
+      }
     : options
 }
 

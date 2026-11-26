@@ -50,6 +50,7 @@ function createPeer(listener = false, env: NodeJS.ProcessEnv = loopbackProxy) {
 it.each([
   ['loopback-only listeners', loopbackProxy],
   ['a public listener with the proxy IP trusted', { ...publicListener, TRUSTED_PROXY_IPS: '127.0.0.1' }],
+  ['a public listener with the proxy range trusted', { ...publicListener, TRUSTED_PROXY_IPS: '127.0.0.0/8' }],
   ['a public listener with every connection proxied', { ...publicListener, TRUSTED_PROXY_IPS: '*' }],
 ])('continues subscriptions and signed delivery after 20 proxied identities with %s', async (_mode, env) => {
   const relay = await createPeer(true, env)
@@ -92,17 +93,29 @@ it('retains IP scoring for public listeners and exempts only proxy loopback addr
     TCP_LISTEN: '/ip4/127.0.0.1/tcp/9002',
   })
   const options = relayPubsubOptions(proxy)
-  expect(options.scoreParams?.IPColocationFactorWhitelist).toEqual(new Set(['127.0.0.1', '::1']))
+  expect([...options.scoreParams!.IPColocationFactorWhitelist!]).toEqual(['127.0.0.1', '::1'])
+  expect(options.scoreParams?.IPColocationFactorWhitelist?.has('192.0.2.1')).toBe(false)
   expect(options.scoreParams?.IPColocationFactorWeight).toBeUndefined()
   expect(relayPubsubOptions({ ...proxy, ipv6Enabled: true }).scoreParams).toBeUndefined()
 })
 
 it('exempts configured proxy addresses or disables colocation scoring behind any proxy', () => {
-  const trusted = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '172.16.0.2,fdaa::3' }))
-  expect(trusted.scoreParams?.IPColocationFactorWhitelist).toEqual(new Set(['172.16.0.2', 'fdaa::3']))
+  const trusted = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '172.16.0.2,FDAA::3' }))
+  const whitelist = trusted.scoreParams!.IPColocationFactorWhitelist!
+  expect([...whitelist]).toEqual(['172.16.0.2', 'fdaa::3'])
+  expect(whitelist.has('fdaa::3')).toBe(true)
+  expect(whitelist.has('172.16.0.3')).toBe(false)
   expect(trusted.scoreParams?.IPColocationFactorWeight).toBeUndefined()
+  const ranges = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '10.0.0.0/8,2001:db8::/32' }))
+    .scoreParams!.IPColocationFactorWhitelist!
+  for (const address of ['10.1.2.3', '::ffff:a01:203', '2001:db8:5::1']) {
+    expect(ranges.has(address)).toBe(true)
+  }
+  for (const address of ['11.0.0.1', '2001:db9::1', 'not-an-ip']) {
+    expect(ranges.has(address)).toBe(false)
+  }
   const combined = relayPubsubOptions(loadConfig({ ...loopbackProxy, TRUSTED_PROXY_IPS: '10.0.0.5' }))
-  expect(combined.scoreParams?.IPColocationFactorWhitelist).toEqual(new Set(['10.0.0.5', '127.0.0.1', '::1']))
+  expect([...combined.scoreParams!.IPColocationFactorWhitelist!]).toEqual(['10.0.0.5', '127.0.0.1', '::1'])
   const everyConnection = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '*' }))
   expect(everyConnection.scoreParams).toEqual({ IPColocationFactorWeight: 0 })
 })

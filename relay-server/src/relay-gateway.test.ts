@@ -156,7 +156,7 @@ describe('relay gateway', () => {
   }, 15_000)
 
   it('rejects repeated connection attempts from one IP', async () => {
-    const { gateway } = await fixture({ ...demoGatewayLimits, attemptsPerIpPerTenSeconds: 1 })
+    const { gateway } = await fixture({ ...demoGatewayLimits, attemptsPerClientPerTenSeconds: 1 })
     const first = await upgrade(gateway.port, trusted())
     expect(first.response).toContain('101')
     first.socket.destroy()

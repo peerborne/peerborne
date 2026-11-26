@@ -1,12 +1,13 @@
+import { isIPv4, isIPv6 } from 'node:net'
 import { performance } from 'node:perf_hooks'
 
 export const demoGatewayLimits = {
   maxConnections: 16,
-  maxConnectionsPerIp: 4,
-  attemptsPerMinute: 30,
-  attemptsPerIpPerMinute: 6,
-  attemptsPerIpPerTenSeconds: 3,
-  maxTrackedIps: 512,
+  maxConnectionsPerClient: 4,
+  newClientsPerMinute: 30,
+  attemptsPerClientPerMinute: 6,
+  attemptsPerClientPerTenSeconds: 3,
+  maxTrackedClients: 512,
   sessionBytes: 2 * 1024 * 1024,
   totalBytes: 32 * 1024 * 1024,
   bytesPerSecond: 64 * 1024,
@@ -22,17 +23,53 @@ interface Window {
   count: number
 }
 
+interface ClientRecord {
+  minute: Window
+  burst: Window
+}
+
 export interface GatewaySession {
-  ip: string
+  client: string
   bytes: number
   tokens: number
   refilledAt: number
 }
 
+function ipv6Groups(address: string): number[] {
+  let text = address.split('%')[0]
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text)
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number)
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`
+  }
+  const [head, tail] = text.split('::')
+  const parse = (part: string | undefined) =>
+    part ? part.split(':').map((group) => parseInt(group, 16)) : []
+  const left = parse(head)
+  const right = parse(tail)
+  return [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right]
+}
+
+/**
+ * The unit the gateway rate-limits: an IPv4 address, or an IPv6 /64, which one
+ * subscriber usually controls in full. IPv4-mapped IPv6 addresses count as
+ * their IPv4 address.
+ */
+export function clientKey(address: string): string {
+  if (isIPv4(address)) return address
+  if (!isIPv6(address)) throw new Error('Gateway client address must be an IP address')
+  const groups = ipv6Groups(address)
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return [groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff].join('.')
+  }
+  return `${groups.slice(0, 4).map((group) => group.toString(16)).join(':')}::/64`
+}
+
 export class GatewayLimiter {
-  private readonly addresses = new Map<string, { minute: Window; burst: Window }>()
+  /** Rate windows by client, least recently seen first. */
+  private readonly clients = new Map<string, ClientRecord>()
   private readonly sessions = new Set<GatewaySession>()
-  private readonly attempts: Window = { start: -Infinity, count: 0 }
+  private readonly newClients = { start: -Infinity, clients: new Set<string>() }
   private bytes = 0
   private exhausted = false
 
@@ -54,42 +91,66 @@ export class GatewayLimiter {
     return this.exhausted
   }
 
+  private evictIdleClient(): boolean {
+    const active = new Set([...this.sessions].map((session) => session.client))
+    for (const client of this.clients.keys()) {
+      if (!active.has(client)) {
+        this.clients.delete(client)
+        return true
+      }
+    }
+    return false
+  }
+
   admit(ip: string): GatewaySession | undefined {
     if (this.exhausted) return undefined
-    for (const [address, windows] of this.addresses) {
-      if (this.now() - windows.minute.start >= 60_000) this.addresses.delete(address)
+    const client = clientKey(ip)
+    const now = this.now()
+    for (const [tracked, record] of this.clients) {
+      if (now - record.minute.start >= 60_000) this.clients.delete(tracked)
     }
-    let windows = this.addresses.get(ip)
-    if (!windows) {
-      if (this.addresses.size >= this.limits.maxTrackedIps) return undefined
-      windows = {
-        minute: { start: this.now(), count: 0 },
-        burst: { start: this.now(), count: 0 },
+    let record = this.clients.get(client)
+    if (record) {
+      this.clients.delete(client)
+    } else {
+      // A full registry must not lock out unseen clients: forget the least
+      // recently seen client that holds no session instead.
+      if (this.clients.size >= this.limits.maxTrackedClients && !this.evictIdleClient()) {
+        return undefined
       }
-      this.addresses.set(ip, windows)
+      record = {
+        minute: { start: now, count: 0 },
+        burst: { start: now, count: 0 },
+      }
     }
-    const minute = this.increment(windows.minute, 60_000)
-    const burst = this.increment(windows.burst, 10_000)
+    this.clients.set(client, record)
+    const minute = this.increment(record.minute, 60_000)
+    const burst = this.increment(record.burst, 10_000)
     if (
-      minute > this.limits.attemptsPerIpPerMinute ||
-      burst > this.limits.attemptsPerIpPerTenSeconds ||
-      [...this.sessions].filter((session) => session.ip === ip).length >=
-        this.limits.maxConnectionsPerIp ||
+      minute > this.limits.attemptsPerClientPerMinute ||
+      burst > this.limits.attemptsPerClientPerTenSeconds ||
+      [...this.sessions].filter((session) => session.client === client).length >=
+        this.limits.maxConnectionsPerClient ||
       this.sessions.size >= this.limits.maxConnections
     ) {
       return undefined
     }
-    // Charge the shared budget only for attempts every other limit admits, so
-    // one client or a full gateway cannot spend it for everyone else.
-    if (this.increment(this.attempts, 60_000) > this.limits.attemptsPerMinute) {
-      return undefined
+    // The shared budget counts distinct clients, not sessions: reconnects are
+    // bounded per client above, so a few clients cannot spend it by churning.
+    if (now - this.newClients.start >= 60_000) {
+      this.newClients.start = now
+      this.newClients.clients.clear()
+    }
+    if (!this.newClients.clients.has(client)) {
+      if (this.newClients.clients.size >= this.limits.newClientsPerMinute) return undefined
+      this.newClients.clients.add(client)
     }
 
     const session = {
-      ip,
+      client,
       bytes: 0,
       tokens: this.limits.burstBytes,
-      refilledAt: this.now(),
+      refilledAt: now,
     }
     this.sessions.add(session)
     return session
