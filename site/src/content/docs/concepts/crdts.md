@@ -58,6 +58,7 @@ interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   ): [DocType, ChangesType];
   remoteChange(document: DocType, changes: ChangesType): DocType;
   hasIntegrated?(document: DocType, changes: ChangesType): boolean;
+  hasDiscarded?(document: DocType, changes: ChangesType): boolean;
   getHistory(document: DocType): ChangesType;
   getSnapshot?(document: DocType): ChangesType;
   applySnapshot?(document: DocType, snapshot: ChangesType): DocType;
@@ -72,7 +73,10 @@ Peerborne records such a change, notifies handlers about it and serves it only
 once it integrates, together with any node that references it in a delivered
 tree. A checkpoint therefore never claims it, and a later message delivers it
 again. Yjs keeps its pending updates in the state it encodes, including
-checkpoints.
+checkpoints. The Loro provider validates a buffered change once its
+dependencies arrive and implements `hasDiscarded` to report one it dropped, so
+Peerborne stops waiting for it and passes a later delivery to `remoteChange`
+again.
 
 Two implementations exist:
 

@@ -82,6 +82,7 @@ function automergeDocument(): any {
         },
       },
       _localHandlers: {},
+      _deliveryFailureHandlers: {},
       _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       getReaders: jest.fn(async () => []),
       getWriters: async () => [],
@@ -91,11 +92,15 @@ function automergeDocument(): any {
   return document;
 }
 
-function publishedChange(document: any, index: number): Change[] {
+function publishedMessage(document: any, index: number): any {
   const frame: Uint8Array = document.frames[index];
   return document._syncMessageSerializer.deserializeSyncMessage(
     frame.subarray(KEY_ID_BYTES + NONCE_BYTES),
-  ).changes.change;
+  );
+}
+
+function publishedChange(document: any, index: number): Change[] {
+  return publishedMessage(document, index).changes.change;
 }
 
 function push(entry: string) {
@@ -138,25 +143,37 @@ function applyRemoteChangeAndSnapshot(document: any): void {
   expect(document._document.log).toContain('probe');
 }
 
-describe('an Automerge transaction that fails', () => {
-  test.each([
-    ['storing the block', (document: any) => document._putBlock],
-    ['signing the frame', (document: any) => document._signAsWriter],
-    ['encrypting the frame', (document: any) => document._authProvider.encrypt],
+describe('an Automerge change that fails', () => {
+  const beforeTheTree: [string, (document: any) => any][] = [
+    ['storing the block', (document) => document._putBlock],
+    ['signing the frame', (document) => document._signAsWriter],
+  ];
+  const inTheTree: [string, (document: any) => any][] = [
+    ['encrypting the frame', (document) => document._authProvider.encrypt],
     [
       'publishing the frame',
-      (document: any) => document.swarm.heliaNode.libp2p.services.pubsub.publish,
+      (document) => document.swarm.heliaNode.libp2p.services.pubsub.publish,
     ],
-  ])(
-    'before publication, while %s, rolls back to a writable document',
-    async (_step, failingStep) => {
+  ];
+  const entries: [string, (document: any, entry: string) => Promise<void>][] = [
+    ['change()', (document, entry) => document.change(push(entry))],
+    ['endChange()', batch],
+  ];
+  const cases = (steps: [string, (document: any) => any][]) =>
+    entries.flatMap(([entry, commit]) =>
+      steps.map(
+        ([step, failingStep]) => [entry, step, commit, failingStep] as const,
+      ),
+    );
+
+  test.each(cases(beforeTheTree))(
+    'in %s before the change is in the tree, while %s, rolls back to a writable document',
+    async (_entry, _step, commit, failingStep) => {
       const document = automergeDocument();
       const failure = new Error('commit failed');
       failingStep(document).mockRejectedValueOnce(failure);
 
-      document.startChange();
-      document.addChange(push('lost'));
-      await expect(document.endChange()).rejects.toBe(failure);
+      await expect(commit(document, 'lost')).rejects.toBe(failure);
       const discarded: Change[] = document._putBlock.mock.calls[0][0];
       expect(document._document.log).toEqual([]);
       expect(document._hashes.size).toBe(0);
@@ -172,8 +189,8 @@ describe('an Automerge transaction that fails', () => {
         'batched',
       ]);
 
-      // A peer may hold the discarded change after an ambiguous publish. The
-      // replica's later changes must not reuse its actor sequence number.
+      // The discarded change's block may stay stored. The replica's later
+      // changes must not reuse its actor sequence number.
       let peer = provider.remoteChange(
         clone(genesis, { actor: '06' }),
         discarded,
@@ -182,6 +199,46 @@ describe('an Automerge transaction that fails', () => {
         peer = provider.remoteChange(peer, publishedChange(document, index));
       }
       expect([...peer.log].sort()).toEqual(['batched', 'lost', 'next']);
+      applyRemoteChangeAndSnapshot(document);
+    },
+  );
+
+  test.each(cases(inTheTree))(
+    'in %s after the change is in the tree, a failure while %s keeps it for the next frame',
+    async (_entry, _step, commit, failingStep) => {
+      const document = automergeDocument();
+      const undelivered: unknown[] = [];
+      document._deliveryFailureHandlers.probe = (failure: unknown) =>
+        undelivered.push(failure);
+      const failure = new Error('PublishError.NoPeersSubscribedToTopic');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await commit(document, 'kept');
+      expect(document._document.log).toEqual(['kept']);
+      const keptId = document._lastSyncMessage.changeId;
+      expect(document._hashes.has(keptId)).toBe(true);
+      expect(document.frames).toHaveLength(0);
+      expect(undelivered).toEqual([
+        {
+          documentPath: '/automerge-rollback',
+          changeId: keptId,
+          error: failure,
+        },
+      ]);
+
+      await document.change(push('next'));
+      await batch(document, 'batched');
+      expect(document._document.log).toEqual(['kept', 'next', 'batched']);
+      const next = publishedMessage(document, 0);
+      expect(Object.keys(next.changes.children)).toEqual([keptId]);
+      let peer = clone(genesis, { actor: '06' });
+      for (const changes of [
+        next.changes.children[keptId].change,
+        next.changes.change,
+        publishedChange(document, 1),
+      ])
+        peer = provider.remoteChange(peer, changes);
+      expect(peer.log).toEqual(['kept', 'next', 'batched']);
       applyRemoteChangeAndSnapshot(document);
     },
   );
@@ -310,28 +367,32 @@ describe('a rollback while Automerge holds changes waiting for dependencies', ()
     expect(provider.cloneDocument(synced)?.log).toEqual(synced.log);
   });
 
-  test('a transaction that fails before publication retires the instance', async () => {
-    const document = automergeDocument();
-    const { queued, b1 } = queuedRemoteChange();
-    document._document = queued;
-    const failure = new Error('commit failed');
-    document._putBlock.mockRejectedValueOnce(failure);
+  test.each([
+    ['change()', (document: any) => document.change(push('lost'))],
+    ['endChange()', (document: any) => batch(document, 'lost')],
+  ])(
+    '%s that fails before publication retires the instance',
+    async (_entry, commit) => {
+      const document = automergeDocument();
+      const { queued, b1 } = queuedRemoteChange();
+      document._document = queued;
+      const failure = new Error('commit failed');
+      document._putBlock.mockRejectedValueOnce(failure);
 
-    document.startChange();
-    document.addChange(push('lost'));
-    const error: any = await document
-      .endChange()
-      .catch((reason: unknown) => reason);
-    expect(error.message).toMatch(/could not be rolled back/);
-    expect(error.cause).toBe(failure);
-    await expect(document.change(push('next'))).rejects.toThrow(
-      /could not be rolled back/,
-    );
-    expect(() => document.document).toThrow(/could not be rolled back/);
-    expect(document.frames).toHaveLength(0);
-    // The retained document still holds the queued change.
-    expect(provider.remoteChange(document._document, b1).log).toContain('a2');
-  });
+      const error: any = await commit(document).catch(
+        (reason: unknown) => reason,
+      );
+      expect(error.message).toMatch(/could not be rolled back/);
+      expect(error.cause).toBe(failure);
+      await expect(document.change(push('next'))).rejects.toThrow(
+        /could not be rolled back/,
+      );
+      expect(() => document.document).toThrow(/could not be rolled back/);
+      expect(document.frames).toHaveLength(0);
+      // The retained document still holds the queued change.
+      expect(provider.remoteChange(document._document, b1).log).toContain('a2');
+    },
+  );
 
   test('a sync whose ACL entry throws keeps the applied entries and the queue', async () => {
     const document = automergeDocument();

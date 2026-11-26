@@ -1,4 +1,4 @@
-import type { DocumentHandle } from './index.js';
+import type { DocumentDeliveryFailure, DocumentHandle } from './index.js';
 
 export type TestData = { title: string };
 export type TestChange = (data: TestData) => void;
@@ -51,6 +51,14 @@ export class TestDocument
     await this.writeGate;
     if (this.writeError) throw this.writeError;
     change(this.document);
+    if (this.undeliveredError) {
+      for (const handler of this.deliveryHandlers.values())
+        handler({
+          documentPath: '/test',
+          changeId: `cid-${this.writeCount}`,
+          error: this.undeliveredError,
+        });
+    }
     this.emit();
   }
   subscribe(
@@ -66,6 +74,20 @@ export class TestDocument
   }
   unsubscribe(id: string) {
     this.handlers.delete(id);
+  }
+  deliveryHandlers = new Map<
+    string,
+    (failure: DocumentDeliveryFailure) => void
+  >();
+  undeliveredError?: Error;
+  subscribeDeliveryFailures(
+    id: string,
+    handler: (failure: DocumentDeliveryFailure) => void,
+  ) {
+    this.deliveryHandlers.set(id, handler);
+  }
+  unsubscribeDeliveryFailures(id: string) {
+    this.deliveryHandlers.delete(id);
   }
   emit() {
     for (const handler of this.handlers.values()) {
