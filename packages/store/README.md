@@ -46,7 +46,8 @@ signed sync request, a member's sync request that names the change, or a
 writer's frame that builds on it. That is evidence of delivery, not an
 acknowledgment that a member stored the change. A frame that reaches members
 only through a relay mesh stays reported until a member's next sync request,
-usually a few seconds with automatic catch-up. A custom handle reports its
+which a member with automatic catch-up sends 1 to 2 s after a frame adds a
+change. A custom handle reports its
 delivery state through `subscribeDeliveryState` and `unsubscribeDeliveryState`,
 which every handle implements; one that never fails to deliver accepts the
 handler and never calls it. Explicit `start()` and `stop()`

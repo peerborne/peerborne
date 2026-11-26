@@ -315,6 +315,87 @@ describe('anti-entropy triggering', () => {
     expect(state.requestTimes).toHaveLength(3);
   });
 
+  test('acknowledges applied changes one to two seconds later, two seconds after the previous request', async () => {
+    const { time, state, events, antiEntropy } = setup();
+    antiEntropy.start();
+    await time.to(1_000);
+    await time.to(20_000);
+    antiEntropy.acknowledge();
+    await time.to(20_400);
+    antiEntropy.acknowledge();
+    await time.to(21_499);
+    expect(state.requestTimes).toEqual([1_000]);
+    await time.to(21_500);
+    expect(state.requestTimes).toEqual([1_000, 21_500]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'request',
+      triggers: ['acknowledgment'],
+      outcome: 'sent',
+    });
+    await time.to(21_600);
+    antiEntropy.acknowledge();
+    await time.to(23_499);
+    expect(state.requestTimes).toHaveLength(2);
+    await time.to(23_500);
+    expect(state.requestTimes).toEqual([1_000, 21_500, 23_500]);
+    expect(antiEntropy.status().nextRunAt).toBe(START + 68_500);
+    await time.to(68_499);
+    expect(state.requestTimes).toHaveLength(3);
+  });
+
+  test('a request sent first acknowledges changes applied before it, and one applied during it is acknowledged again', async () => {
+    const { time, state, host, events, antiEntropy } = setup();
+    antiEntropy.start();
+    antiEntropy.acknowledge();
+    await time.to(1_000);
+    expect(events.at(-1)).toMatchObject({
+      triggers: ['open', 'acknowledgment'],
+    });
+    await time.to(10_000);
+    expect(state.requestTimes).toEqual([1_000]);
+    let during = true;
+    host.request = async () => {
+      state.requestTimes.push(time.now);
+      if (during) antiEntropy.acknowledge();
+      during = false;
+      return 'sent';
+    };
+    antiEntropy.acknowledge();
+    await time.to(11_500);
+    expect(state.requestTimes).toEqual([1_000, 11_500]);
+    await time.to(13_500);
+    expect(state.requestTimes).toEqual([1_000, 11_500, 13_500]);
+    await time.to(20_000);
+    expect(state.requestTimes).toHaveLength(3);
+  });
+
+  test('an acknowledgment that cannot be sent is not retried, and none is scheduled once closed', async () => {
+    const { time, state, host, antiEntropy } = setup();
+    antiEntropy.start();
+    await time.to(1_000);
+    state.outcome = 'rate-limited';
+    antiEntropy.acknowledge();
+    await time.to(3_000);
+    expect(state.requestTimes).toEqual([1_000, 3_000]);
+    await time.to(15_000);
+    state.outcome = 'not-ready';
+    antiEntropy.acknowledge();
+    await time.to(30_000);
+    expect(state.requestTimes).toEqual([1_000, 3_000, 16_500]);
+    host.request = async () => {
+      state.requestTimes.push(time.now);
+      throw new Error('offline');
+    };
+    antiEntropy.acknowledge();
+    await time.to(45_000);
+    expect(state.requestTimes).toEqual([1_000, 3_000, 16_500, 31_500]);
+    antiEntropy.close();
+    antiEntropy.acknowledge();
+    await time.to(1_000_000);
+    expect(state.requestTimes).toHaveLength(4);
+    expect(time.timers).toBe(0);
+  });
+
   test('requests that are not ready or fail keep the schedule without counting', async () => {
     const { time, state, events, antiEntropy } = setup();
     state.outcome = 'not-ready';

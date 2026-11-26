@@ -555,7 +555,7 @@
     },
     {
       "id": "automatic-catch-up-scheduling",
-      "formalBoundary": "No scheduler contract is proved. Generated signal histories with fake time check that at most one timer is armed, requests stay at least the minimum interval apart, quiet periods are never longer than four thirds of the periodic interval, loads stay a load interval apart, follow a request by the load delay and target only connected writer advertisers, and nothing loads without the commitment resolver. Real timers, the shared budget across documents, signature verification of advertisements and the authenticated load itself are covered by example, native and real-node tests; network delivery, UI latency and many-peer traffic are outside this evidence.",
+      "formalBoundary": "No scheduler contract is proved. Generated signal histories with fake time check that at most one timer is armed, requests stay at least the minimum interval apart, or the two-second rate limit apart when one acknowledges an applied change, every applied change is followed by a request within two seconds, acknowledging requests never outnumber applied changes, quiet periods are never longer than four thirds of the periodic interval, loads stay a load interval apart, follow a request by the load delay and target only connected writer advertisers, and nothing loads without the commitment resolver. Real timers, the shared budget across documents, signature verification of advertisements and the authenticated load itself are covered by example, native and real-node tests; network delivery, UI latency and many-peer traffic are outside this evidence.",
       "evidence": [
         "packages/core/src/anti-entropy-properties.test.ts"
       ],

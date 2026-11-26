@@ -312,6 +312,10 @@ updates without an application call. It sends the signed sync request that
 - when a frame names a change that cannot be fetched;
 - when a verified member's request names, as its own head, a change this
   replica does not hold;
+- 1 to 2 s after a frame adds a change this replica did not hold, so the
+  change's author sees a member's request that names it even when the frame
+  reached members only through a relay; changes applied before the request
+  share it;
 - otherwise every 30 to 60 s, drawn uniformly around 45 s.
 
 A request names the requester's head, up to 32 recent tips, its known
@@ -330,7 +334,10 @@ behind in the same way.
 - Signals that arrive within 0.5 to 1.5 s are coalesced into one request. A
   document sends at most one request per 5 s (`minRequestIntervalMs`), and
   while a detected gap stays open that spacing doubles up to the periodic
-  interval.
+  interval. A request that follows an applied change waits only for the 2 s
+  sync-request rate limit, so a member sends at most one every 2 s however
+  fast writers edit, a frame whose change the replica already holds triggers
+  none, and one that cannot be sent is not retried.
 - Advertised heads are counted per member signing key, however many PeerIds
   the member uses. One member triggers at most one request per kind of signal
   per 30 s (`peerCooldownMs`), and a document verifies at most four

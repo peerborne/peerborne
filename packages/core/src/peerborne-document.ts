@@ -9977,6 +9977,8 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
+      const { changeId } = message;
+      const added = changeId !== undefined && !this._holdsChange(changeId);
       const applied = await this._syncGossipMessage(
         message,
         () => receiveAdmission.active,
@@ -9987,6 +9989,8 @@ export class PeerborneDocument<
       if (applied) {
         this._antiEntropy?.memberPeer(sender);
         this._confirmDeliveryByMessage(message);
+        if (added && this._holdsChange(changeId))
+          this._antiEntropy?.acknowledge();
       }
     };
     // A kept frame is retried through the full receive path, which repeats
@@ -11105,7 +11109,10 @@ export class PeerborneDocument<
    * a sync request signed by a member's key that names that peer as its
    * publisher. This is evidence of delivery, not an acknowledgment that a
    * member stored it. A load served to a member is not evidence until the
-   * member's next sync request names the change.
+   * member's next sync request names the change. A member with automatic
+   * catch-up sends that request one to two seconds after a frame adds a
+   * change, so a change that reaches members only through a relay clears
+   * within a few seconds.
    * Local update handlers see the value after their change. A coordinated
    * document never sets it.
    */

@@ -20,6 +20,7 @@ const signal = fc.record({
     'equivalent',
     'learned',
     'member',
+    'applied',
   ),
   peer: fc.integer({ min: 0, max: peers.length - 1 }),
   member: fc.integer({ min: 0, max: 2 }),
@@ -61,6 +62,8 @@ test('generated signal histories keep request, load and timer bounds', async () 
         const loads: Array<{ at: number; peer?: string; writer?: boolean }> =
           [];
         let maxTimers = 0;
+        const acknowledging: boolean[] = [];
+        const appliedAt: number[] = [];
         const antiEntropy = new AntiEntropy(
           config,
           {
@@ -85,7 +88,10 @@ test('generated signal histories keep request, load and timer bounds', async () 
             },
           },
           new AntiEntropyBudget(),
-          () => {},
+          (event) => {
+            if (event.type === 'request')
+              acknowledging.push(event.triggers.includes('acknowledgment'));
+          },
           clock,
         );
         const runUntil = async (end: number) => {
@@ -143,6 +149,10 @@ test('generated signal histories keep request, load and timer bounds', async () 
             case 'member':
               antiEntropy.memberPeer(peer);
               break;
+            case 'applied':
+              appliedAt.push(now);
+              antiEntropy.acknowledge();
+              break;
           }
         }
         await runUntil(
@@ -151,10 +161,18 @@ test('generated signal histories keep request, load and timer bounds', async () 
         antiEntropy.close();
 
         expect(maxTimers).toBeLessThanOrEqual(1);
+        expect(acknowledging).toHaveLength(requests.length);
         for (let i = 1; i < requests.length; i++)
           expect(requests[i]! - requests[i - 1]!).toBeGreaterThanOrEqual(
-            config.minRequestIntervalMs,
+            acknowledging[i] ? 2_000 : config.minRequestIntervalMs,
           );
+        expect(acknowledging.filter(Boolean).length).toBeLessThanOrEqual(
+          appliedAt.length,
+        );
+        for (const at of appliedAt)
+          expect(
+            requests.some((request) => request >= at && request <= at + 2_000),
+          ).toBe(true);
         const lastSignalAt =
           now - 2 * config.intervalMs - 20 * config.loadIntervalMs;
         const quiet = requests.filter((at) => at > lastSignalAt);
