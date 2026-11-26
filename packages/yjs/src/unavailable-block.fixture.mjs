@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { CID } from 'multiformats/cid';
 import {
   documentFixture,
   receiveEncrypted,
@@ -66,6 +67,13 @@ function crossLinks(tree, cid) {
   return child !== undefined && child.change === undefined;
 }
 
+// `to` stores the block of `cid`, as a replica that fetched it would.
+async function share(from, to, cid) {
+  const parsed = CID.parse(cid);
+  const chunks = await Array.fromAsync(from.helia.blockstore.get(parsed));
+  await to.helia.blockstore.put(parsed, Buffer.concat(chunks));
+}
+
 // Bitswap's wantBlock waits for a block no connected peer holds until the
 // read is aborted. Stored blocks are read as before.
 function bitswapLike(blockstore) {
@@ -109,11 +117,13 @@ test('a replica missing a block whose author is offline keeps working', async (t
   const bitswap = bitswapLike(g.helia.blockstore);
   g.helia.blockstore = bitswap.store;
 
-  // A and B write concurrently. B1 reaches only A, inline, and B goes
-  // offline, so no peer stores B1 as a block. A's next change cross-links it.
+  // A and B write concurrently. B1 reaches only A, which stores its block
+  // as a replica that fetched it would, so A's next change cites it without
+  // its change. No peer G reaches stores B1.
   await deliver((await append(a, 'a1')).frame, g);
   const b1 = await append(b, 'b1');
   await deliver(b1.frame, a);
+  await share(b, a, b1.cid);
   const a2 = await append(a, 'a2');
   assert.equal(crossLinks(a2.tree, b1.cid), true);
 
@@ -133,29 +143,47 @@ test('a replica missing a block whose author is offline keeps working', async (t
   await within(g.document.exportCheckpoint(), PROMPT_MS, 'exportCheckpoint()');
   await within(g.document.requestSync(), PROMPT_MS, 'requestSync()');
 
-  // At the deadline G gives up on B1 and applies A2 without it.
+  // At the deadline G gives up on B1 and applies A2's change without it. B1
+  // is missing, not held, so A2 waits for it and catch-up keeps asking.
+  const root = g.document.document.getMap('root');
   await until(
-    () => g.document.hasChange(a2.cid),
+    () => root.get('a2') === true,
     DEADLINE_BOUND_MS,
     'G did not apply A2',
   );
-  assert.equal(g.document.document.getMap('root').get('a2'), true);
+  assert.equal(g.document.hasChange(a2.cid), false);
   assert.equal(g.document.hasChange(b1.cid), false);
+  assert.equal(g.document._holdsChange(b1.cid), false);
   assert.equal(bitswap.wants.find(({ cid }) => cid === b1.cid).aborted, true);
 
   // A later frame citing B1 again does not wait for it while it backs off.
   const a3 = await append(a, 'a3');
   assert.equal(crossLinks(a3.tree, b1.cid), true);
   gossip(g, a3.frame);
-  await until(() => g.document.hasChange(a3.cid), PROMPT_MS, 'G did not apply A3');
+  await until(() => root.get('a3') === true, PROMPT_MS, 'G did not apply A3');
+  assert.equal(g.document.hasChange(a3.cid), false);
   assert.equal(bitswap.wants.filter(({ cid }) => cid === b1.cid).length, 1);
+
+  // Once B1 arrives, the next frame that carries A2 and A3 settles them.
+  await deliver(b1.frame, g);
+  assert.equal(root.get('b1'), true);
+  const a4 = await append(a, 'a4');
+  gossip(g, a4.frame);
+  await until(
+    () => g.document.hasChange(a4.cid),
+    PROMPT_MS,
+    'G did not hold A4',
+  );
+  assert.equal(g.document.hasChange(a2.cid), true);
+  assert.equal(g.document.hasChange(a3.cid), true);
 
   // close() aborts a fetch in progress at once.
   const b2 = await append(b, 'b2');
   await deliver(b2.frame, a);
-  const a4 = await append(a, 'a4');
-  assert.equal(crossLinks(a4.tree, b2.cid), true);
-  gossip(g, a4.frame);
+  await share(b, a, b2.cid);
+  const a5 = await append(a, 'a5');
+  assert.equal(crossLinks(a5.tree, b2.cid), true);
+  gossip(g, a5.frame);
   await until(
     () => bitswap.wants.some(({ cid }) => cid === b2.cid),
     PROMPT_MS,
@@ -167,5 +195,5 @@ test('a replica missing a block whose author is offline keeps working', async (t
     PROMPT_MS,
     'close() did not abort the fetch of B2',
   );
-  assert.equal(g.document.hasChange(a4.cid), false);
+  assert.equal(g.document.hasChange(a5.cid), false);
 });

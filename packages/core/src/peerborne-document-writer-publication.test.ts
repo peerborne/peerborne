@@ -226,6 +226,7 @@ function publicationHarness(
         libp2p: { services: { pubsub: { publish } } },
       },
     }),
+    _holdsBlock: jest.fn(async () => true),
     _localHandlers: {},
     _maybeCompact: jest.fn(async () => undefined),
     _documentChangeCount: 0,

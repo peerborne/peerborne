@@ -35,7 +35,25 @@ CRDT layer resolves concurrent edits.
 The encrypted wire message may carry history inline or defer it to Helia:
 
 - **Inline**: A `CRDTChangeNode` inside the encrypted `CRDTSyncMessage` carries the serialized CRDT change, allowing immediate application after any configured outer-signature check. A first load has no prior writer set for that check.
-- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it. An ordinary sync message fetches at most eight payloads within 10 seconds of its first fetch, and closing the document aborts the fetches. Loads and invitations need every payload and keep their own deadlines instead. A GossipSub frame fetches only after its writer signature verifies and before it takes the document's state queue, so local changes continue meanwhile. One frame fetches at a time, a frame waits at most 10 seconds for its turn, and the frames waiting to apply hold at most 64 MiB of prefetched payloads per document. A payload that cannot be fetched stays a missing dependency, and the message applies without it. A later message that cites the CID again skips it for 15 seconds, doubling up to 5 minutes, after a failure. Nothing re-requests the payload otherwise: once the tree that cites it is applied, later messages that extend that tree stop at its root.
+- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it. An ordinary sync message fetches at most eight payloads within 10 seconds of its first fetch, and closing the document aborts the fetches. Loads and invitations need every payload and wait at most 10 seconds for each; a load stops at the first payload it cannot fetch. A GossipSub frame fetches only after its writer signature verifies and before it takes the document's state queue, so local changes continue meanwhile. One frame fetches at a time, a frame waits at most 10 seconds for its turn, and the frames waiting to apply hold at most 64 MiB of prefetched payloads per document. A payload that cannot be fetched is a missing change. The message's inline changes still apply, but a node that references a missing change is not held: later messages and catch-up replies are walked down to it again, and catch-up keeps asking for it. A later message that cites the CID again skips it for 15 seconds, doubling up to 5 minutes, after a failure.
+
+### Which blocks a replica can serve
+
+A replica stores the blocks of its own changes and of the changes it fetched,
+but not of changes it received inline, whose encrypted payload never reached
+it. It therefore cites a recent tip without its change only when it stores the
+block. A remote tip it received inline is carried inline instead, with the
+delivered history that its tree does not carry yet, while the change and that
+history fit in the half frame a change may use. Otherwise the tip is not
+cross-linked. This keeps every change a replica names fetchable from that
+replica, or carried in the frame, after the change's author leaves.
+
+Before a replica answers a load or builds an invitation bootstrap, it checks
+that it stores every block its tree cites without the change above its latest
+snapshot. When it does not, a writer takes a snapshot first, which recipients
+apply instead of fetching that history. A replica that still cannot serve the
+tree declines the load, or rejects the invitation with an error, instead of
+leaving the recipient waiting.
 
 ### No graph links in stored payloads
 

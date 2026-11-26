@@ -347,6 +347,11 @@ const MEMBER_PEER_TTL_MS = 60 * 60 * 1000;
 const UNRESOLVED_CHANGE_TTL_MS = 60 * 60 * 1000;
 const MEMBER_PENALTY_MS = 5 * 60 * 1000;
 const MAX_MEMBER_PENALTY_MS = 2 * 60 * 60 * 1000;
+/**
+ * A catch-up load is aborted after this long, and its load slot is released
+ * even if the load ignores the abort, so other repairs can proceed.
+ */
+export const CATCH_UP_LOAD_DEADLINE_MS = 60_000;
 const UNKNOWN_PEER = '\0unknown';
 const GAP_TRIGGERS: readonly AntiEntropyTrigger[] = [
   'pending-changes',
@@ -359,6 +364,18 @@ interface Advertisement {
   readonly head: string;
   readonly writer: boolean;
   readonly at: number;
+}
+
+/** Settle with `work`, or reject once `signal` aborts, whichever is first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    void Promise.resolve(work)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 function remember<V>(
@@ -865,14 +882,22 @@ export class AntiEntropy {
     const loading = new AbortController();
     this.loading = loading;
     this.phase = 'loading';
+    const deadline = this.clock.setTimeout(
+      () => loading.abort(new Error('Catch-up load deadline exceeded')),
+      CATCH_UP_LOAD_DEADLINE_MS,
+    );
     let outcome: AntiEntropyLoadOutcome;
     try {
-      outcome = (await this.host.load(peer, loading.signal))
+      outcome = (await untilAborted(
+        this.host.load(peer, loading.signal),
+        loading.signal,
+      ))
         ? 'loaded'
         : 'not-served';
     } catch {
       outcome = 'failed';
     } finally {
+      this.clock.clearTimeout(deadline);
       release();
       this.loading = undefined;
       this.phase = 'idle';

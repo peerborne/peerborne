@@ -550,6 +550,17 @@
       ]
     },
     {
+      "id": "inline-cross-link-carry",
+      "formalBoundary": "Carrying a delivered remote tip inline has no formal proof. Generated pairs of retained and delivered trees over one acyclic history, with aliases, sparse citations and pruned or content-stripped descriptions, check that the merged change passes the production alias validator, that the copy describes no CID the retained tree already describes, that every delivered change reachable without passing a described CID stays inline, and that the copy cites without content only described or kept CIDs. Which blocks a replica stores, the frame budget, signature and actor checks, CID parsing and the network are covered by example and real-node tests or remain outside this evidence.",
+      "evidence": [
+        "packages/core/src/cross-link-carry-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/merkle-cross-links.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "explicit-document-replacement",
       "formalBoundary": "The production locator classification and staged publication gate are exact. Finite histories from one pinned base prove monotone revision, at most one accepted successor and that it comes from an approved, content-matching, staged CAS attempt. Native checks cover bounded ownership, authorization and hashing, delayed preparation, distinct and identical concurrent preparations, and restart after interrupted staging or acknowledgment. The Yjs fixture reopens a fresh checkpoint and verifies selected content and a fresh epoch. The model trusts the application approval, private durable staging and independently protected atomic locator, and does not provide distributed branch selection, peer-assisted recovery, or browser storage durability.",
       "evidence": [

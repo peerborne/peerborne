@@ -8,12 +8,36 @@ export const MAX_PREFETCHED_BLOCK_BYTES = 64 * 1024 * 1024;
 export const REMOTE_BLOCK_RETRY_DELAY_MS = 15_000;
 /** Longest delay, reached by doubling after each further failure. */
 export const MAX_REMOTE_BLOCK_RETRY_DELAY_MS = 5 * 60_000;
+/** Time a load or an invitation waits for one block it needs. */
+export const LOAD_BLOCK_FETCH_DEADLINE_MS = 10_000;
 const MAX_FAILED_BLOCKS = 1024;
 
 export class RemoteBlockFetchDeadlineError extends Error {
   constructor() {
     super('Remote block fetch deadline exceeded');
     this.name = 'RemoteBlockFetchDeadlineError';
+  }
+}
+
+/** Run `read` with a signal that also aborts once `ms` have passed. */
+export async function readWithin<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  ms: number = LOAD_BLOCK_FETCH_DEADLINE_MS,
+): Promise<T> {
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new RemoteBlockFetchDeadlineError()),
+    ms,
+  );
+  try {
+    return await read(
+      signal === undefined
+        ? deadline.signal
+        : AbortSignal.any([signal, deadline.signal]),
+    );
+  } finally {
+    clearTimeout(timer);
   }
 }
 
