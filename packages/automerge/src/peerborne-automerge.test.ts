@@ -2,6 +2,7 @@ import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
+  ACLActorUnavailableError,
   ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
@@ -2321,6 +2322,34 @@ describe('AutomergeACL', () => {
     } finally {
       exportSpy.mockRestore();
     }
+  });
+
+  test('a bound ACL continues its actor and refuses a position a staged change holds', async () => {
+    const actor = 'ab'.repeat(16);
+    const acl = new AutomergeACL();
+    acl.actorBinding.setLocalActor(actor);
+    const seeded = await acl.prepareAdd(key1);
+
+    expect([...acl.actorBinding.changeActors(seeded.changes)]).toEqual([actor]);
+    await expect(acl.prepareRemove(key1)).rejects.toThrow(
+      ACLActorUnavailableError,
+    );
+    seeded.commit();
+    const removal = await acl.prepareRemove(key1);
+    expect([...acl.actorBinding.changeActors(removal.changes)]).toEqual([
+      actor,
+    ]);
+    removal.commit();
+    expect(await acl.check(key1)).toBe(false);
+    const envelope = new Uint8Array([0x50, 0x42, 0x41, 0x31]);
+    const [prefix, bare] = acl.actorBinding.detach(
+      acl.actorBinding.attach(removal.changes, envelope),
+    );
+    expect(prefix).toEqual(envelope);
+    expect(bare).toEqual(removal.changes);
+    expect(() => acl.actorBinding.setLocalActor('AB'.repeat(16))).toThrow(
+      TypeError,
+    );
   });
 });
 
