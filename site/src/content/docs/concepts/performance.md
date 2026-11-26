@@ -41,11 +41,12 @@ When enabled (the default), document open probes at most `loadQuorumK` distinct
 currently connected peer IDs. Effective K is
 `min(loadQuorumK, deduplicatedConnectedPeerCount)`. With K ≥ 2, the default Q
 is `floor(K / 2) + 1`; an explicit Q is a hard floor and is never reduced. Effective K = 1 is
-rejected unless `loadQuorumAllowSinglePeer` is explicitly enabled.
+rejected unless `loadQuorumAllowSinglePeer` is explicitly enabled. A document
+with one trusted writer instead accepts one response from any of its devices.
 
 Q distinct authenticated writer authorities must agree on a digest covering
-the locally trusted security tuple, document, served frontier, and complete
-response manifest. Peerborne binds the selected response to that digest and
+the locally trusted security tuple, document, served frontier, and response
+manifest. Peerborne binds the selected response to that digest and
 the fresh request challenge before mutation. Many transport PeerIds sharing
 one credential count once; independently controlled trusted authorities are
 still an application requirement:
@@ -55,7 +56,7 @@ still an application requirement:
 | `loadQuorumK` | 3 | Caps the connected peers probed; fewer connected peers reduce effective K |
 | `loadQuorumQ` | Majority of effective K | `floor(K / 2) + 1`; an explicit value is never lowered |
 | `loadQuorumTimeoutMs` | 5000 | Per-peer timeout; peer probes run in parallel |
-| `loadQuorumAllowSinglePeer` | `false` | Requires an explicit opt-in before effective K = 1 can pass |
+| `loadQuorumAllowSinglePeer` | `false` | Requires an explicit opt-in before effective K = 1 can pass; not needed for a single-writer document |
 
 Source: [`peerborne-config.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-config.ts). Focused tests cover pure decisions and orchestration with mocked probes; they are not a hostile real-network quorum test.
 

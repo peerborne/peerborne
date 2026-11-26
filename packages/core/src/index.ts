@@ -5,6 +5,7 @@ import {
 } from './peerborne.js';
 import {
   PeerborneConfig,
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
   defaultConfig,
@@ -224,6 +225,7 @@ export {
   defaultConfig,
   defaultBootstrapConfig,
   getDefaultConfig,
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
   // Capabilities
