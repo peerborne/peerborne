@@ -101,6 +101,73 @@ export function decideLoadQuorum(
   };
 }
 
+/** One probed peer's response, attributed to its authenticated signer. */
+export interface SingleWriterLoadVote {
+  peerId: string;
+  hash: Uint8Array | null;
+  signerAuthority?: string;
+}
+
+export type SingleWriterLoadDecision =
+  | {
+      ok: true;
+      winningHashHex: string;
+      cohort: { index: number; peerId: string; hashHex: string }[];
+      respondingCount: number;
+      stateCount: number;
+    }
+  | { ok: false; reason: 'insufficient-responses'; respondingCount: 0 };
+
+/**
+ * Order the responses of a document's only trusted writer authority. All of
+ * one user's devices share that signing identity, so their votes are not
+ * independent and a differing digest means a device is out of sync, not that
+ * the authority equivocated. Any response from that authority is acceptable.
+ * The state advertised by the most devices comes first, ties keep probe order,
+ * and every other state follows as a fallback. Each peer stays bound to the
+ * digest it advertised. Votes from any other authority are ignored.
+ */
+export function decideSingleWriterLoad(
+  votes: readonly SingleWriterLoadVote[],
+  authority: string,
+): SingleWriterLoadDecision {
+  const captured = votes.map((vote, index) => {
+    const peerId = vote.peerId;
+    let digest: string | undefined;
+    if (vote.signerAuthority === authority) {
+      try {
+        digest = tipsHashToHex(
+          copyUnsharedUint8Array(vote.hash, 32, 32, 'load-quorum vote hash'),
+        );
+      } catch {}
+    }
+    return { index, peerId, digest };
+  });
+  const selected = firstEligiblePeerIndices(
+    captured.map(({ peerId }) => peerId),
+    captured.map(({ digest }) => digest !== undefined),
+  ).map((index) => captured[index]);
+  if (selected.length === 0) {
+    return { ok: false, reason: 'insufficient-responses', respondingCount: 0 };
+  }
+  const states = [
+    ...countQuorumDigests(selected.map(({ digest }) => digest!)),
+  ].map(([hashHex, count], order) => ({ hashHex, count, order }));
+  states.sort((a, b) => b.count - a.count || a.order - b.order);
+  const cohort = states.flatMap(({ hashHex }) =>
+    selected
+      .filter(({ digest }) => digest === hashHex)
+      .map(({ index, peerId }) => ({ index, peerId, hashHex })),
+  );
+  return {
+    ok: true,
+    winningHashHex: states[0].hashHex,
+    cohort,
+    respondingCount: selected.length,
+    stateCount: states.length,
+  };
+}
+
 /**
  * Deduplicate a sequence of (peer, peerId) pairs by `peerId`, preserving
  * first-seen order. Used by the loader to collapse multiple open
@@ -380,9 +447,11 @@ export function formatConfigValue(value: unknown): string {
  *   - `'conflicting-quorum'` — more than one distinct state digest reached
  *     Q. Only possible with an explicit non-majority Q; the loader refuses
  *     to let probe order choose between conflicting states.
- *   - `'equivocating-authority'` — one V4 signing authority voted for two
- *     different state digests in the same round (key compromise or a
- *     fork), so the round fails rather than counting either vote.
+ *   - `'divergent-authority'` — in a document with several trusted writers,
+ *     the devices of one writer authority advertised different state digests
+ *     in the same round. Its devices may be out of sync, or the authority
+ *     may have forked; the round fails rather than counting either vote. A
+ *     document with one trusted writer accepts any of its devices instead.
  *   - `'no-peers-queried'` — `decideLoadQuorum` was called with an empty
  *     advertisement list; surfaced for defensive completeness.
  *   - `'invalid-config'` — the operator misconfigured the gate (e.g.
@@ -405,7 +474,7 @@ export type LoadQuorumFailedReason =
   | 'insufficient-responses'
   | 'no-agreement'
   | 'conflicting-quorum'
-  | 'equivocating-authority'
+  | 'divergent-authority'
   | 'no-peers-queried'
   | 'invalid-config'
   | 'bind-check-failed-all-agreeing-peers'
@@ -489,8 +558,9 @@ export class LoadQuorumFailedError extends Error {
             ? (opts.detail ?? 'invalid load-quorum configuration')
             : opts.reason === 'conflicting-quorum'
               ? `more than one state digest reached the required ${opts.requiredQ} votes`
-              : opts.reason === 'equivocating-authority'
-                ? 'a signing authority voted for conflicting state digests'
+              : opts.reason === 'divergent-authority'
+                ? 'the devices of one writer authority advertised different state digests ' +
+                  '(they may be out of sync, or the authority may have forked)'
                 : opts.reason === 'bind-check-failed-all-agreeing-peers'
                   ? `quorum agreed on a state digest but every peer in the agreeing cohort ` +
                     `(${opts.agreeingPeerBindFailures?.size ?? 0} peer(s)) served a full-load ` +

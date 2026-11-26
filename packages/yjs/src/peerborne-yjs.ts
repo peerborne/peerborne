@@ -912,6 +912,12 @@ export class YjsProvider
   getSnapshot(document: Doc): Uint8Array {
     return encodeStateAsUpdateV2(document);
   }
+  hasPendingChanges(document: Doc): boolean {
+    return (
+      document.store.pendingStructs !== null ||
+      document.store.pendingDs !== null
+    );
+  }
 }
 
 export async function serializeKey(publicKey: CryptoKey): Promise<string> {

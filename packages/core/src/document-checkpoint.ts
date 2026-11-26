@@ -2,6 +2,7 @@ import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import {
   copyUnsharedUint8Array,
+  isPaddedBase64,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import type { SerializedBeeKEMWelcomeV2 } from './beekem-welcome-wire.js';
@@ -112,9 +113,7 @@ export function checkpointDecode(value: unknown): Uint8Array {
   if (
     typeof value !== 'string' ||
     value.length > (MAX_DOCUMENT_CHECKPOINT_BYTES * 4) / 3 + 4 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      value,
-    )
+    !isPaddedBase64(value)
   ) {
     throw new TypeError('Invalid checkpoint byte encoding');
   }

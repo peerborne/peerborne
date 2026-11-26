@@ -55,6 +55,13 @@ After a build, `node --expose-gc verification/run.mjs` runs the Node scenarios
 without rebuilding. This runner is independent of `yarn benchmark:all`, whose
 existing module mismatch is outside this change.
 
+`yarn verify:network` builds the workspaces and runs real libp2p nodes behind a
+local Circuit Relay. A fresh device of a single-writer document loads its
+compacted history with the default load-quorum configuration from one device,
+from two agreeing devices, from devices that signed their own snapshots, and
+from two out-of-sync devices. It also checks that the load fails closed when no
+device answers. It does not cover documents with several writers.
+
 ## Results and acceptance
 
 Node results are saved to `verification/results/node-report.json`; use

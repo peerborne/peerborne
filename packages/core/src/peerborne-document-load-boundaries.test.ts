@@ -4,6 +4,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 
 import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
+  MAX_WAITING_REMOTE_CHANGES,
   PeerborneDocument,
 } from './peerborne-document.js';
 import { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
@@ -12,7 +13,10 @@ import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
-import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
+import {
+  syncInvitationMessageCompletely,
+  withIssuerPinnedInvitationStream,
+} from './invitation-catch-up.js';
 import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
@@ -198,6 +202,42 @@ const welcomeSerializer = {
   },
 };
 
+/**
+ * Let the pre-application snapshot check decode the served writer blocks into
+ * an isolated ACL. Each decoded writer block names the writers it adds.
+ */
+function servedWriterACL(
+  document: any,
+  writersByCid: Record<string, readonly string[]>,
+) {
+  const scratchACLs: Array<{ users: () => Promise<string[]> }> = [];
+  document._decodeBlock = jest.fn(async (cid: { toString(): string }) => ({
+    writers: writersByCid[cid.toString()] ?? [],
+  }));
+  document._aclProvider = {
+    initialize: () => {
+      const users = new Set<string>();
+      const acl = {
+        merge: (change: { writers: readonly string[] }) => {
+          for (const writer of change.writers) users.add(writer);
+        },
+        users: async () => [...users],
+      };
+      scratchACLs.push(acl);
+      return acl;
+    },
+  };
+  document._authProvider.serializePublicKey = async (key: string) =>
+    key === 'bootstrap-writer' ? 'fixture-writer-0' : `serialized:${key}`;
+  const staged = { commit: jest.fn(), claimCommit: jest.fn() };
+  document._keychain.prepareMerge = jest.fn(() => ({
+    ...staged,
+    hydrateKeys: async () => [],
+    getKey: () => undefined,
+  }));
+  return { scratchACLs, staged };
+}
+
 function signedLoadHarness(
   getWriterKeys: () => Promise<string[]>,
   verify: (...args: unknown[]) => Promise<boolean>,
@@ -214,6 +254,7 @@ function signedLoadHarness(
   const document = fakeDocument({
     documentPath: message.documentId,
     _fixtureLoadResponse: contextMessage,
+    _encoder: new TextEncoder(),
     _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     swarm: {
       config: { enableSigning: true, loadQuorumTimeoutMs: 1000 },
@@ -1103,6 +1144,293 @@ describe('document load response boundaries', () => {
     expect(document._changesSinceSnapshot).toBe(3);
   });
 
+  type BufferedChange = { id: string; deps: string[] };
+  const KNOWN_CHILD = { KNOWN: { kind: crdtDocumentChangeNode } };
+  const bufferedNode = (
+    id: string,
+    deps: string[] = [],
+    children: Record<string, unknown> | undefined = KNOWN_CHILD,
+  ) => ({ kind: crdtDocumentChangeNode, change: { id, deps }, children });
+
+  function bufferingDocument(fields: Record<string, unknown> = {}) {
+    const hasIntegrated = jest.fn(
+      (state: Set<string>, change: BufferedChange) =>
+        change.deps.every((dependency) => state.has(dependency)),
+    );
+    const document = fakeDocument({
+      documentPath: '/buffered-document-change',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: new Set<string>(['known']),
+      _hashes: new Set<string>(['KNOWN']),
+      _referencedAncestors: new Set<string>(),
+      _recentTips: [],
+      _lastSyncMessage: undefined,
+      _crdtProvider: {
+        remoteChange: jest.fn(
+          (state: Set<string>, change: BufferedChange) =>
+            new Set([...state, change.id]),
+        ),
+        hasIntegrated,
+      },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _maybeCompact: jest.fn(async () => undefined),
+      ...fields,
+    });
+    return { document, hasIntegrated };
+  }
+
+  test('records a waiting change when a message that does not carry it supplies the dependency', async () => {
+    const { document, hasIntegrated } = bufferingDocument();
+    const dependent = bufferedNode('dependent', ['dependency']);
+
+    await document._syncDocumentChanges('DEPENDENT', dependent);
+
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('DEPENDENT')).toBe(true);
+    expect(document._currentFrontier()).toEqual(['KNOWN']);
+    expect(document._recentTips).toEqual([]);
+    expect(document._documentChangeCount).toBe(0);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    const dependency = bufferedNode('dependency');
+    await document._syncDocumentChanges('DEPENDENCY', dependency);
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(3);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
+    );
+    expect(document._isWaiting('DEPENDENT')).toBe(false);
+    expect(document._recentTips).toEqual([
+      { cid: 'DEPENDENCY', kind: crdtDocumentChangeNode },
+      { cid: 'DEPENDENT', kind: crdtDocumentChangeNode },
+    ]);
+    expect(document._documentChangeCount).toBe(2);
+    expect(document._changesSinceSnapshot).toBe(2);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['DEPENDENCY']],
+      [['DEPENDENT']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENCY', dependency],
+    ]);
+
+    await document._syncDocumentChanges('DEPENDENT', dependent);
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
+  });
+
+  test('checks a waiting change once per delivery and once after another change integrates', async () => {
+    const { document, hasIntegrated } = bufferingDocument({
+      _mergeWriters: jest.fn(async () => undefined),
+    });
+    const waiting = 2047;
+    const tree = bufferedNode(
+      'root',
+      ['missing'],
+      Object.fromEntries(
+        Array.from({ length: waiting }, (_, index) => [
+          `WAITING-${index}`,
+          bufferedNode(`waiting-${index}`, ['missing'], undefined),
+        ]),
+      ),
+    );
+
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._referencedAncestors).toEqual(new Set());
+    expect(document._waiting.entries.size).toBe(waiting + 1);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    hasIntegrated.mockClear();
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(
+      waiting + 1,
+    );
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
+
+    hasIntegrated.mockClear();
+    await document._syncDocumentChanges('WRITER', {
+      kind: crdtWriterChangeNode,
+      change: { id: 'writer', deps: [] },
+      children: KNOWN_CHILD,
+    });
+    expect(hasIntegrated).not.toHaveBeenCalled();
+
+    await document._syncDocumentChanges('OTHER', bufferedNode('other'));
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 2);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'WRITER', 'OTHER']));
+  });
+
+  test('evicts the oldest waiting change past the cap without rescanning', async () => {
+    const { document } = bufferingDocument();
+    const noted = 4 * MAX_WAITING_REMOTE_CHANGES + 3;
+    for (let index = 0; index < noted; index++) {
+      document._noteWaiting(`WAITING-${index}`, crdtDocumentChangeNode, {
+        id: `waiting-${index}`,
+        deps: ['missing'],
+      });
+      expect(
+        document._waiting.order.length - document._waiting.start,
+      ).toBeLessThanOrEqual(2 * MAX_WAITING_REMOTE_CHANGES);
+    }
+    const oldestKept = noted - MAX_WAITING_REMOTE_CHANGES;
+
+    expect(document._waiting.entries.size).toBe(MAX_WAITING_REMOTE_CHANGES);
+    expect(document._isDelivered('WAITING-0')).toBe(false);
+    expect(document._isDelivered(`WAITING-${oldestKept - 1}`)).toBe(false);
+    expect(document._isDelivered(`WAITING-${oldestKept}`)).toBe(true);
+    expect(document._isDelivered(`WAITING-${noted - 1}`)).toBe(true);
+
+    await document._syncDocumentChanges(
+      'WAITING-0',
+      bufferedNode('waiting-0', ['missing'], undefined),
+    );
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(1);
+    expect(document._isDelivered('WAITING-0')).toBe(true);
+    expect(document._isDelivered(`WAITING-${oldestKept}`)).toBe(false);
+  });
+
+  test('records a change whose dependency a fetched block in the same tree supplies', async () => {
+    const { document, hasIntegrated } = bufferingDocument({
+      _getBlock: jest.fn(async () => ({ id: 'dependency', deps: [] })),
+    });
+    const tree = bufferedNode('dependent', ['dependency'], {
+      DEPENDENCY: { kind: crdtDocumentChangeNode },
+    });
+
+    await document._syncDocumentChanges('DEPENDENT', tree);
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(3);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
+    );
+    expect(document._currentFrontier().sort()).toEqual(['DEPENDENT', 'KNOWN']);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['DEPENDENCY']],
+      [['DEPENDENT']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENT', tree],
+    ]);
+  });
+
+  test('serves the part of a delivered tree below a change that waits for a dependency', async () => {
+    const { document } = bufferingDocument();
+    const parent = bufferedNode('parent');
+    const tree = bufferedNode('dependent', ['dependency'], {
+      PARENT: parent,
+      ...KNOWN_CHILD,
+    });
+
+    await document._syncDocumentChanges('DEPENDENT', tree);
+
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'PARENT']));
+    expect(document._currentFrontier()).toEqual(['PARENT']);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['PARENT', parent],
+    ]);
+  });
+
+  test('holds back a node that references a waiting change until that change is recorded', async () => {
+    const { document } = bufferingDocument();
+    const waiting = bufferedNode('waiting', ['dependency'], undefined);
+    const tree = bufferedNode('root', [], { WAITING: waiting, ...KNOWN_CHILD });
+
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('ROOT')).toBe(true);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    const dependency = bufferedNode('dependency');
+    await document._syncDocumentChanges('DEPENDENCY', dependency);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING']),
+    );
+
+    await document._syncDocumentChanges('ROOT', tree);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING', 'ROOT']),
+    );
+    expect(document._waiting.entries.size).toBe(0);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENCY', dependency],
+      ['ROOT', tree],
+    ]);
+  });
+
+  test('walks a later tree through an ACL node above a waiting change', async () => {
+    const mergeWriters = jest.fn(async () => undefined);
+    const { document } = bufferingDocument({ _mergeWriters: mergeWriters });
+    const waiting = bufferedNode('waiting', ['dependency']);
+    const membership = {
+      kind: crdtWriterChangeNode,
+      change: { id: 'membership', deps: [] },
+      children: { WAITING: waiting },
+    };
+
+    await document._syncDocumentChanges('MEMBERSHIP', membership);
+
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('MEMBERSHIP')).toBe(true);
+    expect(document._isDelivered('WAITING')).toBe(true);
+
+    const later = bufferedNode('later', ['waiting'], {
+      MEMBERSHIP: membership,
+    });
+    const restarted = bufferingDocument({ _mergeWriters: mergeWriters });
+    await restarted.document._syncDocumentChanges('LATER', later);
+    expect(
+      restarted.document._crdtProvider.remoteChange.mock.calls.map(
+        ([, change]: [unknown, BufferedChange]) => change.id,
+      ),
+    ).toEqual(['later', 'waiting']);
+
+    await document._syncDocumentChanges(
+      'DEPENDENCY',
+      bufferedNode('dependency'),
+    );
+    await document._syncDocumentChanges('LATER', later);
+
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING', 'MEMBERSHIP', 'LATER']),
+    );
+    expect(mergeWriters).toHaveBeenCalledTimes(3);
+    expect(document._waiting.entries.size).toBe(0);
+  });
+
+  test('counts a delivered change that waits for a dependency as installed', async () => {
+    const { document } = bufferingDocument();
+    const tree = bufferedNode('dependent', ['dependency']);
+
+    await expect(
+      syncInvitationMessageCompletely(
+        {
+          documentId: '/buffered-document-change',
+          signatureContext: 'invitation-bootstrap-v1',
+          changeId: 'DEPENDENT',
+          changes: tree,
+        } as any,
+        { has: (cid) => document._isDelivered(cid) },
+        async () => {
+          await document._syncDocumentChanges('DEPENDENT', tree);
+          return true;
+        },
+        'bootstrap',
+      ),
+    ).resolves.toBe(true);
+    expect(document._hashes.has('DEPENDENT')).toBe(false);
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),
@@ -1611,6 +1939,7 @@ describe('document load response boundaries', () => {
         users: jest.fn(async () => []),
         check: async () => false,
       };
+      servedWriterACL(document, { WRITER: ['bootstrap-writer'] });
       const applied: Array<{ snapshot: unknown; afterChanges: unknown }> = [];
       document._syncUnlocked = jest.fn(
         async (
@@ -1662,8 +1991,8 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('rejects a re-signed snapshot outside the agreed manifest before state application', async () => {
-    const message = {
+  describe('quorum-bound snapshot substitution', () => {
+    const agreed = () => ({
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
@@ -1675,6 +2004,12 @@ describe('document load response boundaries', () => {
           BOUNDARY: {
             kind: crdtDocumentChangeNode,
             change: { inline: 'boundary' },
+            children: {
+              WRITER: {
+                kind: crdtWriterChangeNode,
+                change: { inline: 'writer' },
+              },
+            },
           },
         },
       },
@@ -1685,35 +2020,234 @@ describe('document load response boundaries', () => {
         signature: new Uint8Array([4]),
         timestamp: 1,
       },
+      keychainChanges: { keys: ['agreed'] },
+    });
+    const capturedWriterSignature = 4;
+    const untrustedSignature = 5;
+    const aclOnlyWriterSignature = 7;
+    const signerOf: Record<number, string> = {
+      [capturedWriterSignature]: 'bootstrap-writer',
+      [aclOnlyWriterSignature]: 'acl-only-writer',
     };
-    const { document, stream } = signedLoadHarness(
-      async () => [],
-      async () => true,
-      message,
-    );
-    document._writers = {
-      users: jest.fn(async () => []),
-      check: async () => false,
-    };
-    document._syncUnlocked = jest.fn(async () => true);
-    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
-    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
-      currentLoadResponse({
-        ...message,
-        snapshot: { ...message.snapshot, signature: new Uint8Array([5]) },
-      }),
-    );
 
-    await expect(
-      document._sendLoadRequestAndSync(
-        await loadSessionFixture(document, undefined),
+    async function serveSubstitute(
+      substitute: (message: ReturnType<typeof agreed>) => unknown,
+      options: {
+        authenticationAttempts?: number;
+        servedWriters?: readonly string[];
+      } = {},
+    ) {
+      const message = agreed();
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async (_payload, key, signature) => {
+          const bytes = signature as Uint8Array;
+          return bytes.length === 3 || signerOf[bytes[0]] === key;
+        },
+        message,
+      );
+      document._writers = {
+        users: jest.fn(async () => []),
+        check: async () => false,
+      };
+      const served = servedWriterACL(document, {
+        WRITER: options.servedWriters ?? [
+          'bootstrap-writer',
+          'acl-only-writer',
+        ],
+      });
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _context: string,
+          onStateApplicationStart?: () => void,
+        ) => {
+          onStateApplicationStart?.();
+          for (const cid of ['HEAD', 'BOUNDARY', 'WRITER']) {
+            document._hashes.add(cid);
+          }
+          document._latestSnapshot = appliedMessage.snapshot;
+          document._latestSnapshotSource = appliedMessage.snapshot;
+          return true;
+        },
+      );
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+      document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+        currentLoadResponse(substitute(message)),
+      );
+      const session = await loadSessionFixture(document, undefined);
+      expect(session.authorities.map(({ publicKey }) => publicKey)).toEqual([
+        'bootstrap-writer',
+      ]);
+      const reserve = jest.fn(
+        session.authenticationBudget.reserve.bind(session.authenticationBudget),
+      );
+      if (options.authenticationAttempts !== undefined) {
+        let remaining = options.authenticationAttempts;
+        reserve.mockImplementation(() => remaining-- > 0);
+      }
+      session.authenticationBudget.reserve = reserve;
+      const load = document._sendLoadRequestAndSync(
+        session,
         stream,
         new Uint8Array([1]),
         expectedTipsHash,
-      ),
-    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
-    expect(document._syncUnlocked).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      );
+      return { document, load, reserve, ...served };
+    }
+
+    const resigned =
+      (signature: number, extra: Record<string, unknown> = {}) =>
+      (message: ReturnType<typeof agreed>) => ({
+        ...message,
+        snapshot: {
+          ...message.snapshot,
+          signature: new Uint8Array([signature]),
+          ...extra,
+        },
+      });
+
+    test.each([
+      [
+        'a re-signature no writer made',
+        resigned(untrustedSignature),
+        '(untrusted-snapshot-signature)',
+      ],
+      [
+        'different state bytes under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, state: { compacted: 'forged' } },
+        }),
+        undefined,
+      ],
+      [
+        'a different boundary under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, lastChangeNodeCID: 'HEAD' },
+        }),
+        undefined,
+      ],
+    ])(
+      'rejects %s before state application',
+      async (_label, substitute, advertisedHex) => {
+        const { document, load } = await serveSubstitute(substitute);
+
+        await expect(load).rejects.toMatchObject({
+          name: '_QuorumBindCheckFailedError',
+          ...(advertisedHex === undefined ? {} : { advertisedHex }),
+        });
+        expect(document._syncUnlocked).not.toHaveBeenCalled();
+        expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      },
+    );
+
+    test('accepts a trusted writer that signed its own snapshot of the agreed state', async () => {
+      const { document, load } = await serveSubstitute(
+        resigned(capturedWriterSignature, {
+          timestamp: 2,
+          compactedCount: 119,
+        }),
+      );
+
+      await expect(load).resolves.toBe(true);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(document._latestSnapshot).toMatchObject({
+        signature: new Uint8Array([capturedWriterSignature]),
+        timestamp: 2,
+      });
+    });
+
+    test('accepts a snapshot signed by a writer the served ACL establishes outside the captured set', async () => {
+      const { document, load, scratchACLs, staged } = await serveSubstitute(
+        resigned(aclOnlyWriterSignature),
+      );
+
+      await expect(load).resolves.toBe(true);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(document._decodeBlock).toHaveBeenCalledWith(
+        expect.objectContaining({ toString: expect.any(Function) }),
+        expect.any(Uint8Array),
+        undefined,
+        expect.any(Function),
+      );
+      expect(scratchACLs).toHaveLength(1);
+      expect(document._keychain.prepareMerge).toHaveBeenCalledWith({
+        keys: ['agreed'],
+      });
+      expect(staged.commit).not.toHaveBeenCalled();
+      expect(staged.claimCommit).not.toHaveBeenCalled();
+      expect(scratchACLs[0]).not.toBe(document._writers);
+    });
+
+    test('rejects a captured writer that the served ACL does not establish, as the apply-time check would', async () => {
+      const { document, load } = await serveSubstitute(
+        resigned(capturedWriterSignature),
+        { servedWriters: ['acl-only-writer'] },
+      );
+
+      await expect(load).rejects.toMatchObject({
+        name: '_QuorumBindCheckFailedError',
+        advertisedHex: '(untrusted-snapshot-signature)',
+      });
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
+    });
+
+    test('charges the snapshot to the shared session budget once, however many writers it tries', async () => {
+      const servedWriters = [
+        ...Array.from({ length: 40 }, (_, index) => `writer-${index}`),
+        'acl-only-writer',
+      ];
+      const accepted = await serveSubstitute(resigned(aclOnlyWriterSignature), {
+        authenticationAttempts: 2,
+        servedWriters,
+      });
+      await expect(accepted.load).resolves.toBe(true);
+      expect(accepted.reserve).toHaveBeenCalledTimes(2);
+
+      const exhausted = await serveSubstitute(
+        resigned(aclOnlyWriterSignature),
+        { authenticationAttempts: 1, servedWriters },
+      );
+      await expect(exhausted.load).rejects.toMatchObject({
+        name: '_QuorumBindCheckFailedError',
+        advertisedHex: '(untrusted-snapshot-signature)',
+      });
+      expect(exhausted.document._syncUnlocked).not.toHaveBeenCalled();
+    });
+  });
+
+  test('clamps an adopted compacted count so local snapshot creation keeps working', async () => {
+    const signatures: Uint8Array[] = [];
+    const document = fakeDocument({
+      documentPath: '/load-race',
+      swarm: { config: { enableSigning: true } },
+      _encoder: new TextEncoder(),
+      _documentChangeCount: 0xffffffff + 3,
+      _bootstrapLoadApplicationState: 'complete',
+      _hashes: new Set<string>(),
+      _referencedAncestors: new Set<string>(),
+      _recentTips: [],
+      _ensureCurrentUserCanWrite: async () => undefined,
+      _crdtProvider: { getSnapshot: () => ({ state: 'current' }) },
+      _changesSerializer: { serializeChanges: fixtureSerializeChanges },
+      _authProvider: {
+        sign: async (payload: Uint8Array) => {
+          signatures.push(payload);
+          return new Uint8Array([1]);
+        },
+      },
+      _compactionConfig: { pruneAfterSnapshot: false },
+    });
+
+    const snapshot = await document._snapshotUnlocked();
+
+    expect(snapshot.compactedCount).toBe(0xffffffff);
+    expect(signatures).toHaveLength(1);
+    expect(document._latestSnapshot).toBe(snapshot);
   });
 
   test('rejects a snapshot-only quorum-bound first load before state application', async () => {

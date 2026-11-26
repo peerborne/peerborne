@@ -11,6 +11,7 @@ import { isLibp2p } from 'libp2p';
 import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import type { PeerborneConfig } from './peerborne-config.js';
+import { reuseLimitedConnections } from './limited-connection-reuse.js';
 import { acquirePeerIdentity } from './peer-identity.js';
 import type { PeerIdentityLease } from './peer-identity.js';
 import { closeHeliaStores, openHeliaStores } from './store-lifecycle.js';
@@ -86,6 +87,7 @@ export async function createAndStartHeliaNode(
       });
     }
     await heliaNode.start();
+    reuseLimitedConnections(heliaNode.libp2p);
     if (!heliaNode.libp2p.services.pubsub) {
       throw new Error(
         'Helia node must be initialized with a pubsub service (e.g., gossipsub)',

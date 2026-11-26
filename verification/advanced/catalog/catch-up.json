@@ -1,0 +1,33 @@
+{
+  "category": "network",
+  "scenarios": [
+    {
+      "id": "pruned-gap-catch-up",
+      "name": "Automatic catch-up after missing changes beyond the prune window",
+      "runtime": "node",
+      "module": "./node/catch-up.mjs",
+      "entry": "prunedGapCatchUp"
+    },
+    {
+      "id": "offline-writer-catch-up",
+      "name": "Automatic catch-up of a writer's 400 offline edits after reconnect",
+      "runtime": "node",
+      "module": "./node/catch-up.mjs",
+      "entry": "offlineWriterCatchUp"
+    },
+    {
+      "id": "dropped-frame-catch-up",
+      "name": "Periodic catch-up of a dropped final burst frame",
+      "runtime": "node",
+      "module": "./node/catch-up.mjs",
+      "entry": "droppedFinalFrameCatchUp"
+    },
+    {
+      "id": "large-catch-up-load",
+      "name": "Catch-up too large for gossip loads from the advertising writer",
+      "runtime": "node",
+      "module": "./node/catch-up.mjs",
+      "entry": "largeCatchUpLoad"
+    }
+  ]
+}
