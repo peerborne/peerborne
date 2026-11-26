@@ -416,6 +416,19 @@
       ]
     },
     {
+      "id": "coordinated-topic-catch-up",
+      "formalBoundary": "Topic requests carry receipts in the same canonical receipt codec, and their checkpoints are merged through the same proved receipt admission and runtime suffix verification as relayed checkpoints. Request and checkpoint framing, the separate encryption domains, the GossipSub sender binding, issue-time freshness and replay, controller-only answers, the per-member interval, the process checkpoint budget, outstanding challenges, triggers and backoff are runtime state over network timing, so generated encodings and native scenarios exercise them. Real GossipSub delivery, clock skew between members, peer scoring and traffic analysis remain outside these checks.",
+      "evidence": [
+        "packages/core/src/coordinated-document-topic-catch-up.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/document-catch-up-wire.ts",
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/peerborne-document.ts",
+        "packages/core/src/__testutils__/coordinated-scenarios.ts"
+      ]
+    },
+    {
       "id": "coordinated-held-frames",
       "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, per-author shares, eviction, expiry, equivocation check, dependency-targeted retry, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection and naming is adapter behavior, so generated arrival orders and focused bound, retry-cost and session tests exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
       "evidence": [
