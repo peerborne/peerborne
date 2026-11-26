@@ -238,7 +238,7 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     deliver(block);
     await receiving;
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
-    const options = document._syncUnlocked.mock.calls[0][6];
+    const options = document._syncUnlocked.mock.calls[0][5];
     expect([...options.prefetchedBlocks]).toEqual([['MISSING', block]]);
     expect(options.remoteFetches.signal.aborted).toBe(true);
   });
@@ -254,7 +254,7 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     await document._syncGossipMessage(message, () => true, 123);
     expect(document._verifyOrdinarySyncSignature).not.toHaveBeenCalled();
     expect(document._readBlock).not.toHaveBeenCalled();
-    const options = document._syncUnlocked.mock.calls[0][6];
+    const options = document._syncUnlocked.mock.calls[0][5];
     expect(options.prefetchedBlocks).toBe(undefined);
     expect(options.frameBytes).toBe(123);
   });

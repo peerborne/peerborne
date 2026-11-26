@@ -345,7 +345,6 @@ test('closing and reopening skips old queued receive work and applies fresh fram
       'ordinary-sync-v1',
       undefined,
       false,
-      undefined,
       {
         assertStillActive: expect.any(Function),
         frameBytes: expect.any(Number),
@@ -421,7 +420,7 @@ test('only a frame without a snapshot reports its size for size-bound compaction
     fixture.deliver(frame(9));
     for (let index = 0; index < 5; index++) await turn();
     const sizes = fixture.sync.mock.calls.map(
-      (call) => (call[6] as { frameBytes?: number }).frameBytes,
+      (call) => (call[5] as { frameBytes?: number }).frameBytes,
     );
     expect(sizes).toEqual([1, undefined]);
   } finally {

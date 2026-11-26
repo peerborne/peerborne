@@ -523,6 +523,23 @@ export class BeeKEM {
   }
 
   /**
+   * Rotate the internal keys on our direct path but keep our leaf key, which
+   * peers that bind leaves to identities use to find our leaf. This is the
+   * only remote update a fixed-leaf receiver applies.
+   */
+  async updatePath(): Promise<{
+    pathUpdate: PathUpdateV2;
+    rootSecret: Uint8Array;
+  }> {
+    return this._runTransition(async (staged) => {
+      staged._assertInitializedForMutation('update the path');
+      return staged._updatePath(
+        await staged._computeTreeHashV2(staged._nodes, staged._numLeaves),
+      );
+    });
+  }
+
+  /**
    * Perform a self-update that rotates key material along our path.
    * This operation alone does not establish post-compromise security, secret
    * erasure, or recovery after a compromise.
@@ -571,6 +588,9 @@ export class BeeKEM {
    * callback, the ratchet state is restored to its exact prior snapshot.
    * The callback receives `duplicate` for an exact v2 replay so callers can
    * validate its epoch binding without appending the same durable key again.
+   * With `fixedLeaves`, the update may only re-key internal nodes on the
+   * sender's path: the leaf count and every leaf public key must stay the
+   * same.
    *
    * @internal Used by the document wire handler to couple tree advancement
    * with installation of the document key derived from the new root.
@@ -581,11 +601,16 @@ export class BeeKEM {
       rootSecret: Uint8Array,
       disposition: 'applied' | 'duplicate',
     ) => Promise<T>,
+    options: { readonly fixedLeaves?: boolean } = {},
   ): Promise<T> {
+    const fixedLeaves = options.fixedLeaves === true;
     let stableUpdate: PathUpdateV2;
     return this._runTransition(
       async (staged) => {
-        const result = await staged._processPathUpdateV2(stableUpdate);
+        const result = await staged._processPathUpdateV2(
+          stableUpdate,
+          fixedLeaves,
+        );
         return commit(result.rootSecret, result.disposition);
       },
       () => {
@@ -594,7 +619,10 @@ export class BeeKEM {
     );
   }
 
-  private async _processPathUpdateV2(update: PathUpdateV2): Promise<{
+  private async _processPathUpdateV2(
+    update: PathUpdateV2,
+    fixedLeaves = false,
+  ): Promise<{
     rootSecret: Uint8Array;
     disposition: 'applied' | 'duplicate';
   }> {
@@ -657,6 +685,9 @@ export class BeeKEM {
         `BeeKEM v2 update leaf count must remain ${this._numLeaves} or append exactly one leaf`,
       );
     }
+    if (fixedLeaves && update.numLeaves !== this._numLeaves) {
+      throw new Error('BeeKEM v2 member update cannot add a leaf');
+    }
     const currentTreeHash = await this._computeTreeHashV2(
       this._nodes,
       this._numLeaves,
@@ -664,7 +695,7 @@ export class BeeKEM {
     if (!bytesEqual(currentTreeHash, update.parentTreeHash)) {
       throw new Error('BeeKEM v2 update parent tree hash mismatch');
     }
-    await this._validatePathUpdateLeafTransition(update);
+    await this._validatePathUpdateLeafTransition(update, fixedLeaves);
     await this._validatePathUpdateInternalTransition(update);
 
     const { nextNodes } =
@@ -2023,6 +2054,7 @@ export class BeeKEM {
   /** Enforce the append-only leaf transition emitted by local producers. */
   private async _validatePathUpdateLeafTransition(
     update: PathUpdateV2,
+    fixedLeaves: boolean,
   ): Promise<void> {
     if (update.senderLeafIndex >= 2 * this._numLeaves) {
       throw new Error('BeeKEM v2 update sender must be a current live leaf');
@@ -2052,6 +2084,7 @@ export class BeeKEM {
       nextLiveLeafKeys.add(fingerprint);
     }
     let removedLeaves = 0;
+    let senderLeafReplaced = false;
     for (let leafPosition = 0; leafPosition < this._numLeaves; leafPosition++) {
       const nodeIndex = TreeMath.leafToNodeIndex(leafPosition);
       const currentPublicKey = this._nodes.get(nodeIndex)?.publicKey ?? null;
@@ -2064,6 +2097,9 @@ export class BeeKEM {
         if (nextPublicKey === null) {
           throw new Error('BeeKEM v2 update sender must remain live');
         }
+        senderLeafReplaced =
+          fixedLeaves &&
+          !(await this._publicKeyEqualsBytes(currentPublicKey, nextPublicKey));
         continue;
       }
       if (nextPublicKey === null) {
@@ -2079,6 +2115,12 @@ export class BeeKEM {
       }
     }
 
+    if (fixedLeaves && removedLeaves !== 0) {
+      throw new Error('BeeKEM v2 member update cannot remove a leaf');
+    }
+    if (fixedLeaves && senderLeafReplaced) {
+      throw new Error('BeeKEM v2 member update cannot replace its leaf key');
+    }
     if (update.numLeaves === this._numLeaves + 1) {
       const appendedLeafIndex = TreeMath.leafToNodeIndex(this._numLeaves);
       if (nextPublicKeys.get(appendedLeafIndex) === null) {
