@@ -209,7 +209,6 @@ describe('deserialized load message boundaries', () => {
       'load-response-v4',
       undefined,
       false,
-      undefined,
       expect.anything(),
     );
   });

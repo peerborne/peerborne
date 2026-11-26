@@ -74,6 +74,8 @@ export function actorBindingScenarios(adapter) {
       },
       registerDocument() {},
       unregisterDocument() {},
+      hasLocalDocument: () => false,
+      recordFoundedDocument() {},
     };
     const document = new PeerborneDocument(
       swarm,

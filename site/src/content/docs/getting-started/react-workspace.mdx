@@ -22,7 +22,9 @@ second identity required.
 The shipped hook uses explicit `create` initialization for this new document,
 subscribes to updates, and provides a
 mutation callback. With the Automerge adapter, that callback edits a typed
-JavaScript object.
+JavaScript object. Remounting the component never founds another document:
+the hook keeps a document it created open while its changes have not reached a
+member, and otherwise opens the path again.
 
 <Code code={workspace} lang="tsx" title="Workspace.tsx" />
 

@@ -17,6 +17,7 @@ import {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -202,6 +203,7 @@ export {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -306,7 +308,10 @@ export {
 export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { ConnectOptions, ConnectionProgress, ConnectionErrorType } from './connection.js';
 export type { CreateInvitationOptions } from './peerborne.js';
-export type { InvitationBootstrapBundle } from './peerborne-document.js';
+export type {
+  InvitationBootstrapBundle,
+  SecurityPublicationReport,
+} from './peerborne-document.js';
 export type {
   PeerLoadQuorumVote,
   LoadQuorumDecision,
@@ -464,6 +469,7 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+export { NoDeliveryPeersError } from './delivery-evidence.js';
 export {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,

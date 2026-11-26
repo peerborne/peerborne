@@ -1,7 +1,9 @@
-import type {
-  DocumentReplayJournal,
-  DocumentReplayReceipt,
-  PreparedDocumentJournal,
+import {
+  DocumentJournalCapacityError,
+  type DocumentJournalCarriedFrame,
+  type DocumentReplayJournal,
+  type DocumentReplayReceipt,
+  type PreparedDocumentJournal,
 } from './document-replay-journal.js';
 import type { AuthProvider } from './auth-provider.js';
 import type { ChangesSerializer } from './changes-serializer.js';
@@ -19,6 +21,7 @@ import type {
 } from './group-security-coordinator.js';
 import {
   GroupDocumentOperationBudget,
+  GroupDocumentOperationError,
   type PreparedGroupDocumentOperation,
 } from './group-document-operation.js';
 import {
@@ -77,11 +80,15 @@ import {
   decodeSignedDocumentContent,
   documentContentAAD,
   documentContextsMatch,
+  documentFrameEpochTag,
+  documentFrameNonce,
   encodeDocumentContent,
   encodeEncryptedDocumentContent,
   encodeSignedDocumentContent,
   MAX_DOCUMENT_CONTENT_BYTES,
+  MAX_DOCUMENT_PUBLICATION_FRAMES,
   MAX_DOCUMENT_SECURITY_FRAME_BYTES,
+  splitDocumentPublication,
 } from './document-security-wire.js';
 
 export interface DocumentMemberAuthority {
@@ -132,13 +139,15 @@ export interface CoordinatedAuthorityUpdateResult {
 
 /** One of this author's frames, kept so a retired context's edits can be re-signed. */
 interface OwnFrame {
+  readonly context: GroupSecurityDocumentContext;
   /** Local write order, kept by re-signed copies so native dependencies stay ordered. */
   readonly order: number;
   readonly sequence: number;
   readonly changes: Uint8Array;
   /** Bounded covering operation paths recorded when it was written. */
   readonly paths: DocumentWritePaths;
-  readonly frame?: Uint8Array;
+  /** Its encryption nonce, which finds it inside a coalesced publication. */
+  readonly nonce?: Uint8Array;
   /** Still in the outbox when queued: no peer can have received it. */
   readonly unsent?: boolean;
 }
@@ -157,8 +166,11 @@ export class DocumentDivergedError extends Error {
   }
 }
 
-const MAX_OWN_FRAMES = 64;
+// Unsent frames are never evicted; these bound the sent ones kept beside them.
+const MAX_OWN_FRAMES = 16 * MAX_DOCUMENT_PUBLICATION_FRAMES + 64;
 const MAX_OWN_BYTES = 32 * 1024 * 1024;
+/** Encoded recorded paths of unsent frames; past it a local edit fails as a backlog. */
+const MAX_CARRIED_PATH_BYTES = 4 * 1024 * 1024;
 const WHOLE_DOCUMENT: DocumentWritePaths = Object.freeze([Object.freeze([])]);
 /**
  * A whole-document record comes from an inspection that could not finish.
@@ -168,11 +180,25 @@ const WHOLE_DOCUMENT: DocumentWritePaths = Object.freeze([Object.freeze([])]);
 const uninspected = (paths: DocumentWritePaths) =>
   paths.some((path) => path.length === 0);
 
-/** Charged in-memory size, with fixed overhead for each path array and segment string. */
-const ownFrameBytes = (frame: OwnFrame) =>
-  frame.changes.length +
-  (frame.frame?.length ?? 0) +
-  frame.paths.reduce(
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    bytes += unit < 0x80 ? 1 : unit < 0x800 ? 2 : unit >= 0xd800 && unit < 0xe000 ? 2 : 3;
+  }
+  return bytes;
+}
+
+/** Size of a recorded path list as the journal encodes it. */
+const encodedPathBytes = (paths: DocumentWritePaths) =>
+  paths.reduce(
+    (sum, path) =>
+      sum + 1 + path.reduce((bytes, segment) => bytes + 4 + utf8Bytes(segment), 0),
+    2,
+  );
+
+const pathBytes = (paths: DocumentWritePaths) =>
+  paths.reduce(
     (sum, path) =>
       sum +
       64 +
@@ -180,15 +206,45 @@ const ownFrameBytes = (frame: OwnFrame) =>
     0,
   );
 
-/** Whether an outbox still holds `frame`, so no peer can have received it. */
+/** Charged in-memory size, with fixed overhead for each path array and segment string. */
+const ownFrameBytes = (frame: OwnFrame) =>
+  frame.changes.length + 64 + pathBytes(frame.paths);
+
+/** The publications of an outbox and, by nonce, the publication holding each frame. */
+interface QueuedFrames {
+  readonly rows: Uint8Array[];
+  readonly parts: Uint8Array[][];
+  readonly rowOf: Map<string, number>;
+}
+
+function queueOf(rows: readonly Uint8Array[]): QueuedFrames {
+  const parts = rows.map((row) => splitDocumentPublication(row));
+  const rowOf = new Map<string, number>();
+  parts.forEach((frames, row) => {
+    for (const frame of frames)
+      rowOf.set(documentBytesId(documentFrameNonce(frame)), row);
+  });
+  return { rows: [...rows], parts, rowOf };
+}
+
+/** Whether an outbox still holds the frame sealed with `nonce`, so no peer can have received it. */
 function outboxHolds(
-  pending: readonly Uint8Array[],
-  frame: Uint8Array | undefined,
+  queued: QueuedFrames,
+  nonce: Uint8Array | undefined,
 ): boolean {
-  return (
-    frame !== undefined &&
-    pending.some((value) => documentBytesEqual(value, frame))
+  return nonce !== undefined && queued.rowOf.has(documentBytesId(nonce));
+}
+
+function joinFrames(frames: readonly Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(
+    frames.reduce((sum, frame) => sum + frame.length, 0),
   );
+  let offset = 0;
+  for (const frame of frames) {
+    result.set(frame, offset);
+    offset += frame.length;
+  }
+  return result;
 }
 
 /** The current roles or grants definitely deny a re-signed frame. */
@@ -199,10 +255,19 @@ export interface CoordinatedDocumentOptions {
   readonly authority: DocumentAuthority;
   readonly journal?: DocumentReplayJournal;
   readonly persistPublications?: boolean;
+  /** Append each local frame to the queued tail publication while it fits. */
+  readonly joinPublications?: boolean;
   /** Require the signed roles to enumerate the provider's exact decrypting roster. */
   readonly requireGroupRosterMatch?: boolean;
   /** Allow explicit app-relayed catch-up from the current unrestricted controller. */
   readonly enableAuthenticatedCatchUp?: boolean;
+  /**
+   * Called with the number of unsent frames dropped because they were sealed
+   * for an earlier group context or authority head and their author cannot
+   * re-sign them, or its current roles deny the re-signed frames. Without it,
+   * a warning is logged.
+   */
+  readonly onPublicationsDropped?: (frames: number) => void;
 }
 
 interface DocumentGroupRosterBinding {
@@ -248,7 +313,128 @@ function receiptEntries(
 }
 
 const aggregate = new GroupDocumentOperationBudget(64, 64 * 1024 * 1024);
+/** Received frames and ciphertext bytes waiting for their turn; each frame is charged. */
+class ReceivedFrameBudget {
+  private frames = 0;
+  private bytes = 0;
+
+  constructor(
+    readonly maxFrames: number,
+    readonly maxBytes: number,
+  ) {}
+
+  get usage(): Readonly<{ frames: number; bytes: number }> {
+    return { frames: this.frames, bytes: this.bytes };
+  }
+
+  reserve(bytes: number): () => void {
+    if (this.frames >= this.maxFrames || bytes > this.maxBytes - this.bytes)
+      throw new GroupDocumentOperationError('capacity-exceeded');
+    this.frames++;
+    this.bytes += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.frames--;
+      this.bytes -= bytes;
+    };
+  }
+}
+
+// Each received frame is charged twice its ciphertext: once for the frame
+// and once for the plaintext pre-authentication keeps for its turn.
+// One full outbox is 16 publications of up to 1,024 frames and 16 MiB. A
+// sender's share in one document holds that backlog plus live edits sent
+// while it drains, and two senders' shares leave room for every other one.
+const SENDER_FRAMES = 16 * 1024 + 4096,
+  SENDER_BYTES = 40 * 1024 * 1024;
+const DOCUMENT_FRAMES = 48 * 1024,
+  DOCUMENT_BYTES = 96 * 1024 * 1024;
+const aggregateInbound = new ReceivedFrameBudget(128 * 1024, 192 * 1024 * 1024);
 const ZERO_HASH = new Uint8Array(32);
+const MAX_PUBLICATIONS = 16,
+  MAX_PUBLICATION_BYTES = 16 * 1024 * 1024,
+  STORED_PUBLICATION_OVERHEAD = 72;
+
+/** Unsent changes fill the publication outbox; nothing was committed. */
+export class DocumentPublicationBacklogError extends DocumentJournalCapacityError {
+  constructor() {
+    super();
+    this.name = 'DocumentPublicationBacklogError';
+    this.message =
+      'Document outbox capacity is full of unsent encrypted changes (16 publications, 16 MiB); deliver them to a document peer before changing the document again';
+  }
+}
+
+interface OutboxTail {
+  readonly bytes: Uint8Array;
+  readonly frames: number;
+  // Every frame of one publication is sealed under this content binding.
+  readonly aad: Uint8Array;
+  // Queued publications, this one included.
+  readonly rows: number;
+}
+
+/** A frame that decrypted under the current epoch during pre-authentication. */
+interface AdmittedFrame {
+  readonly frame: Uint8Array;
+  readonly plaintext: Uint8Array;
+  readonly context: GroupSecurityDocumentContext;
+  readonly aad: Uint8Array;
+  readonly author: string;
+  readonly sequence: number;
+  readonly hash: Uint8Array;
+  /**
+   * Release the frame's charge. A frame that was not applied or held, whose
+   * copies admission dropped while it waited, is returned for another turn.
+   */
+  release(processed: boolean): boolean;
+}
+
+interface WaitingFrame {
+  // A copy was dropped because this frame was already waiting.
+  copied: boolean;
+}
+
+// Sixteen full publications, counting each row's storage overhead, fit the
+// journal's 16 MiB.
+const MAX_JOINED_PUBLICATION_BYTES = MAX_DOCUMENT_SECURITY_FRAME_BYTES - 2048;
+
+function reserveSender(
+  senders: Map<string, ReceivedFrameBudget>,
+  sender: string,
+  bytes: number,
+  frames: number,
+  maxBytes: number,
+): () => void {
+  const budget =
+    senders.get(sender) ?? new ReceivedFrameBudget(frames, maxBytes);
+  senders.set(sender, budget);
+  const forget = () => {
+    if (budget.usage.frames === 0 && senders.get(sender) === budget)
+      senders.delete(sender);
+  };
+  let release: () => void;
+  try {
+    release = budget.reserve(bytes);
+  } catch (error) {
+    forget();
+    throw error;
+  }
+  return () => {
+    release();
+    forget();
+  };
+}
+
+function concatFrames(head: Uint8Array, frame: Uint8Array): Uint8Array {
+  const result = new Uint8Array(head.length + frame.length);
+  result.set(head);
+  result.set(frame, head.length);
+  return result;
+}
+
 const MAX_HELD_FRAMES = 64;
 const MAX_HELD_FRAMES_PER_AUTHOR = 32;
 const MAX_HELD_BYTES = 8 * 1024 * 1024;
@@ -451,7 +637,27 @@ export class CoordinatedDocument<
     16,
     16 * 1024 * 1024,
   );
+  private readonly inbound = new ReceivedFrameBudget(
+    DOCUMENT_FRAMES,
+    DOCUMENT_BYTES,
+  );
+  private readonly senders = new Map<string, ReceivedFrameBudget>();
+  // Admitted frames waiting for their turn, by author, sequence and hash.
+  private readonly admittedFrames = new Map<string, WaitingFrame>();
+  // Changes whenever held frames are added, removed or replaced.
+  private heldVersion = 0;
+  // The last queued publication; null when the outbox is known to be empty.
+  private outboxTail: OutboxTail | null | undefined;
+  private deriving?: {
+    readonly context: GroupSecurityDocumentContext;
+    readonly value: Promise<GroupDocumentEncryptionMaterial>;
+  };
   private tail: Promise<void> = Promise.resolve();
+  private readonly localLane: Array<() => Promise<unknown>> = [];
+  // Received publications whose author is not decoded yet, and frames of the
+  // replica's own author that are waiting or queued for another turn.
+  private undecidedPublications = 0;
+  private ownFramesPending = 0;
   private receipts = new Map<string, Receipt>();
   private receiptsContext?: GroupSecurityDocumentContext;
   private recovered = false;
@@ -472,6 +678,9 @@ export class CoordinatedDocument<
   };
   private diverged = false;
   private resendQueue: OwnFrame[] = [];
+  // Encoded paths of own frames still in the outbox, by frame nonce.
+  private readonly unsent = new Map<string, number>();
+  private unsentPathBytes = 0;
   private ownOrder = 0;
   private retained?: {
     readonly context: GroupSecurityDocumentContext;
@@ -510,8 +719,10 @@ export class CoordinatedDocument<
       coordinator,
       journal,
       persistPublications,
+      joinPublications,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      onPublicationsDropped,
     } = options;
     if (
       !documentId ||
@@ -539,6 +750,11 @@ export class CoordinatedDocument<
     )
       throw new TypeError('Document catch-up flag must be boolean');
     if (
+      onPublicationsDropped !== undefined &&
+      typeof onPublicationsDropped !== 'function'
+    )
+      throw new TypeError('Dropped publication handler must be a function');
+    if (
       enableAuthenticatedCatchUp &&
       (!requireGroupRosterMatch ||
         !journal ||
@@ -553,8 +769,11 @@ export class CoordinatedDocument<
       authority,
       journal,
       persistPublications,
+      joinPublications:
+        persistPublications === true && joinPublications === true,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      onPublicationsDropped,
     };
     this.genesisId = copyUnsharedUint8Array(
       authority.genesisId,
@@ -658,35 +877,78 @@ export class CoordinatedDocument<
     return { context, authorityHead: lease.headId, isCurrent: lease.isCurrent };
   }
 
+  /**
+   * Queue document work. A `local` edit also joins the local lane: received
+   * work holding the queue runs it at each turn and frame boundary, so a
+   * received backlog never delays the replica's own edits.
+   */
   private enqueue<T>(
     bytes: number,
     capture: () => () => Promise<T>,
     draining = false,
+    local = false,
   ): Promise<T> {
-    let local: (() => void) | undefined, shared: (() => void) | undefined;
+    let owned: (() => void) | undefined, shared: (() => void) | undefined;
     try {
       this.assertUsable(draining);
       shared = aggregate.reserve(bytes);
-      local = this.budget.reserve(bytes);
+      owned = this.budget.reserve(bytes);
       const work = capture();
-      const result = this.tail.then(() => {
-        this.assertUsable(draining);
-        return work();
+      let started: Promise<T> | undefined,
+        start!: (value: Promise<T>) => void;
+      // Settles with the work, whether received work or the queue ran it.
+      const finished = new Promise<T>((resolve) => {
+        start = resolve;
       });
-      const settled = result.finally(() => {
-        local!();
+      const run = (): Promise<T> => {
+        if (!started) {
+          const index = this.localLane.indexOf(run);
+          if (index !== -1) this.localLane.splice(index, 1);
+          started = (async () => {
+            this.assertUsable(draining);
+            return work();
+          })();
+          start(started);
+        }
+        return started;
+      };
+      if (local) this.localLane.push(run);
+      const turn = this.tail.then(run);
+      const settled = finished.finally(() => {
+        owned!();
         shared!();
       });
-      this.tail = settled.then(
+      this.tail = turn.then(
         () => {},
         () => {},
       );
       return settled;
     } catch (error) {
-      local?.();
+      owned?.();
       shared?.();
       return Promise.reject(error);
     }
+  }
+
+  /**
+   * Run the local edits waiting while received work holds the queue, unless
+   * a frame of the replica's own author, from another device, is waiting,
+   * queued for another turn or held: an edit run first would sign the same
+   * sequence.
+   */
+  private async serveLocal(): Promise<void> {
+    while (this.localLane.length !== 0 && !this.ownFramesWaiting())
+      await this.localLane[0]().then(
+        () => {},
+        () => {},
+      );
+  }
+
+  private ownFramesWaiting(): boolean {
+    if (this.undecidedPublications > 0 || this.ownFramesPending > 0)
+      return true;
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    return this.held?.frames.some((entry) => entry.author === local) ?? false;
   }
 
   async activate(): Promise<void> {
@@ -728,19 +990,40 @@ export class CoordinatedDocument<
   change(change: Change, message = ''): Promise<Uint8Array> {
     if (typeof message !== 'string' || message.length > 4096)
       return Promise.reject(new TypeError('Invalid change message'));
-    return this.enqueue(MAX_DOCUMENT_CONTENT_BYTES, () => async () => {
-      this.assertActivated();
-      // A new edit depends natively on every waiting re-sign, so those go first.
-      if (this.resendQueue.length > 0) {
-        await this.drainResend();
-        if (this.resendQueue.length > 0)
-          throw new Error('Document publication queue is full');
-      }
-      return this.apply(undefined, change, message);
-    });
+    return this.enqueue(
+      MAX_DOCUMENT_CONTENT_BYTES,
+      () => async () => {
+        this.assertActivated();
+        // A new edit depends natively on every waiting re-sign, so those go first.
+        if (this.resendQueue.length > 0) {
+          await this.drainResend();
+          if (this.resendQueue.length > 0)
+            throw new DocumentPublicationBacklogError();
+        }
+        return this.apply(undefined, change, message);
+      },
+      false,
+      true,
+    );
   }
 
-  receive(frame: Uint8Array): Promise<boolean> {
+  /**
+   * Apply a publication of consecutive frames from one author. Every frame is
+   * charged against the received bounds; a `sender` names the network peer,
+   * whose share holds one full outbox backlog plus live edits. Each frame
+   * must decrypt under the current epoch before the publication waits for its
+   * turn. Frames the author already delivered, and copies of frames already
+   * waiting or held, are dropped then, so unauthenticated input and replays
+   * cost no signature check.
+   */
+  receive(frame: Uint8Array, sender?: string): Promise<boolean> {
+    const reserved: Array<Array<() => void>> = [];
+    const release = (index?: number) => {
+      for (const releases of index === undefined
+        ? reserved
+        : [reserved[index] ?? []])
+        for (const value of releases.splice(0).reverse()) value();
+    };
     try {
       const length = unsharedUint8ArrayByteLength(
         frame,
@@ -748,26 +1031,445 @@ export class CoordinatedDocument<
         MAX_DOCUMENT_SECURITY_FRAME_BYTES,
         'document frame',
       );
-      return this.enqueue(length, () => {
-        const owned = copyUnsharedUint8Array(
-          frame,
-          length,
-          length,
-          'document frame',
-        );
-        return async () => {
-          this.assertActivated();
-          return this.receiveOwned(owned);
-        };
+      if (
+        sender !== undefined &&
+        (typeof sender !== 'string' || sender.length > 1024)
+      )
+        throw new TypeError('Invalid document frame sender');
+      this.assertUsable();
+      const frames = splitDocumentPublication(frame);
+      const charge = (index: number) => {
+        const releases = (reserved[index] ??= []);
+        const bytes = 2 * frames[index].length;
+        try {
+          releases.push(aggregateInbound.reserve(bytes));
+          releases.push(this.inbound.reserve(bytes));
+          if (sender !== undefined)
+            releases.push(
+              reserveSender(
+                this.senders,
+                sender,
+                bytes,
+                SENDER_FRAMES,
+                SENDER_BYTES,
+              ),
+            );
+        } catch (error) {
+          release(index);
+          throw error;
+        }
+      };
+      for (let index = 0; index < frames.length; index++) charge(index);
+      const admitted = this.admitFrames(
+        frames,
+        (index) => () => release(index),
+        (index) => {
+          try {
+            charge(index);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      );
+      admitted.then(undefined, () => release());
+      const result = this.tail.then(async () => {
+        // A turn that admits no frames, such as a copy's, still serves them.
+        await this.serveLocal();
+        const accepted = await admitted;
+        await this.serveLocal();
+        this.assertUsable();
+        this.assertActivated();
+        let applied = false,
+          failed = false,
+          failure: unknown,
+          stopped = accepted.length;
+        const retry: AdmittedFrame[] = [];
+        const delivered =
+          accepted.length === 0
+            ? undefined
+            : this.deliveryCheck(accepted[0].context);
+        const observe =
+          accepted.length === 0
+            ? undefined
+            : this.copyObserver(accepted[0].context);
+        for (const [index, value] of accepted.entries()) {
+          await this.serveLocal();
+          let processed = false;
+          try {
+            if (delivered!(value))
+              observe!(value.author, value.sequence, value.frame);
+            else if (await this.receiveOwned(value.frame, value)) applied = true;
+            processed = true;
+          } catch (error) {
+            failed = true;
+            failure = error;
+            stopped = index + 1;
+          } finally {
+            if (value.release(processed)) retry.push(value);
+          }
+          if (failed) break;
+        }
+        for (const value of accepted.slice(stopped))
+          if (value.release(false)) retry.push(value);
+        // A copy that admission dropped behind one of these frames gets the
+        // turn this one lost, after the publications that carried it.
+        if (retry.length !== 0) this.retryFrames(retry);
+        if (failed && !applied) throw failure;
+        return applied;
       });
+      const settled = result.finally(() => {
+        release();
+        void admitted.then(
+          (values) => {
+            for (const value of values) value.release(false);
+          },
+          () => {},
+        );
+      });
+      this.tail = settled.then(
+        () => {},
+        () => {},
+      );
+      return settled;
     } catch (error) {
+      release();
       return Promise.reject(error);
     }
   }
 
-  private async receiveOwned(frame: Uint8Array): Promise<boolean> {
+  /** Derive this document's key for `context` once, outside the document queue. */
+  private materialFor(
+    context: GroupSecurityDocumentContext,
+  ): Promise<GroupDocumentEncryptionMaterial> {
+    if (this.material && documentContextsMatch(this.material.context, context))
+      return Promise.resolve(this.material.value);
+    const pending = this.deriving;
+    if (pending && documentContextsMatch(pending.context, context))
+      return pending.value;
+    let material: GroupDocumentEncryptionMaterial | undefined;
+    const value = this.options.coordinator
+      .runDocumentOperation(
+        context,
+        new Uint8Array(),
+        async (captured, _input, _signal, work) => {
+          material = await this.key(captured, work);
+          return {
+            isAuthorizationCurrent: () => !this.closed && !this.failed,
+            commit: () => {},
+          };
+        },
+      )
+      .then(() => material!);
+    const forget = () => {
+      if (this.deriving?.value === value) this.deriving = undefined;
+    };
+    this.deriving = { context, value };
+    value.then(forget, forget);
+    return value;
+  }
+
+  /** Current epoch key and content binding that every accepted frame decrypts under. */
+  private async frameKey(): Promise<{
+    material: GroupDocumentEncryptionMaterial;
+    aad: Uint8Array;
+  }> {
+    const context = this.options.coordinator.documentContext;
+    const { headId } = this.authority(context);
+    const material = await this.materialFor(context);
+    return {
+      material,
+      aad: documentContentAAD(this.documentId, context, headId),
+    };
+  }
+
+  private async decryptsUnder(
+    frame: Uint8Array,
+    { material, aad }: Awaited<ReturnType<typeof this.frameKey>>,
+  ): Promise<boolean> {
+    const envelope = decodeEncryptedDocumentContent(frame);
+    if (!documentBytesEqual(envelope.epochTag, material.epochTag)) return false;
     try {
-      if ((await this.apply(frame)).length === 0) return false;
+      await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+          additionalData: aad as Uint8Array<ArrayBuffer>,
+        },
+        material.key,
+        envelope.ciphertext as Uint8Array<ArrayBuffer>,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Pre-authenticate a publication before it waits for its turn: every frame
+   * must decrypt under the current epoch and binding, and all of them must
+   * come from one author with consecutive sequences. A frame the author
+   * already delivered, a held frame, or a copy of a frame already waiting is
+   * released as soon as it is identified and dropped without a signature
+   * check. Copies are matched by author, sequence and content hash, so a
+   * forged frame cannot shadow the genuine one, and a different frame at the
+   * accepted sequence still goes on to be reported as equivocation. A dropped
+   * copy of a waiting frame is not lost: if that frame is then neither
+   * applied nor held, it takes another turn.
+   */
+  private async admitFrames(
+    frames: readonly Uint8Array[],
+    releaser: (index: number) => () => void,
+    recharge: (index: number) => boolean,
+  ): Promise<AdmittedFrame[]> {
+    // Until its author is known, a publication may hold the replica's own frames.
+    let undecided = true;
+    this.undecidedPublications++;
+    const own = new Set<number>();
+    const decide = (local: boolean) => {
+      if (!undecided) return;
+      undecided = false;
+      this.undecidedPublications--;
+      if (!local) return;
+      for (let index = 0; index < frames.length; index++) own.add(index);
+      this.ownFramesPending += frames.length;
+    };
+    const settle = (index: number) => {
+      if (own.delete(index)) this.ownFramesPending--;
+    };
+    try {
+      return await this.admitPublication(frames, releaser, recharge, decide, settle);
+    } catch (error) {
+      decide(false);
+      for (const index of [...own]) settle(index);
+      throw error;
+    }
+  }
+
+  private async admitPublication(
+    frames: readonly Uint8Array[],
+    releaser: (index: number) => () => void,
+    recharge: (index: number) => boolean,
+    decide: (local: boolean) => void,
+    settle: (index: number) => void,
+  ): Promise<AdmittedFrame[]> {
+    const context = this.options.coordinator.documentContext;
+    const delivered = this.deliveryCheck(context);
+    const key = await this.frameKey();
+    const decoded: Array<{
+      plaintext: Uint8Array;
+      author: string;
+      sequence: number;
+      hash: Uint8Array;
+      id: string;
+      released: boolean;
+    }> = [];
+    const covered = (value: (typeof decoded)[number]) =>
+      delivered(value) || this.admittedFrames.has(value.id);
+    for (const [index, frame] of frames.entries()) {
+      const envelope = decodeEncryptedDocumentContent(frame);
+      if (!documentBytesEqual(envelope.epochTag, key.material.epochTag))
+        throw new Error('Document epoch is unavailable');
+      let plaintext: Uint8Array;
+      try {
+        plaintext = new Uint8Array(
+          await crypto.subtle.decrypt(
+            {
+              name: 'AES-GCM',
+              iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+              additionalData: key.aad as Uint8Array<ArrayBuffer>,
+            },
+            key.material.key,
+            envelope.ciphertext as Uint8Array<ArrayBuffer>,
+          ),
+        );
+      } catch {
+        throw new Error(
+          'Document frame does not decrypt under the current epoch',
+        );
+      }
+      const { unsigned } = decodeSignedDocumentContent(plaintext);
+      const content = decodeDocumentContent(unsigned);
+      const author = documentBytesId(content.memberId);
+      if (index === 0)
+        decide(
+          author === documentBytesId(this.options.coordinator.localMemberId),
+        );
+      if (
+        index !== 0 &&
+        (author !== decoded[0].author ||
+          content.sequence !== decoded[0].sequence + index)
+      )
+        throw new Error(
+          'Document publication frames must be one author’s consecutive sequences',
+        );
+      const hash = new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          unsigned as Uint8Array<ArrayBuffer>,
+        ),
+      );
+      const value = {
+        plaintext,
+        author,
+        sequence: content.sequence,
+        hash,
+        id: `${author}:${content.sequence}:${documentBytesId(hash)}`,
+        released: false,
+      };
+      // A copy stops holding queue capacity as soon as it is recognized.
+      if (covered(value)) {
+        releaser(index)();
+        value.released = true;
+      }
+      decoded.push(value);
+    }
+    // Decide and register synchronously, so concurrent copies of one
+    // publication keep exactly one whole instance.
+    const admitted: AdmittedFrame[] = [];
+    const observe = this.copyObserver(context);
+    for (const [index, value] of decoded.entries()) {
+      const release = releaser(index);
+      const waiting = this.admittedFrames.get(value.id);
+      if (waiting || delivered(value)) {
+        if (waiting) waiting.copied = true;
+        else observe(value.author, value.sequence, frames[index]);
+        release();
+        settle(index);
+        continue;
+      }
+      // Its original was released unapplied while this frame decoded.
+      if (value.released && !recharge(index)) {
+        settle(index);
+        continue;
+      }
+      const entry: WaitingFrame = { copied: false };
+      this.admittedFrames.set(value.id, entry);
+      let done = false;
+      admitted.push({
+        frame: frames[index],
+        plaintext: value.plaintext,
+        context,
+        aad: key.aad,
+        author: value.author,
+        sequence: value.sequence,
+        hash: value.hash,
+        release: (processed) => {
+          if (done) return false;
+          done = true;
+          release();
+          settle(index);
+          if (this.admittedFrames.get(value.id) === entry)
+            this.admittedFrames.delete(value.id);
+          return !processed && entry.copied;
+        },
+      });
+    }
+    return admitted;
+  }
+
+  /**
+   * A check of whether a frame at `context` was already accepted or is held.
+   * Contexts are compared only when the receipts or held frames are replaced,
+   * so checking each frame of a publication stays cheap.
+   */
+  private deliveryCheck(
+    context: GroupSecurityDocumentContext,
+  ): (value: {
+    author: string;
+    sequence: number;
+    hash: Uint8Array;
+  }) => boolean {
+    let receiptsSource: Map<string, Receipt> | undefined,
+      receipts: ReadonlyMap<string, Receipt> = new Map(),
+      heldVersion = -1,
+      held = new Set<string>();
+    return ({ author, sequence, hash }) => {
+      if (receiptsSource !== this.receipts) {
+        receiptsSource = this.receipts;
+        receipts = this.receiptsAt(context);
+      }
+      if (heldVersion !== this.heldVersion) {
+        heldVersion = this.heldVersion;
+        held = new Set();
+        if (this.held && documentContextsMatch(this.held.context, context))
+          for (const entry of this.held.frames)
+            held.add(
+              `${entry.author}:${entry.sequence}:${documentBytesId(entry.hash)}`,
+            );
+      }
+      const accepted = receipts.get(author);
+      const last = accepted?.sequence ?? 0;
+      return (
+        sequence < last ||
+        (sequence === last && documentBytesEqual(hash, accepted!.hash)) ||
+        held.has(`${author}:${sequence}:${documentBytesId(hash)}`)
+      );
+    };
+  }
+
+  /**
+   * Give frames another turn at the end of the queue. They are charged again;
+   * the frames after the first that finds no capacity are dropped.
+   */
+  private retryFrames(frames: readonly AdmittedFrame[]): void {
+    const releases: Array<() => void> = [];
+    const release = () => {
+      for (const value of releases.splice(0).reverse()) value();
+    };
+    // Frames that find capacity keep their turn in sequence order.
+    let fitting = 0;
+    for (const value of frames) {
+      let shared: (() => void) | undefined;
+      try {
+        shared = aggregateInbound.reserve(2 * value.frame.length);
+        releases.push(this.inbound.reserve(2 * value.frame.length), shared);
+      } catch {
+        shared?.();
+        break;
+      }
+      fitting++;
+    }
+    if (fitting === 0) return;
+    const turns = frames.slice(0, fitting);
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    let own = turns.filter((value) => value.author === local).length;
+    this.ownFramesPending += own;
+    const result = this.tail
+      .then(async () => {
+        const delivered = this.deliveryCheck(turns[0].context);
+        for (const value of turns) {
+          await this.serveLocal();
+          this.assertUsable();
+          try {
+            if (!delivered(value)) await this.receiveOwned(value.frame, value);
+          } catch {
+            // Its later frames are still tried and may be held as gaps.
+          } finally {
+            if (value.author === local) {
+              own--;
+              this.ownFramesPending--;
+            }
+          }
+        }
+      })
+      .finally(() => {
+        this.ownFramesPending -= own;
+        release();
+      });
+    this.tail = result.then(
+      () => {},
+      () => {},
+    );
+  }
+
+  private async receiveOwned(
+    frame: Uint8Array,
+    decrypted?: AdmittedFrame,
+  ): Promise<boolean> {
+    try {
+      if ((await this.apply(frame, undefined, '', decrypted)).length === 0)
+        return false;
     } catch (error) {
       if (!(error instanceof HeldDocumentFrame)) throw error;
       this.hold(frame, error);
@@ -802,6 +1504,7 @@ export class CoordinatedDocument<
         remove: (entry) => this.removeHeld(held, entry),
       };
       this.held = held;
+      this.heldVersion++;
     }
     const held = this.held;
     this.expireHeld(held);
@@ -953,6 +1656,7 @@ export class CoordinatedDocument<
     for (const entry of victims) entry.holder.remove(entry);
     const release = reserveHeld(pending.author, length);
     if (typeof release !== 'function') throw refuse();
+    this.heldVersion++;
     held.frames.push({
       frame,
       author: pending.author,
@@ -980,6 +1684,7 @@ export class CoordinatedDocument<
     const index = held.frames.indexOf(entry);
     if (index === -1) return;
     held.frames.splice(index, 1);
+    this.heldVersion++;
     held.bytes -= entry.frame.length;
     entry.release();
     if (held.frames.length === 0) heldDocuments.delete(held);
@@ -1018,6 +1723,7 @@ export class CoordinatedDocument<
   private clearHeld(): void {
     const held = this.held;
     this.held = undefined;
+    this.heldVersion++;
     if (held) {
       heldDocuments.delete(held);
       for (const entry of held.frames.splice(0)) entry.release();
@@ -1175,6 +1881,29 @@ export class CoordinatedDocument<
     if (entry) entry.observedAt = Date.now();
   }
 
+  /**
+   * Note copies of accepted frames at `context` that admission dropped before
+   * verification; only the exact retained frame counts. The context is
+   * matched once, and an author's retained frames are consecutive, so each
+   * copy is found by its sequence.
+   */
+  private copyObserver(
+    context: GroupSecurityDocumentContext,
+  ): (author: string, sequence: number, copy: Uint8Array) => void {
+    const retained =
+      this.retained && documentContextsMatch(this.retained.context, context)
+        ? this.retained
+        : undefined;
+    if (!retained) return () => {};
+    const now = Date.now();
+    return (author, sequence, copy) => {
+      const frames = retained.authors.get(author);
+      const entry = frames?.[sequence - frames[0].sequence];
+      if (entry?.sequence === sequence && documentBytesEqual(entry.frame, copy))
+        entry.observedAt = now;
+    };
+  }
+
   hasHeldFrames(): boolean {
     return (this.held?.frames.length ?? 0) > 0;
   }
@@ -1272,70 +2001,127 @@ export class CoordinatedDocument<
           encodeEncryptedDocumentRedelivery,
         );
       });
-    });
+    }, false, true);
   }
 
   /**
    * Authenticate a current member's request that GossipSub delivered from
-   * `from`, and choose the retained frames past its heads to resend. Requests
-   * are answered once, at most every 2 s per member, and within a shared
-   * per-replica frame budget.
+   * `from`, and choose the retained frames past its heads to resend. The
+   * request is authenticated outside the document queue and charged against
+   * the received bounds and the sender's share, never the local edit budget.
+   * Requests are answered once, at most every 2 s per member, and within a
+   * shared per-replica frame budget.
    */
-  answerRedelivery(
+  async answerRedelivery(
     frame: Uint8Array,
     from: string | undefined,
   ): Promise<CoordinatedRedeliveryAnswer> {
+    const length = unsharedUint8ArrayByteLength(
+      frame,
+      1,
+      MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES + 64,
+      'document redelivery request',
+    );
+    if (from !== undefined && (typeof from !== 'string' || from.length > 1024))
+      throw new TypeError('Invalid document frame sender');
+    this.assertUsable();
+    this.assertActivated();
+    this.assertPublicationDispatchAllowed(this.rosterBinding, false);
+    const releases: Array<() => void> = [];
     try {
-      const length = unsharedUint8ArrayByteLength(
-        frame,
-        1,
-        MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES + 64,
-        'document redelivery request',
+      releases.push(aggregateInbound.reserve(length));
+      releases.push(this.inbound.reserve(length));
+      releases.push(
+        reserveSender(
+          this.senders,
+          from ?? '',
+          length,
+          SENDER_FRAMES,
+          SENDER_BYTES,
+        ),
       );
-      return this.enqueue(
-        length,
-        () => {
-          const owned = copyUnsharedUint8Array(
-            frame,
-            length,
-            length,
-            'document redelivery request',
-          );
-          return async () => {
-            this.assertActivated();
-            return this.runSealed(owned, async (stage, input) => {
-              const signed = await this.openSealed(
-                stage,
-                documentRedeliveryAAD(stage.binding),
-                decodeEncryptedDocumentRedelivery(input),
-              );
-              const body = decodeDocumentRedeliveryRequest(signed.unsigned);
-              this.assertCatchUpBinding(stage.binding, body);
-              if (from === undefined || body.requesterPeer !== from)
-                throw new Error('Document redelivery request is not from its signer');
-              const requesterId = documentBytesId(body.requesterId);
-              const requester = stage.lease.members.get(requesterId);
-              if (
-                !requester ||
-                documentBytesEqual(
-                  body.requesterId,
-                  this.options.coordinator.localMemberId,
-                )
-              )
-                throw new Error('Document redelivery requester is unauthorized');
-              await this.verifyCatchUp(stage, signed, requester);
-              return this.chooseRedelivery(stage, requesterId, body);
-            });
-          };
-        },
+      const envelope = decodeEncryptedDocumentRedelivery(
+        copyUnsharedUint8Array(
+          frame,
+          length,
+          length,
+          'document redelivery request',
+        ),
       );
-    } catch (error) {
-      return Promise.reject(error);
+      const context = this.options.coordinator.documentContext;
+      const lease = this.authority(context);
+      const binding: DocumentCatchUpBinding = {
+        documentId: this.documentId,
+        genesisId: this.genesisId,
+        authorityHead: lease.headId,
+        context,
+      };
+      const material = await this.materialFor(context);
+      if (!documentBytesEqual(envelope.epochTag, material.epochTag))
+        throw new Error('Document redelivery epoch is unavailable');
+      let plaintext: Uint8Array;
+      try {
+        plaintext = new Uint8Array(
+          await crypto.subtle.decrypt(
+            {
+              name: 'AES-GCM',
+              iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+              additionalData: documentRedeliveryAAD(
+                binding,
+              ) as Uint8Array<ArrayBuffer>,
+            },
+            material.key,
+            envelope.ciphertext as Uint8Array<ArrayBuffer>,
+          ),
+        );
+      } catch {
+        throw new Error('Document redelivery request does not decrypt');
+      }
+      const signed = decodeSignedDocumentContent(plaintext);
+      const body = decodeDocumentRedeliveryRequest(signed.unsigned);
+      this.assertCatchUpBinding(binding, body);
+      if (from === undefined || body.requesterPeer !== from)
+        throw new Error('Document redelivery request is not from its signer');
+      const requesterId = documentBytesId(body.requesterId);
+      const requester = lease.members.get(requesterId);
+      if (
+        !requester ||
+        documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+      )
+        throw new Error('Document redelivery requester is unauthorized');
+      // Stale or replayed requests are refused before their signature check.
+      if (Math.abs(Date.now() - body.issuedAt) > REDELIVERY_FRESHNESS_MS) {
+        this.staleRedeliveries++;
+        return this.noRedelivery(lease, requesterId);
+      }
+      if (body.issuedAt <= (this.redelivery.issued.get(requesterId) ?? -1))
+        return this.noRedelivery(lease, requesterId);
+      await this.verifySigned(signed, requester);
+      this.assertPublicationDispatchAllowed(this.rosterBinding, false);
+      if (
+        !lease.isCurrent() ||
+        !documentContextsMatch(context, this.options.coordinator.documentContext)
+      )
+        throw new Error('Document redelivery request is no longer current');
+      return this.chooseRedelivery({ binding, lease }, requesterId, body);
+    } finally {
+      for (const release of releases.reverse()) release();
     }
   }
 
+  private noRedelivery(
+    lease: AuthorityLease,
+    requester: string,
+  ): CoordinatedRedeliveryAnswer {
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const peers = [...lease.members.keys()]
+      .filter((id) => id !== requester)
+      .sort();
+    return { own: [], others: [], since: Date.now(), rank: Math.max(0, peers.indexOf(local)) };
+  }
+
   private chooseRedelivery(
-    stage: SealedStage,
+    stage: Pick<SealedStage, 'binding' | 'lease'>,
     requester: string,
     body: DocumentRedeliveryRequest,
   ): CoordinatedRedeliveryAnswer {
@@ -1430,7 +2216,10 @@ export class CoordinatedDocument<
     });
   }
 
-  /** Authenticated requests ignored because their issue time was over 60 s from this clock. */
+  /**
+   * Requests sealed under the current epoch key and ignored, before their
+   * signature check, because their issue time was over 60 s from this clock.
+   */
   get staleRedeliveryRequests(): number {
     return this.staleRedeliveries;
   }
@@ -1701,20 +2490,29 @@ export class CoordinatedDocument<
     return decodeSignedDocumentContent(new Uint8Array(value));
   }
 
-  private async verifyCatchUp(
+  private verifyCatchUp(
     stage: Pick<SealedStage, 'work'>,
     body: ReturnType<typeof decodeSignedDocumentContent>,
     member: CapturedDocumentMember,
   ): Promise<void> {
-    const { value: key } = await stage.work.observe<PublicKey>(
+    return this.verifySigned(body, member, async <T,>(value: unknown) =>
+      (await stage.work.observe<T>(value)).value,
+    );
+  }
+
+  private async verifySigned(
+    body: ReturnType<typeof decodeSignedDocumentContent>,
+    member: CapturedDocumentMember,
+    observe: <T>(value: unknown) => Promise<T> = async <T,>(value: unknown) =>
+      (await value) as T,
+  ): Promise<void> {
+    const key = await observe<PublicKey>(
       this.auth.deserializePublicKey(member.publicKey),
     );
-    const { value: canonical } = await stage.work.observe<string>(
-      this.auth.serializePublicKey(key),
-    );
+    const canonical = await observe<string>(this.auth.serializePublicKey(key));
     if (canonical !== member.publicKey)
       throw new Error('Noncanonical document catch-up signer');
-    const { value: verified } = await stage.work.observe<boolean>(
+    const verified = await observe<boolean>(
       this.auth.verify(body.unsigned.slice(), key, body.signature.slice()),
     );
     if (verified !== true)
@@ -1831,6 +2629,9 @@ export class CoordinatedDocument<
           );
           if (!plan.snapshot)
             throw new Error('CRDT provider cannot checkpoint merged state');
+          const { value: carried } = await stage.work.observe<
+            DocumentJournalCarriedFrame[]
+          >(this.checkpointCarry());
           const { value } = await stage.work.observe<PreparedDocumentJournal>(
             this.options.journal!.prepare({
               checkpoint: true,
@@ -1839,6 +2640,7 @@ export class CoordinatedDocument<
               receipts: receiptEntries(receipts),
               authorityHead: stage.lease.headId,
               authorityRecords: this.options.authority.exportRecords!(),
+              ...(carried.length ? { carriedFrames: carried } : {}),
             }),
           );
           journal = value;
@@ -2107,6 +2909,7 @@ export class CoordinatedDocument<
     input?: Uint8Array,
     change?: Change,
     message = '',
+    decrypted?: AdmittedFrame,
     resend?: OwnFrame,
   ): Promise<Uint8Array> {
     const context = this.options.coordinator.documentContext;
@@ -2116,13 +2919,21 @@ export class CoordinatedDocument<
     let acceptedAuthorityLease: (() => boolean) | undefined;
     let plan: PreparedDocumentChange<Changes> | undefined;
     let preparation: Promise<unknown> | undefined;
-    if (
-      !input &&
-      this.options.persistPublications &&
-      !this.options.journal &&
-      this.publications.length >= 16
-    )
-      throw new Error('Document publication queue is full');
+    // A local frame joins the queued tail publication when it fits, so
+    // offline edits share publications instead of filling the outbox.
+    let tail: OutboxTail | undefined, rows: number | undefined;
+    // Local edits leave the journal's last row free, so re-signs can drain a
+    // full retired outbox in order, shrinking each retired row as they go.
+    const maxRows =
+      this.options.journal && !resend ? MAX_PUBLICATIONS - 1 : MAX_PUBLICATIONS;
+    if (input === undefined && this.options.joinPublications) {
+      if (this.outboxTail === undefined) await this.loadOutboxTail();
+      tail = this.outboxTail ?? undefined;
+      rows = tail?.rows ?? 0;
+      if (!tail && rows >= maxRows) throw new DocumentPublicationBacklogError();
+    }
+    let outbound: Uint8Array | undefined,
+      merged = false;
     let committed = false,
       replay = false;
     let held: HeldReason | undefined;
@@ -2156,19 +2967,29 @@ export class CoordinatedDocument<
               const envelope = decodeEncryptedDocumentContent(owned);
               if (!documentBytesEqual(envelope.epochTag, material.epochTag))
                 throw new Error('Document epoch is unavailable');
-              const { value: plaintext } = await work.observe<ArrayBuffer>(
-                (async () =>
-                  crypto.subtle.decrypt(
-                    {
-                      name: 'AES-GCM',
-                      iv: envelope.nonce as Uint8Array<ArrayBuffer>,
-                      additionalData: aad as Uint8Array<ArrayBuffer>,
-                    },
-                    material.key,
-                    envelope.ciphertext as Uint8Array<ArrayBuffer>,
-                  ))(),
-              );
-              signedContent = new Uint8Array(plaintext);
+              // Pre-authentication already decrypted it under this binding.
+              const plaintext =
+                decrypted &&
+                documentContextsMatch(decrypted.context, captured) &&
+                documentBytesEqual(decrypted.aad, aad)
+                  ? decrypted.plaintext
+                  : new Uint8Array(
+                      (
+                        await work.observe<ArrayBuffer>(
+                          (async () =>
+                            crypto.subtle.decrypt(
+                              {
+                                name: 'AES-GCM',
+                                iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+                                additionalData: aad as Uint8Array<ArrayBuffer>,
+                              },
+                              material.key,
+                              envelope.ciphertext as Uint8Array<ArrayBuffer>,
+                            ))(),
+                        )
+                      ).value,
+                    );
+              signedContent = plaintext;
               const signed = decodeSignedDocumentContent(signedContent);
               unsigned = signed.unsigned;
               const frame = decodeDocumentContent(unsigned);
@@ -2340,6 +3161,50 @@ export class CoordinatedDocument<
                 nonce,
                 new Uint8Array(ciphertext),
               );
+              if (this.options.persistPublications) {
+                merged =
+                  !!this.options.joinPublications &&
+                  tail !== undefined &&
+                  tail.frames < MAX_DOCUMENT_PUBLICATION_FRAMES &&
+                  tail.bytes.length + result.length <=
+                    MAX_JOINED_PUBLICATION_BYTES &&
+                  documentBytesEqual(tail.aad, aad) &&
+                  documentBytesEqual(
+                    documentFrameEpochTag(tail.bytes),
+                    material.epochTag,
+                  ) &&
+                  (!!this.options.journal ||
+                    (this.publications.length !== 0 &&
+                      documentBytesEqual(
+                        this.publications.at(-1)!,
+                        tail.bytes,
+                      )));
+                outbound = merged ? concatFrames(tail!.bytes, result) : result;
+                if (!merged && rows !== undefined && rows >= maxRows)
+                  throw new DocumentPublicationBacklogError();
+                // A checkpoint must carry every unsent frame's exact paths.
+                if (
+                  this.options.journal &&
+                  !resend &&
+                  this.unsentPathBytes + encodedPathBytes(ownPaths!) >
+                    MAX_CARRIED_PATH_BYTES
+                )
+                  throw new DocumentPublicationBacklogError();
+                if (!this.options.journal) {
+                  const queued = this.publications.reduce(
+                    (sum, frame) => sum + frame.length,
+                    0,
+                  );
+                  if (
+                    (!merged && this.publications.length >= MAX_PUBLICATIONS) ||
+                    queued -
+                      (merged ? tail!.bytes.length : 0) +
+                      outbound.length >
+                      MAX_PUBLICATION_BYTES
+                  )
+                    throw new DocumentPublicationBacklogError();
+                }
+              }
             }
             if (!replay && !held && input !== undefined)
               assertDocumentOperationsAllowed(
@@ -2388,6 +3253,25 @@ export class CoordinatedDocument<
               const persistedReceipts = checkpoint
                 ? receiptEntries(nextReceipts)
                 : [{ memberId, sequence, hash }];
+              // A checkpoint folds the entries of unsent own frames, so it
+              // keeps them, and the frame it records, re-signable.
+              const carriedFrames = checkpoint
+                ? (
+                    await work.observe<DocumentJournalCarriedFrame[]>(
+                      this.checkpointCarry(
+                        input === undefined
+                          ? {
+                              context: captured,
+                              sequence,
+                              nonce: documentFrameNonce(result),
+                              changes: ownChanges!,
+                              operationPaths: ownPaths!,
+                            }
+                          : undefined,
+                      ),
+                    )
+                  ).value
+                : undefined;
               const { value } = await work.observe<PreparedDocumentJournal>(
                 this.options.journal.prepare({
                   checkpoint,
@@ -2400,11 +3284,17 @@ export class CoordinatedDocument<
                       ? (this.options.authority.exportRecords?.() ?? [])
                       : [],
                   ...(checkpoint
-                    ? {}
-                    : { operationPaths: input === undefined ? ownPaths! : [] }),
-                  ...(input === undefined && this.options.persistPublications
-                    ? { outboundFrame: result }
-                    : {}),
+                    ? carriedFrames?.length
+                      ? { carriedFrames }
+                      : {}
+                    : {
+                        operationPaths: input === undefined ? ownPaths! : [],
+                        ...(input === undefined
+                          ? { frameNonce: documentFrameNonce(result) }
+                          : {}),
+                      }),
+                  ...(outbound ? { outboundFrame: outbound } : {}),
+                  ...(merged ? { replacesPublication: tail!.bytes } : {}),
                 }),
               );
               journal = value;
@@ -2438,21 +3328,31 @@ export class CoordinatedDocument<
                   frame: input === undefined ? result.slice() : owned,
                 });
                 if (input !== undefined) this.markRemote(captured);
-                if (input === undefined)
-                  this.recordOwn(captured, {
+                if (input === undefined) {
+                  const nonce = documentFrameNonce(result);
+                  if (outbound) this.markUnsent(nonce, ownPaths!);
+                  this.recordOwn({
+                    context: captured,
                     order: resend?.order ?? ++this.ownOrder,
                     sequence,
                     changes: ownChanges!,
                     paths: ownPaths!,
-                    frame: result.slice(),
+                    nonce,
                   });
+                }
                 committed = true;
-                if (
-                  input === undefined &&
-                  this.options.persistPublications &&
-                  !this.options.journal
-                )
-                  this.publications.push(result.slice());
+                if (outbound) {
+                  if (!this.options.journal) {
+                    if (merged) this.publications.pop();
+                    this.publications.push(outbound.slice());
+                  }
+                  this.outboxTail = {
+                    bytes: outbound,
+                    frames: merged ? tail!.frames + 1 : 1,
+                    aad,
+                    rows: merged ? rows! : (rows ?? 0) + 1,
+                  };
+                }
                 if (input !== undefined) result = hash;
               },
             };
@@ -2470,6 +3370,13 @@ export class CoordinatedDocument<
       return result;
     } catch (error) {
       if (commitAttempted) this.failed = true;
+      else if (
+        outbound &&
+        error instanceof DocumentJournalCapacityError &&
+        !(error instanceof DocumentPublicationBacklogError) &&
+        (await this.outboxIsFull(outbound.length))
+      )
+        throw new DocumentPublicationBacklogError();
       throw error;
     } finally {
       // The gate can time out before native work settles. Keep the session slot
@@ -2502,7 +3409,28 @@ export class CoordinatedDocument<
             'Configured authority forks the accepted document history',
           );
       }
+      const queued =
+        this.options.persistPublications && this.options.journal
+          ? await this.queuedFrames()
+          : undefined;
+      // Own frames of contexts the journal moved past. Their copies may have
+      // been re-signed already, so only those still in the outbox are queued.
+      const retired: Array<NonNullable<typeof this.own>> = [];
+      const restoreOwn = (frame: Omit<OwnFrame, 'order'>) => {
+        if (queued && outboxHolds(queued, frame.nonce))
+          this.markUnsent(frame.nonce!, frame.paths);
+        const replaced = this.recordOwn({ ...frame, order: ++this.ownOrder });
+        if (replaced) retired.push(replaced);
+      };
       for (const record of records) {
+        for (const frame of record.carriedFrames ?? [])
+          restoreOwn({
+            context: frame.context,
+            sequence: frame.sequence,
+            changes: frame.changes,
+            paths: frame.operationPaths,
+            nonce: frame.nonce,
+          });
         const changes = this.serializer.deserializeChanges(record.changes);
         if (record.checkpoint && !this.session.prepareSnapshot)
           throw new Error('CRDT provider cannot restore a checkpoint');
@@ -2541,14 +3469,12 @@ export class CoordinatedDocument<
               !record.checkpoint &&
               id === documentBytesId(this.options.coordinator.localMemberId)
             )
-              this.recordOwn(record.context, {
-                order: ++this.ownOrder,
+              restoreOwn({
+                context: record.context,
                 sequence: receipt.sequence,
                 changes: record.changes,
                 paths: record.operationPaths!,
-                ...(record.outboundFrame
-                  ? { frame: record.outboundFrame }
-                  : {}),
+                ...(record.frameNonce ? { nonce: record.frameNonce } : {}),
               });
           }
           if (receipts.size > 256)
@@ -2559,6 +3485,17 @@ export class CoordinatedDocument<
         } finally {
           plan.discard();
         }
+      }
+      // The group may have moved on while the document was closed.
+      const moved =
+        this.own &&
+        !documentContextsMatch(
+          this.own.context,
+          this.options.coordinator.documentContext,
+        );
+      if ((retired.length !== 0 || moved) && queued) {
+        for (const own of retired) this.queueRetired(own, queued, true);
+        if (moved) this.queueRetired(this.own, queued);
       }
       this.recovered = true;
     } catch (error) {
@@ -2626,7 +3563,7 @@ export class CoordinatedDocument<
             const before = beforeOpen ? this.own : undefined;
             await this.applyStrictAuthorityUpdate(authority, owned);
             if (beforeOpen) {
-              this.queueRetired(before, await this.outboxFrames());
+              this.queueRetired(before, await this.queuedFrames());
               return undefined;
             }
             return this.resendRetired(retired);
@@ -2713,6 +3650,9 @@ export class CoordinatedDocument<
             const changes = this.serializer.serializeChanges(
               this.crdt.getSnapshot(this.session.document),
             );
+            const { value: carried } = await work.observe<
+              DocumentJournalCarriedFrame[]
+            >(this.checkpointCarry());
             const { value } = await work.observe<PreparedDocumentJournal>(
               this.options.journal!.prepare({
                 checkpoint: true,
@@ -2724,6 +3664,7 @@ export class CoordinatedDocument<
                   proposal?.authorityRecords ??
                   this.options.authority.exportRecords?.() ??
                   [],
+                ...(carried.length ? { carriedFrames: carried } : {}),
               }),
             );
             prepared = value;
@@ -2753,18 +3694,55 @@ export class CoordinatedDocument<
     }
   }
 
-  private recordOwn(
-    context: GroupSecurityDocumentContext,
-    frame: OwnFrame,
-  ): void {
-    if (!this.own || !documentContextsMatch(this.own.context, context))
-      this.own = { context, frames: [], bytes: 0, remoteMark: -1 };
+  /** Record an own frame, returning the frames of a context it replaces. */
+  private recordOwn(frame: OwnFrame): typeof this.own {
+    let replaced: typeof this.own;
+    if (!this.own || !documentContextsMatch(this.own.context, frame.context)) {
+      replaced = this.own;
+      this.own = {
+        context: frame.context,
+        frames: [],
+        bytes: 0,
+        remoteMark: -1,
+      };
+    }
     const own = this.own;
     own.frames.push(frame);
     own.bytes += ownFrameBytes(frame);
     while (own.frames.length > MAX_OWN_FRAMES || own.bytes > MAX_OWN_BYTES) {
-      const [oldest] = own.frames.splice(0, 1);
+      const index = own.frames.findIndex(
+        (value) => !value.nonce || !this.unsent.has(documentBytesId(value.nonce)),
+      );
+      if (index === -1) break;
+      const [oldest] = own.frames.splice(index, 1);
       own.bytes -= ownFrameBytes(oldest);
+    }
+    return replaced;
+  }
+
+  private markUnsent(nonce: Uint8Array, paths: DocumentWritePaths): void {
+    const id = documentBytesId(nonce);
+    if (this.unsent.has(id)) return;
+    const bytes = encodedPathBytes(paths);
+    this.unsent.set(id, bytes);
+    this.unsentPathBytes += bytes;
+  }
+
+  /** Forget the unsent frames a publication held but `kept` does not. */
+  private markSent(publication: Uint8Array, kept?: Uint8Array): void {
+    const remaining = new Set(
+      kept
+        ? splitDocumentPublication(kept).map((frame) =>
+            documentBytesId(documentFrameNonce(frame)),
+          )
+        : [],
+    );
+    for (const frame of splitDocumentPublication(publication)) {
+      const id = documentBytesId(documentFrameNonce(frame));
+      const bytes = this.unsent.get(id);
+      if (bytes === undefined || remaining.has(id)) continue;
+      this.unsent.delete(id);
+      this.unsentPathBytes -= bytes;
     }
   }
 
@@ -2781,15 +3759,9 @@ export class CoordinatedDocument<
    * for all members; only its unsent frames are carried.
    */
   private carriedRetired(
-    retired: CoordinatedDocument<
-      Document,
-      Changes,
-      Change,
-      PrivateKey,
-      PublicKey,
-      DocumentKey
-    >['own'],
-    pending: readonly Uint8Array[],
+    retired: typeof this.own,
+    queued: QueuedFrames,
+    unsentOnly = false,
   ): { carried: OwnFrame[]; skipped: number } | undefined {
     if (
       !this.options.persistPublications ||
@@ -2810,8 +3782,9 @@ export class CoordinatedDocument<
       controller !== undefined &&
       documentBytesEqual(controller, this.options.coordinator.localMemberId);
     const carried = retired.frames.flatMap((frame) => {
-      const unsent = outboxHolds(pending, frame.frame);
-      return unsent || (!committed && frame.order > retired.remoteMark)
+      const unsent = outboxHolds(queued, frame.nonce);
+      return unsent ||
+        (!unsentOnly && !committed && frame.order > retired.remoteMark)
         ? [{ ...frame, unsent }]
         : [];
     });
@@ -2824,40 +3797,27 @@ export class CoordinatedDocument<
 
   /** Queue a retired context's own frames, in order, behind any still waiting. */
   private queueRetired(
-    retired: CoordinatedDocument<
-      Document,
-      Changes,
-      Change,
-      PrivateKey,
-      PublicKey,
-      DocumentKey
-    >['own'],
-    pending: readonly Uint8Array[] = [],
+    retired: typeof this.own,
+    queued: QueuedFrames,
+    unsentOnly = false,
   ): number {
     // Without an outbox, nothing could publish a re-signed frame.
-    const selection = this.carriedRetired(retired, pending);
+    const selection = this.carriedRetired(retired, queued, unsentOnly);
     if (!selection) return 0;
-    const queued = new Map(
+    const waiting = new Map(
       [...this.resendQueue, ...selection.carried].map((frame) => [frame.order, frame]),
     );
-    this.resendQueue = [...queued.values()].sort((a, b) => a.order - b.order);
+    this.resendQueue = [...waiting.values()].sort((a, b) => a.order - b.order);
     return selection.skipped;
   }
 
   /** Re-sign this author's frames from the context an update retired. */
   private async resendRetired(
-    retired: CoordinatedDocument<
-      Document,
-      Changes,
-      Change,
-      PrivateKey,
-      PublicKey,
-      DocumentKey
-    >['own'],
+    retired: typeof this.own,
   ): Promise<CoordinatedAuthorityUpdateResult> {
     let skipped = 0;
     try {
-      skipped = this.queueRetired(retired, await this.outboxFrames());
+      skipped = this.queueRetired(retired, await this.queuedFrames());
       const drained = await this.drainResend();
       return { ...drained, skipped: skipped + drained.skipped };
     } catch {
@@ -2872,15 +3832,129 @@ export class CoordinatedDocument<
     }
   }
 
+  private async queuedFrames(): Promise<QueuedFrames> {
+    return queueOf(
+      this.options.journal
+        ? await this.options.journal.pendingPublications()
+        : this.publications.map((frame) => frame.slice()),
+    );
+  }
+
   /**
-   * Re-sign queued frames in order. Outbox capacity or a transient failure
-   * leaves the rest queued. A denial drops that frame and every later one,
-   * which natively depends on it; a writer whose grants narrowed has diverged.
+   * Own frames a checkpoint keeps re-signable: those still in the outbox,
+   * from the current context or waiting to be re-signed, and `current`, the
+   * frame the checkpoint itself records.
    */
-  private async outboxFrames(): Promise<readonly Uint8Array[]> {
-    return this.options.journal
-      ? this.options.journal.pendingPublications()
-      : this.publications.map((frame) => frame.slice());
+  private async checkpointCarry(
+    current?: DocumentJournalCarriedFrame,
+  ): Promise<DocumentJournalCarriedFrame[]> {
+    if (!this.options.persistPublications) return [];
+    const queued = await this.queuedFrames();
+    const frames = new Map<string, OwnFrame>();
+    for (const frame of [...(this.own?.frames ?? []), ...this.resendQueue])
+      if (outboxHolds(queued, frame.nonce))
+        frames.set(documentBytesId(frame.nonce!), frame);
+    const carried = [...frames.values()]
+      .sort((a, b) => a.order - b.order)
+      .map(
+        (frame): DocumentJournalCarriedFrame => ({
+          context: frame.context,
+          sequence: frame.sequence,
+          nonce: frame.nonce!,
+          changes: frame.changes,
+          operationPaths: frame.paths,
+        }),
+      );
+    return current ? [...carried, current] : carried;
+  }
+
+  /**
+   * Remove frames from the publications that hold them. A publication that
+   * keeps other frames is rewritten with the rest, in its place in the outbox.
+   */
+  private async withdrawFrames(
+    queued: QueuedFrames,
+    nonces: readonly (Uint8Array | undefined)[],
+  ): Promise<void> {
+    const byRow = new Map<number, Set<string>>();
+    for (const nonce of nonces) {
+      if (!nonce) continue;
+      const id = documentBytesId(nonce),
+        row = queued.rowOf.get(id);
+      if (row === undefined) continue;
+      const ids = byRow.get(row) ?? new Set<string>();
+      ids.add(id);
+      byRow.set(row, ids);
+    }
+    for (const [row, ids] of byRow) {
+      const before = queued.rows[row];
+      const rest = queued.parts[row].filter(
+        (frame) => !ids.has(documentBytesId(documentFrameNonce(frame))),
+      );
+      const next = rest.length === 0 ? undefined : joinFrames(rest);
+      if (next) await this.replacePublication(before, next);
+      else {
+        await this.removePublication(before);
+        this.outboxTail = undefined;
+      }
+      for (const id of ids) queued.rowOf.delete(id);
+      queued.rows[row] = next ?? new Uint8Array();
+      queued.parts[row] = rest;
+    }
+  }
+
+  private async replacePublication(
+    frame: Uint8Array,
+    next: Uint8Array,
+  ): Promise<void> {
+    if (this.options.journal)
+      await this.options.journal.replacePublication(frame, next);
+    else
+      this.publications = this.publications.map((value) =>
+        documentBytesEqual(value, frame) ? next.slice() : value,
+      );
+    this.markSent(frame, next);
+    if (this.outboxTail && documentBytesEqual(this.outboxTail.bytes, frame))
+      this.outboxTail = undefined;
+  }
+
+  /**
+   * Re-sign one queued frame. A journal's outbox keeps a row free for
+   * re-signs, so a retired publication leaves it only frame by frame, after
+   * each re-signed copy is durable. A process-local outbox has no such row:
+   * when it is full and the publication holding the frame carries only
+   * queued frames, that publication is removed first and its frames are
+   * re-signed from the queue in turn.
+   */
+  private async resign(entry: OwnFrame, queued: QueuedFrames): Promise<void> {
+    try {
+      await this.apply(undefined, undefined, '', undefined, entry);
+    } catch (error) {
+      if (
+        this.options.journal ||
+        !(error instanceof DocumentJournalCapacityError) ||
+        !entry.nonce
+      )
+        throw error;
+      const row = queued.rowOf.get(documentBytesId(entry.nonce));
+      const waiting = new Set(
+        this.resendQueue.flatMap((frame) =>
+          frame.nonce ? [documentBytesId(frame.nonce)] : [],
+        ),
+      );
+      if (
+        row === undefined ||
+        !queued.parts[row].every((frame) =>
+          waiting.has(documentBytesId(documentFrameNonce(frame))),
+        )
+      )
+        throw error;
+      await this.withdrawFrames(
+        queued,
+        queued.parts[row].map((frame) => documentFrameNonce(frame)),
+      );
+      await this.apply(undefined, undefined, '', undefined, entry);
+    }
   }
 
   /**
@@ -2888,7 +3962,8 @@ export class CoordinatedDocument<
    * leaves the rest queued. A published frame the current grants deny is
    * skipped. A denied frame still in the outbox reached no one, and every
    * later frame depends on it: they are dropped, and a writer whose grants
-   * narrowed has diverged.
+   * narrowed has diverged. Each re-signed or dropped frame leaves the
+   * publication that held it.
    */
   private async drainResend(): Promise<CoordinatedAuthorityUpdateResult> {
     let resent = 0,
@@ -2897,20 +3972,11 @@ export class CoordinatedDocument<
       diverged = false;
     if (this.resendQueue.length === 0)
       return { resent, waiting: 0, skipped, dropped, diverged };
-    const pending = await this.outboxFrames();
-    const superseded = async (entry: OwnFrame) => {
-      const frame = entry.frame;
-      if (!frame || !outboxHolds(pending, frame)) return;
-      if (this.options.journal) await this.options.journal.publicationSent(frame);
-      else
-        this.publications = this.publications.filter(
-          (value) => !documentBytesEqual(value, frame),
-        );
-    };
+    const queued = await this.queuedFrames();
     while (this.resendQueue.length > 0) {
       const entry = this.resendQueue[0];
       try {
-        await this.apply(undefined, undefined, '', entry);
+        await this.resign(entry, queued);
       } catch (error) {
         if (!(error instanceof ResendDeniedError)) break;
         if (!entry.unsent) {
@@ -2921,6 +3987,7 @@ export class CoordinatedDocument<
         const denied = this.resendQueue;
         this.resendQueue = [];
         dropped = denied.length;
+        this.reportDropped(dropped);
         if (this.localMemberWrites()) {
           diverged = true;
           this.diverged = true;
@@ -2930,14 +3997,37 @@ export class CoordinatedDocument<
             this.failed = true;
           }
         }
-        for (const later of denied) await superseded(later).catch(() => {});
+        await this.withdrawFrames(
+          queued,
+          denied.map((frame) => frame.nonce),
+        ).catch(() => {});
         break;
       }
       this.resendQueue.shift();
       resent++;
-      await superseded(entry);
+      await this.withdrawFrames(queued, [entry.nonce]);
     }
     return { resent, waiting: this.resendQueue.length, skipped, dropped, diverged };
+  }
+
+  /** Frames a re-sign can still carry into the current context, by nonce. */
+  private resignableFrames(): Set<string> {
+    const ids = new Set<string>();
+    const add = (frames: readonly OwnFrame[]) => {
+      for (const frame of frames)
+        if (frame.nonce) ids.add(documentBytesId(frame.nonce));
+    };
+    add(this.resendQueue);
+    // Learning the new roles queues these.
+    if (
+      this.own &&
+      !documentContextsMatch(
+        this.own.context,
+        this.options.coordinator.documentContext,
+      )
+    )
+      add(this.own.frames);
+    return ids;
   }
 
   private localMemberWrites(): boolean {
@@ -2954,14 +4044,19 @@ export class CoordinatedDocument<
   /** Re-sign queued retired frames into outbox space freed by publication. */
   continueResend(): Promise<boolean> {
     if (this.resendQueue.length === 0) return Promise.resolve(false);
-    return this.enqueue(0, () => async () => {
-      this.assertActivated();
-      try {
-        return (await this.drainResend()).resent > 0;
-      } catch {
-        return false;
-      }
-    });
+    return this.enqueue(
+      0,
+      () => async () => {
+        this.assertActivated();
+        try {
+          return (await this.drainResend()).resent > 0;
+        } catch {
+          return false;
+        }
+      },
+      false,
+      true,
+    );
   }
 
   assertPublicationDispatchAllowed(
@@ -3023,16 +4118,161 @@ export class CoordinatedDocument<
         );
         return async () => {
           this.assertActivated();
-          if (this.options.journal)
-            await this.options.journal.publicationSent(owned);
-          else
-            this.publications = this.publications.filter(
-              (value) => !documentBytesEqual(value, owned),
-            );
+          await this.removePublication(owned);
         };
-      }, true);
+      }, true, true);
     } catch (error) {
       return Promise.reject(error);
+    }
+  }
+
+  /**
+   * Read publications to send now. A publication sealed for an earlier group
+   * context or authority head would be rejected by every current member. It
+   * stays queued, unsent, while it holds a frame its author can still re-sign
+   * into the current context, and `waiting` reports it; otherwise it is
+   * removed and its frames are counted as `dropped`. A diverged document
+   * still drains what it committed before diverging.
+   */
+  dispatchablePublications(): Promise<{
+    readonly frames: ReadonlyArray<Uint8Array>;
+    readonly dropped: number;
+    readonly waiting: boolean;
+  }> {
+    return this.enqueue(
+      0,
+      () => async () => {
+        this.assertActivated();
+        const binding = this.rosterBinding;
+        this.assertPublicationDispatchAllowed(binding);
+        const rows = this.options.journal
+          ? await this.options.journal.pendingPublications()
+          : this.publications.map((frame) => frame.slice());
+        this.assertPublicationDispatchAllowed(binding);
+        const frames: Uint8Array[] = [];
+        let dropped = 0,
+          kept = 0,
+          last = 0;
+        const key = rows.length === 0 ? undefined : await this.frameKey();
+        this.assertPublicationDispatchAllowed(binding);
+        const resignable = this.resignableFrames();
+        for (const row of rows) {
+          // One publication only joins frames sealed under the same binding.
+          const parts = splitDocumentPublication(row);
+          if (await this.decryptsUnder(parts[0], key!)) {
+            frames.push(row);
+            last = parts.length;
+          } else if (
+            parts.some((frame) =>
+              resignable.has(documentBytesId(documentFrameNonce(frame))),
+            )
+          )
+            kept++;
+          else {
+            dropped += parts.length;
+            await this.removePublication(row);
+          }
+        }
+        const tail = frames.at(-1);
+        this.outboxTail =
+          kept === 0 || (tail && documentBytesEqual(tail, rows.at(-1)!))
+            ? tail
+              ? {
+                  bytes: tail,
+                  frames: last,
+                  aad: key!.aad,
+                  rows: frames.length + kept,
+                }
+              : null
+            : undefined;
+        if (dropped !== 0) this.reportDropped(dropped);
+        return { frames, dropped, waiting: kept !== 0 };
+      },
+      true,
+      true,
+    );
+  }
+
+  /**
+   * Whether publications are queued, from the known outbox tail without
+   * reading the outbox; undefined when it must be read.
+   */
+  hasQueuedPublications(): Promise<boolean | undefined> {
+    return this.enqueue(
+      0,
+      () => async () => {
+        this.assertActivated();
+        return this.outboxTail === undefined
+          ? undefined
+          : this.outboxTail !== null;
+      },
+      true,
+      true,
+    );
+  }
+
+  private reportDropped(frames: number): void {
+    const report = this.options.onPublicationsDropped;
+    if (!report) {
+      console.warn(
+        `[${this.documentId}] dropped ${frames} unsent change frame(s) sealed for an earlier group epoch or authority; current members did not receive them.`,
+      );
+      return;
+    }
+    try {
+      report(frames);
+    } catch {
+      // The application's handler cannot affect publication state.
+    }
+  }
+
+  /** Learn the queued tail publication and how many publications are queued. */
+  private async loadOutboxTail(): Promise<void> {
+    const rows = this.options.journal
+      ? await this.options.journal.pendingPublications()
+      : this.publications.map((frame) => frame.slice());
+    const last = rows.at(-1);
+    if (!last) {
+      this.outboxTail = null;
+      return;
+    }
+    const parts = splitDocumentPublication(last);
+    const key = await this.frameKey();
+    this.outboxTail = {
+      bytes: last,
+      frames: parts.length,
+      // A stale tail never matches a new frame's binding.
+      aad: (await this.decryptsUnder(parts[0], key))
+        ? key.aad
+        : new Uint8Array(),
+      rows: rows.length,
+    };
+  }
+
+  private async removePublication(frame: Uint8Array): Promise<void> {
+    if (this.options.journal) await this.options.journal.publicationSent(frame);
+    else
+      this.publications = this.publications.filter(
+        (value) => !documentBytesEqual(value, frame),
+      );
+    this.markSent(frame);
+    if (this.outboxTail && documentBytesEqual(this.outboxTail.bytes, frame))
+      this.outboxTail = undefined;
+  }
+
+  private async outboxIsFull(bytes: number): Promise<boolean> {
+    try {
+      const rows = await this.options.journal!.pendingPublications();
+      const queued = rows.reduce(
+        (sum, row) => sum + row.length + STORED_PUBLICATION_OVERHEAD,
+        0,
+      );
+      return (
+        rows.length >= MAX_PUBLICATIONS ||
+        queued + bytes + STORED_PUBLICATION_OVERHEAD > MAX_PUBLICATION_BYTES
+      );
+    } catch {
+      return false;
     }
   }
 

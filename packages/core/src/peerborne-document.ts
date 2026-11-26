@@ -85,6 +85,12 @@ import {
   RETAINED_TREE_HIGH_BYTES,
   RETAINED_TREE_KEEP_BYTES,
 } from './gossip-frame.js';
+import {
+  MemberPeers,
+  NoDeliveryPeersError,
+  publicationRecipients,
+  syncMessageReferences,
+} from './delivery-evidence.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -359,6 +365,26 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
 /** GossipSub publisher of a message, for per-sender receive admission. */
 function gossipSender(message: Message): string {
   return message.type === 'signed' ? message.from.toString() : '';
+}
+
+/** Outcome of one coordinated publication pass. */
+export interface SecurityPublicationReport {
+  /** Publications that reached at least one topic peer. */
+  readonly sent: number;
+  /**
+   * Whether publications stay queued until a topic peer receives them, or
+   * until their frames are re-signed into the current group context.
+   */
+  readonly pending: boolean;
+  /** Frames removed because they were sealed for an earlier context or authority. */
+  readonly dropped: number;
+}
+
+/** A publish allowed with zero topic peers reports an empty recipient list. */
+function securityPublicationReachedPeers(result: unknown): boolean {
+  if (typeof result !== 'object' || result === null) return true;
+  const recipients: unknown = Reflect.get(result, 'recipients');
+  return !Array.isArray(recipients) || recipients.length > 0;
 }
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
@@ -861,6 +887,11 @@ export type PeerborneDocumentDeliveryFailureHandler = (
   failure: ChangeDeliveryFailure,
 ) => void;
 
+/** Receives `PeerborneDocument.deliveryFailure` each time it changes. */
+export type PeerborneDocumentDeliveryStateHandler = (
+  failure: ChangeDeliveryFailure | undefined,
+) => void;
+
 /** Options for {@link PeerborneDocument.removeWriter}. */
 export interface RemoveWriterOptions {
   /**
@@ -1145,6 +1176,19 @@ export class PeerborneDocument<
   /** Generation at which this instance stopped after observing an authenticated competing BeeKEM tree. */
   get competingBeeKEMGeneration(): number | undefined {
     return this._competingBeeKEMGeneration ?? this._beekemForkGuard?.competingGeneration;
+  }
+
+  /**
+   * Whether this instance was retired and refuses further work: after an
+   * oversized edit, a failed change it could not roll back, or a failure that
+   * left its authorization state indeterminate. Continue with a fresh
+   * instance opened from accepted state, such as the last checkpoint.
+   */
+  get retired(): boolean {
+    return (
+      this._oversizedEditClose !== undefined ||
+      this._bootstrapLoadApplicationState === 'poisoned'
+    );
   }
 
   private _competingBeeKEMGeneration: number | undefined;
@@ -1712,7 +1756,7 @@ export class PeerborneDocument<
   // Handler for listening for sync messages on the document topic. Is `undefined` until
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
-  private _redeliverySubscriptionHandler:
+  private _securitySubscriptionHandler:
     | EventHandler<CustomEvent<SubscriptionChangeData>>
     | undefined;
   private _redeliveryTimer?: ReturnType<typeof setTimeout>;
@@ -1763,6 +1807,14 @@ export class PeerborneDocument<
   private _deliveryFailureHandlers: {
     [id: string]: PeerborneDocumentDeliveryFailureHandler;
   } = {};
+  private _deliveryFailure?: ChangeDeliveryFailure;
+  private _deliveryStateHandlers: {
+    [id: string]: PeerborneDocumentDeliveryStateHandler;
+  } = {};
+  private _memberPeerLog?: MemberPeers;
+  private get _memberPeers(): MemberPeers {
+    return (this._memberPeerLog ??= new MemberPeers());
+  }
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -1885,7 +1937,11 @@ export class PeerborneDocument<
       this._coordinated = new CoordinatedDocument(
         documentPath, this._document, _crdtProvider, _changesSerializer,
         _authProvider, _userKey, _userPublicKey,
-        { ...options.security, persistPublications: true },
+        {
+          ...options.security,
+          persistPublications: true,
+          joinPublications: true,
+        },
       );
       this._topic = `peerborne/coordinated/v1/${this._coordinated.routingId}`;
     } else if (this.swarm.beekemForkStore) {
@@ -2582,13 +2638,10 @@ export class PeerborneDocument<
   }
 
   private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType> {
-    const message: CRDTSyncMessage<ChangesType> = {
-      ...(this._lastSyncMessage || {
-        documentId: this.documentPath,
-      }),
-      signatureContext: context,
+    const { snapshot: _snapshot, ...retained } = this._lastSyncMessage || {
+      documentId: this.documentPath,
     };
-    return message;
+    return { ...retained, signatureContext: context };
   }
 
   /**
@@ -5133,6 +5186,7 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
+    let reachedNoMember = false;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
     if (kind === crdtDocumentChangeNode) {
@@ -5233,10 +5287,22 @@ export class PeerborneDocument<
       if (!nonce) {
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
-      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-        this._topic,
-        concatUint8Arrays(documentKeyID, nonce, data),
+      const publication: unknown =
+        await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+          this._topic,
+          concatUint8Arrays(documentKeyID, nonce, data),
+        );
+      const recipients = publicationRecipients(
+        publication,
+        this.swarm.heliaNode.libp2p.peerId?.toString(),
       );
+      reachedNoMember =
+        recipients !== undefined && !this._memberPeers.includesAny(recipients);
+      if (!reachedNoMember) this._setDeliveryFailure(undefined);
+      // Recorded once the founder frame is out, so a failure after this point
+      // cannot let a retry found a second document under a new key.
+      if (this._foundingPublication)
+        this.swarm.recordFoundedDocument(this.documentPath);
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -5275,6 +5341,8 @@ export class PeerborneDocument<
         throw error;
       this._reportDeliveryFailure(hash, error);
     }
+    if (reachedNoMember)
+      this._reportDeliveryFailure(hash, new NoDeliveryPeersError());
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
@@ -5318,6 +5386,7 @@ export class PeerborneDocument<
       changeId,
       error,
     });
+    this._setDeliveryFailure(failure);
     const report = () =>
       console.error(`[${this.documentPath}] a delivery failure handler failed.`);
     for (const handler of Object.values(this._deliveryFailureHandlers)) {
@@ -5328,6 +5397,43 @@ export class PeerborneDocument<
         report();
       }
     }
+  }
+
+  private _setDeliveryFailure(next: ChangeDeliveryFailure | undefined): void {
+    if (this._deliveryFailure === next) return;
+    this._deliveryFailure = next;
+    for (const handler of Object.values(this._deliveryStateHandlers)) {
+      try {
+        const result: unknown = handler(next);
+        if (result !== undefined)
+          void Promise.resolve(result).catch(() =>
+            console.error(`[${this.documentPath}] a delivery state handler failed.`),
+          );
+      } catch {
+        console.error(`[${this.documentPath}] a delivery state handler failed.`);
+      }
+    }
+  }
+
+  /** A member holds, or was sent, the state that `covered` was undelivered in. */
+  private _confirmDelivery(covered: ChangeDeliveryFailure | undefined): void {
+    if (covered !== undefined && this._deliveryFailure === covered)
+      this._setDeliveryFailure(undefined);
+  }
+
+  /** `peer` published a sync request signed by a member's key that names it. */
+  private _noteMemberPeer(peer: string): void {
+    this._antiEntropy?.memberPeer(peer);
+    this._memberPeers.note(peer);
+  }
+
+  /** A verified writer's message that names the undelivered change delivers it. */
+  private _confirmDeliveryByMessage(
+    message: CRDTSyncMessage<ChangesType>,
+  ): void {
+    const pending = this._deliveryFailure;
+    if (pending !== undefined && syncMessageReferences(message, pending.changeId))
+      this._confirmDelivery(pending);
   }
 
   /**
@@ -6613,7 +6719,6 @@ export class PeerborneDocument<
         let beganBootstrapStateApplication = false;
         let trackedLoadHadEstablishedState = false;
         let trackedLoadMadeReplicatedProgress = false;
-        let trackedLoadMadeLogicalKeychainProgress = false;
         const assertBootstrapCanComplete = async (): Promise<void> => {
           throwIfLoadAborted(signal);
           if (
@@ -6677,9 +6782,6 @@ export class PeerborneDocument<
               ? undefined
               : beginBootstrapStateApplication,
             continuingInvitationBootstrap,
-            () => {
-              trackedLoadMadeLogicalKeychainProgress = true;
-            },
             changeFetchOptions,
           );
           throwIfLoadAborted(signal);
@@ -6690,8 +6792,6 @@ export class PeerborneDocument<
             return false;
           }
           trackedLoadMadeReplicatedProgress =
-            (loadWriterAdmission === 'pinned' &&
-              trackedLoadMadeLogicalKeychainProgress) ||
             this._hashes.size > hashesBefore ||
             this._lastSyncMessage !== lastSyncMessageBefore ||
             this._latestSnapshot !== latestSnapshotBefore;
@@ -6738,7 +6838,6 @@ export class PeerborneDocument<
                 session.context,
                 undefined,
                 false,
-                undefined,
                 changeFetchOptions,
               );
             });
@@ -7927,6 +8026,7 @@ export class PeerborneDocument<
   }
 
   private _activationInProgress = false;
+  private _foundingPublication = false;
   private _preOpenAuthorityPathReserved = false;
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
@@ -8243,7 +8343,7 @@ export class PeerborneDocument<
       return;
     const verified = await role();
     if (verified === undefined || !isCurrent()) return;
-    antiEntropy.memberPeer(request.requesterPeer);
+    this._noteMemberPeer(request.requesterPeer);
     if (held) antiEntropy.retractAdvertisement(request.requester);
     else
       antiEntropy.advertisement(
@@ -8272,6 +8372,17 @@ export class PeerborneDocument<
       const role = () => (verification ??= this._syncRequestRole(request));
       await this._observeSyncRequest(request, now, role, isCurrent);
       if (!isCurrent()) return;
+      const pending = this._deliveryFailure;
+      if (
+        pending !== undefined &&
+        request.knownTips.includes(pending.changeId) &&
+        (await role()) !== undefined
+      ) {
+        this._noteMemberPeer(request.requesterPeer);
+        this._confirmDelivery(pending);
+      }
+      if (!isCurrent()) return;
+      const covered = this._deliveryFailure;
       const previous = this._lastSyncMessage,
         snapshot = this._latestSnapshot;
       const hasChange = !!previous?.changeId && !!previous.changes;
@@ -8292,7 +8403,7 @@ export class PeerborneDocument<
       )
         return;
       if (!(await this._verifySyncRequest(request, verification))) return;
-      this._antiEntropy?.memberPeer(request.requesterPeer);
+      this._noteMemberPeer(request.requesterPeer);
       if ((await this._writers.check(this._userPublicKey)) !== true) return;
       const snapshotKnown =
         !snapshot ||
@@ -8342,7 +8453,7 @@ export class PeerborneDocument<
       this._lastSyncResponseAt = now;
       try {
         message.signature = await this._signAsWriter(message);
-        await this._publishSyncBytes(
+        const publication = await this._publishSyncBytes(
           this._syncMessageSerializer.serializeSyncMessage(message),
           () => {
             const dispatch = this._observeSyncRequestClock();
@@ -8353,6 +8464,12 @@ export class PeerborneDocument<
             );
           },
         );
+        if (
+          publicationRecipients(publication, this._localPeerId())?.includes(
+            request.requesterPeer,
+          )
+        )
+          this._confirmDelivery(covered);
       } finally {
         const settled = this._observeSyncRequestClock();
         if (settled !== undefined) this._lastSyncResponseAt = settled;
@@ -8360,26 +8477,26 @@ export class PeerborneDocument<
     });
   }
 
+  /** Returns the GossipSub publication, or undefined when nothing was sent. */
   private async _publishSyncBytes(
     bytes: Uint8Array,
     isCurrent?: () => boolean,
-  ): Promise<boolean> {
+  ): Promise<unknown> {
     assertSharedProtocolRequestSize(
       bytes.byteLength,
       'Document sync message',
     );
-    if (isCurrent && !isCurrent()) return false;
+    if (isCurrent && !isCurrent()) return undefined;
     const [keyId, key] = await this._keychain.current();
     if (!key) throw new Error('Document has no encryption key');
     const { nonce, data } = await this._authProvider.encrypt(bytes, key);
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
     const frame = concatUint8Arrays(keyId, nonce, data);
-    if (isCurrent && !isCurrent()) return false;
-    await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+    if (isCurrent && !isCurrent()) return undefined;
+    return this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
       frame,
     );
-    return true;
   }
   /**
    * Capture a bounded, self-signed local checkpoint. The payload contains
@@ -8626,6 +8743,7 @@ export class PeerborneDocument<
       );
       const hashes = new Set(state.hashes);
       assertCheckpointChangeHistory(this.documentPath, message, hashes);
+      const { snapshot, ...retainedMessage } = message;
       const beekem = state.beekem === null ? null : new BeeKEM();
       if (beekem !== null && state.beekem !== null) {
         if (!this._kemKeyPair)
@@ -8697,13 +8815,13 @@ export class PeerborneDocument<
       this._mergedHeldACL = undefined;
       this._waiting = undefined;
       this._keychain = keychain;
-      this._lastSyncMessage = message;
+      this._lastSyncMessage = retainedMessage;
       this._hashes = hashes;
       this._referencedAncestors = ancestors;
       this._recentTips = recentTips;
       this._ownBlocks = new Set(state.ownBlocks);
       this._gcCandidates = new Set(state.gcCandidates);
-      this._latestSnapshot = message.snapshot;
+      this._latestSnapshot = snapshot;
       this._documentChangeCount = state.documentChangeCount;
       this._changesSinceSnapshot = state.changesSinceSnapshot;
       this._historyVisibility = state.historyVisibility;
@@ -8719,10 +8837,15 @@ export class PeerborneDocument<
     });
   }
 
-  /** Create a new document under an application-owned path without querying peers. */
+  /**
+   * Create a new document under an application-owned path without querying
+   * peers. Rejects a path that this node already created or holds open, and
+   * an instance with restored or loaded state: open that path instead, since
+   * creating it again would found a different document with a new key.
+   */
   public async create(): Promise<boolean> {
     this._assertNoIncompleteBootstrapLoad(true);
-    if (this._activationInProgress || this._subscribed || this._hashes.size > 0 || this._createdLocally) {
+    if (this._activationInProgress || this._subscribed || this._hashes.size > 0 || this._createdLocally || this._localCheckpointReady) {
       throw new Error('Cannot create a document with existing local state');
     }
     this._activationInProgress = true;
@@ -8767,16 +8890,21 @@ export class PeerborneDocument<
           ).catch(() => {});
           return;
         }
-        void this.receiveSecurityFrame(event.detail.data).catch(() => {});
+        void this._receiveSecurityFrame(
+          event.detail.data,
+          gossipSender(event.detail),
+        ).catch(() => {});
       };
-      this._redeliverySubscriptionHandler = (event) => {
+      this._securitySubscriptionHandler = (event) => {
         if (
+          !this._subscribed ||
           !event.detail?.subscriptions?.some(
             (subscription) =>
               subscription.subscribe && subscription.topic === this._topic,
           )
         )
           return;
+        void this.retrySecurityPublications().catch(() => {});
         const peer = String(event.detail.peerId);
         const now = Date.now();
         if (now - (this._redeliveryPeers.get(peer) ?? -Infinity) < REDELIVERY_PEER_DEBOUNCE_MS)
@@ -8790,10 +8918,13 @@ export class PeerborneDocument<
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.addEventListener(
         'subscription-change',
-        this._redeliverySubscriptionHandler as EventListener,
+        this._securitySubscriptionHandler as EventListener,
       );
       pubsub.subscribe(this._topic);
       this._subscribed = true;
+      // Peers connected before open announced their subscriptions already, so
+      // restored publications cannot wait for a subscription change.
+      void this.retrySecurityPublications().catch(() => {});
       this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       return true;
     } catch (error) {
@@ -8805,16 +8936,27 @@ export class PeerborneDocument<
 
   /** Accept only the encrypted, signed coordinator document format. */
   public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
+    return this._receiveSecurityFrame(frame);
+  }
+
+  private async _receiveSecurityFrame(
+    frame: Uint8Array,
+    sender?: string,
+  ): Promise<boolean> {
     const engine = this._coordinated;
     if (!engine)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    const applied = await engine.receive(frame);
-    // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
-    if (engine.heldGeneration !== this._redeliveryHeldSeen) {
-      this._redeliveryHeldSeen = engine.heldGeneration;
-      this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
-      this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+    let applied: boolean;
+    try {
+      applied = await engine.receive(frame, sender);
+    } finally {
+      // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
+      if (engine.heldGeneration !== this._redeliveryHeldSeen) {
+        this._redeliveryHeldSeen = engine.heldGeneration;
+        this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
+        this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+      }
     }
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
@@ -8965,8 +9107,9 @@ export class PeerborneDocument<
    * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
    */
   /**
-   * Redelivery requests from members ignored because their issue time was more
-   * than 60 s from this node's clock. Redelivery needs clocks within that range.
+   * Redelivery requests sealed under the current epoch key and ignored because
+   * their issue time was more than 60 s from this node's clock. Redelivery
+   * needs clocks within that range.
    */
   public get securityRedeliveryStaleRequests(): number {
     return this._coordinated?.staleRedeliveryRequests ?? 0;
@@ -9045,33 +9188,65 @@ export class PeerborneDocument<
       await publish(engine.unansweredRedeliveries(answer));
   }
 
-  private _securityPublicationTask?: Promise<void>;
-  private _securityPublicationQueued?: Promise<void>;
+  private _securityPublicationTask?: Promise<SecurityPublicationReport>;
+  private _securityPublicationQueued?: Promise<SecurityPublicationReport>;
 
 
-  /** Retry durable encrypted publications without running local change callbacks again. */
-  public async retrySecurityPublications(): Promise<void> {
+  /**
+   * Retry durable encrypted publications without running local change
+   * callbacks again. Publications that reach no topic peer stay queued, and
+   * later local changes join the last of them. A publication sealed for an
+   * earlier group context or authority head is never sent, since no current
+   * member can accept it. It stays queued while its author can still re-sign
+   * its frames into the current context, and is otherwise dropped and
+   * counted; the security option `onPublicationsDropped` hears about every
+   * drop, including those of background retries.
+   */
+  public async retrySecurityPublications(): Promise<SecurityPublicationReport> {
     const engine = this._coordinated;
     if (!engine || !this._subscribed)
       throw new Error('Coordinated document is not open');
     if (this._securityPublicationQueued) return this._securityPublicationQueued;
     const previous = this._securityPublicationTask ?? Promise.resolve();
-    const task: Promise<void> = previous
+    const task: Promise<SecurityPublicationReport> = previous
       .catch(() => {})
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
+        const pubsub = this.swarm.heliaNode.libp2p.services.pubsub;
+        // Without topic peers a publish reaches nobody; skip reading the outbox.
+        const unreachable =
+          typeof pubsub.getSubscribers === 'function' &&
+          pubsub.getSubscribers(this._topic).length === 0;
+        if (unreachable) {
+          const pending = await engine.hasQueuedPublications();
+          if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
+        }
+        let sent = 0,
+          dropped = 0,
+          waiting = false;
         do {
-          for (const frame of await engine.pendingPublications()) {
+          const batch = await engine.dispatchablePublications();
+          dropped += batch.dropped;
+          waiting = batch.waiting;
+          if (unreachable)
+            return {
+              sent,
+              pending: batch.frames.length !== 0 || waiting,
+              dropped,
+            };
+          for (const frame of batch.frames) {
             engine.assertPublicationDispatchAllowed();
-            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-              this._topic,
-              frame,
-            );
+            const result: unknown = await pubsub.publish(this._topic, frame);
+            // Keep this frame and its successors until a topic peer receives them.
+            if (!securityPublicationReachedPeers(result))
+              return { sent, pending: true, dropped };
             await engine.publicationSent(frame);
+            sent++;
           }
           // Re-signed retired frames that waited for outbox space follow.
         } while (await engine.continueResend());
+        return { sent, pending: waiting, dropped };
       })
       .finally(() => {
         if (this._securityPublicationTask === task)
@@ -9209,6 +9384,11 @@ export class PeerborneDocument<
       }
     }
     assertCanOpen();
+    if (!isExisting && this.swarm.hasLocalDocument(this.documentPath)) {
+      throw new Error(
+        `Document ${this.documentPath} was already created or is open on this node; open it instead`,
+      );
+    }
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
@@ -9257,7 +9437,10 @@ export class PeerborneDocument<
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
-      if (applied) this._antiEntropy?.memberPeer(sender);
+      if (applied) {
+        this._antiEntropy?.memberPeer(sender);
+        this._confirmDeliveryByMessage(message);
+      }
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
@@ -9342,7 +9525,7 @@ export class PeerborneDocument<
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
                       if (!signatureValid) return TopicValidatorResult.Reject;
-                      this._antiEntropy?.memberPeer(request.requesterPeer);
+                      this._noteMemberPeer(request.requesterPeer);
                       const verified = this._observeSyncRequestClock();
                       return verified !== undefined &&
                         isSyncRequestFresh(request, verified)
@@ -9443,10 +9626,15 @@ export class PeerborneDocument<
           // it only in the creator's in-memory ACL lets first-load peers decrypt
           // document state but leaves them unable to authenticate later writer
           // updates (or write as the same restored identity).
-          await this._publishPreparedWriterChange(
-            founderWriter,
-            'open founder writer',
-          );
+          this._foundingPublication = true;
+          try {
+            await this._publishPreparedWriterChange(
+              founderWriter,
+              'open founder writer',
+            );
+          } finally {
+            this._foundingPublication = false;
+          }
         });
       }
     } catch (err) {
@@ -9532,12 +9720,12 @@ export class PeerborneDocument<
 
       // Cast required: see addEventListener comment above
       pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
-      if (this._redeliverySubscriptionHandler)
+      if (this._securitySubscriptionHandler)
         pubsub.removeEventListener(
           'subscription-change',
-          this._redeliverySubscriptionHandler as EventListener,
+          this._securitySubscriptionHandler as EventListener,
         );
-      this._redeliverySubscriptionHandler = undefined;
+      this._securitySubscriptionHandler = undefined;
 
       if (
         this._topicValidator &&
@@ -9582,9 +9770,11 @@ export class PeerborneDocument<
     } catch {
       return false;
     }
-    return this._runStateMutation(() =>
-      this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
-    );
+    return this._runStateMutation(async () => {
+      const applied = await this._syncUnlocked(detached, true, 'ordinary-sync-v1');
+      if (applied) this._confirmDeliveryByMessage(detached);
+      return applied;
+    });
   }
 
   /**
@@ -9629,7 +9819,6 @@ export class PeerborneDocument<
           'ordinary-sync-v1',
           undefined,
           false,
-          undefined,
           {
             assertStillActive: () => {
               if (!isActive())
@@ -9761,7 +9950,6 @@ export class PeerborneDocument<
               'invitation-bootstrap-v1',
               undefined,
               true,
-              undefined,
               changeFetchOptions,
             ),
             changeFetchOptions.signal,
@@ -9884,7 +10072,6 @@ export class PeerborneDocument<
     context: Extract<SyncMessageContext, 'ordinary-sync-v1' | 'load-response-v4' | 'invitation-bootstrap-v1' | 'invitation-catch-up-v1'>,
     onStateApplicationStart?: () => void,
     continuePendingBootstrapApplication = false,
-    onLogicalKeychainChange?: () => void,
     changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
   ): Promise<boolean> {
     const assertStillActive = (): void => {
@@ -9988,6 +10175,32 @@ export class PeerborneDocument<
           );
     assertStillActive();
 
+    // Any writer can sign a response, and an honest one is encrypted under a
+    // key the receiver holds, so it may only re-deliver known keys. New keys
+    // come from BeeKEM rotations, the invitation, or a checkpoint. A no-op is
+    // still committed below so providers retain causal metadata.
+    const keychainChanges = message.keychainChanges;
+    const preparedKeychainMerge =
+      keychainChanges === undefined
+        ? undefined
+        : this._keychain.prepareMerge(keychainChanges);
+    if (preparedKeychainMerge !== undefined) {
+      const [liveCommitment, preparedCommitment] = await awaitLoadWork(
+        Promise.all([
+          this._keychain.stateCommitment(),
+          preparedKeychainMerge.stateCommitment(),
+        ]),
+        changeFetchOptions.signal,
+      );
+      if (!constantTimeEqual(liveCommitment, preparedCommitment)) {
+        console.warn(
+          `Rejected keychain changes that would add keys to ${this.documentPath}`,
+        );
+        return false;
+      }
+    }
+    assertStillActive();
+
     let stateApplicationStarted = false;
     const beginStateApplication = (): void => {
       assertStillActive();
@@ -10000,7 +10213,7 @@ export class PeerborneDocument<
     // _writers/_readers. This is needed before snapshot verification since
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    // It runs before the keychain merge so a rejected ACL merge leaves the
+    // It runs before the keychain commit so a rejected ACL merge leaves the
     // keychain unchanged.
     if (changeTreePreflight && changeTreePreflight.aclEntries.length > 0) {
       await this._admitACLEntries(
@@ -10019,70 +10232,19 @@ export class PeerborneDocument<
       assertStillActive();
     }
 
-    // Keychain changes are provider-opaque. Only an absent wire field is a
-    // generic no-op; concrete providers decide whether any present value is a
-    // semantic no-op through a staged state commitment below.
-    const keychainChanges = message.keychainChanges;
-    const hasKeychainChanges = keychainChanges !== undefined;
-
-    // The built-in providers do not share one byte-level empty encoding. When
-    // bootstrapping, compare the live and projected key sequences before
-    // reserving a bootstrap instance. A semantic no-op is still committed
-    // atomically so providers retain causal metadata, but it does not expose
-    // new logical key state.
-    const preparedKeychainMerge =
-      hasKeychainChanges &&
-      onStateApplicationStart !== undefined
-        ? this._keychain.prepareMerge(keychainChanges)
-        : undefined;
-    let logicalKeychainStateChanged: boolean | undefined;
     if (preparedKeychainMerge !== undefined) {
-      const [liveCommitment, preparedCommitment] = await awaitLoadWork(
-        Promise.all([
-          this._keychain.stateCommitment(),
-          preparedKeychainMerge.stateCommitment(),
-        ]),
-        changeFetchOptions.signal,
-      );
-      logicalKeychainStateChanged = !constantTimeEqual(
-        liveCommitment,
-        preparedCommitment,
-      );
-    }
-    assertStillActive();
-    // Update/replace list of document keys (if provided).
-    if (hasKeychainChanges) {
+      assertStillActive();
       try {
-        if (preparedKeychainMerge) {
-          if (logicalKeychainStateChanged !== false) {
-            await awaitLoadWork(
-              preparedKeychainMerge.hydrateKeys(),
-              changeFetchOptions.signal,
-            );
-            assertStillActive();
-            beginStateApplication();
-          }
-          assertStillActive();
-          try {
-            preparedKeychainMerge.commit();
-          } catch (error) {
-            // A provider-reported no-op can still partially mutate before throwing.
-            this._markBootstrapStateApplicationPending();
-            throw error;
-          }
-        } else {
-          beginStateApplication();
-          this._keychain.merge(keychainChanges);
+        preparedKeychainMerge.commit();
+      } catch (error) {
+        // A provider-reported no-op can still partially mutate before throwing.
+        if (onStateApplicationStart !== undefined) {
+          this._markBootstrapStateApplicationPending();
         }
-        if (logicalKeychainStateChanged === true) {
-          onLogicalKeychainChange?.();
-        }
-        console.log(`Updated keychain in ${this.documentPath}`);
-      } catch (e) {
         console.error(
           `Failed to merge keychain changes in ${this.documentPath}`,
         );
-        throw e;
+        throw error;
       }
     }
 
@@ -10329,13 +10491,15 @@ export class PeerborneDocument<
   /**
    * Subscribe to local changes that were committed but not delivered, because
    * encrypting or publishing their frame failed, for example when GossipSub
-   * has no topic peers and does not allow publishing to none. `change()` and
-   * `endChange()` still resolve for such a change: it stays in the document,
-   * and it reaches peers with the next change's frame or a sync or load
-   * response. Do not repeat the edit. A coordinated document reports a
+   * has no topic peers and does not allow publishing to none. A frame that is
+   * published but reaches no peer known to serve a member, as by default with
+   * no topic peers or only a relay, is reported with a `NoDeliveryPeersError`.
+   * `change()` and `endChange()` still resolve for such a change: it stays in
+   * the document, and it reaches peers with the next change's frame or a sync
+   * or load response. Do not repeat the edit. A coordinated document reports a
    * delivery failure by rejecting instead, and does not call these handlers.
    *
-   * Until a later frame is published, the change exists only on this device.
+   * Until a member receives it, the change exists only on this device.
    * Export a checkpoint after a delivery failure: if the instance is later
    * retired, it is reopened from the last checkpoint, and an undelivered
    * change made after that checkpoint is lost.
@@ -10350,6 +10514,44 @@ export class PeerborneDocument<
   ) {
     this._assertNoIncompleteBootstrapLoad(true);
     this._deliveryFailureHandlers[id] = handler;
+  }
+
+  /**
+   * The latest local change that is committed but not known to have reached
+   * a member, as reported to `subscribeDeliveryFailures()` handlers. It is
+   * cleared on evidence that a member holds the change or was sent it: a
+   * later local frame or sync response sent to a peer that recently proved it
+   * serves a member, a member's sync request that names the change, or a
+   * writer's frame that names it. A peer proves it serves a member only with
+   * a sync request signed by a member's key that names that peer as its
+   * publisher. This is evidence of delivery, not an acknowledgment that a
+   * member stored it. A load served to a member is not evidence until the
+   * member's next sync request names the change.
+   * Local update handlers see the value after their change. A coordinated
+   * document never sets it.
+   */
+  public get deliveryFailure(): ChangeDeliveryFailure | undefined {
+    return this._deliveryFailure;
+  }
+
+  /**
+   * Call `handler` with `deliveryFailure` each time it is set or cleared.
+   *
+   * @param id An id to remove the handler with `unsubscribeDeliveryState(id)`.
+   * @param handler Called synchronously. A thrown error or rejected promise is
+   *   logged and does not affect the document.
+   */
+  public subscribeDeliveryState(
+    id: string,
+    handler: PeerborneDocumentDeliveryStateHandler,
+  ) {
+    this._assertNoIncompleteBootstrapLoad(true);
+    this._deliveryStateHandlers[id] = handler;
+  }
+
+  /** Remove a handler added with `subscribeDeliveryState()`. */
+  public unsubscribeDeliveryState(id: string) {
+    delete this._deliveryStateHandlers[id];
   }
 
   /**
@@ -10503,10 +10705,11 @@ export class PeerborneDocument<
    *
    * The change is committed locally once its block is stored and it is in the
    * retained change tree. When encrypting or publishing its frame then fails,
-   * for example because GossipSub has no topic peers, the call still
-   * resolves: the change stays in the document, the next change's frame
-   * carries it inline, and sync and load responses serve it. The failure is
-   * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
+   * for example because GossipSub has no topic peers, or the frame reaches
+   * no member's peer, the call still resolves: the change stays in the
+   * document, the next change's frame carries it inline, and sync and load
+   * responses serve it. The failure is reported to
+   * `subscribeDeliveryFailures()` handlers. A failure from a local
    * update handler or compaction rejects the call but also keeps the change.
    *
    * A failure before that point (block storage, signing or the frame size
@@ -13219,6 +13422,16 @@ export class PeerborneDocument<
     }
   }
 
+  /** Whether this replica has no key, ratchet tree, or invitation epoch. */
+  private async _acceptsBeeKEMWelcome(): Promise<boolean> {
+    return (
+      this._beekem === null &&
+      !this._beekemInitialized &&
+      this._invitationEpoch === undefined &&
+      (await this._keychain.keys()).length === 0
+    );
+  }
+
   /**
    * Shared receive-path body for both freshly-arrived Welcomes (called
    * from `handleBeeKEMWelcomeRequestData`) and Welcomes replayed from the
@@ -13335,6 +13548,14 @@ export class PeerborneDocument<
     // validator authenticated, never the caller-owned serializer result.
     message = decision.message;
 
+    // Any writer can sign a Welcome, so it may only bootstrap a replica with
+    // no key or tree. Otherwise it could append a key or plant a leaf that
+    // reads this replica's later rotations.
+    if (!(await this._acceptsBeeKEMWelcome())) {
+      console.warn('Ignoring BeeKEM Welcome for a replica that holds keys');
+      return 'terminal';
+    }
+
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
     // that addresses us by identity and KEM public key cannot be
@@ -13373,18 +13594,6 @@ export class PeerborneDocument<
       EPOCH_ID_LENGTH,
       'BeeKEM Welcome epoch ID',
     );
-    const existingInvitationEpoch =
-      this._invitationEpoch === undefined
-        ? undefined
-        : new Uint8Array(this._invitationEpoch);
-    if (
-      existingInvitationEpoch !== undefined &&
-      constantTimeEqual(existingInvitationEpoch, newEpochId)
-    ) {
-      return 'terminal';
-    }
-    const liveBeeKEM = this._beekem;
-    const liveGeneration = liveBeeKEM?.generation;
 
     let keychainPlaintext: ChangesType;
     let bootstrapWelcome: BeeKEMWelcomeV2;
@@ -13418,34 +13627,6 @@ export class PeerborneDocument<
         [keychainPlaintext],
       );
       preparedKeychainMerge = capturePreparedKeychainMerge(prepared);
-
-      if (existingInvitationEpoch !== undefined) {
-        let existingIndex = -1;
-        let incomingIndex = -1;
-        for (
-          let index = 0;
-          index < preparedKeychainMerge.keyIds.length;
-          index++
-        ) {
-          const keyId = preparedKeychainMerge.keyIds[index];
-          if (constantTimeEqual(keyId, existingInvitationEpoch)) {
-            existingIndex = index;
-          }
-          if (constantTimeEqual(keyId, newEpochId)) {
-            incomingIndex = index;
-          }
-        }
-        if (existingIndex === -1 || incomingIndex === -1) {
-          console.warn(
-            'Dropping BeeKEM Welcome with a divergent staged keychain',
-          );
-          return 'terminal';
-        }
-        if (incomingIndex <= existingIndex) {
-          console.warn('Ignoring out-of-order BeeKEM Welcome');
-          return 'terminal';
-        }
-      }
 
       if (!constantTimeEqual(preparedKeychainMerge.currentKeyId, newEpochId)) {
         console.warn(
@@ -13490,11 +13671,6 @@ export class PeerborneDocument<
           this._kemKeyPair.publicKey,
         )
       ).fill(0);
-      const currentGeneration = this._beekem?.generation;
-      if (currentGeneration != null && bootstrapWelcome.generation <= currentGeneration) {
-        console.warn('Dropping non-increasing BeeKEM Welcome generation');
-        return 'terminal';
-      }
     } catch {
       console.warn('Dropping BeeKEM Welcome with invalid bootstrap state');
       return 'terminal';
@@ -13508,16 +13684,10 @@ export class PeerborneDocument<
           if (this._writerKeysVersion !== writerKeysVersion) {
             throw new Error('Writer ACL changed before Welcome commit');
           }
-          const invitationEpoch = this._invitationEpoch;
-          const invitationEpochChanged =
-            invitationEpoch === undefined ||
-            existingInvitationEpoch === undefined
-              ? invitationEpoch !== existingInvitationEpoch
-              : !constantTimeEqual(invitationEpoch, existingInvitationEpoch);
           if (
-            this._beekem !== liveBeeKEM ||
-            this._beekem?.generation !== liveGeneration ||
-            invitationEpochChanged
+            this._beekem !== null ||
+            this._beekemInitialized ||
+            this._invitationEpoch !== undefined
           ) {
             return false;
           }
@@ -14586,6 +14756,11 @@ export class PeerborneDocument<
       let rootSecret: Uint8Array;
       let disposition: 'applied' | 'duplicate';
       try {
+        // Members join only through this replica's own addMember and leave
+        // only through its own removeReader. A remote update that adds or
+        // blanks a leaf could plant one its signer controls, and one that
+        // replaces the signer's leaf key would hide that leaf from the
+        // identity-bound lookup removeReader uses to revoke it.
         ({ rootSecret, disposition } =
           await beekem.processPathUpdateTransactionally(
             pathUpdate,
@@ -14593,6 +14768,7 @@ export class PeerborneDocument<
               rootSecret: appliedRoot,
               disposition: appliedDisposition,
             }),
+            { fixedLeaves: true },
           ));
       } catch (error) {
         if (error instanceof BeeKEMCompetingEpochError) {

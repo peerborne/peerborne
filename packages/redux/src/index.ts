@@ -13,6 +13,7 @@ export {
   CLOSE_DOCUMENT,
   SYNC_DOCUMENT,
   CHANGE_DOCUMENT,
+  DELIVERY_FAILURE,
   PEER_CONNECT,
   PEER_DISCONNECT,
 
@@ -23,6 +24,7 @@ export {
   type CloseDocumentAction,
   type SyncDocumentAction,
   type ChangeDocumentAction,
+  type DeliveryFailureAction,
   type PeerConnectAction,
   type PeerDisconnectAction,
   type PeerborneActions,
@@ -34,6 +36,7 @@ export {
   closeDocument,
   syncDocument,
   changeDocument,
+  deliveryFailure,
   peerConnect,
   peerDisconnect,
 } from './actions.js';

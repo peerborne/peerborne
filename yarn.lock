@@ -4472,7 +4472,7 @@ __metadata:
     typescript: "npm:^6.0.3"
     vue: "npm:^3.5.46"
   peerDependencies:
-    vue: ^3.2.25
+    vue: ^3.3.0
   languageName: unknown
   linkType: soft
 

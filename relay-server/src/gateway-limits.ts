@@ -1,5 +1,6 @@
 import { isIPv4, isIPv6 } from 'node:net'
 import { performance } from 'node:perf_hooks'
+import { RefillingBucket } from './refilling-bucket.js'
 
 export const demoGatewayLimits = {
   maxConnections: 16,
@@ -25,53 +26,17 @@ interface Window {
   count: number
 }
 
-/** A byte allowance that refills continuously up to its capacity. */
-export class ByteBucket {
-  private balance: number
-  private refilledAt: number
-
-  constructor(
-    readonly capacity: number,
-    private readonly bytesPerMs: number,
-    now: number,
-  ) {
-    this.balance = capacity
-    this.refilledAt = now
-  }
-
-  available(now: number): number {
-    if (now > this.refilledAt) {
-      this.balance = Math.min(
-        this.capacity,
-        this.balance + (now - this.refilledAt) * this.bytesPerMs,
-      )
-      this.refilledAt = now
-    }
-    return this.balance
-  }
-
-  /** Charges the bytes even past zero and reports whether the balance covered them. */
-  spend(bytes: number, now: number): boolean {
-    this.balance = this.available(now) - bytes
-    return this.balance >= 0
-  }
-
-  msUntil(bytes: number, now: number): number {
-    return Math.max(0, (bytes - this.available(now)) / this.bytesPerMs)
-  }
-}
-
 interface ClientRecord {
   minute: Window
   burst: Window
-  share: ByteBucket
+  share: RefillingBucket
 }
 
 export interface GatewaySession {
   readonly client: string
   bytes: number
-  readonly rate: ByteBucket
-  readonly share: ByteBucket
+  readonly rate: RefillingBucket
+  readonly share: RefillingBucket
 }
 
 function ipv6Groups(address: string): number[] {
@@ -109,7 +74,7 @@ export class GatewayLimiter {
   private readonly clients = new Map<string, ClientRecord>()
   private readonly sessions = new Set<GatewaySession>()
   private readonly newClients = { start: -Infinity, clients: new Set<string>() }
-  private readonly window: ByteBucket
+  private readonly window: RefillingBucket
 
   constructor(
     readonly limits: GatewayLimits = demoGatewayLimits,
@@ -118,8 +83,8 @@ export class GatewayLimiter {
     this.window = this.windowBucket(limits.windowBytes, now())
   }
 
-  private windowBucket(bytes: number, now: number): ByteBucket {
-    return new ByteBucket(bytes, bytes / this.limits.windowMs, now)
+  private windowBucket(bytes: number, now: number): RefillingBucket {
+    return new RefillingBucket(bytes, bytes / this.limits.windowMs, now)
   }
 
   private increment(window: Window, duration: number): number {
@@ -207,7 +172,7 @@ export class GatewayLimiter {
     const session = {
       client,
       bytes: 0,
-      rate: new ByteBucket(this.limits.burstBytes, this.limits.bytesPerSecond / 1000, now),
+      rate: new RefillingBucket(this.limits.burstBytes, this.limits.bytesPerSecond / 1000, now),
       share: record.share,
     }
     this.sessions.add(session)

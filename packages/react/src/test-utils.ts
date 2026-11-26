@@ -24,6 +24,7 @@ export function getCacheSizes(peerborne: object) {
 
 export function createMockDocument(data: any = { test: 'data' }): any {
   const subscriptions = new Map<string, { handler: Function; filter: string }>();
+  const deliveryHandlers = new Map<string, Function>();
   return {
     open: jest.fn(() => Promise.resolve()),
     create: jest.fn(() => Promise.resolve()),
@@ -43,7 +44,15 @@ export function createMockDocument(data: any = { test: 'data' }): any {
     unsubscribe: jest.fn((id: string) => {
       subscriptions.delete(id);
     }),
+    deliveryFailure: undefined,
+    subscribeDeliveryState: jest.fn((id: string, handler: Function) => {
+      deliveryHandlers.set(id, handler);
+    }),
+    unsubscribeDeliveryState: jest.fn((id: string) => {
+      deliveryHandlers.delete(id);
+    }),
     _subscriptions: subscriptions,
+    _deliveryHandlers: deliveryHandlers,
   };
 }
 
@@ -83,14 +92,21 @@ export function TestConsumer(props: {
   initialization?: 'open' | 'create';
   captureRef?: { current: any };
 }) {
-  const [docData, changeFn, acl, activationError] = usePeerborneDocumentState(
-    props.peerborne,
-    props.documentPath,
-    props.originFilter,
-    props.initialization,
-  );
+  const [docData, changeFn, acl, activationError, deliveryFailure] =
+    usePeerborneDocumentState(
+      props.peerborne,
+      props.documentPath,
+      props.originFilter,
+      props.initialization,
+    );
   if (props.captureRef) {
-    props.captureRef.current = { docData, changeFn, acl, activationError };
+    props.captureRef.current = {
+      docData,
+      changeFn,
+      acl,
+      activationError,
+      deliveryFailure,
+    };
   }
   return React.createElement('div', { 'data-testid': 'doc-data' }, JSON.stringify(docData));
 }
