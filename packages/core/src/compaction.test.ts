@@ -4,6 +4,7 @@ import {
   defaultCompactionConfig,
 } from './compaction-config.js';
 import { CRDTSnapshotNode } from './snapshot-node.js';
+import { buildSnapshotSignaturePayload } from './snapshot-signature-payload.js';
 import {
   isBlockNotFoundError,
   loadChangeBlock,
@@ -96,110 +97,141 @@ describe('Compaction trigger logic', () => {
 });
 
 describe('Snapshot sign payload construction', () => {
-  /**
-   * Mirrors PeerborneDocument._buildSnapshotSignPayload() so we can
-   * test the deterministic binary layout and input validation independently.
-   */
-  function buildSnapshotSignPayload(
+  const DOMAIN = 'peerborne/snapshot-signature/v2\0';
+  const PATH = '/docs/alpha';
+  const build = (
     stateBytes: Uint8Array,
     lastChangeNodeCID: string,
     timestamp: number,
     compactedCount: number,
-  ): Uint8Array {
-    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
-      throw new Error(`Invalid snapshot timestamp: ${timestamp}`);
-    }
-    if (!Number.isInteger(compactedCount) || compactedCount < 0 || compactedCount > 0xFFFFFFFF) {
-      throw new Error(`Invalid snapshot compactedCount: ${compactedCount}`);
-    }
-    const encoder = new TextEncoder();
-    const cidBytes = encoder.encode(lastChangeNodeCID);
-    if (cidBytes.length > 0xFFFFFFFF) {
-      throw new Error(`lastChangeNodeCID too large: ${cidBytes.length} bytes`);
-    }
-    if (stateBytes.length > 0xFFFFFFFF) {
-      throw new Error(`Snapshot state too large: ${stateBytes.length} bytes`);
-    }
-    const totalLen = 1 + 8 + 4 + 4 + cidBytes.length + 4 + stateBytes.length;
-    const buf = new ArrayBuffer(totalLen);
-    const view = new DataView(buf);
-    const out = new Uint8Array(buf);
-    let offset = 0;
-    view.setUint8(offset, 1);
-    offset += 1;
-    view.setBigUint64(offset, BigInt(timestamp), false);
-    offset += 8;
-    view.setUint32(offset, compactedCount, false);
-    offset += 4;
-    view.setUint32(offset, cidBytes.length, false);
-    offset += 4;
-    out.set(cidBytes, offset);
-    offset += cidBytes.length;
-    view.setUint32(offset, stateBytes.length, false);
-    offset += 4;
-    out.set(stateBytes, offset);
-    return out;
-  }
+    documentPath = PATH,
+  ) =>
+    buildSnapshotSignaturePayload(
+      documentPath,
+      stateBytes,
+      lastChangeNodeCID,
+      timestamp,
+      compactedCount,
+    );
 
   test('produces deterministic output for same inputs', () => {
     const state = new Uint8Array([1, 2, 3]);
-    const cid = 'bafytest123';
-    const ts = 1700000000000;
-    const count = 100;
-
-    const a = buildSnapshotSignPayload(state, cid, ts, count);
-    const b = buildSnapshotSignPayload(state, cid, ts, count);
+    const a = build(state, 'bafytest123', 1700000000000, 100);
+    const b = build(state, 'bafytest123', 1700000000000, 100);
     expect(a).toEqual(b);
+  });
+
+  test('encodes the domain, the length-prefixed path and every field', () => {
+    const payload = build(new Uint8Array([7, 8]), 'cid', 0x0102030405, 9);
+    const encoder = new TextEncoder();
+    const expected = new Uint8Array([
+      ...encoder.encode(DOMAIN),
+      0, 0, 0, 11, ...encoder.encode(PATH),
+      0, 0, 0, 1, 2, 3, 4, 5,
+      0, 0, 0, 9,
+      0, 0, 0, 3, ...encoder.encode('cid'),
+      0, 0, 0, 2, 7, 8,
+    ]);
+    expect(payload).toEqual(expected);
   });
 
   test('different inputs produce different payloads', () => {
     const state = new Uint8Array([1, 2, 3]);
-    const a = buildSnapshotSignPayload(state, 'cid-a', 1700000000000, 100);
-    const b = buildSnapshotSignPayload(state, 'cid-b', 1700000000000, 100);
+    const a = build(state, 'cid-a', 1700000000000, 100);
+    const b = build(state, 'cid-b', 1700000000000, 100);
     expect(a).not.toEqual(b);
   });
 
-  test('payload starts with version byte 1', () => {
-    const payload = buildSnapshotSignPayload(
-      new Uint8Array([42]), 'cid', 1700000000000, 50,
+  test('binds the document path', () => {
+    const state = new Uint8Array([1, 2, 3]);
+    expect(build(state, 'cid', 1, 1, '/docs/a')).not.toEqual(
+      build(state, 'cid', 1, 1, '/docs/b'),
     );
-    expect(payload[0]).toBe(1);
+  });
+
+  test('a path cannot absorb bytes from the following fields', () => {
+    const state = new Uint8Array([1]);
+    const left = build(state, 'cid', 1, 1, '/a');
+    const right = build(state, 'cid', 1, 1, '/a\u0000');
+    expect(left).not.toEqual(right);
+    expect(left.byteLength).not.toBe(right.byteLength);
+    const shifted = build(new Uint8Array([]), 'x', 1, 1, '/a');
+    const unshifted = build(new Uint8Array([]), '', 1, 1, '/ax');
+    expect(shifted).not.toEqual(unshifted);
+  });
+
+  test('starts with the versioned domain and no legacy version byte', () => {
+    const payload = build(new Uint8Array([42]), 'cid', 1700000000000, 50);
+    const domain = new TextEncoder().encode(DOMAIN);
+    expect(payload.subarray(0, domain.length)).toEqual(domain);
+    expect(payload[0]).not.toBe(1);
+  });
+
+  test.each([
+    ['empty', ''],
+    ['lone surrogate', '/docs/\ud800'],
+    ['oversized', `/${'a'.repeat(4096)}`],
+  ])('rejects an %s document path', (_name, documentPath) => {
+    expect(() => build(new Uint8Array([1]), 'cid', 1000, 1, documentPath)).toThrow(
+      /snapshot document path/i,
+    );
+  });
+
+  test('rejects a non-string document path', () => {
+    expect(() =>
+      buildSnapshotSignaturePayload(
+        42 as unknown as string,
+        new Uint8Array([1]),
+        'cid',
+        1000,
+        1,
+      ),
+    ).toThrow('Invalid snapshot document path');
+  });
+
+  test('rejects a non-string CID and non-byte state', () => {
+    expect(() =>
+      build(new Uint8Array([1]), 7 as unknown as string, 1000, 1),
+    ).toThrow('Invalid snapshot lastChangeNodeCID');
+    expect(() =>
+      build([1] as unknown as Uint8Array, 'cid', 1000, 1),
+    ).toThrow('Invalid snapshot state');
   });
 
   test('rejects non-integer timestamp', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', 1.5, 10,
-    )).toThrow('Invalid snapshot timestamp');
+    expect(() => build(new Uint8Array([1]), 'cid', 1.5, 10)).toThrow(
+      'Invalid snapshot timestamp',
+    );
   });
 
   test('rejects negative timestamp', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', -1, 10,
-    )).toThrow('Invalid snapshot timestamp');
+    expect(() => build(new Uint8Array([1]), 'cid', -1, 10)).toThrow(
+      'Invalid snapshot timestamp',
+    );
   });
 
   test('rejects NaN timestamp', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', NaN, 10,
-    )).toThrow('Invalid snapshot timestamp');
+    expect(() => build(new Uint8Array([1]), 'cid', NaN, 10)).toThrow(
+      'Invalid snapshot timestamp',
+    );
   });
 
   test('rejects non-integer compactedCount', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', 1000, 1.5,
-    )).toThrow('Invalid snapshot compactedCount');
+    expect(() => build(new Uint8Array([1]), 'cid', 1000, 1.5)).toThrow(
+      'Invalid snapshot compactedCount',
+    );
   });
 
   test('rejects compactedCount exceeding uint32 max', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', 1000, 0x100000000,
-    )).toThrow('Invalid snapshot compactedCount');
+    expect(() => build(new Uint8Array([1]), 'cid', 1000, 0x100000000)).toThrow(
+      'Invalid snapshot compactedCount',
+    );
   });
 
   test('accepts compactedCount at uint32 max', () => {
-    expect(() => buildSnapshotSignPayload(
-      new Uint8Array([1]), 'cid', 1000, 0xFFFFFFFF,
-    )).not.toThrow();
+    expect(() =>
+      build(new Uint8Array([1]), 'cid', 1000, 0xffffffff),
+    ).not.toThrow();
   });
 });
 

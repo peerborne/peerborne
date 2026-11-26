@@ -408,7 +408,10 @@ one of its writers signed the snapshot, the same rule the apply-time check
 uses. An agreeing responder can substitute neither other snapshot bytes nor a
 snapshot that would fail after application began; it is skipped instead. A
 later load ignores a snapshot that does not verify against the current writer
-ACL. The snapshot's compacted count is signed advisory metadata: snapshot
+ACL. A snapshot signature covers a versioned domain tag and the document path
+as well as the state, boundary CID, timestamp and compacted count, so a
+writer's snapshot of one document does not verify for another. The snapshot's
+compacted count is signed advisory metadata: snapshot
 creation clamps it to the 32-bit limit, so an inflated count cannot stop a
 writer from compacting. One credential contributes only one vote, even
 through multiple PeerIds; when devices sharing a credential advertise different

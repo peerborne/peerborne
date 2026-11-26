@@ -32,6 +32,7 @@ import {
 } from './remote-block-fetch.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
+import { buildSnapshotSignaturePayload } from './snapshot-signature-payload.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
 import type {
   InitialLoadSession,
@@ -6287,70 +6288,19 @@ export class PeerborneDocument<
     }
   }
 
-  /**
-   * Build the deterministic binary payload used for snapshot signing/verification.
-   *
-   * Binary layout (big-endian integers):
-   *   [0]       uint8   version (1)
-   *   [1..8]    uint64  timestamp
-   *   [9..12]   uint32  compactedCount
-   *   [13..16]  uint32  cidLen
-   *   [17..]    bytes   UTF-8(lastChangeNodeCID)
-   *   [..]      uint32  stateLen
-   *   [..]      bytes   stateBytes
-   */
   private _buildSnapshotSignPayload(
     stateBytes: Uint8Array,
     lastChangeNodeCID: string,
     timestamp: number,
     compactedCount: number,
   ): Uint8Array {
-    // Validate inputs to prevent runtime errors (e.g. BigInt(NaN) throws TypeError)
-    // and silent uint32 overflow/truncation via DataView.setUint32.
-    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
-      throw new Error(`Invalid snapshot timestamp: ${timestamp}`);
-    }
-    if (!Number.isInteger(compactedCount) || compactedCount < 0 || compactedCount > 0xFFFFFFFF) {
-      throw new Error(`Invalid snapshot compactedCount: ${compactedCount}`);
-    }
-    const cidBytes = this._encoder.encode(lastChangeNodeCID);
-    if (cidBytes.length > 0xFFFFFFFF) {
-      throw new Error(`lastChangeNodeCID too large: ${cidBytes.length} bytes`);
-    }
-    if (stateBytes.length > 0xFFFFFFFF) {
-      throw new Error(`Snapshot state too large: ${stateBytes.length} bytes`);
-    }
-    // 1 (version) + 8 (timestamp) + 4 (compactedCount) + 4 (cidLen) + cidBytes + 4 (stateLen) + stateBytes
-    const totalLen = 1 + 8 + 4 + 4 + cidBytes.length + 4 + stateBytes.length;
-    const buf = new ArrayBuffer(totalLen);
-    const view = new DataView(buf);
-    const out = new Uint8Array(buf);
-    let offset = 0;
-
-    // version
-    view.setUint8(offset, 1);
-    offset += 1;
-
-    // timestamp as uint64
-    view.setBigUint64(offset, BigInt(timestamp), false);
-    offset += 8;
-
-    // compactedCount as uint32
-    view.setUint32(offset, compactedCount, false);
-    offset += 4;
-
-    // lastChangeNodeCID (length-prefixed)
-    view.setUint32(offset, cidBytes.length, false);
-    offset += 4;
-    out.set(cidBytes, offset);
-    offset += cidBytes.length;
-
-    // stateBytes (length-prefixed)
-    view.setUint32(offset, stateBytes.length, false);
-    offset += 4;
-    out.set(stateBytes, offset);
-
-    return out;
+    return buildSnapshotSignaturePayload(
+      this.documentPath,
+      stateBytes,
+      lastChangeNodeCID,
+      timestamp,
+      compactedCount,
+    );
   }
 
   private async _ensureCurrentUserCanWrite() {
