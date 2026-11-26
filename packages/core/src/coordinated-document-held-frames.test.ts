@@ -353,7 +353,7 @@ describe('coordinated document held frames', () => {
     const now = jest.spyOn(performance, 'now').mockReturnValue(start);
     try {
       expect(await b.receive(frames[2])).toBe(false);
-      now.mockReturnValue(start + 120_000);
+      now.mockReturnValue(start + 120_001);
       expect(await b.receive(frames[1])).toBe(false);
       expect(await b.receive(frames[0])).toBe(true);
       expect(b.document).toEqual([1, 2]);
@@ -377,7 +377,7 @@ describe('coordinated document held frames', () => {
     const now = jest.spyOn(performance, 'now').mockReturnValue(start);
     try {
       expect(await b.receive(frames[1])).toBe(false);
-      now.mockReturnValue(start + 120_000);
+      now.mockReturnValue(start + 120_001);
       expect(await b.receive(frames[0])).toBe(true);
       expect(b.document).toEqual([1, 2]);
     } finally {

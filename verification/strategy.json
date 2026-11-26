@@ -559,6 +559,15 @@
         "packages/core/src/policy/document-recovery.ts",
         "packages/core/src/document-recovery.ts"
       ]
+    },
+    {
+      "id": "held-acl-changes",
+      "formalBoundary": "Generated hold and release sequences check the held ACL change buffer directly: every per-signer and per-document count and byte bound holds after each step, a change leaves only by release or by an eviction the buffer reports, re-holding a change refreshes it without counting it twice, and eviction takes the offending signer's oldest change, or past the document bound the oldest change of the signer holding the most. Whether a held change's missing dependencies have arrived is decided by each ACL adapter's ready() check, which native Yjs and Automerge dependency tests calibrate; the buffer does not prove that check, signer authentication, merge order or CRDT convergence, and no policy file models it.",
+      "evidence": ["packages/core/src/held-acl-changes.test.ts"],
+      "sources": [
+        "packages/core/src/held-acl-changes.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
     }
   ],
   "integrationBoundaries": [
