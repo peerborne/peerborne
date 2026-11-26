@@ -564,7 +564,7 @@ describe('ordinary sync-message context confinement', () => {
         undefined,
         false,
         undefined,
-        { assertStillActive: expect.any(Function) },
+        { assertStillActive: expect.any(Function), frameBytes: expect.any(Number) },
       );
     } finally {
       await document.close();

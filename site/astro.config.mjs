@@ -1,5 +1,5 @@
 // @ts-check
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import { unified } from '@astrojs/markdown-remark';
@@ -29,17 +29,10 @@ const socialCard = {
   alt: 'Peerborne — local-first TypeScript state with end-to-end encryption.',
 };
 
-const googleAnalyticsId = 'G-JMJLN1YM4N';
-const googleAnalytics = `if (location.hostname === 'peerborne.io') {
-  window.dataLayer = window.dataLayer || [];
-  window.gtag = function gtag() { dataLayer.push(arguments); };
-  gtag('js', new Date());
-  gtag('config', '${googleAnalyticsId}');
-  const script = document.createElement('script');
-  script.async = true;
-  script.src = 'https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}';
-  document.head.append(script);
-}`;
+const googleAnalytics = readFileSync(
+  new URL('./src/lib/google-analytics.js', import.meta.url),
+  'utf8',
+);
 
 // Deployed through GitHub Pages at the custom apex domain.
 export default defineConfig({
