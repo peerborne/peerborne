@@ -34,6 +34,7 @@ import {
 } from './document-authority-log.js';
 import {
   assertDocumentOperationsAllowed,
+  boundDocumentOperationPaths,
   type DocumentWritePaths,
 } from './document-field-authorization.js';
 import type { CapturedDocumentMember } from './policy/authority-capture.js';
@@ -125,8 +126,8 @@ interface OwnFrame {
   readonly order: number;
   readonly sequence: number;
   readonly changes: Uint8Array;
-  /** Operation paths inspected when it was written, when the author was restricted. */
-  readonly paths?: DocumentWritePaths;
+  /** Bounded covering operation paths recorded when it was written. */
+  readonly paths: DocumentWritePaths;
   readonly frame?: Uint8Array;
   /** Still in the outbox when queued: no peer can have received it. */
   readonly unsent?: boolean;
@@ -144,6 +145,23 @@ export class DocumentDivergedError extends Error {
 
 const MAX_OWN_FRAMES = 64;
 const MAX_OWN_BYTES = 32 * 1024 * 1024;
+const WHOLE_DOCUMENT: DocumentWritePaths = Object.freeze([Object.freeze([])]);
+
+const ownFrameBytes = (frame: OwnFrame) =>
+  frame.changes.length +
+  (frame.frame?.length ?? 0) +
+  2 * frame.paths.reduce((sum, path) => sum + path.join('').length, 0);
+
+/** Whether an outbox still holds `frame`, so no peer can have received it. */
+function outboxHolds(
+  pending: readonly Uint8Array[],
+  frame: Uint8Array | undefined,
+): boolean {
+  return (
+    frame !== undefined &&
+    pending.some((value) => documentBytesEqual(value, frame))
+  );
+}
 
 /** The current roles or grants definitely deny a re-signed frame. */
 class ResendDeniedError extends Error {}
@@ -1574,18 +1592,20 @@ export class CoordinatedDocument<
               const scope = lease.writePaths.get(member.id);
               if (resend === undefined) {
                 plan = this.session.prepareLocal(message, change!, {
-                  inspectOperations: scope !== undefined,
+                  inspectOperations: scope === undefined ? 'record' : true,
                 });
                 assertDocumentOperationsAllowed(plan, scope);
-                ownPaths = scope === undefined ? undefined : plan.operationPaths?.();
+                ownPaths = plan.operationPaths
+                  ? boundDocumentOperationPaths(plan.operationPaths())
+                  : WHOLE_DOCUMENT;
               } else {
                 // The delta is already local, so check the paths recorded when it was written.
                 if (scope !== undefined) {
-                  const paths = resend.paths;
-                  if (!paths) throw new ResendDeniedError();
                   try {
                     assertDocumentOperationsAllowed(
-                      { operationPaths: () => paths } as PreparedDocumentChange<Changes>,
+                      {
+                        operationPaths: () => resend.paths,
+                      } as PreparedDocumentChange<Changes>,
                       scope,
                     );
                   } catch {
@@ -1710,6 +1730,9 @@ export class CoordinatedDocument<
                     checkpoint || this.persistedAuthorityLease?.() !== true
                       ? (this.options.authority.exportRecords?.() ?? [])
                       : [],
+                  ...(checkpoint
+                    ? {}
+                    : { operationPaths: input === undefined ? ownPaths! : [] }),
                   ...(input === undefined && this.options.persistPublications
                     ? { outboundFrame: result }
                     : {}),
@@ -1748,7 +1771,7 @@ export class CoordinatedDocument<
                     order: resend?.order ?? ++this.ownOrder,
                     sequence,
                     changes: ownChanges!,
-                    ...(ownPaths ? { paths: ownPaths } : {}),
+                    paths: ownPaths!,
                     frame: result.slice(),
                   });
                 committed = true;
@@ -1797,6 +1820,10 @@ export class CoordinatedDocument<
     if (this.recovered) return;
     try {
       const records = (await this.options.journal?.restore()) ?? [];
+      if (this.options.journal?.diverged) {
+        this.diverged = true;
+        throw new DocumentDivergedError();
+      }
       for (const record of records) {
         if (this.options.authority.extendsHead(record.authorityHead) !== true)
           throw new Error(
@@ -1846,6 +1873,10 @@ export class CoordinatedDocument<
                 order: ++this.ownOrder,
                 sequence: receipt.sequence,
                 changes: record.changes,
+                paths: record.operationPaths!,
+                ...(record.outboundFrame
+                  ? { frame: record.outboundFrame }
+                  : {}),
               });
           }
           if (receipts.size > 256)
@@ -1923,7 +1954,7 @@ export class CoordinatedDocument<
             const before = beforeOpen ? this.own : undefined;
             await this.applyStrictAuthorityUpdate(authority, owned);
             if (beforeOpen) {
-              this.queueRetired(before);
+              this.queueRetired(before, await this.outboxFrames());
               return undefined;
             }
             return this.resendRetired(retired);
@@ -2058,10 +2089,10 @@ export class CoordinatedDocument<
       this.own = { context, frames: [], bytes: 0, remoteMark: -1 };
     const own = this.own;
     own.frames.push(frame);
-    own.bytes += frame.changes.length + (frame.frame?.length ?? 0);
+    own.bytes += ownFrameBytes(frame);
     while (own.frames.length > MAX_OWN_FRAMES || own.bytes > MAX_OWN_BYTES) {
       const [oldest] = own.frames.splice(0, 1);
-      own.bytes -= oldest.changes.length + (oldest.frame?.length ?? 0);
+      own.bytes -= ownFrameBytes(oldest);
     }
   }
 
@@ -2096,10 +2127,7 @@ export class CoordinatedDocument<
     )
       return undefined;
     const carried = retired.frames.flatMap((frame) => {
-      const outbox = frame.frame;
-      const unsent =
-        outbox !== undefined &&
-        pending.some((value) => documentBytesEqual(value, outbox));
+      const unsent = outboxHolds(pending, frame.frame);
       return unsent || frame.order > retired.remoteMark
         ? [{ ...frame, unsent }]
         : [];
@@ -2189,8 +2217,7 @@ export class CoordinatedDocument<
     const pending = await this.outboxFrames();
     const superseded = async (entry: OwnFrame) => {
       const frame = entry.frame;
-      if (!frame || !pending.some((value) => documentBytesEqual(value, frame)))
-        return;
+      if (!frame || !outboxHolds(pending, frame)) return;
       if (this.options.journal) await this.options.journal.publicationSent(frame);
       else
         this.publications = this.publications.filter(
@@ -2211,11 +2238,16 @@ export class CoordinatedDocument<
         const denied = this.resendQueue;
         this.resendQueue = [];
         dropped = denied.length;
-        for (const later of denied) await superseded(later);
         if (this.localMemberWrites()) {
           diverged = true;
           this.diverged = true;
+          try {
+            await this.options.journal?.markDiverged();
+          } catch {
+            this.failed = true;
+          }
         }
+        for (const later of denied) await superseded(later).catch(() => {});
         break;
       }
       this.resendQueue.shift();

@@ -102,6 +102,7 @@ export class AutomergeProvider<T = any>
     let actor: string | undefined = getActorId(initial);
     let preparing = false;
     let operationIndex: AutomergeOperationIndex | undefined;
+    let unindexable = false;
     const stage = (apply: (base: Doc<T>) => [Doc<T>, BinaryChange[]], options?: DocumentPreparationOptions) => {
       if (closed || active || preparing)
         throw new Error('Document session is closed or busy');
@@ -132,6 +133,32 @@ export class AutomergeProvider<T = any>
             paths = inspected.paths;
             nextIndex = operationIndex;
             acceptInspection = inspected.accept;
+          } else if (options?.inspectOperations === 'record') {
+            try {
+              if (unindexable)
+                throw new RangeError('Automerge operation index is unavailable');
+              if (!operationIndex) {
+                try {
+                  operationIndex = AutomergeOperationIndex.from(base);
+                } catch (error) {
+                  unindexable = true;
+                  throw error;
+                }
+              }
+              const inspected = operationIndex.inspect(base, changes);
+              paths = inspected.paths;
+              nextIndex = operationIndex;
+              acceptInspection = inspected.accept;
+            } catch {
+              paths = [[]];
+              try {
+                const indexed = operationIndex?.extend(base, changes);
+                nextIndex = indexed && operationIndex;
+                acceptInspection = indexed?.accept;
+              } catch {
+                nextIndex = undefined;
+              }
+            }
           } else if (operationIndex) {
             try {
               const indexed = operationIndex.extend(base, changes);

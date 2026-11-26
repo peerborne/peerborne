@@ -501,6 +501,12 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     return errors;
   };
 
+  /** Give a member an empty journal, store and rollback anchor for its next open. */
+  const resetJournal = (index: number) => {
+    journalStores[index] = new InMemoryDocumentJournalStore();
+    journalAnchors[index] = new InMemoryDocumentJournalRollbackAnchor();
+  };
+
   const take = () => publications.splice(0);
   const signRoster = () =>
     logs[0].signUpdate(coordinators[0].documentContext, roster, members[0]);
@@ -524,6 +530,9 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     take,
     signRoster,
     nextId,
+    resetJournal,
+    journalStores,
+    journalAnchors,
     async close() {
       await Promise.all(docs.map((document) => document?.close()));
     },

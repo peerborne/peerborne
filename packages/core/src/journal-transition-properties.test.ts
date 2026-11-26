@@ -754,6 +754,7 @@ test.each(['memory', 'indexeddb'] as const)(
             );
           const item = {
             checkpoint,
+            ...(checkpoint ? {} : { operationPaths: [] }),
             context: fixture.coordinator.documentContext,
             changes: new Uint8Array([1]),
             receipts: [
@@ -781,7 +782,11 @@ test.each(['memory', 'indexeddb'] as const)(
             expect(await recovered.pendingPublications()).toEqual([frame]);
             await recovered.publicationSent(frame);
             await (
-              await recovered.prepare({ ...item, checkpoint: false })
+              await recovered.prepare({
+                ...item,
+                checkpoint: false,
+                operationPaths: [],
+              })
             ).commit();
             expect(recovered.revision).toBe(2);
             expect(await recovered.pendingPublications()).toEqual([frame]);

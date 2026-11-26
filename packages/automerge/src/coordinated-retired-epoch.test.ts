@@ -7,7 +7,10 @@ import {
 import { coordinatedGroupFixture } from '../../core/src/__testutils__/coordinated-group.js';
 import { createGroupSecurityDurableAcceptance } from '../../core/src/group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from '../../core/src/group-security-coordinator.js';
-import type { DocumentMemberAuthority } from '../../core/src/coordinated-document.js';
+import {
+  DocumentDivergedError,
+  type DocumentMemberAuthority,
+} from '../../core/src/coordinated-document.js';
 import { documentBytesId } from '../../core/src/internal/document-binary.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
@@ -50,9 +53,10 @@ async function rotate(
   return { delivery, record };
 }
 
-async function setup(keys: string[]) {
+async function setup(keys: string[], { catchUp = false } = {}) {
   const g: any = await coordinatedGroupFixture(crdt as any, serializer as any, {
     members: 2,
+    catchUp,
   });
   await g.addMember(1);
   await g.open(0);
@@ -324,11 +328,166 @@ test('T4: a restricted writer that restarted keeps writing when its grants are u
     await g.doc(1).close();
     await g.open(1);
     const update = await applyAt1(g, await restrict(g, [['a']]));
-    expect(update).toMatchObject({ dropped: 0, diverged: false });
-    await g.doc(1).change(set('a'));
+    expect(update).toEqual({
+      resent: 1,
+      waiting: 0,
+      skipped: 0,
+      dropped: 0,
+      diverged: false,
+    });
+    await g.doc(1).change((draft: State) => {
+      draft.a = 2;
+    });
     await flush(g, errors);
     expect(errors).toEqual([]);
+    expect(read(g.doc(0).document)).toEqual({ a: 2 });
   } finally {
     await g.close().catch(() => {});
   }
 }, 30_000);
+
+const restart = async (g: any) => {
+  await g.doc(1).close();
+  await g.open(1);
+};
+
+test('T3: a diverged writer is refused when it reopens', async () => {
+  const { g, online } = await setup(['b']);
+  try {
+    const step = await restrict(g, [['a']]);
+    online();
+    expect(await applyAt1(g, step)).toMatchObject({
+      dropped: 1,
+      diverged: true,
+    });
+    await g.doc(1).close().catch(() => {});
+    await expect(g.open(1)).rejects.toThrow(DocumentDivergedError);
+    await expect(g.open(1)).rejects.toThrow(DocumentDivergedError);
+    expect(keys(g)).toEqual([]);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 30_000);
+
+test('a diverged writer rebuilt from a controller checkpoint into a new journal syncs again', async () => {
+  const { g, online } = await setup(['b'], { catchUp: true });
+  try {
+    const step = await restrict(g, [['a']]);
+    online();
+    expect(await applyAt1(g, step)).toMatchObject({ diverged: true });
+    const errors: string[] = [];
+    await g.doc(0).change(set('c'));
+    g.take();
+    await g.doc(1).close().catch(() => {});
+    await expect(g.open(1)).rejects.toThrow(DocumentDivergedError);
+    g.resetJournal(1);
+    await g.open(1);
+    const request = await g.doc(1).createSecurityCatchUpRequest();
+    await g
+      .doc(1)
+      .applySecurityCatchUpCheckpoint(
+        await g.doc(0).createSecurityCatchUpCheckpoint(request),
+      );
+    expect(read(g.doc(1).document)).toEqual({ c: 1 });
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(['a', 'c']);
+    await restart(g);
+    await g.doc(1).change((draft: State) => {
+      draft.a = 2;
+    });
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(read(g.doc(0).document)).toEqual({ a: 2, c: 1 });
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 30_000);
+
+test.each([false, true])(
+  'an edit written unrestricted is re-signed under a grant that covers it (restart: %s)',
+  async (restarted) => {
+    const { g, online } = await setup(['a']);
+    try {
+      const step = await restrict(g, [['a']]);
+      if (restarted) await restart(g);
+      online();
+      expect(await applyAt1(g, step)).toEqual({
+        resent: 1,
+        waiting: 0,
+        skipped: 0,
+        dropped: 0,
+        diverged: false,
+      });
+      await g.doc(1).retrySecurityPublications();
+      const errors: string[] = [];
+      await flush(g, errors);
+      await g.doc(1).change((draft: State) => {
+        draft.a = 2;
+      });
+      await flush(g, errors);
+      expect(errors).toEqual([]);
+      expect(read(g.doc(0).document)).toEqual({ a: 2 });
+      expect(await g.doc(1)._coordinated.pendingPublications()).toEqual([]);
+    } finally {
+      await g.close();
+    }
+  },
+  30_000,
+);
+
+test.each([false, true])(
+  'an unsent edit outside the new grants diverges the writer (restart: %s)',
+  async (restarted) => {
+    const { g, online } = await setup(['b']);
+    try {
+      const step = await restrict(g, [['a']]);
+      if (restarted) await restart(g);
+      online();
+      expect(await applyAt1(g, step)).toEqual({
+        resent: 0,
+        waiting: 0,
+        skipped: 0,
+        dropped: 1,
+        diverged: true,
+      });
+      await expect(g.doc(1).change(set('a'))).rejects.toThrow(
+        DocumentDivergedError,
+      );
+      expect(g.take()).toEqual([]);
+    } finally {
+      await g.close().catch(() => {});
+    }
+  },
+  30_000,
+);
+
+test.each([false, true])(
+  'a published edit outside the new grants is skipped and the writer keeps writing (restart: %s)',
+  async (restarted) => {
+    const { g, online } = await setup([]);
+    online();
+    try {
+      const errors: string[] = [];
+      await g.doc(1).change(set('b'));
+      await flush(g, errors);
+      const step = await restrict(g, [['a']]);
+      if (restarted) await restart(g);
+      expect(await applyAt1(g, step)).toEqual({
+        resent: 0,
+        waiting: 0,
+        skipped: 1,
+        dropped: 0,
+        diverged: false,
+      });
+      await g.doc(1).change(set('a'));
+      await flush(g, errors);
+      expect(errors).toEqual([]);
+      expect(keys(g)).toEqual(['a', 'b']);
+    } finally {
+      await g.close();
+    }
+  },
+  30_000,
+);

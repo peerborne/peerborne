@@ -654,8 +654,9 @@ export class YjsProvider
         }
         const baseRevision = revision;
         let stable: Uint8Array;
+        const recording = options?.inspectOperations === 'record';
         let targets =
-          options?.inspectOperations === true
+          options?.inspectOperations === true || recording
             ? new DocumentOperationTargets()
             : undefined;
         const preparingDocument = shadow;
@@ -664,11 +665,11 @@ export class YjsProvider
         let inspectionFailed = false;
         let collected = false;
         const inspect = (transaction: Transaction) => {
+          if (preserveEncoding && transaction.deleteSet.clients.size > 0)
+            deletions.push(transaction.deleteSet);
           try {
             if (recordYjsOperationTargets(transaction, targets!))
               collected = true;
-            if (preserveEncoding && transaction.deleteSet.clients.size > 0)
-              deletions.push(transaction.deleteSet);
           } catch {
             inspectionFailed = true;
           }
@@ -683,7 +684,7 @@ export class YjsProvider
             if (preserveEncoding) preparingDocument.gc = collectGarbage;
             if (targets) preparingDocument.off('beforeObserverCalls', inspect);
           }
-          if (inspectionFailed)
+          if (inspectionFailed && !recording)
             throw new Error('Yjs document operation inspection failed');
           assertHealthy();
           if (shadow.isDestroyed)
@@ -707,12 +708,18 @@ export class YjsProvider
           )
             throw new Error('Document root type changed during preparation');
           const { structs } = decodeUpdateV2(stable);
-          if (targets && collected)
-            targets = inspectAgainstDocument(
-              preparingDocument,
-              structs,
-              stable,
-            );
+          if (targets && collected && !inspectionFailed) {
+            try {
+              targets = inspectAgainstDocument(
+                preparingDocument,
+                structs,
+                stable,
+              );
+            } catch (error) {
+              if (!recording) throw error;
+              inspectionFailed = true;
+            }
+          }
           assertStagedYjsValues(structs);
           complete(shadow);
         } catch (error) {
@@ -720,6 +727,7 @@ export class YjsProvider
           throw error;
         }
         const operationTargets = targets;
+        const wholeDocument = inspectionFailed;
         const stagedVersion = shadowVersion;
         const stagedRoots = captureRoots(shadow);
         const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
@@ -793,7 +801,9 @@ export class YjsProvider
             active = undefined;
           },
           () => this.getSnapshot(shadow!),
-          operationTargets ? () => operationTargets.snapshot() : undefined,
+          operationTargets
+            ? () => (wholeDocument ? [[]] : operationTargets.snapshot())
+            : undefined,
         );
         active = plan;
         return plan;
@@ -821,7 +831,8 @@ export class YjsProvider
             return encodeStateAsUpdateV2(value, before);
           },
           options,
-          options?.inspectOperations === true,
+          options?.inspectOperations === true ||
+            options?.inspectOperations === 'record',
         ),
       prepareRemote: (changes, options) => {
         const owned = new Uint8Array(changes);

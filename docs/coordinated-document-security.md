@@ -83,7 +83,8 @@ peer in that context. Earlier frames reached a reachable group and are not
 re-sent, so re-signing does not repeat every epoch. Duplicates are harmless
 because native CRDT changes are idempotent. The document keeps each author's
 latest 64 own frames, up to 32 MiB, apart from the shared retention pool. After
-a restart it rebuilds them from the journal entries since its last checkpoint.
+a restart it rebuilds them from the journal entries since its last checkpoint,
+together with each entry's publication while it is still in the outbox.
 
 A frame needs an outbox slot until it is published. When the outbox is full,
 the remaining frames wait and are re-signed as publication frees space. A
@@ -94,9 +95,19 @@ cannot. Any other failure leaves the queue in place. A re-sign failure never
 fails the role update itself, which resolves with
 `{ resent, waiting, skipped, dropped, diverged }`.
 
-A restricted author's frame is checked against its current grants, using the
-operation paths inspected when it was written. A frame without recorded paths
-is checked as denied; this covers frames rebuilt after a restart and frames
+Every local edit is inspected when it is written, whether or not its author is
+restricted, and its operation paths are recorded with the frame and sealed in
+its journal entry with the device key. The record keeps at most 64 paths of at
+most 32 segments of 1,024 units each, and 65,536 units in all. Paths under a
+recorded prefix are dropped first. If that is not enough, every path is cut to
+the deepest common depth that fits, down to the whole document. A grant that
+covers the record therefore covers every operation. When an unrestricted
+author's edit cannot be inspected within the inspection bounds, the record is
+the whole document instead of failing the edit. A non-checkpoint journal entry
+without a valid path list fails decoding.
+
+When re-signed, a restricted author's frame is checked against its current
+grants using those recorded paths, including after a restart and for edits
 written before the author was restricted.
 
 - A denied frame that was already published is skipped. Peers have it, or the
@@ -105,10 +116,19 @@ written before the author was restricted.
   which depends on it natively, are dropped and counted.
 - A reader or removed member keeps its replica readable.
 - An author that can still write in that case has `diverged`. Its replica holds
-  content the group cannot accept. The live document then rejects every
-  operation with `DocumentDivergedError` and must be rebuilt from a controller
-  checkpoint. The marker is not persisted, so a reopened document does not
-  report it.
+  content the group cannot accept. Before the role update resolves, the
+  journal appends an authenticated divergence marker. The marker advances the
+  independent rollback anchor, so storage that drops it is rejected as a
+  rollback. The journal then takes no further entries. The live document
+  rejects every operation with `DocumentDivergedError`, and so does every
+  later open of that journal.
+- To rebuild, open the document with a new journal, store and rollback anchor,
+  then request a controller checkpoint. The new journal starts without the
+  marker. A replica never adopts its own receipt from a checkpoint, so this
+  works only while the controller holds none of the author's frames in the
+  current context. That is the case when the first re-sign pass found the
+  denial. If an earlier re-signed frame reached the controller first, the
+  rebuilt replica's catch-up conflicts on its own receipt until the next epoch.
 
 Receivers admit re-signed frames through normal admission, including their
 own field-scope checks. A document opened without a publication outbox does
