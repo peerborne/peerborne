@@ -406,6 +406,16 @@
       ]
     },
     {
+      "id": "coordinated-redelivery",
+      "formalBoundary": "Requests carry receipts in the same canonical receipt codec and resent frames re-enter the proved sequence policy. Request framing, the GossipSub sender binding, replay and per-member intervals, the shared resend budget, suffix completeness and suppression are runtime state over network timing, so generated encodings and native scenarios exercise them. Real GossipSub delivery, peer scoring and traffic analysis remain outside these checks.",
+      "evidence": ["packages/core/src/coordinated-document-redelivery.test.ts"],
+      "sources": [
+        "packages/core/src/document-redelivery-wire.ts",
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "coordinated-held-frames",
       "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, equivocation check, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection is adapter behavior, so generated arrival orders exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
       "evidence": [

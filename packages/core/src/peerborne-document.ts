@@ -1,5 +1,6 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
+import { isDocumentRedeliveryFrame } from './document-redelivery-wire.js';
 import {
   DocumentBlockReadLimitError,
   MAX_DOCUMENT_BLOCK_BYTES,
@@ -227,6 +228,7 @@ import { TopicValidatorResult } from '@libp2p/gossipsub';
 import type {
   GossipSub,
   Message,
+  SubscriptionChangeData,
   TopicValidatorFn,
 } from '@libp2p/gossipsub';
 import { EventHandler, PeerId } from '@libp2p/interface';
@@ -280,6 +282,19 @@ const loadCandidateResponders = new WeakMap<object, string>();
 // Stand-ins of the largest sizes a CID and a signature take in a frame.
 const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
 const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
+
+const REDELIVERY_MIN_SPACING_MS = 2_000;
+const REDELIVERY_SETTLE_MS = [200, 800] as const;
+const REDELIVERY_PERIOD_MS = [30_000, 60_000] as const;
+const REDELIVERY_RESPONSE_DELAY_MS = [100, 500] as const;
+
+function jitter([low, high]: readonly [number, number]): number {
+  return low + Math.random() * (high - low);
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  (timer as { unref?: () => void }).unref?.();
+}
 
 /** GossipSub publisher of a message, for per-sender receive admission. */
 function gossipSender(message: Message): string {
@@ -1478,6 +1493,13 @@ export class PeerborneDocument<
   // Handler for listening for sync messages on the document topic. Is `undefined` until
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
+  private _redeliverySubscriptionHandler:
+    | EventHandler<CustomEvent<SubscriptionChangeData>>
+    | undefined;
+  private _redeliveryTimer?: ReturnType<typeof setTimeout>;
+  private _redeliveryDue = 0;
+  private _redeliverySentAt = -Infinity;
+  private _redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
@@ -7424,11 +7446,34 @@ export class PeerborneDocument<
       if (this._gcClosed) throw new Error('Coordinated document is closed');
       this._pubsubHandler = (event) => {
         if (event.detail.topic !== this._topic) return;
+        if (isDocumentRedeliveryFrame(event.detail.data)) {
+          void this._answerSecurityRedelivery(
+            event.detail.data,
+            event.detail.type === 'signed'
+              ? event.detail.from.toString()
+              : undefined,
+          ).catch(() => {});
+          return;
+        }
         void this.receiveSecurityFrame(event.detail.data).catch(() => {});
       };
+      this._redeliverySubscriptionHandler = (event) => {
+        if (
+          event.detail?.subscriptions?.some(
+            (subscription) =>
+              subscription.subscribe && subscription.topic === this._topic,
+          )
+        )
+          this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+      };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
+      pubsub.addEventListener(
+        'subscription-change',
+        this._redeliverySubscriptionHandler as EventListener,
+      );
       pubsub.subscribe(this._topic);
       this._subscribed = true;
+      this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       return true;
     } catch (error) {
       if (registered) await this.close();
@@ -7444,6 +7489,8 @@ export class PeerborneDocument<
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
     const applied = await engine.receive(frame);
+    if (!applied && engine.hasHeldFrames())
+      this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
       if (rosterIsCurrent) {
@@ -7576,6 +7623,78 @@ export class PeerborneDocument<
     } finally {
       this._activationInProgress = false;
     }
+  }
+
+  /**
+   * Ask peers to resend the frames this replica lacks after its accepted heads.
+   * Requests are also sent automatically on open, when a peer subscribes,
+   * while frames wait for predecessors, and every 30-60 s. The request is
+   * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
+   */
+  public async requestSecurityRedelivery(): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed || this._gcClosed)
+      throw new Error('Coordinated document is not open');
+    const peer = this.swarm.heliaNode.libp2p.peerId?.toString();
+    if (!peer) return;
+    this._redeliverySentAt = Date.now();
+    this._redeliveryBackoff = engine.hasHeldFrames()
+      ? Math.min(this._redeliveryBackoff * 2, REDELIVERY_PERIOD_MS[0])
+      : REDELIVERY_MIN_SPACING_MS;
+    this._scheduleSecurityRedelivery(
+      engine.hasHeldFrames() ? this._redeliveryBackoff : jitter(REDELIVERY_PERIOD_MS),
+      true,
+    );
+    const frame = await engine.createRedeliveryRequest(peer);
+    engine.assertPublicationDispatchAllowed();
+    await this.swarm.heliaNode.libp2p.services.pubsub.publish(this._topic, frame);
+  }
+
+  private _scheduleSecurityRedelivery(delayMs: number, replace = false): void {
+    if (!this._coordinated || !this._subscribed || this._gcClosed) return;
+    const now = Date.now();
+    const due = Math.max(
+      now + delayMs,
+      this._redeliverySentAt + REDELIVERY_MIN_SPACING_MS,
+    );
+    if (this._redeliveryTimer !== undefined) {
+      if (!replace && this._redeliveryDue <= due) return;
+      clearTimeout(this._redeliveryTimer);
+    }
+    this._redeliveryDue = due;
+    this._redeliveryTimer = setTimeout(() => {
+      this._redeliveryTimer = undefined;
+      if (this._subscribed && !this._gcClosed)
+        void this.requestSecurityRedelivery().catch(() => {});
+    }, due - now);
+    unrefTimer(this._redeliveryTimer);
+  }
+
+  /** Resend retained frames a verified member asked for; others' after a pause. */
+  private async _answerSecurityRedelivery(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed || this._gcClosed) return;
+    const answer = await engine.answerRedelivery(frame, from);
+    const publish = async (frames: readonly Uint8Array[]) => {
+      for (const value of frames) {
+        if (!this._subscribed || this._gcClosed) return;
+        engine.assertPublicationDispatchAllowed();
+        await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+          this._topic,
+          value,
+        );
+      }
+    };
+    await publish(answer.own);
+    if (answer.others.length === 0) return;
+    await new Promise<void>((resolve) =>
+      unrefTimer(setTimeout(resolve, jitter(REDELIVERY_RESPONSE_DELAY_MS))),
+    );
+    if (this._subscribed && !this._gcClosed)
+      await publish(engine.unansweredRedeliveries(answer));
   }
 
   private _securityPublicationTask?: Promise<void>;
@@ -8039,6 +8158,8 @@ export class PeerborneDocument<
     this._gossipReceiveAdmission = undefined;
     this._gcClosed = true;
     this._gcLifecycle = {};
+    if (this._redeliveryTimer !== undefined) clearTimeout(this._redeliveryTimer);
+    this._redeliveryTimer = undefined;
     const coordinatedClose = this._coordinated?.close();
     await this._gcInProgress?.catch(() => {});
     await coordinatedClose;
@@ -8059,6 +8180,12 @@ export class PeerborneDocument<
 
       // Cast required: see addEventListener comment above
       pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
+      if (this._redeliverySubscriptionHandler)
+        pubsub.removeEventListener(
+          'subscription-change',
+          this._redeliverySubscriptionHandler as EventListener,
+        );
+      this._redeliverySubscriptionHandler = undefined;
 
       if (
         this._topicValidator &&

@@ -61,6 +61,14 @@ import {
   type DocumentCatchUpKind,
 } from './document-catch-up-wire.js';
 import {
+  decodeDocumentRedeliveryRequest,
+  decodeEncryptedDocumentRedelivery,
+  documentRedeliveryAAD,
+  encodeDocumentRedeliveryRequest,
+  encodeEncryptedDocumentRedelivery,
+  MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES,
+} from './document-redelivery-wire.js';
+import {
   decodeDocumentContent,
   decodeEncryptedDocumentContent,
   decodeSignedDocumentContent,
@@ -189,6 +197,29 @@ interface RetainedFrame {
   /** Exact encrypted wire frame. */
   readonly frame: Uint8Array;
   readonly order: number;
+  /** When this replica last accepted or saw a duplicate of the frame. */
+  observedAt: number;
+}
+
+const REDELIVERY_RESPONSE_FRAMES = 64;
+const REDELIVERY_RESPONSE_BYTES = 4 * 1024 * 1024;
+const REDELIVERY_REQUESTER_INTERVAL_MS = 2_000;
+const REDELIVERY_SEEN_REQUESTS = 256;
+/** Frames one replica resends per second across all requesters, with a burst of 64. */
+const REDELIVERY_FRAMES_PER_SECOND = 32;
+
+/** Frames a responder resends: its own at once, others' after suppression. */
+export interface CoordinatedRedeliveryAnswer {
+  readonly own: readonly Uint8Array[];
+  readonly others: readonly { readonly author: string; readonly sequence: number }[];
+  readonly since: number;
+}
+
+interface SealedStage {
+  readonly binding: DocumentCatchUpBinding;
+  readonly lease: AuthorityLease;
+  readonly material: GroupDocumentEncryptionMaterial;
+  readonly work: GroupSecurityDocumentPreparation;
 }
 
 const MAX_RETAINED_FRAMES_PER_AUTHOR = 64;
@@ -247,6 +278,12 @@ export class CoordinatedDocument<
     readonly authors: Map<string, RetainedFrame[]>;
     bytes: number;
     order: number;
+  };
+  private readonly redelivery = {
+    answered: new Map<string, number>(),
+    seen: new Set<string>(),
+    tokens: REDELIVERY_RESPONSE_FRAMES,
+    refilledAt: 0,
   };
   private material?: {
     context: GroupSecurityDocumentContext;
@@ -630,7 +667,7 @@ export class CoordinatedDocument<
   private retain(
     context: GroupSecurityDocumentContext,
     author: string,
-    value: Omit<RetainedFrame, 'order'>,
+    value: Omit<RetainedFrame, 'order' | 'observedAt'>,
   ): void {
     if (
       !this.retained ||
@@ -639,7 +676,7 @@ export class CoordinatedDocument<
       this.retained = { context, authors: new Map(), bytes: 0, order: 0 };
     const retained = this.retained;
     const frames = retained.authors.get(author) ?? [];
-    frames.push({ ...value, order: retained.order++ });
+    frames.push({ ...value, order: retained.order++, observedAt: Date.now() });
     retained.authors.set(author, frames);
     retained.bytes += value.signed.length + value.frame.length;
     const evict = (list: RetainedFrame[], owner: string) => {
@@ -678,6 +715,233 @@ export class CoordinatedDocument<
     )
       return undefined;
     return suffix;
+  }
+
+  private observeRetained(
+    context: GroupSecurityDocumentContext,
+    author: string,
+    sequence: number,
+  ): void {
+    if (!this.retained || !documentContextsMatch(this.retained.context, context))
+      return;
+    const entry = this.retained.authors
+      .get(author)
+      ?.find((frame) => frame.sequence === sequence);
+    if (entry) entry.observedAt = Date.now();
+  }
+
+  hasHeldFrames(): boolean {
+    return (this.held?.frames.length ?? 0) > 0;
+  }
+
+  /** Run a signed exchange against the current authority outside the content path. */
+  private async runSealed<Value>(
+    input: Uint8Array,
+    prepare: (stage: SealedStage, input: Uint8Array) => Promise<Value>,
+  ): Promise<Value> {
+    let value!: Value;
+    let preparation: Promise<PreparedGroupDocumentOperation> | undefined;
+    try {
+      await this.options.coordinator.runDocumentOperation(
+        this.options.coordinator.documentContext,
+        input,
+        (captured, owned, signal, work) => {
+          preparation = (async () => {
+            const lease = this.authority(captured);
+            const roster = this.options.requireGroupRosterMatch
+              ? await this.prepareGroupRoster(captured, lease, work)
+              : undefined;
+            this.assertCurrentGroupRoster(roster);
+            const staged = await prepare(
+              {
+                binding: {
+                  documentId: this.documentId,
+                  genesisId: this.genesisId,
+                  authorityHead: lease.headId,
+                  context: captured,
+                },
+                lease,
+                material: await this.key(captured, work),
+                work,
+              },
+              owned,
+            );
+            return {
+              isAuthorizationCurrent: () =>
+                !signal.aborted &&
+                !this.closed &&
+                !this.failed &&
+                lease.isCurrent(),
+              commit: () => {
+                value = staged;
+              },
+            };
+          })();
+          return preparation;
+        },
+      );
+      return value;
+    } finally {
+      await preparation?.then(
+        () => {},
+        () => {},
+      );
+    }
+  }
+
+  /** Seal this member's accepted heads for peers to resend what it lacks. */
+  createRedeliveryRequest(requesterPeer: string): Promise<Uint8Array> {
+    return this.enqueue(0, () => async () => {
+      this.assertActivated();
+      return this.runSealed(new Uint8Array(), async (stage) => {
+        const requesterId = this.options.coordinator.localMemberId;
+        const member = stage.lease.members.get(documentBytesId(requesterId));
+        if (!member) throw new Error('Local member has no document authority');
+        return this.sealSigned(
+          stage,
+          documentRedeliveryAAD(stage.binding),
+          encodeDocumentRedeliveryRequest({
+            ...stage.binding,
+            requesterId,
+            requesterPeer,
+            nonce: crypto.getRandomValues(new Uint8Array(16)),
+            receipts: receiptEntries(this.sortedReceipts(stage.binding.context)),
+          }),
+          member,
+          encodeEncryptedDocumentRedelivery,
+        );
+      });
+    });
+  }
+
+  /**
+   * Authenticate a current member's request that GossipSub delivered from
+   * `from`, and choose the retained frames past its heads to resend. Requests
+   * are answered once, at most every 2 s per member, and within a shared
+   * per-replica frame budget.
+   */
+  answerRedelivery(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<CoordinatedRedeliveryAnswer> {
+    try {
+      const length = unsharedUint8ArrayByteLength(
+        frame,
+        1,
+        MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES + 64,
+        'document redelivery request',
+      );
+      return this.enqueue(
+        length,
+        () => {
+          const owned = copyUnsharedUint8Array(
+            frame,
+            length,
+            length,
+            'document redelivery request',
+          );
+          return async () => {
+            this.assertActivated();
+            return this.runSealed(owned, async (stage, input) => {
+              const signed = await this.openSealed(
+                stage,
+                documentRedeliveryAAD(stage.binding),
+                decodeEncryptedDocumentRedelivery(input),
+              );
+              const body = decodeDocumentRedeliveryRequest(signed.unsigned);
+              this.assertCatchUpBinding(stage.binding, body);
+              if (from === undefined || body.requesterPeer !== from)
+                throw new Error('Document redelivery request is not from its signer');
+              const requesterId = documentBytesId(body.requesterId);
+              const requester = stage.lease.members.get(requesterId);
+              if (
+                !requester ||
+                documentBytesEqual(
+                  body.requesterId,
+                  this.options.coordinator.localMemberId,
+                )
+              )
+                throw new Error('Document redelivery requester is unauthorized');
+              await this.verifyCatchUp(stage, signed, requester);
+              return this.chooseRedelivery(stage.binding.context, requesterId, body.nonce, body.receipts);
+            });
+          };
+        },
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private chooseRedelivery(
+    context: GroupSecurityDocumentContext,
+    requester: string,
+    nonce: Uint8Array,
+    receipts: readonly DocumentReplayReceipt[],
+  ): CoordinatedRedeliveryAnswer {
+    const now = Date.now();
+    const none = { own: [], others: [], since: now };
+    const state = this.redelivery;
+    const request = `${requester}:${documentBytesId(nonce)}`;
+    if (state.seen.has(request)) return none;
+    state.seen.add(request);
+    if (state.seen.size > REDELIVERY_SEEN_REQUESTS)
+      state.seen.delete(state.seen.values().next().value!);
+    if (now - (state.answered.get(requester) ?? -Infinity) < REDELIVERY_REQUESTER_INTERVAL_MS)
+      return none;
+    state.answered.set(requester, now);
+    if (state.answered.size > 256)
+      state.answered.delete(state.answered.keys().next().value!);
+    state.tokens = Math.min(
+      REDELIVERY_RESPONSE_FRAMES,
+      state.tokens +
+        Math.floor(((now - state.refilledAt) * REDELIVERY_FRAMES_PER_SECOND) / 1000),
+    );
+    state.refilledAt = now;
+    const heads = new Map(
+      receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
+    );
+    const accepted = this.sortedReceipts(context);
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const own: Uint8Array[] = [];
+    const others: { author: string; sequence: number }[] = [];
+    let bytes = 0;
+    for (const [author, { sequence: head }] of accepted) {
+      if (author === requester) continue;
+      const known = heads.get(author);
+      const suffix = this.retainedSuffix(
+        context,
+        author,
+        known?.sequence ?? 0,
+        known?.hash ?? ZERO_HASH,
+        head,
+      );
+      for (const entry of suffix ?? []) {
+        if (
+          state.tokens === 0 ||
+          own.length + others.length >= REDELIVERY_RESPONSE_FRAMES ||
+          bytes + entry.frame.length > REDELIVERY_RESPONSE_BYTES
+        )
+          return { own, others, since: now };
+        state.tokens--;
+        bytes += entry.frame.length;
+        if (author === local) own.push(entry.frame.slice());
+        else others.push({ author, sequence: entry.sequence });
+      }
+    }
+    return { own, others, since: now };
+  }
+
+  /** Frames from an answer that no other replica has resent since `since`. */
+  unansweredRedeliveries(answer: CoordinatedRedeliveryAnswer): Uint8Array[] {
+    const retained = this.retained;
+    if (!retained) return [];
+    return answer.others.flatMap(({ author, sequence }) => {
+      const entry = retained.authors
+        .get(author)
+        ?.find((frame) => frame.sequence === sequence);
+      return entry && entry.observedAt <= answer.since ? [entry.frame.slice()] : [];
+    });
   }
 
   createCatchUpRequest(): Promise<Uint8Array> {
@@ -903,12 +1167,23 @@ export class CoordinatedDocument<
       throw new Error('Document catch-up context mismatch');
   }
 
-  private async openCatchUp(
-    stage: CatchUpWork,
+  private openCatchUp(
+    stage: SealedStage,
     kind: DocumentCatchUpKind,
     frame: Uint8Array,
   ) {
-    const envelope = decodeEncryptedDocumentContent(frame);
+    return this.openSealed(
+      stage,
+      documentCatchUpAAD(kind, stage.binding),
+      decodeEncryptedDocumentContent(frame),
+    );
+  }
+
+  private async openSealed(
+    stage: SealedStage,
+    aad: Uint8Array,
+    envelope: { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array },
+  ) {
     if (!documentBytesEqual(envelope.epochTag, stage.material.epochTag))
       throw new Error('Document catch-up epoch is unavailable');
     const { value } = await stage.work.observe<ArrayBuffer>(
@@ -917,10 +1192,7 @@ export class CoordinatedDocument<
           {
             name: 'AES-GCM',
             iv: envelope.nonce as Uint8Array<ArrayBuffer>,
-            additionalData: documentCatchUpAAD(
-              kind,
-              stage.binding,
-            ) as Uint8Array<ArrayBuffer>,
+            additionalData: aad as Uint8Array<ArrayBuffer>,
           },
           stage.material.key,
           envelope.ciphertext as Uint8Array<ArrayBuffer>,
@@ -930,7 +1202,7 @@ export class CoordinatedDocument<
   }
 
   private async verifyCatchUp(
-    stage: CatchUpWork,
+    stage: Pick<SealedStage, 'work'>,
     body: ReturnType<typeof decodeSignedDocumentContent>,
     member: CapturedDocumentMember,
   ): Promise<void> {
@@ -949,11 +1221,31 @@ export class CoordinatedDocument<
       throw new Error('Invalid document catch-up signature');
   }
 
-  private async sealCatchUp(
-    stage: CatchUpWork,
+  private sealCatchUp(
+    stage: SealedStage,
     kind: DocumentCatchUpKind,
     unsigned: Uint8Array,
     member: CapturedDocumentMember,
+  ): Promise<Uint8Array> {
+    return this.sealSigned(
+      stage,
+      documentCatchUpAAD(kind, stage.binding),
+      unsigned,
+      member,
+      encodeEncryptedDocumentContent,
+    );
+  }
+
+  private async sealSigned(
+    stage: SealedStage,
+    aad: Uint8Array,
+    unsigned: Uint8Array,
+    member: CapturedDocumentMember,
+    outer: (
+      epochTag: Uint8Array,
+      nonce: Uint8Array,
+      ciphertext: Uint8Array,
+    ) => Uint8Array,
   ): Promise<Uint8Array> {
     const { value: canonical } = await stage.work.observe<string>(
       this.auth.serializePublicKey(this.publicKey),
@@ -981,10 +1273,7 @@ export class CoordinatedDocument<
           {
             name: 'AES-GCM',
             iv: nonce,
-            additionalData: documentCatchUpAAD(
-              kind,
-              stage.binding,
-            ) as Uint8Array<ArrayBuffer>,
+            additionalData: aad as Uint8Array<ArrayBuffer>,
           },
           stage.material.key,
           encodeSignedDocumentContent(
@@ -993,11 +1282,7 @@ export class CoordinatedDocument<
           ) as Uint8Array<ArrayBuffer>,
         ))(),
     );
-    return encodeEncryptedDocumentContent(
-      stage.material.epochTag,
-      nonce,
-      new Uint8Array(ciphertext),
-    );
+    return outer(stage.material.epochTag, nonce, new Uint8Array(ciphertext));
   }
 
   private async mergeCatchUpCheckpoint(input: Uint8Array): Promise<void> {
@@ -1560,7 +1845,10 @@ export class CoordinatedDocument<
                 (replay || plan!.isCurrent()),
               commit: () => {
                 this.rosterBinding = roster;
-                if (replay) return;
+                if (replay) {
+                  this.observeRetained(captured, documentBytesId(memberId), sequence);
+                  return;
+                }
                 commitAttempted = true;
                 plan!.commit();
                 this.receipts = receipts;

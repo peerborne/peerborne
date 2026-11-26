@@ -279,8 +279,31 @@ field-scope inspection. A document holds at most 64 frames, 32 per author and
 8 MiB, and all documents in a process at most 1,024 frames and 64 MiB. A frame
 beyond those bounds is rejected. A second frame for a held author sequence with
 different content is rejected as equivocation. Held frames are memory-only and
-are dropped at a new group context and on close. A held frame whose
-predecessor never arrives stays held; nothing requests it yet.
+are dropped at a new group context and on close.
+
+A replica asks peers for the frames it lacks with a redelivery request. The
+request lists its accepted heads in the current context, at most 256, and is
+signed by the member and encrypted under the epoch key with its own AAD
+domain. Its outer frame uses a separate format marker. It also names the
+node's libp2p PeerId, and a responder answers only when GossipSub's signed
+sender is that PeerId, so a member cannot replay another member's request from
+its own peer. Requests go out about a second after open, when a peer
+subscribes to the topic, while frames are held (backing off from 2 s to 30 s),
+and every 30-60 s. `requestSecurityRedelivery()` sends one at once. A document
+sends at most one request every 2 s.
+
+A current member that authenticates the request resends, on the topic, the
+exact encrypted frames it retains after each of the requester's heads. It does
+so only when it holds the complete suffix and its own frame at that head has
+the same hash. The author resends its own frames at once. Other members wait
+100-500 ms and skip frames that another member resent in the meantime. Each
+replica answers a member at most once every 2 s and a given request once. One
+answer is at most 64 frames and 4 MiB, and all answers share a budget of 64
+frames, refilled at 32 per second. Resent frames are ordinary frames:
+receivers admit them through the full path, and duplicates are no-ops. A
+requester further behind than the retained 64 frames per author, or behind a
+restarted peer, still needs the controller checkpoint. Requests and resends
+are visible on the topic as traffic.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
@@ -366,8 +389,8 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery requests, old-epoch edit
-rebasing and epoch-fork reconciliation remain future work. The controller
+Redelivery beyond the retained window, old-epoch edit rebasing and
+epoch-fork reconciliation remain future work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

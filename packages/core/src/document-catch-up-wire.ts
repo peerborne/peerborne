@@ -100,7 +100,7 @@ function readRequest(
   };
 }
 
-function writeReceipts(
+export function writeDocumentReceipts(
   writer: DocumentBinaryWriter,
   receipts: readonly DocumentReplayReceipt[],
 ): void {
@@ -125,7 +125,7 @@ function writeReceipts(
   }
 }
 
-function readReceipts(reader: DocumentBinaryReader): DocumentReplayReceipt[] {
+export function readDocumentReceipts(reader: DocumentBinaryReader): DocumentReplayReceipt[] {
   const count = reader.number(2);
   if (count > MAX_RECEIPTS)
     throw new RangeError('Too many document catch-up receipts');
@@ -147,7 +147,7 @@ export function encodeDocumentCatchUpRequest(
   value: DocumentCatchUpRequest,
 ): Uint8Array {
   const writer = writeRequest('request', value);
-  writeReceipts(writer, value.receipts);
+  writeDocumentReceipts(writer, value.receipts);
   return writer.finish();
 }
 
@@ -159,7 +159,7 @@ export function decodeDocumentCatchUpRequest(
     MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
   );
   const request = readRequest(reader, 'request');
-  const receipts = readReceipts(reader);
+  const receipts = readDocumentReceipts(reader);
   reader.end();
   return { ...request, receipts };
 }
@@ -170,7 +170,7 @@ export function encodeDocumentCatchUpCheckpoint(
   const writer = writeRequest('checkpoint', value).fixed(
     fixed32(value.controllerId),
   );
-  writeReceipts(writer, value.receipts);
+  writeDocumentReceipts(writer, value.receipts);
   if (value.suffixes.length > MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES)
     throw new RangeError('Too many document catch-up suffix frames');
   writer.integer(value.suffixes.length, 2);
@@ -190,7 +190,7 @@ export function decodeDocumentCatchUpCheckpoint(
   const reader = new DocumentBinaryReader(value);
   const request = readRequest(reader, 'checkpoint');
   const controllerId = reader.fixed(32);
-  const receipts = readReceipts(reader);
+  const receipts = readDocumentReceipts(reader);
   const count = reader.number(2);
   if (count > MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES)
     throw new RangeError('Too many document catch-up suffix frames');
