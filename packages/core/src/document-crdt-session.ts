@@ -8,6 +8,14 @@ export interface DocumentPreparationOptions {
   readonly inspectOperations?: boolean;
 }
 
+/** A remote change names native causal dependencies the session does not hold yet. */
+export class DocumentCausalDependencyError extends Error {
+  constructor() {
+    super('Document change has missing causal dependencies');
+    this.name = 'DocumentCausalDependencyError';
+  }
+}
+
 export interface PreparedDocumentChange<Changes> {
   readonly changes: Changes;
   isCurrent(): boolean;
