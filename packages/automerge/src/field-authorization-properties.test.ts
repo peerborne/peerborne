@@ -211,7 +211,6 @@ test('native pred-reference and operation-boundary fuzzing cannot relabel a prot
             deps: A.getHeads(base),
             time: 0,
             message: '',
-            author: null,
             ops: [
               {
                 action,
@@ -411,7 +410,6 @@ test('real counter predecessor fuzzing admits a valid increment and preserves pr
             deps: A.getHeads(base),
             time: 0,
             message: '',
-            author: null,
             ops: [{ action: 'inc', obj: '_root', key: 'allowed', pred, value }],
           });
         const valid = new AutomergeProvider<Counters>().createDocumentSession(
