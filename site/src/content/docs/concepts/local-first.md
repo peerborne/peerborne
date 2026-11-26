@@ -84,6 +84,8 @@ Documents store encrypted blocks in browser IndexedDB via Helia's blockstore. Lo
 
 If part of the `change()` pipeline fails (e.g., storage quota exceeded), the CRDT mutation may already be applied to the local replica. The mutation persists locally even though the remote sync failed. There is no automatic undo or rollback of the CRDT state.
 
+An `endChange()` batch that fails before it is published rolls an Automerge document back to a writable copy of its state before the batch, which makes later changes under a new actor. While the document holds remote changes waiting for missing dependencies, a copy would lose them, so the batch instead retires the instance, which must be reopened from accepted state. Yjs edits in place, so its batch stays applied. A batch whose publication succeeded is kept even when a local update handler then fails.
+
 ## The infrastructure boundary
 
 "Local-first" does not mean "infrastructure-free." Browser nodes do not bind

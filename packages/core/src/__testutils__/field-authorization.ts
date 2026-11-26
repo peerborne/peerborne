@@ -110,6 +110,12 @@ export async function fieldDocumentFixture<Document, Changes, Change>(
     store,
     new InMemoryDocumentJournalRollbackAnchor(),
   );
+  const unrestricted = new Proxy(coordinator, {
+    get: (target, key) =>
+      key === 'localMemberId'
+        ? f.identities.attackerId.slice()
+        : Reflect.get(target, key),
+  });
   return {
     store,
     storageKey: documentBytesId(authority.genesisId),
@@ -127,6 +133,18 @@ export async function fieldDocumentFixture<Document, Changes, Change>(
           authority: bypass ? dishonest : authority,
           ...(persist ? { journal, persistPublications: true } : {}),
         },
+      ),
+    /** Signs as the roster's whole-document writer. */
+    createUnrestricted: (initial: Document) =>
+      new CoordinatedDocument(
+        authority.documentId,
+        initial,
+        crdt,
+        serializer,
+        auth,
+        f.identities.attackerId,
+        f.identities.attackerId,
+        { coordinator: unrestricted, authority },
       ),
   };
 }
