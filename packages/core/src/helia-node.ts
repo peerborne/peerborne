@@ -26,6 +26,26 @@ interface StartedHeliaNode {
   openedStores: OpenableStore[];
 }
 
+/**
+ * Helia's `blockstore.delete()` first cancels reproviding the block, which
+ * libp2p refuses with `NoContentRoutersError` when no content router, such as
+ * a DHT, is configured. Such a node provides nothing, so deletion proceeds.
+ */
+function allowDeletionWithoutContentRouters(
+  heliaNode: PeerborneHeliaNode,
+): void {
+  const { routing } = heliaNode;
+  const cancelReprovide = routing.cancelReprovide.bind(routing);
+  routing.cancelReprovide = async (key, options) => {
+    try {
+      await cancelReprovide(key, options);
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== 'NoContentRoutersError')
+        throw error;
+    }
+  };
+}
+
 export async function createAndStartHeliaNode(
   heliaInit?: NonNullable<PeerborneConfig['helia']>,
 ): Promise<StartedHeliaNode> {
@@ -80,6 +100,7 @@ export async function createAndStartHeliaNode(
             bitswap: bitswapInit,
           })
     ) as PeerborneHeliaNode;
+    allowDeletionWithoutContentRouters(heliaNode);
     if (identity) {
       heliaNode.addMixin({
         name: 'peerborne-peer-identity',

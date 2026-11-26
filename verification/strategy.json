@@ -48,7 +48,7 @@
     },
     {
       "id": "live-gc-lease-and-io",
-      "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, stale trees/snapshots, existing pins, coalescing, atomic metadata refusal, close quiescence, opaque provider failures and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
+      "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, a lease captured again after a stale tree or snapshot, an edit between every deletion slot, one attempt per candidate per pass, existing pins, coalescing, atomic metadata refusal, close quiescence, provider failures described without trusting the thrown value, and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
       "evidence": [
         "packages/core/src/live-gc-properties.test.ts",
         "packages/core/src/live-gc-native.fixture.mjs"
@@ -622,6 +622,13 @@
         "verification/advanced/EXECUTION.md",
         "verification/advanced/browser/eviction.spec.ts",
         "verification/browser/technical.spec.ts"
+      ]
+    },
+    {
+      "boundary": "Closing documents while they open, live block GC during continuous edits with and without a content router, and default GossipSub IP scoring on loopback libp2p TCP nodes",
+      "evidence": [
+        "packages/core/src/document-tcp.fixture.mjs",
+        "packages/core/src/gossip-colocation-defaults.fixture.mjs"
       ]
     },
     {
