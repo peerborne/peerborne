@@ -2,8 +2,10 @@ import { expect, jest, test } from '@jest/globals';
 import type { Doc } from 'yjs';
 import { YjsJSONSerializer, YjsProvider } from './peerborne-yjs.js';
 import {
+  joinCatchUpScenario,
   lostFrameRedeliveryScenario,
   missedTailCatchUpScenario,
+  missedWindowCatchUpScenario,
   retiredEpochScenario,
 } from '../../core/src/__testutils__/coordinated-scenarios.js';
 
@@ -26,6 +28,33 @@ test('resumes a Yjs member that missed a writer’s tail through the controller 
   for (const view of views)
     expect(view).toEqual(['ctl', 'four', 'one', 'three', 'two']);
 }, 30_000);
+
+test('a Yjs member added in a new epoch converges without an application relay', async () => {
+  const result = await joinCatchUpScenario(adapter);
+  expect(result.traffic.requests).toContain(2);
+  expect(result.traffic.checkpoints.length).toBeGreaterThan(0);
+  expect(new Set(result.traffic.checkpoints)).toEqual(new Set([0]));
+  expect(result).toMatchObject({ before: true, joined: true, after: true });
+  expect(result.empty).toEqual([]);
+  for (const view of result.views)
+    expect(view).toEqual(['first', 'fourth', 'second', 'third']);
+}, 60_000);
+
+test('a Yjs member that missed more frames than peers retain converges through a topic checkpoint', async () => {
+  const result = await missedWindowCatchUpScenario(adapter);
+  expect(result.traffic.redeliveries).toContain(2);
+  expect(result.traffic.requests).toContain(2);
+  expect(new Set(result.traffic.checkpoints)).toEqual(new Set([0]));
+  expect(result).toMatchObject({
+    joined: true,
+    behind: true,
+    recovered: true,
+    live: true,
+    held: false,
+  });
+  expect(result.views[2]).toHaveLength(73);
+  for (const view of result.views) expect(view).toEqual(result.views[2]);
+}, 90_000);
 
 test('recovers a lost Yjs frame from a causal chain through redelivery', async () => {
   const { errors, held, views } = await lostFrameRedeliveryScenario(adapter);

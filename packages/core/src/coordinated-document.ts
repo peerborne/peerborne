@@ -53,16 +53,25 @@ import {
 import { admitDocumentCatchUpReceipt } from './policy/document-catch-up.js';
 import {
   decodeDocumentCatchUpCheckpoint,
+  decodeDocumentCatchUpRefusal,
   decodeDocumentCatchUpRequest,
+  decodeDocumentTopicCatchUpRequest,
+  decodeEncryptedDocumentCatchUp,
   documentCatchUpAAD,
   encodeDocumentCatchUpCheckpoint,
+  encodeDocumentCatchUpRefusal,
   encodeDocumentCatchUpRequest,
+  encodeDocumentTopicCatchUpRequest,
+  encodeEncryptedDocumentCatchUp,
   MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
   MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES,
   MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES,
+  MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES,
   type DocumentCatchUpBinding,
   type DocumentCatchUpCheckpoint,
   type DocumentCatchUpKind,
+  type DocumentCatchUpRequest,
+  type DocumentTopicCatchUpRequest,
 } from './document-catch-up-wire.js';
 import {
   decodeDocumentRedeliveryRequest,
@@ -259,8 +268,23 @@ export interface CoordinatedDocumentOptions {
   readonly joinPublications?: boolean;
   /** Require the signed roles to enumerate the provider's exact decrypting roster. */
   readonly requireGroupRosterMatch?: boolean;
-  /** Allow explicit app-relayed catch-up from the current unrestricted controller. */
+  /**
+   * Allow catch-up from the current unrestricted controller: requested on the
+   * document topic, or relayed by the application.
+   */
   readonly enableAuthenticatedCatchUp?: boolean;
+  /**
+   * On the controller, decide whether an authenticated member's topic request
+   * gets a checkpoint, which holds the whole document state and its history.
+   * Any answer but `true` refuses it. Without it, every current member does.
+   */
+  readonly authorizeCatchUp?: (memberId: Uint8Array) => boolean | Promise<boolean>;
+  /**
+   * Called when the controller refuses this replica's topic request; it then
+   * stops requesting until `requestSecurityCatchUp()` is called. Without it,
+   * a warning is logged.
+   */
+  readonly onCatchUpRefused?: (refusal: CoordinatedCatchUpRefusal) => void;
   /**
    * Called with the number of unsent frames dropped because they were sealed
    * for an earlier group context or authority head and their author cannot
@@ -269,6 +293,15 @@ export interface CoordinatedDocumentOptions {
    */
   readonly onPublicationsDropped?: (frames: number) => void;
 }
+
+/** Why the controller answered this replica's topic request without a checkpoint. */
+export type CoordinatedCatchUpRefusal =
+  | {
+      /** The encoded snapshot exceeds the 512 KiB a checkpoint carries. */
+      readonly reason: 'snapshot-too-large';
+      readonly snapshotBytes: number;
+    }
+  | { readonly reason: 'denied' };
 
 interface DocumentGroupRosterBinding {
   readonly context: GroupSecurityDocumentContext;
@@ -301,6 +334,10 @@ interface CatchUpPreparation<Value> {
 interface PendingCatchUp {
   readonly roster: DocumentGroupRosterBinding;
   readonly challenge: Uint8Array;
+}
+
+interface TopicCatchUp extends PendingCatchUp {
+  readonly issuedAt: number;
 }
 
 function receiptEntries(
@@ -485,6 +522,51 @@ const REDELIVERY_REQUESTER_INTERVAL_MS = 2_000;
 const REDELIVERY_FRESHNESS_MS = 60_000;
 /** Frames one replica resends per second across all requesters, with a burst of 64. */
 const REDELIVERY_FRAMES_PER_SECOND = 32;
+
+/** A member gets at most one topic checkpoint from this controller in this interval. */
+const CATCH_UP_MEMBER_INTERVAL_MS = 10_000;
+/**
+ * Topic checkpoints that all coordinated documents in this module instance
+ * answer together: a burst of four, refilled at one every 2 s. Each document
+ * may take a burst of two, refilled at one every 4 s, so one document's
+ * members cannot use the whole budget.
+ */
+const CATCH_UP_PROCESS = { burst: 4, refillMs: 2_000 };
+const CATCH_UP_DOCUMENT = { burst: 2, refillMs: 4_000 };
+const catchUpAnswers = { tokens: CATCH_UP_PROCESS.burst, refilledAt: 0 };
+/** Topic requests a replica keeps outstanding; a newer one displaces the oldest. */
+const MAX_TOPIC_CATCH_UPS = 4;
+
+interface Bucket {
+  tokens: number;
+  refilledAt: number;
+}
+
+function refill(
+  bucket: Bucket,
+  limit: { burst: number; refillMs: number },
+  now: number,
+): void {
+  bucket.tokens = Math.min(
+    limit.burst,
+    bucket.tokens + Math.max(0, now - bucket.refilledAt) / limit.refillMs,
+  );
+  bucket.refilledAt = now;
+}
+
+/** Take a checkpoint from the document's share and the process budget, or neither. */
+function takeCatchUpAnswer(share: Bucket, now: number): boolean {
+  refill(share, CATCH_UP_DOCUMENT, now);
+  refill(catchUpAnswers, CATCH_UP_PROCESS, now);
+  if (share.tokens < 1 || catchUpAnswers.tokens < 1) return false;
+  share.tokens--;
+  catchUpAnswers.tokens--;
+  return true;
+}
+
+function boundRecent(map: Map<string, number>): void {
+  if (map.size > 256) map.delete(map.keys().next().value!);
+}
 
 /** Frames a responder resends: its own at once, others' after suppression. */
 export interface CoordinatedRedeliveryAnswer {
@@ -695,7 +777,26 @@ export class CoordinatedDocument<
     refilledAt: 0,
   };
   private heldAdded = 0;
+  private heldApplied = 0;
   private staleRedeliveries = 0;
+  private topicCatchUps: TopicCatchUp[] = [];
+  private readonly catchUpAnswer = {
+    answered: new Map<string, number>(),
+    issued: new Map<string, number>(),
+  };
+  private staleCatchUps = 0;
+  private readonly catchUpShare: Bucket = {
+    tokens: CATCH_UP_DOCUMENT.burst,
+    refilledAt: 0,
+  };
+  // Changes whenever accepted content changes, so a refused snapshot is not rebuilt.
+  private contentVersion = 0;
+  private oversized?: { readonly version: number; readonly bytes: number };
+  private catchUpRefusal?: CoordinatedCatchUpRefusal;
+  // Whether this replica accepted a frame or checkpoint, now or before a restart.
+  private holdsContent = false;
+  // Opened or added without content, and no checkpoint merged since.
+  private joining = false;
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -722,6 +823,8 @@ export class CoordinatedDocument<
       joinPublications,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      authorizeCatchUp,
+      onCatchUpRefused,
       onPublicationsDropped,
     } = options;
     if (
@@ -754,6 +857,10 @@ export class CoordinatedDocument<
       typeof onPublicationsDropped !== 'function'
     )
       throw new TypeError('Dropped publication handler must be a function');
+    if (authorizeCatchUp !== undefined && typeof authorizeCatchUp !== 'function')
+      throw new TypeError('Catch-up authorization must be a function');
+    if (onCatchUpRefused !== undefined && typeof onCatchUpRefused !== 'function')
+      throw new TypeError('Catch-up refusal handler must be a function');
     if (
       enableAuthenticatedCatchUp &&
       (!requireGroupRosterMatch ||
@@ -773,6 +880,8 @@ export class CoordinatedDocument<
         persistPublications === true && joinPublications === true,
       requireGroupRosterMatch,
       enableAuthenticatedCatchUp,
+      authorizeCatchUp,
+      onCatchUpRefused,
       onPublicationsDropped,
     };
     this.genesisId = copyUnsharedUint8Array(
@@ -979,6 +1088,7 @@ export class CoordinatedDocument<
             commit: () => {
               this.rosterBinding = roster;
               this.activated = true;
+              this.joining = !this.holdsContent && !this.controlsCatchUp(lease);
             },
           };
         },
@@ -1782,6 +1892,7 @@ export class CoordinatedDocument<
         this.removeHeld(held, entry);
         if (applied) {
           this.appliedFrames++;
+          this.heldApplied++;
           progressed = true;
         }
       }
@@ -2260,7 +2371,7 @@ export class CoordinatedDocument<
       (input) =>
         this.runCatchUp(input, async (stage) => {
           const controllerId = this.options.coordinator.localMemberId;
-          const controller = this.catchUpController(stage.lease, controllerId);
+          this.catchUpController(stage.lease, controllerId);
           const signed = await this.openCatchUp(stage, 'request', input);
           const body = decodeDocumentCatchUpRequest(signed.unsigned);
           this.assertCatchUpBinding(stage.binding, body);
@@ -2270,41 +2381,100 @@ export class CoordinatedDocument<
           if (!requester || documentBytesEqual(body.requesterId, controllerId))
             throw new Error('Document catch-up requester is unauthorized');
           await this.verifyCatchUp(stage, signed, requester);
-          stage.assertCurrent();
-          const receipts = this.sortedReceipts(stage.binding.context);
-          const snapshot = this.serializer.serializeChanges(
-            this.crdt.getSnapshot!(this.session.document),
-          );
-          const { receipts: requested, ...request } = body;
-          const base = {
-            ...request,
-            controllerId,
-            receipts: receiptEntries(receipts),
-            suffixes: [],
-            snapshot,
-          };
-          const { offered, suffixes } = this.catchUpSuffixes(
-            stage.binding.context,
-            receipts,
-            requested,
-            body.requesterId,
-            MAX_DOCUMENT_SECURITY_FRAME_BYTES -
-              CHECKPOINT_SEAL_BYTES -
-              encodeDocumentCatchUpCheckpoint(base).length,
-          );
-          const value = await this.sealCatchUp(
-            stage,
-            'checkpoint',
-            encodeDocumentCatchUpCheckpoint({
-              ...base,
-              receipts: receiptEntries(offered),
-              suffixes,
-            }),
-            controller,
-          );
-          return { value };
+          return { value: await this.sealCheckpoint(stage, body, 'checkpoint') };
         }),
     );
+  }
+
+  /** Seal the current state, with signed suffixes past the requester's heads, for an authenticated request. */
+  private async sealCheckpoint(
+    stage: CatchUpWork,
+    body: DocumentCatchUpRequest,
+    kind: 'checkpoint' | 'topic-checkpoint',
+  ): Promise<Uint8Array> {
+    const controllerId = this.options.coordinator.localMemberId;
+    const controller = this.catchUpController(stage.lease, controllerId);
+    stage.assertCurrent();
+    const receipts = this.sortedReceipts(stage.binding.context);
+    const snapshot = this.serializer.serializeChanges(
+      this.crdt.getSnapshot!(this.session.document),
+    );
+    if (kind === 'topic-checkpoint' && snapshot.length > MAX_DOCUMENT_CONTENT_BYTES) {
+      this.oversized = { version: this.contentVersion, bytes: snapshot.length };
+      return this.sealRefusal(stage, body, {
+        reason: 'snapshot-too-large',
+        snapshotBytes: snapshot.length,
+      });
+    }
+    const base = {
+      documentId: body.documentId,
+      genesisId: body.genesisId,
+      authorityHead: body.authorityHead,
+      context: body.context,
+      requesterId: body.requesterId,
+      challenge: body.challenge,
+      controllerId,
+      receipts: receiptEntries(receipts),
+      suffixes: [],
+      snapshot,
+    };
+    const { offered, suffixes } = this.catchUpSuffixes(
+      stage.binding.context,
+      receipts,
+      body.receipts,
+      body.requesterId,
+      MAX_DOCUMENT_SECURITY_FRAME_BYTES -
+        CHECKPOINT_SEAL_BYTES -
+        encodeDocumentCatchUpCheckpoint(base, kind).length,
+    );
+    return this.sealCatchUp(
+      stage,
+      kind,
+      encodeDocumentCatchUpCheckpoint(
+        { ...base, receipts: receiptEntries(offered), suffixes },
+        kind,
+      ),
+      controller,
+    );
+  }
+
+  /** Seal the controller's signed answer that sends no checkpoint for a topic request. */
+  private sealRefusal(
+    stage: CatchUpWork,
+    body: DocumentCatchUpRequest,
+    refusal: CoordinatedCatchUpRefusal,
+  ): Promise<Uint8Array> {
+    const controllerId = this.options.coordinator.localMemberId;
+    const controller = this.catchUpController(stage.lease, controllerId);
+    stage.assertCurrent();
+    return this.sealCatchUp(
+      stage,
+      'topic-refusal',
+      encodeDocumentCatchUpRefusal({
+        documentId: body.documentId,
+        genesisId: body.genesisId,
+        authorityHead: body.authorityHead,
+        context: body.context,
+        requesterId: body.requesterId,
+        challenge: body.challenge,
+        controllerId,
+        reason: refusal.reason,
+        snapshotBytes:
+          refusal.reason === 'snapshot-too-large' ? refusal.snapshotBytes : 0,
+      }),
+      controller,
+    );
+  }
+
+  /** The application's decision for a member's topic request; failures refuse it. */
+  private async authorizesCatchUp(memberId: Uint8Array): Promise<boolean> {
+    const authorize = this.options.authorizeCatchUp;
+    if (!authorize) return true;
+    try {
+      return (await authorize(memberId.slice())) === true;
+    } catch {
+      return false;
+    }
   }
 
   applyCatchUpCheckpoint(checkpoint: Uint8Array): Promise<void> {
@@ -2313,11 +2483,493 @@ export class CoordinatedDocument<
       MAX_DOCUMENT_SECURITY_FRAME_BYTES,
       MAX_DOCUMENT_CONTENT_BYTES,
       async (input) => {
-        await this.mergeCatchUpCheckpoint(input);
+        const pending = this.pendingCatchUp;
+        if (!pending) throw new Error('No document catch-up request is pending');
+        await this.mergeCatchUpCheckpoint(
+          input,
+          'checkpoint',
+          pending,
+          () => this.pendingCatchUp === pending,
+          () => {
+            this.pendingCatchUp = undefined;
+          },
+        );
         this.appliedFrames++;
         await this.releaseHeld();
       },
     );
+  }
+
+  /** Whether this replica opened, or a role update reached it, without content, and no checkpoint merged since. */
+  needsJoinCatchUp(): boolean {
+    return this.joining && this.canRequestCatchUp();
+  }
+
+  /**
+   * Whether this open replica may ask the controller for a checkpoint: it is a
+   * current member other than the controller, and the controller has not
+   * refused it since the last explicit request.
+   */
+  canRequestCatchUp(): boolean {
+    if (
+      !this.options.enableAuthenticatedCatchUp ||
+      this.catchUpRefusal !== undefined ||
+      !this.activated ||
+      this.closed ||
+      this.failed ||
+      this.diverged
+    )
+      return false;
+    try {
+      const lease = this.authority(this.options.coordinator.documentContext);
+      return (
+        lease.members.has(
+          documentBytesId(this.options.coordinator.localMemberId),
+        ) && !this.controlsCatchUp(lease)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Ask again after the controller refused; the application decides when. */
+  resumeCatchUp(): void {
+    this.catchUpRefusal = undefined;
+  }
+
+  get topicCatchUpEnabled(): boolean {
+    return this.options.enableAuthenticatedCatchUp === true;
+  }
+
+  /** Increases each time a held frame applies. */
+  get heldProgress(): number {
+    return this.heldApplied;
+  }
+
+  /**
+   * Topic catch-up requests ignored, before their signature check, because
+   * their issue time was over 60 s from this clock.
+   */
+  get staleCatchUpRequests(): number {
+    return this.staleCatchUps;
+  }
+
+  /**
+   * Seal a request for the current controller to answer on the document
+   * topic, bound to this node's libp2p PeerId. Up to four requests stay
+   * outstanding; the first checkpoint merged for any of them retires all.
+   */
+  createTopicCatchUpRequest(requesterPeer: string): Promise<Uint8Array> {
+    return this.enqueueCatchUp(
+      undefined,
+      0,
+      0,
+      (input) =>
+        this.runCatchUp(input, async (stage) => {
+          const requesterId = this.options.coordinator.localMemberId;
+          const member = stage.lease.members.get(documentBytesId(requesterId));
+          if (!member) throw new Error('Local member has no document authority');
+          if (this.controlsCatchUp(stage.lease))
+            throw new Error('The document controller has no catch-up source');
+          const challenge = crypto.getRandomValues(new Uint8Array(32));
+          const issuedAt = Date.now();
+          const value = await this.sealCatchUp(
+            stage,
+            'topic-request',
+            encodeDocumentTopicCatchUpRequest({
+              ...stage.binding,
+              requesterId,
+              challenge,
+              requesterPeer,
+              issuedAt,
+              receipts: receiptEntries(this.sortedReceipts(stage.binding.context)),
+            }),
+            member,
+          );
+          return {
+            value,
+            commit: () => {
+              this.topicCatchUps = [
+                ...this.topicCatchUps.slice(1 - MAX_TOPIC_CATCH_UPS),
+                { roster: stage.roster, challenge, issuedAt },
+              ];
+            },
+          };
+        }),
+      true,
+    );
+  }
+
+  /**
+   * Answer a current member's topic request, which GossipSub delivered from
+   * `from`, with an encrypted checkpoint for the topic. Only the unrestricted
+   * current controller answers; other replicas drop the request before
+   * decrypting it. The request is authenticated outside the document queue and
+   * charged against the received bounds and the sender's share. A fresh issue
+   * time newer than the member's last is required, a member gets at most one
+   * checkpoint every 10 s, and all documents in the process share a budget.
+   */
+  async answerTopicCatchUp(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<Uint8Array | undefined> {
+    const length = unsharedUint8ArrayByteLength(
+      frame,
+      1,
+      MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES + 64,
+      'document catch-up request',
+    );
+    if (from !== undefined && (typeof from !== 'string' || from.length > 1024))
+      throw new TypeError('Invalid document frame sender');
+    if (!this.options.enableAuthenticatedCatchUp) return undefined;
+    this.assertUsable();
+    this.assertActivated();
+    this.assertPublicationDispatchAllowed(this.rosterBinding, false);
+    const roster = this.rosterBinding!;
+    const context = this.options.coordinator.documentContext;
+    const lease = this.authority(context);
+    if (!this.controlsCatchUp(lease)) return undefined;
+    let request: DocumentTopicCatchUpRequest;
+    let refusal: CoordinatedCatchUpRefusal | undefined;
+    const releases = this.reserveReceived(length, from);
+    try {
+      const envelope = decodeEncryptedDocumentCatchUp(
+        'topic-request',
+        copyUnsharedUint8Array(frame, length, length, 'document catch-up request'),
+      );
+      const binding: DocumentCatchUpBinding = {
+        documentId: this.documentId,
+        genesisId: this.genesisId,
+        authorityHead: lease.headId,
+        context,
+      };
+      const signed = await this.openTopicCatchUp(
+        context,
+        documentCatchUpAAD('topic-request', binding),
+        envelope,
+      );
+      if (!signed) throw new Error('Document catch-up request does not decrypt');
+      const body = decodeDocumentTopicCatchUpRequest(signed.unsigned);
+      this.assertCatchUpBinding(binding, body);
+      if (from === undefined || body.requesterPeer !== from)
+        throw new Error('Document catch-up request is not from its signer');
+      const requesterId = documentBytesId(body.requesterId);
+      const requester = lease.members.get(requesterId);
+      if (
+        !requester ||
+        documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+      )
+        throw new Error('Document catch-up requester is unauthorized');
+      const state = this.catchUpAnswer;
+      const stale = () =>
+        Math.abs(Date.now() - body.issuedAt) > REDELIVERY_FRESHNESS_MS;
+      const replayed = () =>
+        body.issuedAt <= (state.issued.get(requesterId) ?? -1);
+      // Stale or replayed requests are refused before their signature check.
+      if (stale()) {
+        this.staleCatchUps++;
+        return undefined;
+      }
+      if (replayed()) return undefined;
+      await this.verifySigned(signed, requester);
+      if (
+        !lease.isCurrent() ||
+        this.rosterBinding !== roster ||
+        !documentContextsMatch(context, this.options.coordinator.documentContext)
+      )
+        throw new Error('Document catch-up request is no longer current');
+      if (stale() || replayed()) return undefined;
+      state.issued.set(requesterId, body.issuedAt);
+      boundRecent(state.issued);
+      if (
+        Date.now() - (state.answered.get(requesterId) ?? -Infinity) <
+        CATCH_UP_MEMBER_INTERVAL_MS
+      )
+        return undefined;
+      const authorized = await this.authorizesCatchUp(body.requesterId);
+      if (
+        !lease.isCurrent() ||
+        this.rosterBinding !== roster ||
+        !documentContextsMatch(context, this.options.coordinator.documentContext)
+      )
+        throw new Error('Document catch-up request is no longer current');
+      const now = Date.now();
+      if (now - (state.answered.get(requesterId) ?? -Infinity) < CATCH_UP_MEMBER_INTERVAL_MS)
+        return undefined;
+      if (!authorized) refusal = { reason: 'denied' };
+      else if (this.oversized?.version === this.contentVersion)
+        refusal = {
+          reason: 'snapshot-too-large',
+          snapshotBytes: this.oversized.bytes,
+        };
+      else if (!takeCatchUpAnswer(this.catchUpShare, now)) return undefined;
+      state.answered.set(requesterId, now);
+      boundRecent(state.answered);
+      request = body;
+    } finally {
+      for (const release of releases.reverse()) release();
+    }
+    const work = this.reserveReceived(
+      MAX_DOCUMENT_CONTENT_BYTES + MAX_DOCUMENT_SECURITY_FRAME_BYTES,
+      from,
+    );
+    try {
+      return await this.receivedTurn(() =>
+        this.runCatchUp(new Uint8Array(), async (stage) => {
+          if (stage.roster !== roster)
+            throw new Error('Document catch-up authority changed');
+          this.assertCatchUpBinding(stage.binding, request);
+          return {
+            value: refusal
+              ? await this.sealRefusal(stage, request, refusal)
+              : await this.sealCheckpoint(stage, request, 'topic-checkpoint'),
+          };
+        }),
+      );
+    } finally {
+      for (const release of work.reverse()) release();
+    }
+  }
+
+  /**
+   * Merge a checkpoint carried on the topic that answers one of this
+   * replica's outstanding requests. A replica with none drops it unread.
+   */
+  async receiveTopicCatchUp(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<boolean> {
+    const length = unsharedUint8ArrayByteLength(
+      frame,
+      1,
+      MAX_DOCUMENT_SECURITY_FRAME_BYTES,
+      'document catch-up checkpoint',
+    );
+    if (from !== undefined && (typeof from !== 'string' || from.length > 1024))
+      throw new TypeError('Invalid document frame sender');
+    if (!this.options.enableAuthenticatedCatchUp) return false;
+    this.assertUsable();
+    if (this.outstandingCatchUps().length === 0) return false;
+    this.assertActivated();
+    const releases = this.reserveReceived(
+      2 * length + MAX_DOCUMENT_CONTENT_BYTES,
+      from,
+    );
+    try {
+      const owned = copyUnsharedUint8Array(
+        frame,
+        length,
+        length,
+        'document catch-up checkpoint',
+      );
+      const context = this.options.coordinator.documentContext;
+      const signed = await this.openTopicCatchUp(
+        context,
+        documentCatchUpAAD('topic-checkpoint', {
+          documentId: this.documentId,
+          genesisId: this.genesisId,
+          authorityHead: this.authority(context).headId,
+          context,
+        }),
+        decodeEncryptedDocumentCatchUp('topic-checkpoint', owned),
+      );
+      if (!signed) return false;
+      const body = decodeDocumentCatchUpCheckpoint(
+        signed.unsigned,
+        'topic-checkpoint',
+      );
+      const pending = this.outstandingCatchUps().find((entry) =>
+        documentBytesEqual(entry.challenge, body.challenge),
+      );
+      if (
+        !pending ||
+        !documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+      )
+        return false;
+      await this.receivedTurn(async () => {
+        await this.mergeCatchUpCheckpoint(
+          owned,
+          'topic-checkpoint',
+          pending,
+          () => this.topicCatchUps.includes(pending),
+          () => {
+            this.topicCatchUps = [];
+          },
+        );
+        this.appliedFrames++;
+        await this.releaseHeld();
+      });
+      return true;
+    } finally {
+      for (const release of releases.reverse()) release();
+    }
+  }
+
+  /**
+   * Accept the controller's signed refusal of one of this replica's
+   * outstanding requests. The replica then stops requesting until the
+   * application asks again, and reports the refusal.
+   */
+  async receiveTopicCatchUpRefusal(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<boolean> {
+    const length = unsharedUint8ArrayByteLength(
+      frame,
+      1,
+      MAX_DOCUMENT_CATCH_UP_TOPIC_REQUEST_BYTES + 64,
+      'document catch-up refusal',
+    );
+    if (from !== undefined && (typeof from !== 'string' || from.length > 1024))
+      throw new TypeError('Invalid document frame sender');
+    if (!this.options.enableAuthenticatedCatchUp) return false;
+    this.assertUsable();
+    if (this.outstandingCatchUps().length === 0) return false;
+    this.assertActivated();
+    const releases = this.reserveReceived(length, from);
+    try {
+      const context = this.options.coordinator.documentContext;
+      const lease = this.authority(context);
+      const binding: DocumentCatchUpBinding = {
+        documentId: this.documentId,
+        genesisId: this.genesisId,
+        authorityHead: lease.headId,
+        context,
+      };
+      const signed = await this.openTopicCatchUp(
+        context,
+        documentCatchUpAAD('topic-refusal', binding),
+        decodeEncryptedDocumentCatchUp(
+          'topic-refusal',
+          copyUnsharedUint8Array(frame, length, length, 'document catch-up refusal'),
+        ),
+      );
+      if (!signed) return false;
+      const body = decodeDocumentCatchUpRefusal(signed.unsigned);
+      this.assertCatchUpBinding(binding, body);
+      const pending = this.outstandingCatchUps().find((entry) =>
+        documentBytesEqual(entry.challenge, body.challenge),
+      );
+      if (
+        !pending ||
+        !documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+      )
+        return false;
+      await this.verifySigned(
+        signed,
+        this.catchUpController(lease, body.controllerId),
+      );
+      if (!lease.isCurrent() || !this.topicCatchUps.includes(pending))
+        return false;
+      this.topicCatchUps = [];
+      this.catchUpRefusal =
+        body.reason === 'denied'
+          ? { reason: 'denied' }
+          : { reason: body.reason, snapshotBytes: body.snapshotBytes };
+      this.reportRefusal(this.catchUpRefusal);
+      return true;
+    } finally {
+      for (const release of releases.reverse()) release();
+    }
+  }
+
+  private reportRefusal(refusal: CoordinatedCatchUpRefusal): void {
+    const report = this.options.onCatchUpRefused;
+    if (!report) {
+      console.warn(
+        refusal.reason === 'denied'
+          ? `[${this.documentId}] the document controller refused catch-up for this member.`
+          : `[${this.documentId}] the document snapshot is ${refusal.snapshotBytes} bytes, over the 524288 a catch-up checkpoint carries.`,
+      );
+      return;
+    }
+    try {
+      report(refusal);
+    } catch {
+      // The application's handler cannot affect catch-up state.
+    }
+  }
+
+  /** Requests still bound to the installed roster and recent enough to be answered. */
+  private outstandingCatchUps(): TopicCatchUp[] {
+    const now = Date.now();
+    this.topicCatchUps = this.topicCatchUps.filter(
+      (entry) =>
+        entry.roster === this.rosterBinding &&
+        Math.abs(now - entry.issuedAt) <= 2 * REDELIVERY_FRESHNESS_MS,
+    );
+    return this.topicCatchUps;
+  }
+
+  /** Decrypt a topic catch-up message under the current epoch, or undefined when it does not. */
+  private async openTopicCatchUp(
+    context: GroupSecurityDocumentContext,
+    aad: Uint8Array,
+    envelope: { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array },
+  ): Promise<ReturnType<typeof decodeSignedDocumentContent> | undefined> {
+    const material = await this.materialFor(context);
+    if (!documentBytesEqual(envelope.epochTag, material.epochTag))
+      return undefined;
+    let plaintext: Uint8Array;
+    try {
+      plaintext = new Uint8Array(
+        await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: envelope.nonce as Uint8Array<ArrayBuffer>,
+            additionalData: aad as Uint8Array<ArrayBuffer>,
+          },
+          material.key,
+          envelope.ciphertext as Uint8Array<ArrayBuffer>,
+        ),
+      );
+    } catch {
+      return undefined;
+    }
+    return decodeSignedDocumentContent(plaintext);
+  }
+
+  /** Charge received input against the process, document and sender bounds. */
+  private reserveReceived(
+    bytes: number,
+    sender: string | undefined,
+  ): Array<() => void> {
+    const releases: Array<() => void> = [];
+    try {
+      releases.push(aggregateInbound.reserve(bytes));
+      releases.push(this.inbound.reserve(bytes));
+      releases.push(
+        reserveSender(this.senders, sender ?? '', bytes, SENDER_FRAMES, SENDER_BYTES),
+      );
+    } catch (error) {
+      for (const release of releases.reverse()) release();
+      throw error;
+    }
+    return releases;
+  }
+
+  /** Run received work in the document queue; waiting local edits go first. */
+  private receivedTurn<Value>(work: () => Promise<Value>): Promise<Value> {
+    const result = this.tail.then(async () => {
+      await this.serveLocal();
+      this.assertUsable();
+      this.assertActivated();
+      return work();
+    });
+    this.tail = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
+  private controlsCatchUp(lease: AuthorityLease): boolean {
+    try {
+      this.catchUpController(lease, this.options.coordinator.localMemberId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private enqueueCatchUp<Value>(
@@ -2325,6 +2977,7 @@ export class CoordinatedDocument<
     maximum: number,
     workBytes: number,
     run: (input: Uint8Array) => Promise<Value>,
+    local = false,
   ): Promise<Value> {
     try {
       if (!this.options.enableAuthenticatedCatchUp)
@@ -2349,7 +3002,7 @@ export class CoordinatedDocument<
                 'document catch-up frame',
               );
         return () => run(owned);
-      });
+      }, false, local);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -2464,7 +3117,9 @@ export class CoordinatedDocument<
     return this.openSealed(
       stage,
       documentCatchUpAAD(kind, stage.binding),
-      decodeEncryptedDocumentContent(frame),
+      kind === 'request' || kind === 'checkpoint'
+        ? decodeEncryptedDocumentContent(frame)
+        : decodeEncryptedDocumentCatchUp(kind, frame),
     );
   }
 
@@ -2530,7 +3185,10 @@ export class CoordinatedDocument<
       documentCatchUpAAD(kind, stage.binding),
       unsigned,
       member,
-      encodeEncryptedDocumentContent,
+      kind === 'request' || kind === 'checkpoint'
+        ? encodeEncryptedDocumentContent
+        : (epochTag, nonce, ciphertext) =>
+            encodeEncryptedDocumentCatchUp(kind, epochTag, nonce, ciphertext),
     );
   }
 
@@ -2583,9 +3241,13 @@ export class CoordinatedDocument<
     return outer(stage.material.epochTag, nonce, new Uint8Array(ciphertext));
   }
 
-  private async mergeCatchUpCheckpoint(input: Uint8Array): Promise<void> {
-    const pending = this.pendingCatchUp;
-    if (!pending) throw new Error('No document catch-up request is pending');
+  private async mergeCatchUpCheckpoint(
+    input: Uint8Array,
+    kind: 'checkpoint' | 'topic-checkpoint',
+    pending: PendingCatchUp,
+    isPending: () => boolean,
+    consume: () => void,
+  ): Promise<void> {
     let plan: PreparedDocumentChange<Changes> | undefined;
     let journal: PreparedDocumentJournal | undefined;
     let accepting = false;
@@ -2593,13 +3255,13 @@ export class CoordinatedDocument<
       const { context, receipts, lease } = await this.runCatchUp(
         input,
         async (stage, owned) => {
-          if (pending.roster !== stage.roster)
+          if (!isPending() || pending.roster !== stage.roster)
             throw new Error('Document catch-up request authority changed');
           const localId = this.options.coordinator.localMemberId;
           if (!stage.lease.members.has(documentBytesId(localId)))
             throw new Error('Local member has no document authority');
-          const signed = await this.openCatchUp(stage, 'checkpoint', owned);
-          const body = decodeDocumentCatchUpCheckpoint(signed.unsigned);
+          const signed = await this.openCatchUp(stage, kind, owned);
+          const body = decodeDocumentCatchUpCheckpoint(signed.unsigned, kind);
           this.assertCatchUpBinding(stage.binding, body);
           if (
             !documentBytesEqual(body.requesterId, localId) ||
@@ -2652,8 +3314,10 @@ export class CoordinatedDocument<
       );
       // An uncertain acceptance requires reopen. Do not expose the native merge
       // before the authenticated journal and its independent anchor agree.
+      if (!isPending())
+        throw new Error('Document catch-up response has no matching request');
       accepting = true;
-      this.pendingCatchUp = undefined;
+      consume();
       await journal!.commit();
       await this.runCatchUp(new Uint8Array(), async (stage) => {
         if (stage.roster !== pending.roster || !lease.isCurrent())
@@ -2668,6 +3332,9 @@ export class CoordinatedDocument<
             this.receipts = receipts;
             this.receiptsContext = context;
             this.persistedAuthorityLease = lease.isCurrent;
+            this.holdsContent = true;
+            this.contentVersion++;
+            this.joining = false;
           },
         };
       });
@@ -3315,6 +3982,8 @@ export class CoordinatedDocument<
                 }
                 commitAttempted = true;
                 plan?.commit();
+                this.holdsContent = true;
+                this.contentVersion++;
                 this.receipts = receipts;
                 this.receiptsContext = captured;
                 this.receipts.set(documentBytesId(memberId), {
@@ -3423,6 +4092,8 @@ export class CoordinatedDocument<
         if (replaced) retired.push(replaced);
       };
       for (const record of records) {
+        if (record.receipts.length !== 0) this.holdsContent = true;
+        this.contentVersion++;
         for (const frame of record.carriedFrames ?? [])
           restoreOwn({
             context: frame.context,
@@ -3562,6 +4233,10 @@ export class CoordinatedDocument<
             }
             const before = beforeOpen ? this.own : undefined;
             await this.applyStrictAuthorityUpdate(authority, owned);
+            if (!beforeOpen && !this.holdsContent)
+              this.joining = !this.controlsCatchUp(
+                this.authority(this.options.coordinator.documentContext),
+              );
             if (beforeOpen) {
               this.queueRetired(before, await this.queuedFrames());
               return undefined;
@@ -4283,6 +4958,7 @@ export class CoordinatedDocument<
     this.dropRetained();
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
+    this.topicCatchUps = [];
     this.material = undefined;
     return this.tail.then(() => {
       this.clearHeld();
