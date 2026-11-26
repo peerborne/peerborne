@@ -574,10 +574,17 @@ describe('bounded iterative change-tree consumers', () => {
     mergeWriters: (changes: Change) => Promise<void>,
     mergeKeychain: (changes: Change) => void,
   ): any {
+    const commitment = async () => new Uint8Array(32);
     return fakeDocument({
       documentPath: '/acl-before-keychain',
       _isSigningEnabled: () => false,
-      _keychain: { merge: mergeKeychain },
+      _keychain: {
+        stateCommitment: commitment,
+        prepareMerge: (changes: Change) => ({
+          stateCommitment: commitment,
+          commit: () => mergeKeychain(changes),
+        }),
+      },
       _mergeReaders: jest.fn(),
       _mergeWriters: mergeWriters,
     });
@@ -617,7 +624,14 @@ describe('bounded iterative change-tree consumers', () => {
     const settlement = new Promise<void>((resolve) => {
       settle = resolve;
     });
-    const mergeWriters = jest.fn(() => settlement);
+    let started!: () => void;
+    const writersStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const mergeWriters = jest.fn(() => {
+      started();
+      return settlement;
+    });
     const stop = new Error('stop after keychain merge');
     const mergeKeychain = jest.fn(() => {
       throw stop;
@@ -630,7 +644,7 @@ describe('bounded iterative change-tree consumers', () => {
         () => 'resolved',
         (error: unknown) => error,
       );
-    await Promise.resolve();
+    await writersStarted;
     expect(mergeWriters).toHaveBeenCalledTimes(1);
     expect(mergeKeychain).not.toHaveBeenCalled();
 

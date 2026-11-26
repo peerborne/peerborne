@@ -6535,7 +6535,6 @@ export class PeerborneDocument<
         let beganBootstrapStateApplication = false;
         let trackedLoadHadEstablishedState = false;
         let trackedLoadMadeReplicatedProgress = false;
-        let trackedLoadMadeLogicalKeychainProgress = false;
         const assertBootstrapCanComplete = async (): Promise<void> => {
           throwIfLoadAborted(signal);
           if (
@@ -6599,9 +6598,6 @@ export class PeerborneDocument<
               ? undefined
               : beginBootstrapStateApplication,
             continuingInvitationBootstrap,
-            () => {
-              trackedLoadMadeLogicalKeychainProgress = true;
-            },
             changeFetchOptions,
           );
           throwIfLoadAborted(signal);
@@ -6612,8 +6608,6 @@ export class PeerborneDocument<
             return false;
           }
           trackedLoadMadeReplicatedProgress =
-            (loadWriterAdmission === 'pinned' &&
-              trackedLoadMadeLogicalKeychainProgress) ||
             this._hashes.size > hashesBefore ||
             this._lastSyncMessage !== lastSyncMessageBefore ||
             this._latestSnapshot !== latestSnapshotBefore;
@@ -6660,7 +6654,6 @@ export class PeerborneDocument<
                 session.context,
                 undefined,
                 false,
-                undefined,
                 changeFetchOptions,
               );
             });
@@ -9525,7 +9518,6 @@ export class PeerborneDocument<
           'ordinary-sync-v1',
           undefined,
           false,
-          undefined,
           {
             assertStillActive: () => {
               if (!isActive())
@@ -9657,7 +9649,6 @@ export class PeerborneDocument<
               'invitation-bootstrap-v1',
               undefined,
               true,
-              undefined,
               changeFetchOptions,
             ),
             changeFetchOptions.signal,
@@ -9780,7 +9771,6 @@ export class PeerborneDocument<
     context: Extract<SyncMessageContext, 'ordinary-sync-v1' | 'load-response-v4' | 'invitation-bootstrap-v1' | 'invitation-catch-up-v1'>,
     onStateApplicationStart?: () => void,
     continuePendingBootstrapApplication = false,
-    onLogicalKeychainChange?: () => void,
     changeFetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
   ): Promise<boolean> {
     const assertStillActive = (): void => {
@@ -9884,6 +9874,32 @@ export class PeerborneDocument<
           );
     assertStillActive();
 
+    // Any writer can sign a response, and an honest one is encrypted under a
+    // key the receiver holds, so it may only re-deliver known keys. New keys
+    // come from BeeKEM rotations, the invitation, or a checkpoint. A no-op is
+    // still committed below so providers retain causal metadata.
+    const keychainChanges = message.keychainChanges;
+    const preparedKeychainMerge =
+      keychainChanges === undefined
+        ? undefined
+        : this._keychain.prepareMerge(keychainChanges);
+    if (preparedKeychainMerge !== undefined) {
+      const [liveCommitment, preparedCommitment] = await awaitLoadWork(
+        Promise.all([
+          this._keychain.stateCommitment(),
+          preparedKeychainMerge.stateCommitment(),
+        ]),
+        changeFetchOptions.signal,
+      );
+      if (!constantTimeEqual(liveCommitment, preparedCommitment)) {
+        console.warn(
+          `Rejected keychain changes that would add keys to ${this.documentPath}`,
+        );
+        return false;
+      }
+    }
+    assertStillActive();
+
     let stateApplicationStarted = false;
     const beginStateApplication = (): void => {
       assertStillActive();
@@ -9896,7 +9912,7 @@ export class PeerborneDocument<
     // _writers/_readers. This is needed before snapshot verification since
     // _verifySnapshotSignature() requires writer keys. ACL merges are
     // idempotent, so re-applying them in _syncDocumentChanges() is safe.
-    // It runs before the keychain merge so a rejected ACL merge leaves the
+    // It runs before the keychain commit so a rejected ACL merge leaves the
     // keychain unchanged.
     if (changeTreePreflight && changeTreePreflight.aclEntries.length > 0) {
       beginStateApplication();
@@ -9909,70 +9925,19 @@ export class PeerborneDocument<
       assertStillActive();
     }
 
-    // Keychain changes are provider-opaque. Only an absent wire field is a
-    // generic no-op; concrete providers decide whether any present value is a
-    // semantic no-op through a staged state commitment below.
-    const keychainChanges = message.keychainChanges;
-    const hasKeychainChanges = keychainChanges !== undefined;
-
-    // The built-in providers do not share one byte-level empty encoding. When
-    // bootstrapping, compare the live and projected key sequences before
-    // reserving a bootstrap instance. A semantic no-op is still committed
-    // atomically so providers retain causal metadata, but it does not expose
-    // new logical key state.
-    const preparedKeychainMerge =
-      hasKeychainChanges &&
-      onStateApplicationStart !== undefined
-        ? this._keychain.prepareMerge(keychainChanges)
-        : undefined;
-    let logicalKeychainStateChanged: boolean | undefined;
     if (preparedKeychainMerge !== undefined) {
-      const [liveCommitment, preparedCommitment] = await awaitLoadWork(
-        Promise.all([
-          this._keychain.stateCommitment(),
-          preparedKeychainMerge.stateCommitment(),
-        ]),
-        changeFetchOptions.signal,
-      );
-      logicalKeychainStateChanged = !constantTimeEqual(
-        liveCommitment,
-        preparedCommitment,
-      );
-    }
-    assertStillActive();
-    // Update/replace list of document keys (if provided).
-    if (hasKeychainChanges) {
+      assertStillActive();
       try {
-        if (preparedKeychainMerge) {
-          if (logicalKeychainStateChanged !== false) {
-            await awaitLoadWork(
-              preparedKeychainMerge.hydrateKeys(),
-              changeFetchOptions.signal,
-            );
-            assertStillActive();
-            beginStateApplication();
-          }
-          assertStillActive();
-          try {
-            preparedKeychainMerge.commit();
-          } catch (error) {
-            // A provider-reported no-op can still partially mutate before throwing.
-            this._markBootstrapStateApplicationPending();
-            throw error;
-          }
-        } else {
-          beginStateApplication();
-          this._keychain.merge(keychainChanges);
+        preparedKeychainMerge.commit();
+      } catch (error) {
+        // A provider-reported no-op can still partially mutate before throwing.
+        if (onStateApplicationStart !== undefined) {
+          this._markBootstrapStateApplicationPending();
         }
-        if (logicalKeychainStateChanged === true) {
-          onLogicalKeychainChange?.();
-        }
-        console.log(`Updated keychain in ${this.documentPath}`);
-      } catch (e) {
         console.error(
           `Failed to merge keychain changes in ${this.documentPath}`,
         );
-        throw e;
+        throw error;
       }
     }
 
@@ -12780,6 +12745,16 @@ export class PeerborneDocument<
     }
   }
 
+  /** Whether this replica has no key, ratchet tree, or invitation epoch. */
+  private async _acceptsBeeKEMWelcome(): Promise<boolean> {
+    return (
+      this._beekem === null &&
+      !this._beekemInitialized &&
+      this._invitationEpoch === undefined &&
+      (await this._keychain.keys()).length === 0
+    );
+  }
+
   /**
    * Shared receive-path body for both freshly-arrived Welcomes (called
    * from `handleBeeKEMWelcomeRequestData`) and Welcomes replayed from the
@@ -12896,6 +12871,14 @@ export class PeerborneDocument<
     // validator authenticated, never the caller-owned serializer result.
     message = decision.message;
 
+    // Any writer can sign a Welcome, so it may only bootstrap a replica with
+    // no key or tree. Otherwise it could append a key or plant a leaf that
+    // reads this replica's later rotations.
+    if (!(await this._acceptsBeeKEMWelcome())) {
+      console.warn('Ignoring BeeKEM Welcome for a replica that holds keys');
+      return 'terminal';
+    }
+
     // Open the sealed keychain delta. We must hold the matching ECDH
     // private key (see `setKemKeyPair`); without it, even a Welcome
     // that addresses us by identity and KEM public key cannot be
@@ -12934,18 +12917,6 @@ export class PeerborneDocument<
       EPOCH_ID_LENGTH,
       'BeeKEM Welcome epoch ID',
     );
-    const existingInvitationEpoch =
-      this._invitationEpoch === undefined
-        ? undefined
-        : new Uint8Array(this._invitationEpoch);
-    if (
-      existingInvitationEpoch !== undefined &&
-      constantTimeEqual(existingInvitationEpoch, newEpochId)
-    ) {
-      return 'terminal';
-    }
-    const liveBeeKEM = this._beekem;
-    const liveGeneration = liveBeeKEM?.generation;
 
     let keychainPlaintext: ChangesType;
     let bootstrapWelcome: BeeKEMWelcomeV2;
@@ -12979,34 +12950,6 @@ export class PeerborneDocument<
         [keychainPlaintext],
       );
       preparedKeychainMerge = capturePreparedKeychainMerge(prepared);
-
-      if (existingInvitationEpoch !== undefined) {
-        let existingIndex = -1;
-        let incomingIndex = -1;
-        for (
-          let index = 0;
-          index < preparedKeychainMerge.keyIds.length;
-          index++
-        ) {
-          const keyId = preparedKeychainMerge.keyIds[index];
-          if (constantTimeEqual(keyId, existingInvitationEpoch)) {
-            existingIndex = index;
-          }
-          if (constantTimeEqual(keyId, newEpochId)) {
-            incomingIndex = index;
-          }
-        }
-        if (existingIndex === -1 || incomingIndex === -1) {
-          console.warn(
-            'Dropping BeeKEM Welcome with a divergent staged keychain',
-          );
-          return 'terminal';
-        }
-        if (incomingIndex <= existingIndex) {
-          console.warn('Ignoring out-of-order BeeKEM Welcome');
-          return 'terminal';
-        }
-      }
 
       if (!constantTimeEqual(preparedKeychainMerge.currentKeyId, newEpochId)) {
         console.warn(
@@ -13051,11 +12994,6 @@ export class PeerborneDocument<
           this._kemKeyPair.publicKey,
         )
       ).fill(0);
-      const currentGeneration = this._beekem?.generation;
-      if (currentGeneration != null && bootstrapWelcome.generation <= currentGeneration) {
-        console.warn('Dropping non-increasing BeeKEM Welcome generation');
-        return 'terminal';
-      }
     } catch {
       console.warn('Dropping BeeKEM Welcome with invalid bootstrap state');
       return 'terminal';
@@ -13069,16 +13007,10 @@ export class PeerborneDocument<
           if (this._writerKeysVersion !== writerKeysVersion) {
             throw new Error('Writer ACL changed before Welcome commit');
           }
-          const invitationEpoch = this._invitationEpoch;
-          const invitationEpochChanged =
-            invitationEpoch === undefined ||
-            existingInvitationEpoch === undefined
-              ? invitationEpoch !== existingInvitationEpoch
-              : !constantTimeEqual(invitationEpoch, existingInvitationEpoch);
           if (
-            this._beekem !== liveBeeKEM ||
-            this._beekem?.generation !== liveGeneration ||
-            invitationEpochChanged
+            this._beekem !== null ||
+            this._beekemInitialized ||
+            this._invitationEpoch !== undefined
           ) {
             return false;
           }

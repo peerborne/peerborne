@@ -563,7 +563,6 @@ describe('ordinary sync-message context confinement', () => {
         'ordinary-sync-v1',
         undefined,
         false,
-        undefined,
         { assertStillActive: expect.any(Function), frameBytes: expect.any(Number) },
       );
     } finally {
@@ -812,7 +811,6 @@ describe('snapshot-bearing invitation sync', () => {
           'load-response-v4',
           undefined,
           false,
-          undefined,
           { applySnapshotAfterChanges },
         ),
       ).resolves.toBe(true);
@@ -866,7 +864,6 @@ describe('snapshot-bearing invitation sync', () => {
           'load-response-v4',
           undefined,
           false,
-          undefined,
           { applySnapshotAfterChanges },
         ),
       ).resolves.toBe(true);
@@ -907,7 +904,6 @@ describe('snapshot-bearing invitation sync', () => {
         'load-response-v4',
         undefined,
         false,
-        undefined,
         { applySnapshotAfterChanges: true },
       ),
     ).resolves.toBe(true);

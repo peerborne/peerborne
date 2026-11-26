@@ -15,6 +15,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { MemoryBlockstore } from 'blockstore-core/memory';
 import { MemoryDatastore } from 'datastore-core/memory';
 import {
+  BeeKEM,
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   Peerborne,
   SubtleCrypto,
@@ -313,6 +314,129 @@ test('a founder re-shares after revoking its only collaborator', async (t) => {
       await serialize(founder.identity.publicKey),
       await serialize(replacement.identity.publicKey),
     ].sort(),
+  );
+});
+
+test('a collaborator cannot plant its own key or ratchet tree in the founder', async (t) => {
+  const path = `/reshare/forged-welcome-${crypto.randomUUID()}`;
+  const [founder, mallory, replacement] = await network(t, path, 3);
+  const document = await founded(founder, path, 'before');
+  const rendezvous = [founder.circuit];
+  const editor = await mallory.swarm.acceptInvitation(
+    await document.createInvitation({
+      role: 'editor',
+      rendezvous,
+      beforeAcceptance: unstored,
+    }),
+    mallory.kem,
+  );
+  await until('collaborator state', () => editor.document?.body === 'before');
+  const keyIds = async (replica) =>
+    (await replica._keychain.keys()).map(([id]) => hex(id));
+  const honestKeys = await keyIds(document);
+  const honestTree = document._beekem;
+
+  // Any writer can publish a reader row, including one for the founder.
+  await editor._makeChangeOnce(
+    await editor._readers.add(founder.identity.publicKey),
+    'reader',
+  );
+  await until(
+    'founder reader row',
+    async () =>
+      (await document._readers.check(founder.identity.publicKey)) === true,
+  );
+
+  // A tree whose ghost leaf the collaborator controls, sealed to the founder.
+  const ecdh = { name: 'ECDH', namedCurve: 'P-256' };
+  const founderKem = new Uint8Array(
+    await crypto.subtle.exportKey('raw', founder.kem.publicKey),
+  );
+  const ghost = await crypto.subtle.generateKey(ecdh, false, ['deriveBits']);
+  const forgedTree = new BeeKEM();
+  await forgedTree.initialize(ghost.privateKey, ghost.publicKey);
+  await forgedTree.addMember(mallory.kem.publicKey);
+  while (forgedTree.generation < honestTree.generation) {
+    await forgedTree.update();
+  }
+  const { welcome } = await forgedTree.addMember(
+    await crypto.subtle.importKey('raw', founderKem, ecdh, true, []),
+  );
+  const forger = new AutomergeKeychainProvider().initialize();
+  forger.merge(editor._keychain.history());
+  const [forgedKey] = await forger.add();
+
+  const outcomes = [];
+  const evaluate = document._evaluateAndApplyBeeKEMWelcome.bind(document);
+  document._evaluateAndApplyBeeKEMWelcome = async (...args) => {
+    const outcome = await evaluate(...args);
+    outcomes.push(outcome);
+    return outcome;
+  };
+  const liveKeychain = editor._keychain;
+  editor._keychain = forger;
+  try {
+    await editor._sendBeeKEMWelcome(
+      founder.identity.publicKey,
+      founderKem,
+      welcome,
+      editor._changesSerializer.serializeChanges(forger.history()),
+    );
+  } finally {
+    editor._keychain = liveKeychain;
+  }
+  await until('forged Welcome handled', () => outcomes.length > 0);
+
+  assert.deepEqual(outcomes, ['terminal']);
+  assert.deepEqual(await keyIds(document), honestKeys);
+  assert.equal(await holdsKey(document, forgedKey), false);
+  assert.equal(document._beekem, honestTree);
+  assert.equal(document._invitationEpoch, undefined);
+
+  await editor._makeChangeOnce(
+    await editor._readers.remove(founder.identity.publicKey),
+    'reader',
+  );
+  await until(
+    'founder reader row removed',
+    async () =>
+      (await document._readers.check(founder.identity.publicKey)) !== true,
+  );
+  await document.change((draft) => {
+    draft.body = 'shared';
+  });
+  await until('collaborator edit', () => editor.document.body === 'shared');
+
+  let rotation;
+  const distribute = document._distributeBeeKEMPathUpdate.bind(document);
+  document._distributeBeeKEMPathUpdate = async (update, epoch) => {
+    rotation = update;
+    return distribute(update, epoch);
+  };
+  await document.removeWriter(mallory.identity.publicKey);
+  await document.removeReader(mallory.identity.publicKey);
+  const [rotated] = await document._keychain.current();
+  assert.equal(await holdsKey(editor, rotated), false);
+  await assert.rejects(forgedTree.processPathUpdate(rotation));
+  assert.deepEqual(await keyIds(document), [...honestKeys, hex(rotated)]);
+  assert.equal(document._beekem.hasOnlyLocalLiveLeaf(), true);
+
+  const joined = await replacement.swarm.acceptInvitation(
+    await document.createInvitation({
+      role: 'editor',
+      rendezvous,
+      beforeAcceptance: unstored,
+    }),
+    replacement.kem,
+  );
+  await until('replacement state', () => joined.document?.body === 'shared');
+  assert.deepEqual(await keyIds(joined), await keyIds(document));
+  await joined.change((draft) => {
+    draft.reply = 'converged';
+  });
+  await until(
+    'founder sees the replacement',
+    () => document.document.reply === 'converged',
   );
 });
 

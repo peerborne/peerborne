@@ -289,7 +289,6 @@ describe('context-relabeled signed sync messages', () => {
         'load-response-v4',
         undefined,
         false,
-        undefined,
         expect.anything(),
       );
     });
@@ -355,7 +354,6 @@ describe('context-relabeled signed sync messages', () => {
         'invitation-bootstrap-v1',
         undefined,
         true,
-        undefined,
         expect.anything(),
       );
     });
