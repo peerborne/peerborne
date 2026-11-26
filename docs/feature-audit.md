@@ -94,8 +94,8 @@ system-level statuses below.
 
 | Feature | Status | Current evidence | Missing or adversarial case |
 | --- | --- | --- | --- |
-| React hooks and lifecycle management | Verified | Hook/cache/lifecycle and import-safety suites | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
-| Redux actions and reducer integration | Verified | 30 passing tests; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
+| React hooks and lifecycle management | Verified | Hook/cache/lifecycle, created-document remount, delivery-failure, and import-safety suites; a real-node fixture rejects a second `create()` of a path its node created | StrictMode and real reconnect behavior should be browser-tested. The password-manager now uses an application-managed checkpoint lifecycle. |
+| Redux actions and reducer integration | Verified | Action, thunk, delivery-failure, and reducer suites; both Redux examples typecheck, build, and start in Chromium | Multi-peer action propagation is not yet asserted in a browser. |
 | Field extraction and local indexes | Verified | Proved reserved path-segment exclusion, generated own-data extraction and projection ownership checks, and index planner, cursor, malformed-value, consistency, and lifecycle tests | Real-browser large-dataset and concurrent-pagination behavior need acceptance coverage. |
 | Memory and IndexedDB index storage | Verified | Physical compound-key, bounded-cursor, schema-generation invalidation, current-schema rejection, and corrupted-row suites | Persistent schema invalidation should be exercised across actual browser restarts. |
 | Blind indexes for encrypted queries | Verified | Provider and query suites | Leakage characteristics, token rotation, and false-positive UX need documentation and tests. |
