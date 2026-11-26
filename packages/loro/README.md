@@ -25,10 +25,34 @@ convert Yjs or Automerge documents. Full-history snapshots retain Loro's
 application operation history; they do not provide content-history redaction,
 including when an application selects current-only key delivery.
 
+Remote payloads are validated before they reach a document, because Loro's
+xxHash32 checksum is not a MAC and an authorized writer's client can alter
+update bytes. `remoteChange` accepts only update blobs and `applySnapshot` only
+full snapshots. A snapshot contributes its operation history; its encoded state
+is never loaded. `getHistory` exports that history as one update, so a
+checkpoint restore replays it through the same validation. An update whose
+dependencies are missing waits outside the document. Once it can integrate, it
+is imported into a fork together with the waiting updates it releases, and the
+batch is rejected if an operation writes to an unknown container type, deletes
+elements outside its container or causal past, or moves a tree node that does
+not exist, or if any root container reads differently after a snapshot round
+trip. Only a batch that passes reaches the document; a rejected one leaves it
+unchanged.
+
+Validation reads the whole document, so every integrated remote update costs
+O(document). Duplicate and waiting deliveries cost microseconds. The rules
+cover the malformation classes that byte-mutation fuzzing found; they do not
+prove that every operation Loro accepts is harmless. Rich-text marks are not
+compared, an update that reuses another replica's peer ID is not detected, and
+`toJSON()` shows one of two root containers that share a name depending on
+arrival order.
+
 Focused tests cover concurrent edits, out-of-order delivery, replay, snapshot
-merging, and malformed payloads. The browser example exercises a local encrypted
-document mutation. These do not establish live multi-peer Loro convergence,
-hostile-peer security, restart recovery, or long-running performance.
+merging, malformed and crafted payloads, and a `PeerborneDocument` fixture where
+replicas reject crafted changes and a poisoned snapshot from an authorized
+writer. The browser example exercises a local encrypted document mutation.
+These do not establish live multi-peer Loro convergence, browser restart
+recovery, or long-running performance.
 
 - [Browser example](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md)
 - [Loro upstream documentation](https://www.loro.dev/docs/tutorial/get_started)

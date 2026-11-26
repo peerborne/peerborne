@@ -42,7 +42,7 @@ adapters. A dedicated Vite plugin is deferred until recurring configuration
 warrants one. The full runtime still needs browser dependency resolution;
 no published CDN bundle is claimed.
 
-Loro snapshots retain full application operation history. Use separate paths for separate engines. The example retains the existing Yjs ACL, keychain, and byte serializers; it does not provide content-history redaction.
+Loro snapshots retain full application operation history. Use separate paths for separate engines. The example retains the existing Yjs ACL, keychain, and byte serializers; it does not provide content-history redaction. The provider validates each remote update and snapshot on a fork before importing it; see [limitations](../../concepts/limitations/) for its cost and what it does not detect.
 
 TanStack DB currently copies and replaces the complete row snapshot per notification. Query-driven network sync, incremental projection, relational durability, and distributed transactions are not implemented.
 
