@@ -478,7 +478,7 @@ describe('a local change that fails before publication', () => {
     },
   );
 
-  test('a throwing delivery failure handler does not fail the change, and unsubscribe removes handlers', async () => {
+  test('a throwing delivery failure handler does not fail the change, and unsubscribing removes handlers', async () => {
     const { document } = await committedOnce(inPlaceProvider);
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -493,12 +493,86 @@ describe('a local change that fails before publication', () => {
         '[/local-change] a delivery failure handler failed.',
       );
 
-      document.unsubscribe('broken');
       document.unsubscribe('probe');
+      expect(document._localHandlers.probe).toBeUndefined();
+      document.unsubscribeDeliveryFailures('broken');
+      document.unsubscribeDeliveryFailures('probe');
       publish.mockRejectedValueOnce(new Error('offline'));
       await document.change((doc: string[]) => doc.push('again'));
       expect(document.undelivered).toHaveLength(1);
       expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe('local update handlers that throw', () => {
+  test('do not stop later handlers, counting or compaction of a change', async () => {
+    const document = publishingDocument();
+    document.swarm.heliaNode.libp2p.services.pubsub.publish.mockRejectedValue(
+      new Error('PublishError.NoPeersSubscribedToTopic'),
+    );
+    const later: string[][] = [];
+    document._localHandlers = {
+      broken: () => {
+        throw new Error('handler bug');
+      },
+      later: (current: string[]) => {
+        later.push([...current]);
+      },
+    };
+    for (let index = 0; index < 3; index++)
+      await expect(
+        document.change((doc: string[]) => doc.push(`e${index}`)),
+      ).rejects.toThrow('handler bug');
+    expect(document.undelivered).toHaveLength(3);
+    expect(document._hashes.size).toBe(3);
+    expect(document._document).toEqual(['e0', 'e1', 'e2']);
+    expect(later).toEqual([['e0'], ['e0', 'e1'], ['e0', 'e1', 'e2']]);
+    expect({
+      documentChangeCount: document._documentChangeCount,
+      changesSinceSnapshot: document._changesSinceSnapshot,
+    }).toEqual({ documentChangeCount: 3, changesSinceSnapshot: 3 });
+  });
+
+  test('reject together with all their errors', async () => {
+    const document = publishingDocument();
+    const first = new Error('first');
+    const second = new Error('second');
+    document._localHandlers = {
+      first: () => {
+        throw first;
+      },
+      second: () => {
+        throw second;
+      },
+    };
+    const error = await rejection(
+      document.change((doc: string[]) => doc.push('edit')),
+    );
+    expect(error).toBeInstanceOf(AggregateError);
+    expect([...error.errors]).toEqual([first, second]);
+    expect(document.frames).toHaveLength(1);
+    expect(document._documentChangeCount).toBe(1);
+  });
+
+  test('a rejected asynchronous delivery failure handler is logged, not left unhandled', async () => {
+    const document = publishingDocument();
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      document.subscribeDeliveryFailures('async', async () => {
+        throw new Error('handler');
+      });
+      document.swarm.heliaNode.libp2p.services.pubsub.publish.mockRejectedValueOnce(
+        new Error('offline'),
+      );
+      await document.change((doc: string[]) => doc.push('kept'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(error).toHaveBeenCalledWith(
+        '[/local-change] a delivery failure handler failed.',
+      );
+      expect(document.undelivered).toHaveLength(1);
     } finally {
       error.mockRestore();
     }

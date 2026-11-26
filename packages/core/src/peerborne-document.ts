@@ -2341,31 +2341,40 @@ export class PeerborneDocument<
     ]);
   }
 
+  /** Run every local handler, then throw the first failure or all of them. */
   private async _fireLocalUpdateHandlers(
     hashes: string[],
     postPublishOperation?: string,
   ) {
+    const errors: unknown[] = [];
     for (const handler of Object.values(this._localHandlers)) {
-      const result = (handler as (
-        current: DocType,
-        readers: PublicKey[],
-        writers: PublicKey[],
-        hashes: string[],
-      ) => unknown)(
-        this._document,
-        await this.getReaders(),
-        await this.getWriters(),
-        hashes,
-      );
-      if (result !== undefined) {
-        void Promise.resolve(result).catch(() => {
-          this._reportLocalUpdateHandlerFailure(
-            postPublishOperation,
-            true,
-          );
-        });
+      try {
+        const result = (handler as (
+          current: DocType,
+          readers: PublicKey[],
+          writers: PublicKey[],
+          hashes: string[],
+        ) => unknown)(
+          this._document,
+          await this.getReaders(),
+          await this.getWriters(),
+          hashes,
+        );
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => {
+            this._reportLocalUpdateHandlerFailure(
+              postPublishOperation,
+              true,
+            );
+          });
+        }
+      } catch (error) {
+        errors.push(error);
       }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(errors, 'Local update handlers failed');
   }
 
   private _reportLocalUpdateHandlerFailure(
@@ -4754,14 +4763,18 @@ export class PeerborneDocument<
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
     // failures. Report them, but preserve the successful membership result.
+    // A document change is still counted and compacted before its handler
+    // failure is thrown, so a failing handler cannot grow the retained tree.
+    let handlerFailure: { error: unknown } | undefined;
     try {
       await this._fireLocalUpdateHandlers(
         [hash],
         postPublishCommit?.operation,
       );
     } catch (error) {
-      if (!postPublishCommit) throw error;
-      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      if (postPublishCommit)
+        this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      else handlerFailure = { error };
     }
 
     // Track document changes for compaction. Membership nodes deepen the
@@ -4770,7 +4783,17 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact(undefined, publishedBytes);
+    try {
+      await this._maybeCompact(undefined, publishedBytes);
+    } catch (error) {
+      throw handlerFailure
+        ? new AggregateError(
+            [handlerFailure.error, error],
+            'A local update handler and compaction failed after the change was committed',
+          )
+        : error;
+    }
+    if (handlerFailure) throw handlerFailure.error;
   }
 
   private _reportDeliveryFailure(changeId: string, error: unknown): void {
@@ -4779,13 +4802,14 @@ export class PeerborneDocument<
       changeId,
       error,
     });
+    const report = () =>
+      console.error(`[${this.documentPath}] a delivery failure handler failed.`);
     for (const handler of Object.values(this._deliveryFailureHandlers)) {
       try {
-        handler(failure);
+        const result: unknown = handler(failure);
+        if (result !== undefined) void Promise.resolve(result).catch(report);
       } catch {
-        console.error(
-          `[${this.documentPath}] a delivery failure handler failed.`,
-        );
+        report();
       }
     }
   }
@@ -9309,8 +9333,14 @@ export class PeerborneDocument<
    * response. Do not repeat the edit. A coordinated document reports a
    * delivery failure by rejecting instead, and does not call these handlers.
    *
-   * @param id An id to unsubscribe the handler with `unsubscribe(id)`.
-   * @param handler Called synchronously with each delivery failure.
+   * Until a later frame is published, the change exists only on this device.
+   * Export a checkpoint after a delivery failure: if the instance is later
+   * retired, it is reopened from the last checkpoint, and an undelivered
+   * change made after that checkpoint is lost.
+   *
+   * @param id An id to remove the handler with `unsubscribeDeliveryFailures(id)`.
+   * @param handler Called synchronously with each delivery failure. A thrown
+   *   error or rejected promise is logged and does not affect the change.
    */
   public subscribeDeliveryFailures(
     id: string,
@@ -9321,7 +9351,16 @@ export class PeerborneDocument<
   }
 
   /**
-   * Unsubscribes a change or delivery failure handler from the document.
+   * Remove a handler added with `subscribeDeliveryFailures()`.
+   *
+   * @param id The id the handler was subscribed with.
+   */
+  public unsubscribeDeliveryFailures(id: string) {
+    delete this._deliveryFailureHandlers[id];
+  }
+
+  /**
+   * Unsubscribes a change handler from the document.
    *
    * @param id The id of the handler to unsubscribe.
    */
@@ -9332,7 +9371,6 @@ export class PeerborneDocument<
     if (this._localHandlers[id]) {
       delete this._localHandlers[id];
     }
-    delete this._deliveryFailureHandlers[id];
   }
 
   // TODO: Unit tests for PeerborneDocument require mocking libp2p, Helia,

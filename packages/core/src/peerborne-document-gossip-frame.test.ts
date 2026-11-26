@@ -303,6 +303,30 @@ test.each([
   },
 );
 
+test('a writer whose local handler throws on every change still bounds its retained tree', async () => {
+  const { document, published } = writerDocument('a');
+  Object.assign(document, {
+    getReaders: async () => [],
+    getWriters: async () => [],
+    _localHandlers: {
+      broken: () => {
+        throw new Error('handler bug');
+      },
+    },
+  });
+  for (let index = 0; index < 30; index++)
+    await expect(
+      document.change(() => ({ index, text: 'x'.repeat(200_000) })),
+    ).rejects.toThrow('handler bug');
+  expect(published).toHaveLength(30);
+  for (const frame of published)
+    expect(frame.byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
+      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+    );
+  expect(document._latestSnapshot).toBeDefined();
+  expect(document._closeDocument).not.toHaveBeenCalled();
+});
+
 test('a frame that outgrows GossipSub because compaction is unavailable is rolled back, not wedged', async () => {
   const { document, published } = writerDocument('a');
   document._snapshotUnsupported = true;
