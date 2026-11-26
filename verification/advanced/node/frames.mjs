@@ -161,6 +161,7 @@ export async function oversizedFrames({ full }) {
     const offer = await source.createInvitation({
       role: 'reader',
       rendezvous: [founder.circuit],
+      beforeAcceptance: async () => {},
     });
     const target = await reader.swarm.acceptInvitation(offer, reader.kem);
     await until(() => text(target, 'body') === 'joined');

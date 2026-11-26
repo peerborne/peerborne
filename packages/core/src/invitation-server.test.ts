@@ -1,8 +1,11 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import {
   assertInvitationOfferLifetime,
+  INVITATION_BEFORE_ACCEPTANCE_TIMEOUT_MS,
   InMemoryInvitationAcceptanceCoordinator,
   MIN_INVITATION_OFFER_TTL_MS,
+  MIN_INVITATION_PROCESSING_WINDOW_MS,
+  runInvitationBeforeAcceptance,
   withInvitationDeadline,
 } from './invitation-policy.js';
 import { MAX_INVITATION_TTL_MS } from './invitation-wire.js';
@@ -324,6 +327,121 @@ describe('invitation acceptance in-flight lifecycle', () => {
     await Promise.resolve();
     expect(coordinator.inFlightCount).toBe(0);
     expect(coordinator.cachedCount).toBe(1);
+  });
+});
+
+describe('invitation retries near expiry', () => {
+  test('a request that already started can retry inside the processing window', async () => {
+    const coordinator = new InMemoryInvitationAcceptanceCoordinator<string>();
+    const start = jest
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValueOnce('acceptance');
+    await expect(
+      coordinator.run(
+        'request-a',
+        Date.now() + MIN_INVITATION_OFFER_TTL_MS,
+        undefined,
+        async () => {},
+        () => {},
+        start,
+      ),
+    ).rejects.toThrow(/storage unavailable/);
+
+    const lateExpiry = Date.now() + MIN_INVITATION_PROCESSING_WINDOW_MS - 1;
+    await expect(
+      coordinator.run(
+        'request-b',
+        lateExpiry,
+        undefined,
+        async () => {},
+        () => {},
+        start,
+      ),
+    ).rejects.toThrow(/at least 30000ms remaining/);
+    await expect(
+      coordinator.run(
+        'request-a',
+        lateExpiry,
+        undefined,
+        async () => {},
+        () => {},
+        start,
+      ),
+    ).resolves.toBe('acceptance');
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  test('a started request cannot retry after its offer expires', async () => {
+    const coordinator = new InMemoryInvitationAcceptanceCoordinator<string>();
+    const start = jest
+      .fn<() => Promise<string>>()
+      .mockRejectedValue(new Error('storage unavailable'));
+    await expect(
+      coordinator.run(
+        'request-a',
+        Date.now() + MIN_INVITATION_OFFER_TTL_MS,
+        undefined,
+        async () => {},
+        () => {},
+        start,
+      ),
+    ).rejects.toThrow(/storage unavailable/);
+    await expect(
+      coordinator.run(
+        'request-a',
+        Date.now() - 1,
+        undefined,
+        async () => {},
+        () => {},
+        start,
+      ),
+    ).rejects.toThrow(/expired before the retry started/);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('invitation beforeAcceptance bound', () => {
+  test('passes through a settled hook and its rejection', async () => {
+    const expiresAt = Date.now() + MIN_INVITATION_OFFER_TTL_MS;
+    await expect(
+      runInvitationBeforeAcceptance(async () => {}, expiresAt),
+    ).resolves.toBeUndefined();
+    await expect(
+      runInvitationBeforeAcceptance(async () => {
+        throw new Error('storage unavailable');
+      }, expiresAt),
+    ).rejects.toThrow(/storage unavailable/);
+  });
+
+  test('times out at the fixed bound or the offer expiry, whichever is first', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const pending = () => new Promise<void>(() => {});
+      const bounded = runInvitationBeforeAcceptance(
+        pending,
+        Date.now() + MIN_INVITATION_OFFER_TTL_MS,
+      );
+      const boundedResult = expect(bounded).rejects.toThrow(/timed out/);
+      await jest.advanceTimersByTimeAsync(
+        INVITATION_BEFORE_ACCEPTANCE_TIMEOUT_MS,
+      );
+      await boundedResult;
+
+      const nearExpiry = runInvitationBeforeAcceptance(
+        pending,
+        Date.now() + 1_000,
+      );
+      const nearExpiryResult = expect(nearExpiry).rejects.toThrow(/timed out/);
+      await jest.advanceTimersByTimeAsync(1_000);
+      await nearExpiryResult;
+
+      await expect(
+        runInvitationBeforeAcceptance(pending, Date.now()),
+      ).rejects.toThrow(/expired before beforeAcceptance ran/);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

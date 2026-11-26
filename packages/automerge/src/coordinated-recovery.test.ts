@@ -5,6 +5,7 @@ import {
   AutomergeProvider,
 } from './peerborne-automerge.js';
 import {
+  lostFrameRedeliveryScenario,
   missedTailCatchUpScenario,
   retiredEpochScenario,
 } from '../../core/src/__testutils__/coordinated-scenarios.js';
@@ -26,6 +27,14 @@ test('resumes an Automerge member that missed a writer’s tail through the cont
   expect(errors).toEqual([]);
   for (const view of views)
     expect(view).toEqual({ ctl: 3, four: 4, one: 3, three: 5, two: 3 });
+}, 30_000);
+
+test('recovers a lost Automerge frame from a causal chain through redelivery', async () => {
+  const { errors, held, views } = await lostFrameRedeliveryScenario(adapter);
+  expect(errors).toEqual([]);
+  expect(held).toEqual({});
+  for (const view of views)
+    expect(view).toEqual({ c0: 2, c1: 2, c2: 2, c3: 2 });
 }, 30_000);
 
 test('re-signs an Automerge edit written offline across an epoch change', async () => {

@@ -344,7 +344,7 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
   const founderKey = await editorRow.getByRole('cell').first().innerText();
   expect(founderKey).not.toEqual('');
 
-  await page.getByPlaceholder('Public Key to add').fill(founderKey);
+  await page.getByPlaceholder("Existing member's public key").fill(founderKey);
   await page.getByRole('combobox').selectOption('r');
   await page.getByRole('button', { name: 'Set role' }).click();
   await expect
@@ -366,9 +366,7 @@ test('keeps the last editor of a secret from being demoted or removed', async ({
   expect(errors, 'permission update errors').toEqual([]);
 });
 
-test('sets a new member as a reader and then promotes them to editor', async ({
-  page,
-}) => {
+test('refuses to add a new member directly', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   const dialogs: string[] = [];
@@ -394,112 +392,44 @@ test('sets a new member as a reader and then promotes them to editor', async ({
       .getByRole('row')
       .filter({ has: page.getByRole('cell', { name: 'Editor', exact: true }) }),
   ).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.getByLabel('Member KEM public key')).toHaveCount(0);
 
-  const { memberKey, memberKemKey } = await page.evaluate(async () => {
-    const exportRaw = async (publicKey: CryptoKey) => {
-      const raw = new Uint8Array(
-        await crypto.subtle.exportKey('raw', publicKey),
-      );
-      return btoa(String.fromCharCode(...raw));
-    };
+  const memberKey = await page.evaluate(async () => {
     const signing = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
       true,
       ['sign', 'verify'],
     );
-    const kem = await crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits'],
+    const raw = new Uint8Array(
+      await crypto.subtle.exportKey('raw', signing.publicKey),
     );
-    return {
-      memberKey: await exportRaw(signing.publicKey),
-      memberKemKey: await exportRaw(kem.publicKey),
-    };
+    return btoa(String.fromCharCode(...raw));
   });
   const memberRows = page
     .getByRole('row')
     .filter({ has: page.getByRole('button', { name: 'Remove' }) });
-  const memberRow = memberRows.filter({
-    has: page.getByRole('cell', { name: memberKey, exact: true }),
-  });
+  const newMemberMessage =
+    'This example cannot add a new member: a member added directly could ' +
+    'never open the secret. Sharing needs an invitation, which this Yjs ' +
+    'example does not support.';
 
-  const truncatedKemKey = btoa(atob(memberKemKey).slice(0, 64));
-  const missingKemMessage =
-    "Enter the new member's KEM public key from their Settings page.";
-  const invalidBase64Message = 'The member KEM public key is not valid base64.';
-  const invalidShapeMessage =
-    'The member KEM public key must be a 65-byte uncompressed P-256 ' +
-    'public key starting with 0x04.';
-
-  await page.getByPlaceholder('Public Key to add').fill(memberKey);
-
-  await page.getByRole('combobox').selectOption('rw');
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect.poll(() => dialogs).toEqual([missingKemMessage]);
-  await expect(memberRows).toHaveCount(1);
-  await expect(memberRow).toHaveCount(0);
-
+  await page.getByPlaceholder("Existing member's public key").fill(memberKey);
   await page.getByRole('combobox').selectOption('r');
   await page.getByRole('button', { name: 'Set role' }).click();
-  await expect
-    .poll(() => dialogs)
-    .toEqual([missingKemMessage, missingKemMessage]);
-  await expect(memberRows).toHaveCount(1);
-  await expect(memberRow).toHaveCount(0);
+  await expect.poll(() => dialogs).toEqual([newMemberMessage]);
 
-  await expect(
-    page.getByLabel('Member signing public key', { exact: true }),
-  ).toHaveValue(memberKey);
-  await page
-    .getByLabel('Member KEM public key', { exact: true })
-    .fill('not-base64!');
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect
-    .poll(() => dialogs)
-    .toEqual([missingKemMessage, missingKemMessage, invalidBase64Message]);
-  await expect(memberRows).toHaveCount(1);
-  await expect(memberRow).toHaveCount(0);
-
-  await page
-    .getByLabel('Member KEM public key', { exact: true })
-    .fill(truncatedKemKey);
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect
-    .poll(() => dialogs)
-    .toEqual([
-      missingKemMessage,
-      missingKemMessage,
-      invalidBase64Message,
-      invalidShapeMessage,
-    ]);
-  await expect(memberRows).toHaveCount(1);
-  await expect(memberRow).toHaveCount(0);
-
-  await page
-    .getByLabel('Member KEM public key', { exact: true })
-    .fill(memberKemKey);
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect(
-    memberRow.getByRole('cell', { name: 'Reader', exact: true }),
-  ).toBeVisible({ timeout: 30_000 });
-  await expect(memberRows).toHaveCount(2);
-
-  await page.getByLabel('Member KEM public key', { exact: true }).fill('');
   await page.getByRole('combobox').selectOption('rw');
   await page.getByRole('button', { name: 'Set role' }).click();
-  await expect(
-    memberRow.getByRole('cell', { name: 'Editor', exact: true }),
-  ).toBeVisible({ timeout: 30_000 });
-  await expect(memberRow).toHaveCount(1);
-  await expect(memberRows).toHaveCount(2);
+  await expect
+    .poll(() => dialogs)
+    .toEqual([newMemberMessage, newMemberMessage]);
 
-  expect(dialogs, 'permission update dialogs').toEqual([
-    missingKemMessage,
-    missingKemMessage,
-    invalidBase64Message,
-    invalidShapeMessage,
-  ]);
+  await expect(memberRows).toHaveCount(1);
+  await expect(
+    memberRows.filter({
+      has: page.getByRole('cell', { name: memberKey, exact: true }),
+    }),
+  ).toHaveCount(0);
   expect(errors, 'permission update errors').toEqual([]);
 });
 
@@ -527,104 +457,6 @@ test('creates a vault and preserves a secret across selection and navigation', a
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('link', { name: 'Secrets', exact: true }).click();
   await expect(name).toHaveValue('Smoke secret');
-});
-
-test('requires a KEM public key before adding a new reader and retries existing readers with one', async ({
-  page,
-}) => {
-  const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
-  let addedReaders = 0;
-  page.on('console', (message) => {
-    if (message.text() === 'Added reader') addedReaders += 1;
-  });
-  const dialogs: string[] = [];
-  page.on('dialog', (dialog) => {
-    dialogs.push(dialog.message());
-    void dialog.accept();
-  });
-
-  await page.goto('/login');
-  await expect(page.getByLabel('Public Key', { exact: true })).not.toHaveValue(
-    '',
-  );
-  await page.getByRole('button', { name: 'Login', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Create a vault', exact: true })
-    .click();
-  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
-  await page.getByText(/^Unnamed Secret/).click();
-  await expect(
-    page.getByRole('cell', { name: 'Editor', exact: true }),
-  ).toHaveCount(1, { timeout: 30_000 });
-
-  const { identityKey, kemKey, otherKemKey } = await page.evaluate(async () => {
-    const encode = (bytes: ArrayBuffer) =>
-      btoa(String.fromCharCode(...new Uint8Array(bytes)));
-    const identity = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-384' },
-      true,
-      ['sign', 'verify'],
-    );
-    const generateKem = () =>
-      crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
-        'deriveBits',
-      ]);
-    const kem = await generateKem();
-    const otherKem = await generateKem();
-    return {
-      identityKey: encode(
-        await crypto.subtle.exportKey('raw', identity.publicKey),
-      ),
-      kemKey: encode(await crypto.subtle.exportKey('raw', kem.publicKey)),
-      otherKemKey: encode(
-        await crypto.subtle.exportKey('raw', otherKem.publicKey),
-      ),
-    };
-  });
-
-  const memberRows = page
-    .getByRole('row')
-    .filter({ has: page.getByRole('button', { name: 'Remove' }) });
-  await page.getByPlaceholder('Public Key to add').fill(identityKey);
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect
-    .poll(() => dialogs)
-    .toEqual([
-      "Enter the new member's KEM public key from their Settings page.",
-    ]);
-  await expect(memberRows).toHaveCount(1);
-
-  await page.getByPlaceholder('Member KEM public key').fill(kemKey);
-  await page.getByRole('button', { name: 'Set role' }).click();
-  const readerRow = memberRows.filter({
-    has: page.getByRole('cell', { name: identityKey, exact: true }),
-  });
-  await expect(readerRow).toHaveCount(1, { timeout: 30_000 });
-  await expect(
-    readerRow.getByRole('cell', { name: 'Reader', exact: true }),
-  ).toHaveCount(1);
-  await expect.poll(() => addedReaders).toBe(1);
-  expect(dialogs).toHaveLength(1);
-
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect.poll(() => addedReaders).toBe(2);
-  expect(dialogs).toHaveLength(1);
-
-  await page.getByPlaceholder('Member KEM public key').fill(otherKemKey);
-  await page.getByRole('button', { name: 'Set role' }).click();
-  await expect
-    .poll(() => dialogs.slice(1))
-    .toEqual([
-      'Unable to update document permissions. Verify both public keys and ' +
-        'the membership configuration.',
-    ]);
-  expect(addedReaders).toBe(2);
-  await expect(memberRows).toHaveCount(2);
-  await expect(
-    readerRow.getByRole('cell', { name: 'Reader', exact: true }),
-  ).toHaveCount(1);
-  expect(errors, 'reader onboarding errors').toEqual([]);
 });
 
 test('leaves a vault that failed to create without saving an empty replacement', async ({

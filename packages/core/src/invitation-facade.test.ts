@@ -147,13 +147,11 @@ describe('public invitation facade', () => {
       document,
     );
 
-    const creating = peerborne.createInvitationForDocument(
-      document as never,
-      {
-        role: 'reader',
-        rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
-      },
-    );
+    const creating = peerborne.createInvitationForDocument(document as never, {
+      role: 'reader',
+      rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
+      beforeAcceptance: async () => {},
+    });
     await signStarted.promise;
     (peerborne as any)._documentRegistry.delete(document.documentPath);
     signature.resolve(new Uint8Array(64).fill(7));
@@ -204,6 +202,7 @@ describe('public invitation facade', () => {
       peerborne.createInvitationForDocument(document as never, {
         role: 'reader',
         rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
+        beforeAcceptance: async () => {},
       }),
     );
     await bothSigning.promise;
@@ -423,4 +422,105 @@ describe('public invitation facade', () => {
     expect(acceptOffer).toHaveBeenCalledTimes(2);
     expect((peerborne as any)._pendingInvitationDocuments.size).toBe(0);
   });
+});
+
+describe('unsent invitation acceptance rollback', () => {
+  function scheduled(readerRevocationCount = 0) {
+    const peerborne = createFacade();
+    const document = {
+      documentPath: '/rollback',
+      readerRevocationCount,
+      revokeUnacceptedInvitationMember: jest.fn(async () => {}),
+    };
+    (peerborne as any)._documentRegistry.set(document.documentPath, document);
+    const registration = {
+      offer: { expiresAtMs: Date.now() + 60_000 },
+      document,
+      readerRevocationCount: 0,
+    };
+    const schedule = () =>
+      (peerborne as any)._scheduleUnsentAcceptanceRollback(
+        registration,
+        'claimant-id',
+        'claimant',
+      );
+    return { peerborne, document, schedule };
+  }
+
+  test('revokes the claimant only after its offer expires', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { document, schedule } = scheduled();
+      schedule();
+      schedule();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(document.revokeUnacceptedInvitationMember).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(document.revokeUnacceptedInvitationMember).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(document.revokeUnacceptedInvitationMember).toHaveBeenCalledWith(
+        'claimant',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('re-arms when the timer fires before the wall clock reaches expiry', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { document, schedule } = scheduled();
+      schedule();
+      jest.setSystemTime(Date.now() - 30_000);
+      await jest.advanceTimersByTimeAsync(61_000);
+      expect(document.revokeUnacceptedInvitationMember).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(document.revokeUnacceptedInvitationMember).toHaveBeenCalledTimes(
+        1,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('checks again for a failure after the first check ran', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { document, schedule } = scheduled();
+      schedule();
+      await jest.advanceTimersByTimeAsync(61_000);
+      schedule();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(document.revokeUnacceptedInvitationMember).toHaveBeenCalledTimes(
+        2,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test.each([
+    [0, 0],
+    [1, 1],
+  ])(
+    'with the document at revocation %i, skips only an acceptance produced for the offer membership',
+    async (currentCount, expectedCalls) => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      try {
+        const { peerborne, document, schedule } = scheduled(currentCount);
+        (peerborne as any)._producedInvitationAcceptances.set(
+          document,
+          new Map([['claimant-id', 0]]),
+        );
+        schedule();
+        await jest.advanceTimersByTimeAsync(61_000);
+        expect(document.revokeUnacceptedInvitationMember).toHaveBeenCalledTimes(
+          expectedCalls,
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 });

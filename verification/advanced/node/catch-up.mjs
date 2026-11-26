@@ -188,6 +188,7 @@ async function pair({ founder: founderConfig, reader: readerConfig }) {
     const offer = await source.createInvitation({
       role: 'reader',
       rendezvous: [founder.circuit],
+      beforeAcceptance: async () => {},
     });
     const target = await reader.swarm.acceptInvitation(offer, reader.kem);
     await until(() => target.document.body === 'joined');

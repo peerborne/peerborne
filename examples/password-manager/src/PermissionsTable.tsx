@@ -3,11 +3,7 @@ import { useVaultDocumentState as usePeerborneDocumentState } from './vault-sess
 import { deserializeKey, serializeKey } from '@peerborne/yjs';
 import { useEffect, useState } from 'react';
 import { Button, Form, Table } from 'react-bootstrap';
-import {
-  decodeKemPublicKey,
-  KemPublicKeyInputError,
-  YjsPeerborne,
-} from './utils';
+import { YjsPeerborne } from './utils';
 
 type DisplayPermission = {
   key: CryptoKey;
@@ -17,8 +13,10 @@ type DisplayPermission = {
 
 const lastEditorMessage =
   'The last editor cannot be demoted or removed. Add another editor first.';
-const missingKemMessage =
-  "Enter the new member's KEM public key from their Settings page.";
+const newMemberMessage =
+  'This example cannot add a new member: a member added directly could ' +
+  'never open the secret. Sharing needs an invitation, which this Yjs ' +
+  'example does not support.';
 const keepAnotherEditor = { requireRemainingWriter: true } as const;
 
 async function isLastWriter(
@@ -45,24 +43,15 @@ export function PermissionsTable({
   const [
     ,
     ,
-    {
-      readers,
-      addReader,
-      removeReader,
-      writers,
-      addWriter,
-      removeWriter,
-      docRef,
-    },
+    { readers, removeReader, writers, addWriter, removeWriter, docRef },
   ] = usePeerborneDocumentState(peerborne, documentPath);
   const [kemReadyDocRef, setKemReadyDocRef] = useState<typeof docRef>();
   const [permissions, setPermissions] = useState<DisplayPermission[]>([]);
   const [draftUserKey, setDraftUserKey] = useState('');
-  const [draftKemKey, setDraftKemKey] = useState('');
   const [draftPermission, setDraftPermission] = useState<'r' | 'rw'>('r');
 
-  // addReader seeds BeeKEM leaf 0 from the founder's KEM key pair, so install
-  // it once per document before any membership change.
+  // Role changes run against BeeKEM membership state, so install the
+  // identity's KEM key pair once per document before any change.
   useEffect(() => {
     if (!docRef) return;
     let active = true;
@@ -116,12 +105,11 @@ export function PermissionsTable({
   return (
     <>
       <p>
-        Enter the new member's signing public key and the raw P-256 ECDH KEM
-        public key from their Settings page, both base64. Adding a member gives
-        them a BeeKEM leaf and sends a Welcome sealed to their KEM public key.
-        An existing member's role can change without a KEM key. This example has
-        no flow for the new member to open a shared secret; use the invitation
-        API for that.
+        Enter an existing member's signing public key, base64, to change their
+        role. This example cannot add members: a member added directly with
+        addReader could never open the secret, and sharing needs the invitation
+        API, which requires the Automerge provider profile that this Yjs example
+        does not use.
       </p>
       <Table striped bordered hover>
         <thead>
@@ -199,16 +187,9 @@ export function PermissionsTable({
             <td>
               <Form.Control
                 aria-label="Member signing public key"
-                placeholder="Public Key to add"
+                placeholder="Existing member's public key"
                 value={draftUserKey}
                 onChange={(e) => setDraftUserKey(e.target.value)}
-              />
-              <Form.Control
-                className="mt-2"
-                aria-label="Member KEM public key"
-                placeholder="Member KEM public key"
-                value={draftKemKey}
-                onChange={(e) => setDraftKemKey(e.target.value)}
               />
             </td>
             <td>
@@ -238,46 +219,32 @@ export function PermissionsTable({
                         },
                         ['verify'],
                       )(draftUserKey);
-                      const kemKey = draftKemKey.trim();
-                      const kemPublicKey = kemKey
-                        ? decodeKemPublicKey(kemKey)
-                        : undefined;
                       const serializedKey = await serializeKey(key);
                       const current = permissions.find(
                         (permission) => permission.publicKey === serializedKey,
                       );
-                      // Writers keep their reader row, so only a new member
-                      // requires a KEM public key. Entering it for an existing
-                      // member retries their onboarding, which resends the
-                      // Welcome sealed to that key.
-                      if (!current && !kemPublicKey) {
-                        alert(missingKemMessage);
+                      if (!current) {
+                        alert(newMemberMessage);
                         return;
                       }
-                      const onboardReader = async () => {
-                        if (kemPublicKey) await addReader(key, kemPublicKey);
-                      };
 
                       switch (draftPermission) {
                         case 'r': {
-                          if (current?.permissions === 'rw') {
+                          if (current.permissions === 'rw') {
                             if (await isLastWriter(key, writers)) {
                               alert(lastEditorMessage);
                               return;
                             }
                             await removeWriter(key, keepAnotherEditor);
-                          } else {
-                            await onboardReader();
                           }
-                          console.log('Added reader');
+                          console.log('Set reader');
                           break;
                         }
                         case 'rw': {
-                          await onboardReader();
-                          if (current?.permissions !== 'rw') {
+                          if (current.permissions !== 'rw') {
                             await addWriter(key);
                           }
-                          console.log('Added writer');
+                          console.log('Set editor');
                           break;
                         }
                         default: {
@@ -288,15 +255,11 @@ export function PermissionsTable({
                         }
                       }
                     } catch (error) {
-                      if (error instanceof KemPublicKeyInputError) {
-                        alert(error.message);
-                        return;
-                      }
                       alert(
                         error instanceof LastWriterRemovalError
                           ? lastEditorMessage
                           : 'Unable to update document permissions. Verify ' +
-                              'both public keys and the membership ' +
+                              'the public key and the membership ' +
                               'configuration.',
                       );
                       return;

@@ -1,5 +1,6 @@
 import type { ChangesSerializer } from '../changes-serializer.js';
 import type { CRDTProvider } from '../crdt-provider.js';
+import { isDocumentRedeliveryFrame } from '../document-redelivery-wire.js';
 import {
   coordinatedGroupFixture,
   type GroupPublication,
@@ -96,6 +97,57 @@ export async function missedTailCatchUpScenario<Document, Changes, Change>(
     await edit(2, 'four', [0, 1]);
     return {
       errors,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}
+
+/**
+ * Members 1 and 2 build a causal chain. Member 0 never receives its first
+ * frame, holds the rest, and recovers through a redelivery request.
+ */
+export async function lostFrameRedeliveryScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    peers: true,
+  });
+  const errors: string[] = [];
+  const content = () =>
+    g.take().filter((publication) => !isDocumentRedeliveryFrame(publication.data));
+  try {
+    await g.addMember(1);
+    await g.addMember(2);
+    for (let index = 0; index < 3; index++) await g.open(index);
+    const chain: GroupPublication[] = [];
+    for (let step = 0; step < 4; step++) {
+      const author = 1 + (step % 2);
+      await g.doc(author).change(adapter.edit(`c${step}`));
+      const [publication] = content();
+      chain.push(publication);
+      errors.push(...(await g.deliver(publication, [3 - author])));
+    }
+    for (const publication of chain.slice(1))
+      errors.push(...(await g.deliver(publication, [0])));
+    const held = adapter.read(g.doc(0).document);
+    g.take();
+    await g.doc(0).requestSecurityRedelivery();
+    const [request] = g
+      .take()
+      .filter((publication) => isDocumentRedeliveryFrame(publication.data));
+    g.dispatch(request, 1);
+    g.dispatch(request, 2);
+    for (let turn = 0; g.publications.length === 0 && turn < 300; turn++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    for (const publication of content())
+      errors.push(...(await g.deliver(publication, [0])));
+    return {
+      errors,
+      held,
       views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
     };
   } finally {

@@ -264,8 +264,6 @@ export function useVaultDocumentState(
       docRef: current?.entry.doc,
       readers: current?.readers ?? emptyKeys,
       writers: current?.writers ?? emptyKeys,
-      addReader: (key: CryptoKey, kem: Uint8Array) =>
-        mutate((doc) => doc.addReader(key, kem)),
       removeReader: (key: CryptoKey) => mutate((doc) => doc.removeReader(key)),
       addWriter: (key: CryptoKey) => mutate((doc) => doc.addWriter(key)),
       removeWriter: (key: CryptoKey, options?: RemoveWriterOptions) =>
