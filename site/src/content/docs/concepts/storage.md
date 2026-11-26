@@ -13,8 +13,8 @@ Helia blockstore. The CID addresses those encrypted bytes. A separate
 signed-when-enabled, encrypted `CRDTSyncMessage` carries the CID and shadow
 graph metadata. A stored document change also carries its author's
 [change signature](../security/#crdt-actors-are-bound-to-change-signers); the
-stored payload has no parent links, and ACL and keychain payloads have no
-writer signature.
+stored payload has no parent links. A stored ACL change carries its author's
+signature the same way; keychain payloads have no writer signature.
 
 ## Implemented model
 

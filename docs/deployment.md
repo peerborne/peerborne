@@ -161,6 +161,19 @@ document; coordinated-document topics are 89 characters. The default 64 KiB
 budget fits about 57 such document topics; Render's 16 KiB fits 13. Keep the
 budget above the discovery topic plus `MAX_AUTO_TOPICS_PER_PEER` document topics.
 
+Every client subscribes to the peer-discovery topic, so the relay forwards each
+message there to every subscriber. It validates the topic before forwarding.
+A message must be signed and carry its signer's own pubsub-peer-discovery
+record, holding only the signer's public key and addresses, of at most 4 KiB;
+anything else is rejected. A Peerborne Note tab's record is about 600 bytes.
+Each connected peer that delivers messages on the topic may deliver 3 at once
+and then 1 every 5 seconds, twice the 10-second broadcast interval; further
+messages are ignored. Rejected messages count against that allowance too. The
+relay forwards neither, so a flooding peer reaches each subscriber with at most
+about 0.8 KiB/s. A peer that forwards other peers' records to the relay before
+their authors do spends its own allowance on them; once that is spent, the
+relay skips those records until the next broadcast.
+
 ### Reverse proxies and GossipSub IP scoring
 
 GossipSub penalizes many peer IDs that share one source IP and retains the
@@ -349,13 +362,16 @@ Stopping these needs limits upstream of the gateway, such as Cloudflare
 rate-limiting rules.
 
 Traffic counts against the session that carries it, including GossipSub
-messages that the relay forwards from other clients. The relay does not limit
-the size or rate of messages on the peer-discovery topic that every client
-subscribes to, so a client publishing there spends every subscriber's session
-and share allowances and the shared window once per subscriber. In a local
-test, one session publishing about 50 KiB/s there reached each of six
-subscribers in full; with four or more subscribers, that one client outpaces
-the window's refill.
+messages that the relay forwards from other clients. On the peer-discovery
+topic that every client subscribes to, the relay forwards at most 3 records and
+then about 0.8 KiB/s from each connected peer, as described under
+[Topic Auto-Subscribe](#topic-auto-subscribe). One client's 4 sessions can
+therefore send each subscriber at most about 3.2 KiB/s there, or about 48 KiB/s
+across 15 subscribers, under a quarter of the window's refill. In a local test,
+three sessions from one client flooding the topic with random 10 KiB messages
+at about 43 KiB/s each delivered nothing to six subscribers; with valid 4 KiB
+records they delivered about 2.4 KiB/s to each, and no subscriber session
+closed.
 
 While the window holds less than one session burst, the public `/readyz` still
 returns HTTP 200 but reports

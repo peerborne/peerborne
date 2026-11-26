@@ -31,7 +31,7 @@ function state(
 ): DocumentCheckpointState {
   const bytes = checkpointEncode(new Uint8Array([1]));
   return {
-    format: 'peerborne/local-document-checkpoint/3',
+    format: 'peerborne/local-document-checkpoint/4',
     documentPath: '/checkpoint',
     owner: 'owner',
     document: bytes,
@@ -39,6 +39,8 @@ function state(
     writers: bytes,
     keychain: bytes,
     actors: bytes,
+    writerActors: bytes,
+    readerActors: bytes,
     message: bytes,
     hashes: ['cid-root'],
     ancestors: [],
@@ -155,6 +157,14 @@ describe('document checkpoint state', () => {
       { timeout: 60_000 },
     );
   }, 70_000);
+
+  test('after Automerge, Yjs and Loro restore a checkpoint with a large snapshot, edits publish small frames a replica applies', async () => {
+    await promisify(execFile)(
+      process.execPath,
+      ['--test', `${__dirname}/restored-checkpoint-frame.fixture.mjs`],
+      { timeout: 120_000 },
+    );
+  }, 130_000);
 
   test('round-trips a document field near the checkpoint size limit', () => {
     const documentBytes = new Uint8Array(4 * 1024 * 1024).map(

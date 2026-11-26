@@ -8,8 +8,6 @@ import {
 import { YjsACL } from '@peerborne/yjs';
 import { aclDependencyScenarios } from '../../../verification/acl-dependencies.mjs';
 
-const ORPHAN_CLIENT = 987_654_321;
-
 function encodeStateVectorOf(clocks) {
   const bytes = [];
   const writeVarUint = (value) => {
@@ -27,8 +25,9 @@ function encodeStateVectorOf(clocks) {
   return new Uint8Array(bytes);
 }
 
-// A membership write at clock 5 of a client whose clocks 0-4 nobody holds.
-async function orphan(acl, publicKey) {
+// A membership write five clocks past the actor's next one, so the
+// clocks in between were never sent.
+async function orphan(acl, publicKey, actor) {
   const serializer = new YjsACL();
   await serializer.add(publicKey);
   const [member] = serializer._acl.getMap('users').keys();
@@ -40,15 +39,16 @@ async function orphan(acl, publicKey) {
       return [client, tail.id.clock + tail.length];
     }),
   );
-  author.clientID = ORPHAN_CLIENT;
+  const client = Number(actor);
+  author.clientID = client;
   for (let index = 0; index < 6; index++) {
     author.getMap('users').set(member, true);
   }
   const update = encodeStateAsUpdateV2(author);
   const last = decodeUpdateV2(update)
-    .structs.filter((struct) => struct.id.client === ORPHAN_CLIENT)
+    .structs.filter((struct) => struct.id.client === client)
     .at(-1);
-  known.set(ORPHAN_CLIENT, last.id.clock);
+  known.set(client, last.id.clock);
   return diffUpdateV2(update, encodeStateVectorOf(known));
 }
 

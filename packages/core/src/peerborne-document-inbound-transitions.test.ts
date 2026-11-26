@@ -580,12 +580,11 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     expect(harness.liveRevision()).toBe(installedRevision);
     expect(harness.document._invitationEpoch).toEqual(currentEpoch);
     expect(harness.document._beekem).toBe(installedBeeKEM);
-    expect(harness.prepareMerge).toHaveBeenCalledTimes(2);
-    expect(harness.claims).toHaveLength(2);
-    expect(harness.claims[1]).not.toHaveBeenCalled();
+    expect(harness.prepareMerge).toHaveBeenCalledTimes(1);
+    expect(harness.claims).toHaveLength(1);
   });
 
-  test('wipes the staged root secret when a Welcome applies, is stale, or fails to commit', async () => {
+  test('wipes the staged root secret when a Welcome applies or fails to commit', async () => {
     const isWiped = (secret: Uint8Array) => secret.every((byte) => byte === 0);
     mockWelcomeRootSecrets.length = 0;
     const applied = welcomeHarness();
@@ -611,7 +610,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
         { fromBuffer: false },
       ),
     ).resolves.toBe('terminal');
-    expect(stale.claims[0]).not.toHaveBeenCalled();
+    expect(stale.prepareMerge).not.toHaveBeenCalled();
 
     const failed = welcomeHarness({
       claimFactory: () => {
@@ -626,7 +625,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       ),
     ).resolves.toBe('retry');
 
-    expect(mockWelcomeRootSecrets).toHaveLength(3);
+    expect(mockWelcomeRootSecrets).toHaveLength(2);
     expect(mockWelcomeRootSecrets.every(isWiped)).toBe(true);
   });
 
@@ -648,33 +647,24 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
 
   test.each([
     [
-      'the live tree generation',
-      (document: Record<string, unknown>) => {
-        (document._beekem as { generation: number }).generation = 4;
-      },
-    ],
-    [
-      'the live tree',
+      'a ratchet tree',
       (document: Record<string, unknown>) => {
         document._beekem = { generation: 3 };
+        document._beekemInitialized = true;
       },
     ],
     [
-      'the invitation epoch',
+      'an invitation epoch',
       (document: Record<string, unknown>) => {
         document._invitationEpoch = new Uint8Array(nextEpoch);
       },
     ],
   ])(
-    'defers a Welcome when %s changes before its commit',
+    'defers a Welcome when the replica gains %s before its commit',
     async (_label, change) => {
       const harness = welcomeHarness({
-        invitationEpoch: oldEpoch,
         onHydrate: () => change(harness.document),
       });
-      const liveTree = { generation: 3 };
-      harness.document._beekem = liveTree;
-      harness.document._beekemInitialized = true;
       harness.register(
         34,
         { ids: [oldEpoch, currentEpoch], currentId: currentEpoch },
@@ -696,21 +686,21 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
   );
 
   test.each([
-    ['older then newer', [2, 3], 'applied', 3, nextEpoch],
-    ['newer then older', [3, 2], 'terminal', 3, currentEpoch],
+    ['a document key', { initialIds: [oldEpoch] }, null],
+    ['a ratchet tree', {}, { generation: 1 }],
+    ['an invitation epoch', { invitationEpoch: oldEpoch }, null],
   ] as const)(
-    'keeps the newest Welcome generation when Welcomes arrive %s',
-    async (_label, generations, secondOutcome, finalGeneration, finalEpoch) => {
-      const harness = welcomeHarness();
+    'refuses a Welcome for a replica that already holds %s',
+    async (_label, options, tree) => {
+      const harness = welcomeHarness(options);
+      if (tree !== null) {
+        harness.document._beekem = tree;
+        harness.document._beekemInitialized = true;
+      }
       harness.register(
         35,
-        { ids: [currentEpoch], currentId: currentEpoch },
-        { token: 35, generation: generations[0] },
-      );
-      harness.register(
-        36,
-        { ids: [currentEpoch, nextEpoch], currentId: nextEpoch },
-        { token: 36, generation: generations[1] },
+        { ids: [oldEpoch, currentEpoch], currentId: currentEpoch },
+        { token: 35, generation: 9 },
       );
 
       await expect(
@@ -718,18 +708,16 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
           welcomeMessage(currentEpoch, 35),
           { fromBuffer: false },
         ),
-      ).resolves.toBe('applied');
-      await expect(
-        harness.document._evaluateAndApplyBeeKEMWelcome(
-          welcomeMessage(nextEpoch, 36),
-          { fromBuffer: false },
-        ),
-      ).resolves.toBe(secondOutcome);
+      ).resolves.toBe('terminal');
 
-      expect(harness.document._beekem.generation).toBe(finalGeneration);
-      expect(harness.document._invitationEpoch).toEqual(finalEpoch);
+      expect(harness.prepareMerge).not.toHaveBeenCalled();
       expect(harness.liveIds()).toEqual(
-        secondOutcome === 'applied' ? [currentEpoch, nextEpoch] : [currentEpoch],
+        'initialIds' in options ? [oldEpoch] : [],
+      );
+      expect(harness.liveRevision()).toBe(0);
+      expect(harness.document._beekem).toBe(tree);
+      expect(harness.document._invitationEpoch).toEqual(
+        'invitationEpoch' in options ? oldEpoch : undefined,
       );
     },
   );
@@ -774,14 +762,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
   test.each(['missing', 'accessor'] as const)(
     'fails closed without poisoning when the prepared merge claim is %s',
     async (claimProperty) => {
-      const harness = welcomeHarness({
-        claimProperty,
-        initialIds: [oldEpoch],
-        invitationEpoch: oldEpoch,
-      });
-      const oldTree = { name: 'old-tree' };
-      harness.document._beekem = oldTree;
-      harness.document._beekemInitialized = true;
+      const harness = welcomeHarness({ claimProperty });
       harness.register(5, {
         ids: [oldEpoch, currentEpoch],
         currentId: currentEpoch,
@@ -796,9 +777,9 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
 
       expect(harness.claims[0]).not.toHaveBeenCalled();
       expect(harness.claimAccessor).not.toHaveBeenCalled();
-      expect(harness.liveIds()).toEqual([oldEpoch]);
-      expect(harness.document._invitationEpoch).toEqual(oldEpoch);
-      expect(harness.document._beekem).toBe(oldTree);
+      expect(harness.liveIds()).toEqual([]);
+      expect(harness.document._invitationEpoch).toBeUndefined();
+      expect(harness.document._beekem).toBeNull();
       expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
     },
   );
@@ -806,11 +787,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
   test.each(['currentKeyId', 'keyIds'] as const)(
     'rejects an accessor-backed prepared %s without invoking it or poisoning',
     async (malformedPreparedId) => {
-      const harness = welcomeHarness({
-        initialIds: [oldEpoch],
-        invitationEpoch: oldEpoch,
-        malformedPreparedId,
-      });
+      const harness = welcomeHarness({ malformedPreparedId });
       harness.register(6, {
         ids: [oldEpoch, currentEpoch],
         currentId: currentEpoch,
@@ -825,7 +802,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
 
       expect(harness.preparedIdAccessor).not.toHaveBeenCalled();
       expect(harness.claims[0]).not.toHaveBeenCalled();
-      expect(harness.liveIds()).toEqual([oldEpoch]);
+      expect(harness.liveIds()).toEqual([]);
       expect(harness.document._bootstrapLoadApplicationState).toBe('complete');
     },
   );
@@ -874,8 +851,6 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
 
   test('uses detached prepared-ID snapshots when hydration mutates the exposed IDs', async () => {
     const harness = welcomeHarness({
-      initialIds: [oldEpoch],
-      invitationEpoch: oldEpoch,
       onHydrate: (prepared) => {
         (prepared.currentKeyId as Uint8Array).fill(0xee);
         for (const id of prepared.keyIds as Uint8Array[]) id.fill(0xdd);
@@ -929,8 +904,6 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
       throw new Error('replacement claim must not run');
     });
     const harness = welcomeHarness({
-      initialIds: [oldEpoch],
-      invitationEpoch: oldEpoch,
       onHydrate: (prepared) => {
         prepared.claimCommit = replacement;
       },
@@ -1015,9 +988,6 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     ],
   ])('poisons after the provider exposes %s', async (_label, claimFactory) => {
     const harness = welcomeHarness({ claimFactory });
-    const oldTree = { name: 'old-tree' };
-    harness.document._beekem = oldTree;
-    harness.document._beekemInitialized = true;
     harness.register(10, {
       ids: [currentEpoch],
       currentId: currentEpoch,
@@ -1034,7 +1004,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     expect(harness.claims[0]).toHaveBeenCalledTimes(1);
     expect(harness.liveIds()).toEqual([]);
     expect(harness.document._invitationEpoch).toBeUndefined();
-    expect(harness.document._beekem).toBe(oldTree);
+    expect(harness.document._beekem).toBeNull();
     expect(harness.document._bootstrapLoadApplicationState).toBe('poisoned');
   });
 
@@ -1129,11 +1099,7 @@ describe('inbound BeeKEM V2 Welcome transaction', () => {
     ).resolves.toBeUndefined();
 
     expect(harness.document._pendingWelcomes.size).toBe(0);
-    expect(harness.prepareMerge).toHaveBeenCalledTimes(3);
-    expect(harness.claims).toHaveLength(3);
-    for (const claim of harness.claims) {
-      expect(claim).not.toHaveBeenCalled();
-    }
+    expect(harness.prepareMerge).not.toHaveBeenCalled();
     expect(harness.liveIds()).toEqual([oldEpoch, currentEpoch]);
     expect(harness.document._invitationEpoch).toEqual(currentEpoch);
   });

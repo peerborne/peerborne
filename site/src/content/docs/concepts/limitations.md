@@ -25,7 +25,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation and storage pipeline, not the GossipSub publish call or remote receipt. A change that is committed locally but whose frame could not be published still resolves, and the failure is reported to `subscribeDeliveryFailures()` handlers.
 - **No general reconnect-and-replay guarantee.** Default documents request missed updates on open, on reconnect, on detected gaps and every 30 to 60 s, but a gap closes only while a member that holds the missing state is online and can answer or serve a load. Note resumes relay reservations after opening a retained note, and release acceptance verifies two writers repairing edits after an owned relay restart and browser-process relaunch. Applications must still reconnect their transport. Membership changes, key loss, multi-document histories and relay failover remain outside that gate.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
-- **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key; it needs another recipient-bound Welcome or an explicit out-of-band recovery path.
+- **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key, and a load response that would add a key is refused. A broadcast Welcome cannot add a key either once the recipient holds one, so the member needs a fresh invitation or an explicit out-of-band recovery path.
 - **Recovery requires retained local state.** Note and the password-manager example test encrypted checkpoints across reload/relaunch. The installed-package Note gate additionally verifies an acknowledged write after forced Chromium termination, both replicas recovering concurrent same-epoch edits after an owned relay outage, and saved-note catch-up when inbound circuit reservations are exhausted. Note no longer waits for an inbound reservation to request history over its relay connection. Recovery remains experimental across browser/OS combinations; the [release evidence](https://github.com/Peerborne/peerborne/blob/main/verification/release/README.md#boundaries) records an earlier Linux/WebKit timeout whose cause remains unconfirmed. This does not establish crash consistency across every interrupted write, device loss or malicious storage rollback.
 - **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no application-facing key backup or recovery service.
 
@@ -84,8 +84,17 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   the ACL or BeeKEM state, and only resends the Welcome to an existing reader.
   Share a document through an invitation. Invitations require the attested
   Automerge capacity profile, which the bundled Yjs and Loro adapters do not
-  declare, so an application built on them, including the password-manager
-  example, has no supported way to share a document with another identity.
+  declare.
+- **Yjs and Loro documents are founder-only.** No supported path shares a
+  Yjs or Loro document with another identity, so an application built on them,
+  including the password-manager example, can only sync it between devices
+  that hold the founder's identity and keys.
+- **A removal's key stays on the device that made it.** `removeReader()`
+  derives the next key from fresh secrets on the removing device, and remote
+  PathUpdates cannot replay it on another device of the same founder. A
+  founder device that missed the removal, or that restores a checkpoint taken
+  before it, cannot recover that key and can neither read nor be read by
+  members using it. Restore a checkpoint taken after the last removal.
 - **Initial invitations require founder authority.** Note can restore its
   founding browser from an encrypted local checkpoint and issue a fresh offer
   while the note has no active collaborator. A founder restored from a
@@ -170,9 +179,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   only by its signer. A change function that applies another document's
   operations, such as `Y.applyUpdate` of an unrelated `Y.Doc`, is refused,
   and a Yjs or Loro instance is then retired; seed such content under an
-  actor from `document.reserveActor()`. Coordinator-backed documents, the ACL
-  and keychain CRDTs, `enableSigning: false`, and devices that share one
-  signer are not covered.
+  actor from `document.reserveActor()`. Reader and writer ACL changes are
+  bound the same way. Coordinator-backed documents, the keychain CRDT,
+  `enableSigning: false`, and devices that share one signer are not covered.
   See [actor binding](../security/#crdt-actors-are-bound-to-change-signers).
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM restore depends on the application.** Checkpoints preserve the accepted generation. Rollback protection requires an independent current pin. Revoked readers retain access to content and keys they already received.

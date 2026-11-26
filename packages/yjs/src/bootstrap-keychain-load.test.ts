@@ -13,14 +13,13 @@ function documentWithKeychain(keychain: unknown): any {
 }
 
 describe('Yjs bootstrap keychain application', () => {
-  test('treats the canonical non-empty encoding of an empty history as a no-op', async () => {
+  test('applies an empty history as a no-op and refuses a load response that adds a key', async () => {
     const provider = new YjsKeychainProvider();
     const source = provider.initialize();
     const target = provider.initialize();
     const emptyHistory = source.history();
     const document = documentWithKeychain(target);
     const beginStateApplication = jest.fn();
-    const logicalKeychainChange = jest.fn();
     const noOpCommit = jest.fn();
     const originalPrepareMerge = target.prepareMerge.bind(target);
     const prepareMerge = jest
@@ -48,18 +47,16 @@ describe('Yjs bootstrap keychain application', () => {
         false,
         'load-response-v4',
         beginStateApplication,
-        false,
-        logicalKeychainChange,
       ),
     ).resolves.toBe(true);
 
     expect(beginStateApplication).not.toHaveBeenCalled();
-    expect(logicalKeychainChange).not.toHaveBeenCalled();
     expect(noOpCommit).toHaveBeenCalledTimes(1);
     await expect(target.keys()).resolves.toEqual([]);
 
     prepareMerge.mockRestore();
     const [keyId, , dependentChanges] = await source.add();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(
       document._syncUnlocked(
         {
@@ -70,13 +67,11 @@ describe('Yjs bootstrap keychain application', () => {
         false,
         'load-response-v4',
         beginStateApplication,
-        false,
-        logicalKeychainChange,
       ),
-    ).resolves.toBe(true);
-    expect(beginStateApplication).toHaveBeenCalledTimes(1);
-    expect(logicalKeychainChange).toHaveBeenCalledTimes(1);
-    expect(target.getKey(keyId)).toBeDefined();
-    await expect(target.keys()).resolves.toHaveLength(1);
+    ).resolves.toBe(false);
+    warn.mockRestore();
+    expect(beginStateApplication).not.toHaveBeenCalled();
+    expect(target.getKey(keyId)).toBeUndefined();
+    await expect(target.keys()).resolves.toEqual([]);
   });
 });
