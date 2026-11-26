@@ -116,8 +116,10 @@ function Note({ swarm }: { swarm: YjsSwarm }) {
 
 The fourth argument, `'create'`, founds this path. The default `'open'` mode
 loads the path from peers. That needs `resolveLoadSecurityCommitments` and
-`resolveTrustedDocumentWriters` in the `usePeerborne` configuration; without
-`resolveLoadSecurityCommitments`, `activationError` is a
+`resolveTrustedDocumentWriters` in the `usePeerborne` configuration. If no
+connected peer can serve the path (a relay cannot), `activationError` is
+`No document state is available…`; if one can and
+`resolveLoadSecurityCommitments` is missing, it is a
 `TrustedLoadSecurityCommitmentsError`. See
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 For a document from [`acceptInvitation()`](../invitations/), pass the returned

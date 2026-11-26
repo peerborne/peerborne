@@ -71,8 +71,8 @@ import {
  *
  * The default listen addresses bind no local socket, so the node accepts
  * connections only through a Circuit Relay reservation. To accept direct
- * connections, set `config.helia.libp2p.addresses.listen` to an address a
- * configured transport can bind, such as `/ip4/127.0.0.1/tcp/0/ws`.
+ * connections, append an address a configured transport can bind, such as
+ * `/ip4/127.0.0.1/tcp/0/ws`, to `config.helia.libp2p.addresses.listen`.
  *
  * @param bootstrapConfig Bootstrap peer list to seed peer discovery.
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.

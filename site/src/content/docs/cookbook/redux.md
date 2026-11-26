@@ -91,7 +91,7 @@ async function openNote(identity: CryptoKeyPair) {
 }
 ```
 
-The third argument explicitly creates a new document. Omitting it loads the path from peers, which requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in `config`; without `resolveLoadSecurityCommitments` the thunk rejects with `TrustedLoadSecurityCommitmentsError`. See [Open existing documents](../../concepts/documents/#open-existing-documents). A failed open never creates a replacement.
+The third argument explicitly creates a new document. Omitting it loads the path from peers, which requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in `config`. If no connected peer can serve the path (a relay cannot), the thunk rejects with `No document state is available…`; if one can and `resolveLoadSecurityCommitments` is missing, it rejects with `TrustedLoadSecurityCommitmentsError`. See [Open existing documents](../../concepts/documents/#open-existing-documents). A failed open never creates a replacement.
 
 Initialize the node once at application startup. `initializeAsync` installs peer listeners and has no matching Redux shutdown action; repeated component effects can duplicate initialization/listeners. `openDocumentAsync` subscribes with the `'remote'` filter and dispatches `SYNC_DOCUMENT` for subsequent remote events. Always pass the selector when the slice is nested.
 

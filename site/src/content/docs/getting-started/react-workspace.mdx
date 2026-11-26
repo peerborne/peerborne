@@ -72,7 +72,9 @@ collaborator, and review its membership and recovery limits.
 Opening the same path on another node is not onboarding either. The hook's
 default `'open'` mode loads from peers and requires
 `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the
-node configuration; without `resolveLoadSecurityCommitments` it reports a
+node configuration. If no connected peer can serve the path (a relay cannot),
+it reports `No document state is available…`; if one can and
+`resolveLoadSecurityCommitments` is missing, it reports a
 `TrustedLoadSecurityCommitmentsError`. See
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 

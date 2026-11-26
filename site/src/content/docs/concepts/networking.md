@@ -48,7 +48,11 @@ import { defaultBootstrapConfig } from '@peerborne/core';
 import { defaultNodeConfig } from '@peerborne/core/node';
 
 const config = defaultNodeConfig(defaultBootstrapConfig([]));
-config.helia!.libp2p!.addresses = { listen: ['/ip4/127.0.0.1/tcp/4010/ws'] };
+const libp2p = config.helia!.libp2p!;
+libp2p.addresses = {
+  ...libp2p.addresses,
+  listen: [...(libp2p.addresses?.listen ?? []), '/ip4/127.0.0.1/tcp/4010/ws'],
+};
 ```
 
 ## PubSub: GossipSub

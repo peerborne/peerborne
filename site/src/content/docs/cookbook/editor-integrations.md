@@ -34,9 +34,11 @@ await document.close();
 
 A collaborator binds the open document that
 [`acceptInvitation()`](../invitations/) returns. Without a restored checkpoint,
-`document.open()` loads the path from peers and requires `resolveLoadSecurityCommitments`
-and `resolveTrustedDocumentWriters` in the node configuration; without
-`resolveLoadSecurityCommitments` it rejects with
+`document.open()` loads the path from peers and requires
+`resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the
+node configuration. If no connected peer can serve the path (a relay cannot),
+it rejects with `No document state is available…`; if one can and
+`resolveLoadSecurityCommitments` is missing, it rejects with
 `TrustedLoadSecurityCommitmentsError`. See
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 

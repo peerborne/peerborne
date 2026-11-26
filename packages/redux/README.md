@@ -35,10 +35,10 @@ The current local-change thunk has a documented ordering limitation; review the 
 
 ## Selecting the Peerborne state
 
-Every async thunk takes a selector that returns the `PeerborneState` from the root state. The default selector expects `peerborneReducer(...)` to be the root reducer. When you mount it under a key, such as `combineReducers({ peerborne: peerborneReducer(...) })`, pass `(state) => state.peerborne` to each thunk. A thunk whose selector does not return Peerborne state rejects with a `TypeError` before it touches the node.
+Every async thunk takes a selector that returns the `PeerborneState` from the root state. The default selector expects `peerborneReducer(...)` to be the root reducer. When you mount it under a key, such as `combineReducers({ peerborne: peerborneReducer(...) })`, pass `(state) => state.peerborne` to each thunk. A thunk whose selector does not return Peerborne state (an object with `node`, `documents`, and a `peers` array) rejects with a `TypeError` before it touches the node.
 
 The package does not provide reader or writer selectors; read ACL state from the open document reference.
 
 ## Opening documents
 
-Use `openDocumentAsync(path, selector, 'create')` to explicitly create a new document. The default `'open'` mode loads existing state from peers and propagates load failures without creating a replacement. That load requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the node configuration; without `resolveLoadSecurityCommitments` the thunk rejects with `TrustedLoadSecurityCommitmentsError`. To share a document with another identity, use [invitations](https://peerborne.io/cookbook/invitations/). See [Open existing documents](https://peerborne.io/concepts/documents/#open-existing-documents).
+Use `openDocumentAsync(path, selector, 'create')` to explicitly create a new document. The default `'open'` mode loads existing state from peers and propagates load failures without creating a replacement. That load requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the node configuration. If no connected peer can serve the path (a relay cannot), the thunk rejects with `No document state is available…`; if one can and `resolveLoadSecurityCommitments` is missing, it rejects with `TrustedLoadSecurityCommitmentsError`. To share a document with another identity, use [invitations](https://peerborne.io/cookbook/invitations/). See [Open existing documents](https://peerborne.io/concepts/documents/#open-existing-documents).

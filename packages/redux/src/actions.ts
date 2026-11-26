@@ -26,9 +26,16 @@ function requirePeerborneState<RootStateType, State>(
   rootState: RootStateType,
 ): State {
   const state = selectPeerborneState(rootState);
-  const documents = (state as { documents?: unknown } | null | undefined)
-    ?.documents;
-  if (typeof documents !== 'object' || documents === null) {
+  const { node, documents, peers } = (state ?? {}) as Partial<
+    Record<'node' | 'documents' | 'peers', unknown>
+  >;
+  if (
+    typeof node !== 'object' ||
+    node === null ||
+    typeof documents !== 'object' ||
+    documents === null ||
+    !Array.isArray(peers)
+  ) {
     throw new TypeError(
       'Peerborne Redux state was not found. The default selector expects ' +
         'peerborneReducer at the root of the store; pass a selector such as ' +
@@ -183,13 +190,6 @@ export function connectAsync<
 ): ThunkAction<Promise<void>, RootStateType, unknown, ConnectAction> {
   return async (dispatch, getState) => {
     const { node } = requirePeerborneState(selectPeerborneState, getState());
-    if (!node) {
-      console.warn(
-        'Node not initialized yet! Unable to connect to:',
-        addresses,
-      );
-      return;
-    }
     await node.connect(addresses);
     dispatch(connect(addresses, captureTrace()));
   };
@@ -256,13 +256,6 @@ export function openDocumentAsync<
 > {
   return async (dispatch, getState) => {
     const { node } = requirePeerborneState(selectPeerborneState, getState());
-    if (!node) {
-      console.warn(
-        'Node not initialized yet! Unable to open document:',
-        documentId,
-      );
-      return null;
-    }
     // Close previous document if one is already open with this ID.
     const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {

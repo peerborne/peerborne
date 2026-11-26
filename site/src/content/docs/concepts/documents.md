@@ -49,10 +49,19 @@ A load from peers requires locally trusted configuration on the node:
   public keys when the instance has no writer ACL yet, which is always the case
   for a fresh instance.
 
-Without `resolveLoadSecurityCommitments`, `open()` rejects with
-`TrustedLoadSecurityCommitmentsError` before it contacts any peer. Both values
-must come from an independently trusted application source, never from a
-peer's response:
+When the load cannot proceed, `open()` rejects in one of two ways:
+
+- If no connected peer offers the document-load protocol (a relay does not),
+  it rejects with `No document state is available; use create() to authorize a
+  new document`.
+- Otherwise it resolves the trusted configuration before requesting any state.
+  Without `resolveLoadSecurityCommitments` it rejects with
+  `TrustedLoadSecurityCommitmentsError`; without
+  `resolveTrustedDocumentWriters` on a fresh instance it rejects with an error
+  naming that callback.
+
+Both values must come from an independently trusted application source, never
+from a peer's response:
 
 ```ts
 import {

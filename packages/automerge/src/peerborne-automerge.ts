@@ -4,6 +4,7 @@ import {
   change,
   clone,
   decodeChange,
+  encodeChange,
   getChanges,
   getConflicts,
   getActorId,
@@ -318,7 +319,8 @@ type AutomergeACLPendingChange = {
 };
 
 function isCanonicalAutomergeACLUsersRootSeed(
-  decoded: ReturnType<typeof decodeChange>,
+  binaryChange: BinaryChange,
+  decoded: DecodedAutomergeChange,
 ): boolean {
   const operation = decoded.ops[0];
   return (
@@ -327,13 +329,13 @@ function isCanonicalAutomergeACLUsersRootSeed(
     decoded.startOp === 1 &&
     decoded.time === AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME &&
     decoded.message === null &&
-    (decoded.author ?? null) === null &&
     decoded.deps.length === 0 &&
     decoded.ops.length === 1 &&
     operation?.action === 'makeMap' &&
     operation.obj === '_root' &&
     operation.key === 'users' &&
-    operation.pred.length === 0
+    operation.pred.length === 0 &&
+    encodesOnlyDecodedAutomergeFields(binaryChange, decoded)
   );
 }
 
@@ -341,7 +343,7 @@ function hasCanonicalAutomergeACLUsersRootSeed(
   changes: readonly BinaryChange[],
 ): boolean {
   return changes.some((binaryChange) =>
-    isCanonicalAutomergeACLUsersRootSeed(decodeChange(binaryChange)),
+    isCanonicalAutomergeACLUsersRootSeed(binaryChange, decodeChange(binaryChange)),
   );
 }
 
@@ -611,7 +613,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
             );
           }
           usersRootCreations++;
-          canonicalUsersRoot = isCanonicalAutomergeACLUsersRootSeed(decoded);
+          canonicalUsersRoot = isCanonicalAutomergeACLUsersRootSeed(
+            binaryChange,
+            decoded,
+          );
         }
         if (
           usersObjectId !== undefined &&
@@ -804,8 +809,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         hash: decoded.hash,
         byteLength: binaryChange.byteLength,
         operationCount: decoded.ops.length,
-        isCanonicalUsersRootSeed:
-          isCanonicalAutomergeACLUsersRootSeed(decoded),
+        isCanonicalUsersRootSeed: isCanonicalAutomergeACLUsersRootSeed(
+          binaryChange,
+          decoded,
+        ),
       };
       const usesCanonicalSeedAllowance =
         record.isCanonicalUsersRootSeed && !hasCanonicalUsersRootSeed;
@@ -1256,6 +1263,21 @@ function currentKeyProjection(
   );
 }
 
+/**
+ * Re-encode only the fields Peerborne validates. Author, extra bytes, or any
+ * other metadata Automerge preserves changes the encoding and fails the check.
+ */
+function encodesOnlyDecodedAutomergeFields(
+  binaryChange: BinaryChange,
+  decoded: DecodedAutomergeChange,
+): boolean {
+  const { actor, seq, startOp, time, message, deps, ops } = decoded;
+  return sameBytes(
+    binaryChange,
+    encodeChange({ actor, author: null, seq, startOp, time, message, deps, ops }),
+  );
+}
+
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   for (let index = 0; index < left.byteLength; index++) {
@@ -1332,6 +1354,7 @@ function automergeOperationId(
 }
 
 function decodeCanonicalAutomergeAppend(
+  binaryChange: BinaryChange,
   decoded: DecodedAutomergeChange,
   expectedPreviousElementId: string,
 ): { readonly entry: CanonicalKeychainEntry; readonly elementId: string } {
@@ -1342,8 +1365,8 @@ function decodeCanonicalAutomergeAppend(
     structuralOperationCount + keyIdHexLength + keyBase64Length;
   if (
     decoded.message !== null ||
-    (decoded.author ?? null) !== null ||
-    decoded.ops.length !== expectedOperationCount
+    decoded.ops.length !== expectedOperationCount ||
+    !encodesOnlyDecodedAutomergeFields(binaryChange, decoded)
   ) {
     throw new Error(
       'Keychain history contains unrelated metadata or operations',
@@ -1463,6 +1486,7 @@ function validateAutomergeKeychain(
         throw new Error('Keychain history is not a linear append sequence');
       }
       const append = decodeCanonicalAutomergeAppend(
+        binaryChange,
         decoded,
         previousElementId,
       );
