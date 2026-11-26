@@ -5,6 +5,7 @@ import {
 } from './peerborne.js';
 import {
   PeerborneConfig,
+  DefaultConfigOptions,
   DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
@@ -160,6 +161,7 @@ import {
 } from './compaction-config.js';
 
 export * from './beekem/index.js';
+export { denyLocalNetworkDial, isLocalNetworkAddress } from './dial-policy.js';
 export * from './crdt-actor-binding.js';
 export * from './invitation-capacity.js';
 export * from './invitation-wire.js';
@@ -199,6 +201,7 @@ export {
   PeerbornePeersHandler,
   DEFAULT_INVITATION_TTL_MS,
   PeerborneConfig,
+  DefaultConfigOptions,
   ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,

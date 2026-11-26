@@ -55,6 +55,39 @@ libp2p.addresses = {
 };
 ```
 
+### Dial policy
+
+Peers learn each other's addresses from identify and the discovery topic, and
+Peerborne dials them during loads and catch-up. Both defaults therefore refuse
+addresses outside the public internet, so a remote peer cannot make a node
+connect to services on its host or network:
+
+- `defaultNodeConfig` installs `denyLocalNetworkDial`. It refuses loopback,
+  private, shared (CGNAT), link-local (including the `169.254.169.254` cloud
+  metadata service), unique-local and other special-purpose IP addresses, Unix
+  sockets, and DNS names that cannot be public, such as `localhost`,
+  `*.local`, `*.internal` and single-label names. A public DNS name that
+  resolves to a private address is not detected.
+- `defaultConfig` keeps libp2p's browser connection gater, which refuses
+  private and loopback addresses and insecure `/ws` WebSockets.
+- The background upgrade of a relayed connection dials only public addresses.
+
+A node that dials the loopback listener above, a LAN peer, a Docker network
+or a relay on `127.0.0.1` or plain `/ws` opts in with the third argument of
+either builder:
+
+```ts
+const config = defaultNodeConfig(defaultBootstrapConfig([]), undefined, {
+  allowLocalNetworkDials: true,
+});
+```
+
+The option admits every address and sets
+`PeerborneConfig.allowLocalNetworkDials`, which also lets relayed connections
+upgrade over local addresses. A custom libp2p config chooses its own
+`connectionGater`; `denyLocalNetworkDial` and `isLocalNetworkAddress` are
+exported for it.
+
 ## PubSub: GossipSub
 
 Document updates are announced and delivered via **GossipSub** — a pubsub protocol built on libp2p. Each document has a corresponding pubsub topic derived from its document ID:

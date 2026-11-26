@@ -177,6 +177,25 @@ export function resolveIceServers(override?: ReadonlyArray<Readonly<IceServer>>)
 }
 
 /**
+ * Options for {@link defaultConfig} and `defaultNodeConfig`.
+ */
+export interface DefaultConfigOptions {
+  /**
+   * Dial loopback, private, link-local and other non-public addresses that
+   * peers advertise, as LAN deployments and local development against a
+   * relay on `127.0.0.1` need. In browsers it also dials insecure `/ws`
+   * WebSocket addresses. It sets {@link PeerborneConfig.allowLocalNetworkDials}
+   * and a connection gater that admits every address.
+   *
+   * **Warning:** a remote peer can then make this node connect to any address
+   * it advertises, including services on the local host or network.
+   *
+   * @default false
+   */
+  allowLocalNetworkDials?: boolean;
+}
+
+/**
  * Default peerborne config to use if none is provided.
  *
  * Browser only: it stores blocks and data in IndexedDB, so `initialize()`
@@ -188,15 +207,21 @@ export function resolveIceServers(override?: ReadonlyArray<Readonly<IceServer>>)
  *       nodes this node will be in a swarm of one; use
  *       `peerborne.connect()` or pass bootstrap addresses to join peers.
  *
+ * Dials keep libp2p's browser connection gater, which refuses private and
+ * loopback addresses and insecure `/ws` WebSockets, unless
+ * {@link DefaultConfigOptions.allowLocalNetworkDials} is set.
+ *
  * @param bootstrapConfig Bootstrap peer list to seed peer discovery.
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.
  *   When undefined, {@link DEFAULT_WEBRTC_ICE_SERVERS} is used so peers can
  *   discover their public address mappings via STUN without relying on relay
  *   infrastructure for data plane forwarding.
+ * @param options Dial policy options.
  */
 export const defaultConfig = (
   bootstrapConfig: BootstrapInit,
   webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>,
+  options: DefaultConfigOptions = {},
 ) => {
   // Resolve the source list and a deeply-frozen exposed view in one place so
   // the browser and Node defaults stay in sync. Each transport below still
@@ -262,12 +287,17 @@ export const defaultConfig = (
             selectors: { ipns: ipnsSelector },
           }),
         },
-        // https://github.com/libp2p/js-libp2p/blob/master/doc/CONFIGURATION.md#configuring-connection-gater
-        connectionGater: { denyDialMultiaddr: async () => false },
+        connectionGater:
+          options.allowLocalNetworkDials === true
+            ? { denyDialMultiaddr: async () => false }
+            : {},
       },
     },
 
     ...defaultDocumentPubsubConfig(),
+    ...(options.allowLocalNetworkDials === true && {
+      allowLocalNetworkDials: true,
+    }),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);
@@ -407,6 +437,19 @@ export interface PeerborneConfig {
    * @default DEFAULT_WEBRTC_ICE_SERVERS
    */
   webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>;
+
+  /**
+   * Let the background upgrade of a relayed connection dial loopback,
+   * private, link-local and other non-public addresses the peer advertises.
+   * Otherwise the upgrade dials only public addresses. The libp2p connection
+   * gater still decides every other dial; `defaultConfig` and
+   * `defaultNodeConfig` set this field together with a gater that admits
+   * every address when called with
+   * {@link DefaultConfigOptions.allowLocalNetworkDials}.
+   *
+   * @default false
+   */
+  allowLocalNetworkDials?: boolean;
 
   /**
    * Require Q distinct trusted signing authorities to agree on one V4
@@ -585,9 +628,11 @@ export const defaultBootstrapConfig = (clientAddresses: string[]) =>
  *
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.
  *   When undefined, {@link DEFAULT_WEBRTC_ICE_SERVERS} is used.
+ * @param options Dial policy options.
  */
 export function getDefaultConfig(
   webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>,
+  options?: DefaultConfigOptions,
 ): PeerborneConfig {
-  return defaultConfig(defaultBootstrapConfig([]), webrtcIceServers);
+  return defaultConfig(defaultBootstrapConfig([]), webrtcIceServers, options);
 }

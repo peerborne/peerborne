@@ -746,7 +746,9 @@ export class Peerborne<
 
     // Setup Helia node.
     const { heliaNode, openedStores } =
-      await createAndStartHeliaNode(config.helia);
+      await createAndStartHeliaNode(config.helia, {
+        allowLocalNetworkUpgrades: config.allowLocalNetworkDials === true,
+      });
     this._heliaNode = heliaNode;
     this._openedStores = openedStores;
 

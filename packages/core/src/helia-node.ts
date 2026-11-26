@@ -12,6 +12,7 @@ import * as json from 'multiformats/codecs/json';
 import { sha512 } from 'multiformats/hashes/sha2';
 import type { PeerborneConfig } from './peerborne-config.js';
 import { reuseLimitedConnections } from './limited-connection-reuse.js';
+import type { LimitedConnectionReuseOptions } from './limited-connection-reuse.js';
 import { acquirePeerIdentity } from './peer-identity.js';
 import type { PeerIdentityLease } from './peer-identity.js';
 import { closeHeliaStores, openHeliaStores } from './store-lifecycle.js';
@@ -28,6 +29,7 @@ interface StartedHeliaNode {
 
 export async function createAndStartHeliaNode(
   heliaInit?: NonNullable<PeerborneConfig['helia']>,
+  reuse?: LimitedConnectionReuseOptions,
 ): Promise<StartedHeliaNode> {
   const openedStores = heliaInit
     ? await openHeliaStores(heliaInit.datastore, heliaInit.blockstore)
@@ -87,7 +89,7 @@ export async function createAndStartHeliaNode(
       });
     }
     await heliaNode.start();
-    reuseLimitedConnections(heliaNode.libp2p);
+    reuseLimitedConnections(heliaNode.libp2p, reuse);
     if (!heliaNode.libp2p.services.pubsub) {
       throw new Error(
         'Helia node must be initialized with a pubsub service (e.g., gossipsub)',

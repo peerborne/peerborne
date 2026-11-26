@@ -185,10 +185,30 @@ describe('Helia node startup cleanup', () => {
 
     await createAndStartHeliaNode(helia);
 
-    expect(mockReuseLimitedConnections).toHaveBeenCalledWith(node.libp2p);
+    expect(mockReuseLimitedConnections).toHaveBeenCalledWith(
+      node.libp2p,
+      undefined,
+    );
     expect(node.start.mock.invocationCallOrder[0]).toBeLessThan(
       mockReuseLimitedConnections.mock.invocationCallOrder[0]!,
     );
+  });
+
+  test('passes the local-network upgrade opt-in to relayed connection reuse', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
+      libp2p: { services: { pubsub: {} } },
+    };
+    const { helia } = createConfig();
+    arrangeNode(node);
+
+    await createAndStartHeliaNode(helia, { allowLocalNetworkUpgrades: true });
+
+    expect(mockReuseLimitedConnections).toHaveBeenCalledWith(node.libp2p, {
+      allowLocalNetworkUpgrades: true,
+    });
   });
 
   test('loads the persisted key while holding the datastore identity', async () => {
