@@ -186,6 +186,7 @@ type FakePubSub = EventTarget & {
   subscribe(topic: string): void;
   unsubscribe(topic: string): void;
   publish(topic: string, data: Uint8Array): Promise<{ recipients: string[] }>;
+  getSubscribers?(topic: string): string[];
 };
 
 export interface CoordinatedGroupOptions {
@@ -194,6 +195,8 @@ export interface CoordinatedGroupOptions {
   readonly journal?: boolean;
   /** Requires a CRDT session with detached snapshot merges. */
   readonly catchUp?: boolean;
+  /** Report topic subscribers, none while a member is offline. */
+  readonly subscribers?: boolean;
 }
 
 /**
@@ -203,7 +206,12 @@ export interface CoordinatedGroupOptions {
 export async function coordinatedGroupFixture<Document, Changes, Change>(
   crdt: CRDTProvider<Document, Changes, Change>,
   serializer: ChangesSerializer<Changes>,
-  { members: size, journal = true, catchUp = false }: CoordinatedGroupOptions,
+  {
+    members: size,
+    journal = true,
+    catchUp = false,
+    subscribers = false,
+  }: CoordinatedGroupOptions,
 ) {
   const path = '/coordinated-group';
   const members = Array.from({ length: size }, (_, index) => {
@@ -297,6 +305,8 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       publications.push({ sender: index, topic, data: data.slice() });
       return { recipients: offline.has(index) ? [] : ['test-peer'] };
     };
+    if (subscribers)
+      pubsub.getSubscribers = () => (offline.has(index) ? [] : ['test-peer']);
     return pubsub;
   });
   const legacy = { initialize: () => ({}) } as never;
@@ -477,9 +487,19 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
   };
 
   /** Run the real pubsub handler for one publication at `recipient`. */
-  const dispatch = (publication: GroupPublication, recipient: number) => {
+  const dispatch = (
+    publication: Pick<GroupPublication, 'topic' | 'data'>,
+    recipient: number,
+    from?: string,
+  ) => {
     const event = new CustomEvent('message', {
-      detail: { topic: publication.topic, data: publication.data.slice() },
+      detail: {
+        topic: publication.topic,
+        data: publication.data.slice(),
+        ...(from === undefined
+          ? {}
+          : { type: 'signed', from: { toString: () => from } }),
+      },
     });
     pubsubs[recipient].dispatchEvent(event);
   };
@@ -508,6 +528,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
   return {
     path,
     members,
+    auth,
     coordinators,
     logs,
     pubsubs,

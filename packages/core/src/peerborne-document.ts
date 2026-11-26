@@ -287,6 +287,16 @@ function gossipSender(message: Message): string {
   return message.type === 'signed' ? message.from.toString() : '';
 }
 
+/** Outcome of one coordinated publication pass. */
+export interface SecurityPublicationReport {
+  /** Publications that reached at least one topic peer. */
+  readonly sent: number;
+  /** Whether publications stay queued until a topic peer receives them. */
+  readonly pending: boolean;
+  /** Frames removed because they were sealed for an earlier context or authority. */
+  readonly dropped: number;
+}
+
 /** A publish allowed with zero topic peers reports an empty recipient list. */
 function securityPublicationReachedPeers(result: unknown): boolean {
   if (typeof result !== 'object' || result === null) return true;
@@ -7435,7 +7445,10 @@ export class PeerborneDocument<
       if (this._gcClosed) throw new Error('Coordinated document is closed');
       this._pubsubHandler = (event) => {
         if (event.detail.topic !== this._topic) return;
-        void this.receiveSecurityFrame(event.detail.data).catch(() => {});
+        void this._receiveSecurityFrame(
+          event.detail.data,
+          gossipSender(event.detail),
+        ).catch(() => {});
       };
       this._securitySubscriptionHandler = (event) => {
         if (
@@ -7454,6 +7467,9 @@ export class PeerborneDocument<
       );
       pubsub.subscribe(this._topic);
       this._subscribed = true;
+      // Peers connected before open announced their subscriptions already, so
+      // restored publications cannot wait for a subscription change.
+      void this.retrySecurityPublications().catch(() => {});
       return true;
     } catch (error) {
       if (registered) await this.close();
@@ -7464,11 +7480,18 @@ export class PeerborneDocument<
 
   /** Accept only the encrypted, signed coordinator document format. */
   public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
+    return this._receiveSecurityFrame(frame);
+  }
+
+  private async _receiveSecurityFrame(
+    frame: Uint8Array,
+    sender?: string,
+  ): Promise<boolean> {
     const engine = this._coordinated;
     if (!engine)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    const applied = await engine.receive(frame);
+    const applied = await engine.receive(frame, sender);
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
       if (rosterIsCurrent) {
@@ -7603,33 +7626,65 @@ export class PeerborneDocument<
     }
   }
 
-  private _securityPublicationTask?: Promise<void>;
-  private _securityPublicationQueued?: Promise<void>;
+  private _securityPublicationTask?: Promise<SecurityPublicationReport>;
+  private _securityPublicationQueued?: Promise<SecurityPublicationReport>;
 
 
-  /** Retry durable encrypted publications without running local change callbacks again. */
-  public async retrySecurityPublications(): Promise<void> {
+  /**
+   * Retry durable encrypted publications without running local change
+   * callbacks again. Publications that reach no topic peer stay queued, and
+   * later local changes join the last of them. A publication sealed for an
+   * earlier group context or authority head is dropped and counted, since no
+   * current member can accept it.
+   */
+  public async retrySecurityPublications(): Promise<SecurityPublicationReport> {
     const engine = this._coordinated;
     if (!engine || !this._subscribed)
       throw new Error('Coordinated document is not open');
     if (this._securityPublicationQueued) return this._securityPublicationQueued;
     const previous = this._securityPublicationTask ?? Promise.resolve();
-    const task: Promise<void> = previous
+    const task: Promise<SecurityPublicationReport> = previous
       .catch(() => {})
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
-        for (const frame of await engine.pendingPublications()) {
-          engine.assertPublicationDispatchAllowed();
-          const result: unknown =
-            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-              this._topic,
-              frame,
-            );
-          // Keep this frame and its successors until a topic peer receives them.
-          if (!securityPublicationReachedPeers(result)) return;
-          await engine.publicationSent(frame);
+        const pubsub = this.swarm.heliaNode.libp2p.services.pubsub;
+        // Without topic peers a publish reaches nobody; skip reading the outbox.
+        const unreachable =
+          typeof pubsub.getSubscribers === 'function' &&
+          pubsub.getSubscribers(this._topic).length === 0;
+        if (unreachable) {
+          const pending = await engine.outboxUndelivered();
+          if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
         }
+        const { frames, dropped } = await engine.dispatchablePublications();
+        if (dropped !== 0)
+          console.warn(
+            `[${this.documentPath}] dropped ${dropped} unsent change frame(s) sealed for an earlier group epoch or authority; current members did not receive them.`,
+          );
+        if (unreachable && frames.length !== 0) {
+          await engine.publicationUndelivered(frames.at(-1)!);
+          return { sent: 0, pending: true, dropped };
+        }
+        let sent = 0;
+        for (const frame of frames) {
+          engine.assertPublicationDispatchAllowed();
+          let result: unknown;
+          try {
+            result = await pubsub.publish(this._topic, frame);
+          } catch (error) {
+            await engine.publicationUndelivered(frames.at(-1)!).catch(() => {});
+            throw error;
+          }
+          // Keep this frame and its successors until a topic peer receives them.
+          if (!securityPublicationReachedPeers(result)) {
+            await engine.publicationUndelivered(frames.at(-1)!);
+            break;
+          }
+          await engine.publicationSent(frame);
+          sent++;
+        }
+        return { sent, pending: sent !== frames.length, dropped };
       })
       .finally(() => {
         if (this._securityPublicationTask === task)
