@@ -88,7 +88,7 @@ specification work. These are structural counts, not semantic coverage.
 
 The property audit includes JavaScript test files and native `.fixture.mjs`
 files. The binary chunk fixture runs through Node/tsx from the normal Jest
-suite so the actual ESM Uint8ArrayList dependency is exercised on Node 22.
+suite so the actual ESM Uint8ArrayList dependency is exercised on Node 26.
 
 Reports, source/proof digests, tool versions, per-member verification results,
 assumption audits, fixed solver-seed checks and control results go under `verification/results/formal/`.

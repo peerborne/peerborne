@@ -10,10 +10,11 @@ optional at the integration API boundary.
 
 ## Run the plain DOM example
 
-Use Node.js 22.19.0 and Yarn 4.5.0 from a source checkout. All packages remain
+Use Node.js 26.13.1 and Yarn 4.19.0 from a source checkout. All packages remain
 unpublished alpha workspaces:
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build

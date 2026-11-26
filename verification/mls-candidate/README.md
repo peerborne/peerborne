@@ -5,7 +5,7 @@ This isolated project evaluates the RFC 9420 dependency needed by
 provider and does not change the library packages, document protocols, or
 application dependencies.
 
-From the repository root, using Node.js 22.19.0 and Yarn 4.5.0:
+From the repository root, using Node.js 26.13.1 and Yarn 4.19.0:
 
 ```sh
 yarn install --immutable

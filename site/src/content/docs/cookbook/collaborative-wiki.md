@@ -7,7 +7,7 @@ description: Run and assess the repository's Vite, Redux, and Automerge wiki exa
 
 The current wiki is [`examples/wiki-swarm`](https://github.com/Peerborne/peerborne/tree/main/examples/wiki-swarm): a Vite application using Redux and Automerge. Its production build and strict Chromium startup smoke test pass. This evidence does **not** prove article mutation, two-browser synchronization, convergence, restart recovery, or a multi-user Yjs application. See [Limitations](../../concepts/limitations/).
 
-The workspace packages are unpublished. Work from a repository checkout with Node.js 22.19.0 and the locked dependencies installed as described in the [quick start](../../getting-started/quick-start/).
+The workspace packages are unpublished. Work from a repository checkout with Node.js 26.13.1 and the locked dependencies installed as described in the [quick start](../../getting-started/quick-start/).
 
 ## Run and verify the source example
 

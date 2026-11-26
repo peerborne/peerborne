@@ -41,7 +41,7 @@ body:
     attributes:
       label: Environment
       description: Include the operating system, Node.js version, browser and version when relevant, and the command or example used.
-      placeholder: macOS 15; Node.js 22.19.0; Chromium 140; yarn test:e2e:browser-test
+      placeholder: macOS 15; Node.js 26.13.1; Chromium 140; yarn test:e2e:browser-test
     validations:
       required: true
   - type: textarea

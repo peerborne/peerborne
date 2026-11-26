@@ -187,8 +187,9 @@ export class SubtleCrypto
         if (nonce) {
           counter = nonce;
         } else {
-          counter = new Uint8Array(16);
-          crypto.getRandomValues(counter.subarray(0, 12));
+          const generated = new Uint8Array(16);
+          crypto.getRandomValues(generated.subarray(0, 12));
+          counter = generated;
         }
         return {
           name: 'AES-CTR',
