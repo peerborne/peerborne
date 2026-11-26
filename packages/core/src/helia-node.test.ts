@@ -52,7 +52,16 @@ interface FakeHeliaNode {
   start: jest.Mock<() => Promise<void>>;
   stop: jest.Mock<() => Promise<void>>;
   addMixin: jest.Mock;
+  routing: { cancelReprovide: (key: unknown) => Promise<void> };
   libp2p: { services: { pubsub?: object } };
+}
+
+function fakeRouting(failure?: Error) {
+  return {
+    cancelReprovide: jest.fn(async (_key: unknown) => {
+      if (failure) throw failure;
+    }),
+  };
 }
 
 function arrangeNode(node: FakeHeliaNode) {
@@ -97,6 +106,7 @@ describe('Helia node startup cleanup', () => {
       }),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia, datastore, blockstore } = createConfig();
@@ -118,6 +128,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: {} },
     };
     const { helia, datastore, blockstore } = createConfig();
@@ -137,6 +148,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const bitswap = {};
@@ -159,6 +171,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     mockCreateHelia.mockReturnValue(node as never);
@@ -178,6 +191,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia } = createConfig();
@@ -196,6 +210,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia, datastore } = createConfig();
@@ -218,6 +233,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia } = createConfig();
@@ -236,6 +252,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia } = createConfig();
@@ -249,6 +266,36 @@ describe('Helia node startup cleanup', () => {
     expect(mockWithLibp2pLight.mock.calls[0]?.[1]?.privateKey).toBe(privateKey);
     expect(node.addMixin).not.toHaveBeenCalled();
   });
+
+  test.each([
+    ['NoContentRoutersError', true],
+    ['AbortError', false],
+  ])(
+    'deletion tolerates a %s from cancelling a reprovide: %s',
+    async (name, tolerated) => {
+      const failure = Object.assign(new Error('synthetic routing failure'), {
+        name,
+      });
+      const routing = fakeRouting(failure);
+      const cancel = routing.cancelReprovide;
+      const node: FakeHeliaNode = {
+        start: jest.fn(async () => undefined),
+        stop: jest.fn(async () => undefined),
+        addMixin: jest.fn(),
+        routing,
+        libp2p: { services: { pubsub: {} } },
+      };
+      const { helia } = createConfig();
+      arrangeNode(node);
+
+      await createAndStartHeliaNode(helia);
+
+      const cancelling = node.routing.cancelReprovide('cid');
+      if (tolerated) await expect(cancelling).resolves.toBeUndefined();
+      else await expect(cancelling).rejects.toBe(failure);
+      expect(cancel).toHaveBeenCalledWith('cid', undefined);
+    },
+  );
 
   test('rejects an already-created libp2p node explicitly', async () => {
     mockIsLibp2p.mockReturnValue(true);
