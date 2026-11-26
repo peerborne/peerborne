@@ -26,6 +26,8 @@ export const MIN_INVITATION_PROCESSING_WINDOW_MS = 30_000;
 /** Leave transport time before the founder-side processing window begins. */
 export const MIN_INVITATION_OFFER_TTL_MS = 60_000;
 export const INVITATION_STREAM_TIMEOUT_MS = 30_000;
+/** Bound the founder's persistence before an acceptance is signed. */
+export const INVITATION_BEFORE_ACCEPTANCE_TIMEOUT_MS = 10_000;
 
 /** @internal Validate the lifetime advertised by a newly-created offer. */
 export function assertInvitationOfferLifetime(expiresInMs: number): void {
@@ -56,12 +58,16 @@ function throwIfInvitationAborted(signal?: AbortSignal): void {
  * retry can attach immediately. Once `start` is called the operation remains
  * tracked even if its original stream is aborted, because document membership
  * work may already have begun and must be allowed to reach a consistent end.
+ * A retry of a request whose earlier attempt started needs only an unexpired
+ * offer: its membership may already be committed, and `start` must enforce
+ * the processing window before any new membership mutation.
  *
  * @internal
  */
 export class InMemoryInvitationAcceptanceCoordinator<T> {
   private readonly _cached = new Map<string, T>();
   private readonly _inFlight = new Map<string, Promise<T>>();
+  private readonly _started = new Set<string>();
   private _queue: Promise<void> = Promise.resolve();
 
   get cachedCount(): number {
@@ -86,7 +92,7 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
     }
     const inFlight = this._inFlight.get(requestKey);
     if (inFlight) return inFlight;
-    reuseCachedInvitationAcceptanceOrAssertFresh(undefined, offerExpiresAtMs);
+    this._assertCanAttempt(requestKey, offerExpiresAtMs);
     throwIfInvitationAborted(signal);
 
     const previous = this._queue;
@@ -109,16 +115,14 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
           // The stream may have closed while this request waited behind a
           // different claim. Do not consume replay state for abandoned work.
           throwIfInvitationAborted(signal);
-          reuseCachedInvitationAcceptanceOrAssertFresh(
-            undefined,
-            offerExpiresAtMs,
-          );
+          this._assertCanAttempt(requestKey, offerExpiresAtMs);
           await claim();
 
           assertCanStart();
           // This is the final cancellation point. Install the operation before
           // invoking `start`, whose synchronous prefix may already mutate state.
           throwIfInvitationAborted(signal);
+          this._started.add(requestKey);
           const operation = Promise.resolve().then(start);
           this._inFlight.set(requestKey, operation);
           void operation.then(
@@ -141,6 +145,50 @@ export class InMemoryInvitationAcceptanceCoordinator<T> {
       release();
     }
     return result;
+  }
+
+  private _assertCanAttempt(
+    requestKey: string,
+    offerExpiresAtMs: number,
+  ): void {
+    if (!this._started.has(requestKey)) {
+      reuseCachedInvitationAcceptanceOrAssertFresh(undefined, offerExpiresAtMs);
+    } else if (isExpiredInvitation(offerExpiresAtMs, Date.now())) {
+      throw new Error('Invitation expired before the retry started');
+    }
+  }
+}
+
+/**
+ * @internal Run the founder's persistence hook, bounded by its timeout and by
+ * the offer's remaining lifetime.
+ */
+export async function runInvitationBeforeAcceptance(
+  beforeAcceptance: () => Promise<void>,
+  offerExpiresAtMs: number,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  const timeoutMs = Math.min(
+    INVITATION_BEFORE_ACCEPTANCE_TIMEOUT_MS,
+    offerExpiresAtMs - nowMs,
+  );
+  if (timeoutMs <= 0) {
+    throw new Error('Invitation expired before beforeAcceptance ran');
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Invitation beforeAcceptance timed out')),
+      timeoutMs,
+    );
+  });
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => beforeAcceptance()),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

@@ -136,6 +136,31 @@ async function fixture(forkStore?: DurableBeeKEMForkStore) {
   return { document, created, signing, kem, traffic };
 }
 
+// addReader cannot onboard a new identity, so register the member's BeeKEM
+// leaf through the onboarding step that invitations use.
+async function registerReader(
+  document: object,
+  reader: CryptoKey,
+  kemPublicKey: CryptoKey,
+) {
+  const internal = document as {
+    _runStateMutation<T>(operation: () => Promise<T>): Promise<T>;
+    _addReaderUnlocked(
+      reader: CryptoKey,
+      serializedReader: string,
+      kemPublicKey: Uint8Array,
+      broadcastWelcome: boolean,
+    ): Promise<unknown>;
+  };
+  const serializedReader = await new SubtleCrypto().serializePublicKey(reader);
+  const kem = new Uint8Array(
+    await crypto.subtle.exportKey('raw', kemPublicKey),
+  );
+  await internal._runStateMutation(() =>
+    internal._addReaderUnlocked(reader, serializedReader, kem, false),
+  );
+}
+
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
 // A canonical CIDv1 (raw, sha2-256) whose digest encodes `index`.
@@ -490,10 +515,7 @@ test('preserves membership state so a restored founder can remove an existing re
     ['sign', 'verify'],
   );
   const memberKem = await generateEciesKeyPair();
-  await created.addReader(
-    member.publicKey,
-    new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
-  );
+  await registerReader(created, member.publicKey, memberKem.publicKey);
   const checkpoint = await created.exportCheckpoint();
   const localWelcome = JSON.parse(new TextDecoder().decode(checkpoint.payload))
     .beekem.welcome;
@@ -550,10 +572,7 @@ test('pinned restart preserves revocation of readers and former editors', async 
       ['sign', 'verify'],
     );
     const memberKem = await generateEciesKeyPair();
-    await live.addReader(
-      member.publicKey,
-      new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
-    );
+    await registerReader(live, member.publicKey, memberKem.publicKey);
     const promoted = (schedule & 4) !== 0;
     if (promoted) await live.addWriter(member.publicKey);
     const beforeRemoval = await live.exportCheckpoint();
@@ -624,10 +643,7 @@ test('same-predecessor signed removal forks stop either branch, including after 
       ['sign', 'verify'],
     );
     const memberKem = await generateEciesKeyPair();
-    await created.addReader(
-      member.publicKey,
-      new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
-    );
+    await registerReader(created, member.publicKey, memberKem.publicKey);
     const first = created;
     const second = await start(await first.exportCheckpoint());
     await first.removeReader(member.publicKey);
@@ -837,10 +853,7 @@ for (const interrupt of ['none', 'before-write', 'after-write'] as const) {
       ['sign', 'verify'],
     );
     const memberKem = await generateEciesKeyPair();
-    await created.addReader(
-      member.publicKey,
-      new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
-    );
+    await registerReader(created, member.publicKey, memberKem.publicKey);
     const common = await created.exportCheckpoint();
     const otherDevice = document(undefined, undefined, null);
     await otherDevice.setKemKeyPair(kem);
@@ -933,10 +946,7 @@ test('recovers selected content into a fresh document after an authenticated for
     ['sign', 'verify'],
   );
   const memberKem = await generateEciesKeyPair();
-  await created.addReader(
-    member.publicKey,
-    new Uint8Array(await crypto.subtle.exportKey('raw', memberKem.publicKey)),
-  );
+  await registerReader(created, member.publicKey, memberKem.publicKey);
   const common = await created.exportCheckpoint();
   const competingReplica = document();
   await competingReplica.setKemKeyPair(kem);

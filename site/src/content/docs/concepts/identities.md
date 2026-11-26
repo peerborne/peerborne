@@ -31,8 +31,8 @@ document key. Distinct identities require explicit onboarding. Use the
 [signed invitation flow](../../cookbook/invitations/) for the bounded initial
 online founder-plus-one case; ACL helpers alone are not an invitation UI.
 
-The [shared-secrets recipe](../../cookbook/password-manager/) describes the
-direct API and its current boundaries. Do not use that development example
+The [shared-secrets recipe](../../cookbook/password-manager/) explains why the
+direct `addReader` API cannot share a document. Do not use that development example
 as evidence that general invitation delivery, hostile-peer exclusion, or recovery
 across devices is complete.
 

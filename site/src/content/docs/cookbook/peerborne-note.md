@@ -28,7 +28,9 @@ irreplaceable work, or other sensitive or durable data into it.
 The invitation expires after 15 minutes. It cannot be accepted offline, and
 restarting the founder invalidates its in-memory offer and retry state. The
 initial release supports one founder and one active collaborator, not a larger
-group or a replacement invitation after revocation.
+group. Note has no control for removing a collaborator, so it cannot invite a
+replacement either. The founding tab stores a checkpoint that records the new
+collaborator before it releases the document key.
 
 ## What the link contains
 

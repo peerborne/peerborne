@@ -66,11 +66,28 @@ const offer = await note.createInvitation({
   role: 'editor',
   rendezvous: [founderCircuitAddress],
   expiresInMs: 15 * 60 * 1000,
+  // Record the new member before the acceptance releases the document key.
+  // saveCheckpoint is the application's encrypted local store.
+  beforeAcceptance: async () => saveCheckpoint(await note.exportCheckpoint()),
 });
 
 const offerBytes = encodeInvitationOffer(offer);
 // Encode offerBytes as unpadded Base64url in a URL fragment or QR code.
 ```
+
+Every offer requires `beforeAcceptance`. It runs after the recipient's
+membership is committed in the founder document and before the acceptance that
+carries the document key is signed. Store a checkpoint there. If the founder
+stops after the recipient has the key but before a checkpoint records it, a
+founder restored from an earlier checkpoint has no record of the collaborator
+and cannot remove it, while the collaborator keeps reading every later founder
+edit. Peerborne cannot store the checkpoint for the application.
+
+`beforeAcceptance` must settle within 10 seconds and before the offer expires.
+A rejection or timeout withholds the acceptance. The recipient's retry from the
+same process runs it again and can complete the committed membership until the
+offer expires. If no acceptance was produced by then, the founder removes the
+claimant and frees the slot.
 
 The default lifetime is 15 minutes, the minimum is 60 seconds, and the maximum
 is seven days. The founder must keep the same `Peerborne` process, open
@@ -111,6 +128,34 @@ creating a new document when any step fails.
 An `editor` is added as both reader and writer. A `reader` can decrypt and
 follow updates but cannot publish document changes.
 
+`addReader()` is not an onboarding path. A recipient that has only installed
+a KEM key pair cannot authenticate a broadcast Welcome or decrypt the reader
+ACL row that admits it, so it could never open the document. `addReader`
+rejects an identity that is not already a reader before changing any state.
+
+## Removing and inviting again
+
+To remove an editor, demote it and then revoke its read access. Both calls run
+on the founder:
+
+```ts
+await note.removeWriter(editorSigningPublicKey);
+await note.removeReader(editorSigningPublicKey);
+
+const replacement = await note.createInvitation({
+  role: 'reader',
+  rendezvous: [founderCircuitAddress],
+  beforeAcceptance: async () => saveCheckpoint(await note.exportCheckpoint()),
+});
+```
+
+`removeReader()` rotates the document key, so the removed member cannot read
+anything written after it. Once the founder has no remaining collaborator, it
+can invite a replacement into a fresh founder-plus-one BeeKEM tree. Every
+offer created before a completed `removeReader()` becomes unavailable, so a
+link that was never claimed, or a retry by the removed member, cannot take the
+freed slot. The removed member keeps whatever it already received.
+
 ## Trust and recovery boundaries
 
 - The offer exposes its document ID, issuer identity, role, timestamps, and
@@ -127,12 +172,19 @@ follow updates but cannot publish document changes.
   confidentiality boundaries, so the invitation API rejects them.
 - One active collaborator per document is enforced in the initial release.
   Add-side BeeKEM updates for larger groups are not implemented. The bounded
-  invitation path supports the first collaborator and exact retries for that
-  identity; inviting a replacement after revocation is not supported yet.
-- Only the online founder process that created the document can issue an
-  initial-release offer. Founder and recipient signing identities must be
-  distinct, and a `reader` acceptance is rejected if its bootstrap grants
-  writer access.
+  invitation path supports the first collaborator, exact retries for that
+  identity, and a replacement after the founder removes that collaborator.
+- Only the founder that created the document, in its original process or
+  restored from its own checkpoint, can issue an initial-release offer, and
+  only while it has no collaborator. Founder and recipient signing identities
+  must be distinct, and a `reader` acceptance is rejected if its bootstrap
+  grants writer access.
+- A founder that stops during acceptance and restores a checkpoint from before
+  it has no record of the new collaborator unless `beforeAcceptance` stored a
+  newer checkpoint. A commitment pin does not close that window.
+- A founder that restarts while an unsent acceptance is pending loses the
+  timer that would remove its claimant at expiry. If its checkpoint recorded
+  the claimant, remove it with `removeWriter()` and `removeReader()`.
 - Offers and replay protection are in memory. An inviter restart invalidates
   outstanding links. A lost response can be retried only from the same
   recipient `Peerborne` process, which reuses the exact signed request. The
