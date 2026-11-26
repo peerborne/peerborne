@@ -11926,24 +11926,60 @@ export class PeerborneDocument<
   /**
    * @internal Revoke an invitation claimant whose acceptance was never
    * produced. It never received the document key from that invitation, so the
-   * revocation frees the collaborator slot. A claimant that is no longer a
-   * member is left alone.
+   * revocation frees the collaborator slot. Only a claimant that this replica
+   * onboarded is touched: it must hold a local KEM binding that resolves to a
+   * live remote leaf of this replica's tree, and every removal precondition
+   * is checked before the demotion, in the same queued operation.
    */
   public async revokeUnacceptedInvitationMember(
     recipient: PublicKey,
   ): Promise<void> {
-    const serialized = await requireSerializePublicKey(
-      this._authProvider,
+    this._assertNoIncompleteBootstrapLoad();
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      recipient,
       'Invitation rollback',
-    )(recipient);
-    if (
-      (await retryACLConflict(() => this._readers.check(recipient))) !== true &&
-      !this._readerKemPublicKeys.has(serialized)
-    ) {
-      return;
-    }
-    await this.removeWriter(recipient);
-    await this.removeReader(recipient);
+    );
+    const localWriterSnapshot = this._startMembershipPublicKeySnapshot(
+      this._userPublicKey,
+      'Invitation rollback local identity',
+    );
+    return this._runStateMutation(async () => {
+      const { publicKey, serialized } = await snapshot;
+      const kemPublicKey = this._readerKemPublicKeys.get(serialized);
+      if (
+        kemPublicKey === undefined ||
+        !this._beekemInitialized ||
+        this._beekem === null ||
+        serialized === (await localWriterSnapshot).serialized
+      ) {
+        return;
+      }
+      const leafIndex = await this._beekem.findLeafByPublicKey(
+        new Uint8Array(kemPublicKey),
+      );
+      const cachedLeafIndex = this._readerLeafIndices.get(serialized);
+      if (
+        leafIndex === undefined ||
+        leafIndex === this._beekem.myLeafIndex ||
+        (cachedLeafIndex !== undefined && cachedLeafIndex !== leafIndex)
+      ) {
+        return;
+      }
+      const [isReader, isWriter] = await Promise.all([
+        retryACLConflict(() => this._readers.check(publicKey)),
+        retryACLConflict(() => this._writers.check(publicKey)),
+      ]);
+      if (isWriter === true) {
+        if (isReader !== true) return;
+        await this._removeWriterUnlocked(
+          publicKey,
+          serialized,
+          false,
+          localWriterSnapshot,
+        );
+      }
+      await this._removeReaderUnlocked(publicKey, serialized);
+    });
   }
 
   private async _assertKemPublicKeyAvailableForNewLeaf(

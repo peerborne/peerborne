@@ -571,7 +571,7 @@ export class Peerborne<
       >;
       readerRevocationCount: number;
       beforeAcceptance: () => Promise<void>;
-      rollbackScheduled?: boolean;
+      rollbackTimer?: ReturnType<typeof setTimeout>;
       replayGuard: InMemoryInvitationReplayGuard;
       acceptanceCoordinator:
         InMemoryInvitationAcceptanceCoordinator<InvitationAcceptanceV1>;
@@ -923,10 +923,7 @@ export class Peerborne<
           const produced =
             this._producedInvitationAcceptances.get(registration.document) ??
             new Map<string, number>();
-          produced.set(
-            request.recipient,
-            registration.document.readerRevocationCount,
-          );
+          produced.set(request.recipient, registration.readerRevocationCount);
           this._producedInvitationAcceptances.set(
             registration.document,
             produced,
@@ -1039,18 +1036,30 @@ export class Peerborne<
    * A failed attempt can leave the claimant's membership committed without an
    * acceptance. Its exact retry can still complete it, so wait until the offer
    * expires; if no acceptance was produced by then, revoke that membership.
+   * The timer re-arms if it fires before the wall clock reaches the expiry,
+   * and a failure after it fired schedules another check.
    */
   private _scheduleUnsentAcceptanceRollback(
     registration: NonNullable<ReturnType<typeof this._invitationRegistry.get>>,
     recipientId: string,
     recipient: PublicKey,
   ): void {
-    if (registration.rollbackScheduled) return;
-    registration.rollbackScheduled = true;
+    if (registration.rollbackTimer !== undefined) return;
     const { document, offer } = registration;
     const timer = setTimeout(
       () => {
         this._unsentAcceptanceRollbacks.delete(timer);
+        if (registration.rollbackTimer === timer) {
+          registration.rollbackTimer = undefined;
+        }
+        if (Date.now() < offer.expiresAtMs) {
+          this._scheduleUnsentAcceptanceRollback(
+            registration,
+            recipientId,
+            recipient,
+          );
+          return;
+        }
         if (
           this._documentRegistry.get(document.documentPath) !== document ||
           this._producedInvitationAcceptances
@@ -1069,6 +1078,7 @@ export class Peerborne<
         UNSENT_ACCEPTANCE_ROLLBACK_GRACE_MS,
     );
     (timer as { unref?: () => void }).unref?.();
+    registration.rollbackTimer = timer;
     this._unsentAcceptanceRollbacks.add(timer);
   }
 

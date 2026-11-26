@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { BeeKEM } from './beekem/beekem.js';
 import type { BeeKEMWelcomeV2 } from './beekem/types.js';
 import { assertInitialInvitationBeeKEMWelcomeShape } from './invitation-capacity.js';
+import { InvitationMembershipQueue } from './invitation-membership.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -704,46 +705,112 @@ describe('revoked founder tree replacement', () => {
   });
 });
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}
+
 describe('unaccepted invitation rollback', () => {
-  test.each([
-    ['an explicit reader', true, new Map()],
-    [
-      'a recorded KEM binding',
-      false,
-      new Map([['"claimant"', new Uint8Array(65)]]),
-    ],
-  ] as const)(
-    'demotes and revokes a claimant with %s',
-    async (_label, isReader, bindings) => {
-      const calls: string[] = [];
-      const document = fakeDocument({
-        _readers: { check: jest.fn(async () => isReader) },
-        _readerKemPublicKeys: bindings,
-        removeWriter: jest.fn(async () => {
-          calls.push('removeWriter');
-        }),
-        removeReader: jest.fn(async () => {
-          calls.push('removeReader');
-        }),
-      });
+  const claimant = 'claimant';
+  const serializedClaimant = JSON.stringify(claimant);
 
-      await document.revokeUnacceptedInvitationMember('claimant');
-      expect(calls).toEqual(['removeWriter', 'removeReader']);
-    },
-  );
-
-  test('leaves a claimant that is no longer a member alone', async () => {
-    const removeWriter = jest.fn();
-    const removeReader = jest.fn();
+  function rollbackDocument(fields: Record<string, unknown> = {}) {
+    const calls: string[] = [];
     const document = fakeDocument({
-      _readers: { check: jest.fn(async () => false) },
+      _userPublicKey: 'founder',
+      _beekemInitialized: true,
+      _beekem: {
+        myLeafIndex: 0,
+        findLeafByPublicKey: jest.fn(async () => 2),
+      },
+      _readerKemPublicKeys: new Map([
+        [serializedClaimant, new Uint8Array(65).fill(4)],
+      ]),
+      _readerLeafIndices: new Map([[serializedClaimant, 2]]),
+      _readers: { check: jest.fn(async () => true) },
+      _writers: { check: jest.fn(async () => true) },
+      _removeWriterUnlocked: jest.fn(async () => {
+        calls.push('removeWriter');
+      }),
+      _removeReaderUnlocked: jest.fn(async () => {
+        calls.push('removeReader');
+      }),
+      ...fields,
+    });
+    return { document, calls };
+  }
+
+  test('demotes and revokes a claimant this replica onboarded', async () => {
+    const { document, calls } = rollbackDocument();
+    await document.revokeUnacceptedInvitationMember(claimant);
+    expect(calls).toEqual(['removeWriter', 'removeReader']);
+    expect(document._removeReaderUnlocked).toHaveBeenCalledWith(
+      claimant,
+      serializedClaimant,
+    );
+  });
+
+  test('revokes a reader claimant without demoting it', async () => {
+    const { document, calls } = rollbackDocument({
+      _writers: { check: jest.fn(async () => false) },
+    });
+    await document.revokeUnacceptedInvitationMember(claimant);
+    expect(calls).toEqual(['removeReader']);
+  });
+
+  test.each([
+    [
+      'a reader with no local KEM binding',
+      { _readerKemPublicKeys: new Map(), _readerLeafIndices: new Map() },
+    ],
+    [
+      'a binding without a live leaf',
+      {
+        _beekem: { myLeafIndex: 0, findLeafByPublicKey: async () => undefined },
+      },
+    ],
+    [
+      'a binding that resolves to the local leaf',
+      { _beekem: { myLeafIndex: 2, findLeafByPublicKey: async () => 2 } },
+    ],
+    [
+      'a cached leaf that differs from the live leaf',
+      { _readerLeafIndices: new Map([[serializedClaimant, 4]]) },
+    ],
+    [
+      'a writer without an explicit reader row',
+      { _readers: { check: jest.fn(async () => false) } },
+    ],
+    ['a replica without a BeeKEM tree', { _beekemInitialized: false }],
+  ] as const)('leaves %s alone', async (_label, fields) => {
+    const { document, calls } = rollbackDocument(fields);
+    await document.revokeUnacceptedInvitationMember(claimant);
+    expect(calls).toEqual([]);
+  });
+
+  test('checks the binding only after earlier queued work commits', async () => {
+    const { document, calls } = rollbackDocument({
+      _mutationQueue: new InvitationMembershipQueue(),
       _readerKemPublicKeys: new Map(),
-      removeWriter,
-      removeReader,
+      _readerLeafIndices: new Map(),
+    });
+    const committed = deferred<void>();
+    const onboarding = document._runStateMutation(async () => {
+      await committed.promise;
+      document._readerKemPublicKeys.set(
+        serializedClaimant,
+        new Uint8Array(65).fill(4),
+      );
+      document._readerLeafIndices.set(serializedClaimant, 2);
     });
 
-    await document.revokeUnacceptedInvitationMember('claimant');
-    expect(removeWriter).not.toHaveBeenCalled();
-    expect(removeReader).not.toHaveBeenCalled();
+    const rollback = document.revokeUnacceptedInvitationMember(claimant);
+    await Promise.resolve();
+    committed.resolve();
+    await Promise.all([onboarding, rollback]);
+    expect(calls).toEqual(['removeWriter', 'removeReader']);
   });
 });
