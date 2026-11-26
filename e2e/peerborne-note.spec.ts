@@ -281,9 +281,14 @@ test('reports a failed note write and saves it after retry', async ({
 
 test('reports evicted storage and a replaced identity instead of retry advice', async ({
   baseURL,
+  browserName,
   context,
   page,
 }) => {
+  test.skip(
+    browserName !== 'chromium',
+    'Storage eviction is simulated through a Chromium-only CDP session.',
+  );
   const errors = failOnRuntimeErrors(page);
   page.on('dialog', (dialog) => void dialog.accept());
   const evicted =
