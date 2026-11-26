@@ -58,5 +58,5 @@ Every field in a physical key must be marked `required`; optional fields remain 
 - [Search indexing guide](https://peerborne.io/cookbook/search-indexing/)
 - [API reference](https://peerborne.io/reference/)
 - [Current limitations](https://peerborne.io/concepts/limitations/)
-- [Local and distributed indexing design](../../docs/indexing-design.md)
+- [Local and distributed indexing design](https://github.com/peerborne/peerborne/blob/main/docs/indexing-design.md)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)

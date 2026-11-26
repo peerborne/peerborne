@@ -30,7 +30,7 @@ merging, and malformed payloads. The browser example exercises a local encrypted
 document mutation. These do not establish live multi-peer Loro convergence,
 hostile-peer security, restart recovery, or long-running performance.
 
-- [Browser example](../../examples/integrations/README.md)
+- [Browser example](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md)
 - [Loro upstream documentation](https://www.loro.dev/docs/tutorial/get_started)
 - [Integration status](https://peerborne.io/reference/integration-status/)
 

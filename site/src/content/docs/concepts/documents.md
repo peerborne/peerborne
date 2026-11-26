@@ -25,10 +25,69 @@ await document.close();
 
 `peerborne` and `render` above belong to your application. For complete setup,
 use the [React workspace tutorial](../../getting-started/react-workspace/).
-Use `open()` for an existing document with its required trust and key material.
+Use `open()` for an existing document with its required trust and key material;
+see [Open existing documents](#open-existing-documents).
 The direct change API returns a promise: handle rejection before telling the
 user a save succeeded. A successful local operation is not a durable
 acknowledgment from every other replica.
+
+## Open existing documents
+
+`create()` founds a new document without querying peers. `open()` never creates
+one. It activates state without a network load only when the same document
+instance already holds restored state from `restoreCheckpoint()`.
+`peerborne.doc(path)` returns a new, unopened instance on each call, so the
+React hook's and Redux thunk's default `'open'` mode always loads from peers.
+
+A load from peers requires locally trusted configuration on the node:
+
+- `resolveLoadSecurityCommitments(documentPath)` returns the current
+  `LoadSecurityCommitments` tuple. Every load needs it, including the first,
+  and every peer that serves the load needs it too and must return the same
+  tuple.
+- `resolveTrustedDocumentWriters(documentPath)` returns the trusted writer
+  public keys when the instance has no writer ACL yet, which is always the case
+  for a fresh instance.
+
+When the load cannot proceed, `open()` rejects in one of two ways:
+
+- If no connected peer offers the document-load protocol (a relay does not),
+  it rejects with `No document state is available; use create() to authorize a
+  new document`.
+- Otherwise it resolves the trusted configuration before requesting any state.
+  Without `resolveLoadSecurityCommitments` it rejects with
+  `TrustedLoadSecurityCommitmentsError`; without
+  `resolveTrustedDocumentWriters` on a fresh instance it rejects with an error
+  naming that callback.
+
+Both values must come from an independently trusted application source, never
+from a peer's response:
+
+```ts
+import {
+  defaultBootstrapConfig,
+  defaultConfig,
+  type PeerborneConfig,
+} from '@peerborne/core';
+
+const config: PeerborneConfig = {
+  ...defaultConfig(defaultBootstrapConfig([relayMultiaddr])),
+  resolveTrustedDocumentWriters: (path) => trustedWritersFor(path),
+  resolveLoadSecurityCommitments: (path) => trustedCommitmentsFor(path),
+};
+await peerborne.initialize(config);
+```
+
+`trustedWritersFor` and `trustedCommitmentsFor` belong to your application. See
+[Initial-load quorum](../security/#initial-load-quorum) for the tuple fields and
+trust model.
+
+To give a document to another identity without this configuration, the founder
+creates it and issues an [invitation](../../cookbook/invitations/).
+`acceptInvitation()` needs neither resolver and returns an open document. Use
+that instance directly, for example through
+`createDocumentStore(document, { manageLifecycle: false })`, instead of opening
+the path again.
 
 ## Paths are names, not credentials
 

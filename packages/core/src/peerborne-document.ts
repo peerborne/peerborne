@@ -44,7 +44,11 @@ import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
-import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipReceiveAdmission,
+  type SkippedFrameKind,
+} from './gossip-receive-admission.js';
+import { documentBytesEqual } from './internal/document-binary.js';
 import {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,
@@ -270,6 +274,11 @@ const loadCandidateResponders = new WeakMap<object, string>();
 // Stand-ins of the largest sizes a CID and a signature take in a frame.
 const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
 const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
+
+/** GossipSub publisher of a message, for per-sender receive admission. */
+function gossipSender(message: Message): string {
+  return message.type === 'signed' ? message.from.toString() : '';
+}
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -7598,6 +7607,23 @@ export class PeerborneDocument<
     }
   }
 
+  /** Cheap authenticity check for a frame skipped by receive admission. */
+  private async _checkSkippedGossipFrame(
+    frame: Uint8Array,
+  ): Promise<SkippedFrameKind | undefined> {
+    const keyEnd = this._keychainProvider.keyIDLength;
+    const [currentKeyId] = await this._keychain.current();
+    if (
+      currentKeyId === undefined ||
+      frame.byteLength <= keyEnd ||
+      !documentBytesEqual(frame.subarray(0, keyEnd), currentKeyId)
+    )
+      return undefined;
+    const content = await this._decryptGossipFrame(frame);
+    if (content === undefined) return undefined;
+    return isSyncRequest(content) ? 'request' : 'sync';
+  }
+
   private _decryptGossipFrame(frame: Uint8Array) {
     const keyEnd = this._keychainProvider.keyIDLength;
     const nonceEnd = keyEnd + this._authProvider.nonceBytes;
@@ -7680,61 +7706,77 @@ export class PeerborneDocument<
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
-    const receiveAdmission = new GossipReceiveAdmission();
+    // A frame skipped for capacity is kept only if it decrypts under the
+    // current document key, so non-members and members holding only a
+    // retired epoch key cannot displace a member's frame.
+    const receiveAdmission = new GossipReceiveAdmission(
+      undefined,
+      undefined,
+      (frame) => this._checkSkippedGossipFrame(frame),
+    );
     this._gossipReceiveAdmission = receiveAdmission;
+    const reportReceiveFailure = () => {
+      if (receiveAdmission.active)
+        console.error('Inbound sync message handling failed');
+    };
+    const receiveFrame = async (frame: Uint8Array): Promise<void> => {
+      const rawContent = await this._decryptGossipFrame(frame);
+      if (!rawContent || !receiveAdmission.active) return;
+
+      if (isSyncRequest(rawContent)) {
+        const request = decodeSyncRequest(rawContent);
+        if (request) {
+          await this._handleSyncRequest(
+            request,
+            () => this._subscribed && receiveAdmission.active,
+          );
+        }
+        return;
+      }
+
+      const message = snapshotSyncMessageForContext<ChangesType>(
+        this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+        'ordinary-sync-v1',
+      );
+      if (message.documentId !== this.documentPath) return;
+
+      await this._runStateMutation(async () => {
+        if (!receiveAdmission.active) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!receiveAdmission.active)
+                throw new Error('GossipSub receive subscription closed');
+            },
+            // A reply carrying a snapshot is not a frame the author
+            // published, so it must not trigger size-bound compaction.
+            frameBytes:
+              message.snapshot === undefined ? rawContent.byteLength : undefined,
+          },
+        );
+      });
+    };
+    // A kept frame is retried through the full receive path, which repeats
+    // every validator check before applying it.
+    const retryFrame = (frame: Uint8Array) =>
+      receiveFrame(frame).catch(reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
       void receiveAdmission
-        .run(rawMessage.detail.data, async (frame) => {
-          const rawContent = await this._decryptGossipFrame(frame);
-          if (!rawContent || !receiveAdmission.active) return;
-
-          if (isSyncRequest(rawContent)) {
-            const request = decodeSyncRequest(rawContent);
-            if (request) {
-              await this._handleSyncRequest(
-                request,
-                () => this._subscribed && receiveAdmission.active,
-              );
-            }
-            return;
-          }
-
-          const message = snapshotSyncMessageForContext<ChangesType>(
-            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-            'ordinary-sync-v1',
-          );
-          if (message.documentId !== this.documentPath) return;
-
-          await this._runStateMutation(async () => {
-            if (!receiveAdmission.active) return;
-            await this._syncUnlocked(
-              message,
-              true,
-              'ordinary-sync-v1',
-              undefined,
-              false,
-              undefined,
-              {
-                assertStillActive: () => {
-                  if (!receiveAdmission.active)
-                    throw new Error('GossipSub receive subscription closed');
-                },
-                // A reply carrying a snapshot is not a frame the author
-                // published, so it must not trigger size-bound compaction.
-                frameBytes:
-                  message.snapshot === undefined
-                    ? rawContent.byteLength
-                    : undefined,
-              },
-            );
-          });
-        })
-        .catch(() => {
-          if (receiveAdmission.active)
-            console.error('Inbound sync message handling failed');
-        });
+        .run(
+          rawMessage.detail.data,
+          receiveFrame,
+          retryFrame,
+          gossipSender(rawMessage.detail),
+        )
+        .catch(reportReceiveFailure);
     };
 
     // All registration and subscription steps are inside try/catch so that
@@ -7852,6 +7894,8 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
+                retryFrame,
+                gossipSender(message),
               );
               return receiveAdmission.active
                 ? (result ?? TopicValidatorResult.Ignore)

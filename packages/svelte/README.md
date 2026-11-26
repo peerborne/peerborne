@@ -1,7 +1,8 @@
 # `@peerborne/svelte`
 
 Svelte readable bindings over `@peerborne/store`. Alpha source workspace;
-unpublished. Requires Svelte 5.
+unpublished. The binding uses only `readable` from `svelte/store` and supports
+Svelte 4 and 5. The example below uses Svelte 5 runes.
 
 ```svelte
 <script>
@@ -24,5 +25,5 @@ browser example; a complete SvelteKit application is not an acceptance target
 yet.
 
 See the [framework guide](https://peerborne.io/cookbook/framework-integrations/)
-and [runnable component](../../examples/integrations/src/App.svelte). MIT
+and [runnable component](https://github.com/peerborne/peerborne/blob/main/examples/integrations/src/App.svelte). MIT
 licensed; not production-ready.

@@ -12,10 +12,13 @@ publication behavior.
 Do not bind an editor directly to `peerborneDocument.document`: ordinary editor
 mutations would bypass Peerborne's change capture.
 
+The bridge needs an open document. This example creates a new one:
+
 ```ts
 import { createYjsEditorBridge } from '@peerborne/yjs/editor';
 
-await document.open();
+const document = peerborne.doc('/notes/launch-plan');
+await document.create();
 const bridge = createYjsEditorBridge(document, {
   onError: () => { showEditorError(); },
 });
@@ -28,6 +31,16 @@ await bridge.flush();
 await bridge.destroy();
 await document.close();
 ```
+
+A collaborator binds the open document that
+[`acceptInvitation()`](../invitations/) returns. Without a restored checkpoint,
+`document.open()` loads the path from peers and requires
+`resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the
+node configuration. If no connected peer can serve the path (a relay cannot),
+it rejects with `No document state is available…`; if one can and
+`resolveLoadSecurityCommitments` is missing, it rejects with
+`TrustedLoadSecurityCommitmentsError`. See
+[Open existing documents](../../concepts/documents/#open-existing-documents).
 
 Remote document notifications update the mirror without generating another
 local write. Local updates are queued in order. `flush()` and `destroy()` reject

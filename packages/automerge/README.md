@@ -15,8 +15,14 @@ Build collaborative applications with Automerge's JSON-like CRDT documents. This
 Use this adapter for Automerge-backed collaborative documents. It works with:
 
 - `@peerborne/core`, included as a package dependency
-- `@automerge/automerge`, required as a peer dependency
+- `@automerge/automerge` `^3.5.0`, required as a peer dependency
 - optional React or Redux bindings for application state
+
+The keychain and ACL validators accept a canonical change only when the local
+Automerge release re-encodes it to the received bytes, so peers must use
+releases that encode those changes identically. A repository test pins the
+encoder's canonical seed and append hashes, so a release that changes them
+fails CI.
 
 ## Entry point
 

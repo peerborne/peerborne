@@ -44,7 +44,7 @@
     "@peerborne/store": "workspace:^"
   },
   "peerDependencies": {
-    "svelte": "^5.59.1"
+    "svelte": "^4.0.0 || ^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.7",

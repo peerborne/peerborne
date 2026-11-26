@@ -21,6 +21,30 @@ function captureTrace(): string | undefined {
   return undefined;
 }
 
+function requirePeerborneState<RootStateType, State>(
+  selectPeerborneState: (rootState: RootStateType) => State,
+  rootState: RootStateType,
+): State {
+  const state = selectPeerborneState(rootState);
+  const { node, documents, peers } = (state ?? {}) as Partial<
+    Record<'node' | 'documents' | 'peers', unknown>
+  >;
+  if (
+    typeof node !== 'object' ||
+    node === null ||
+    typeof documents !== 'object' ||
+    documents === null ||
+    !Array.isArray(peers)
+  ) {
+    throw new TypeError(
+      'Peerborne Redux state was not found. The default selector expects ' +
+        'peerborneReducer at the root of the store; pass a selector such as ' +
+        '(state) => state.peerborne when the reducer is nested.',
+    );
+  }
+  return state;
+}
+
 export function initializeAsync<
   DocType,
   ChangesType,
@@ -76,7 +100,7 @@ export function initializeAsync<
     config = defaultConfig(defaultBootstrapConfig([]));
   }
   return async (dispatch, getState) => {
-    const { node } = selectPeerborneState(getState());
+    const { node } = requirePeerborneState(selectPeerborneState, getState());
     node.subscribeToPeerConnect('peer-connect', (address: string) => {
       dispatch(peerConnect(address, captureTrace()));
     });
@@ -165,14 +189,7 @@ export function connectAsync<
   > = defaultStateSelector,
 ): ThunkAction<Promise<void>, RootStateType, unknown, ConnectAction> {
   return async (dispatch, getState) => {
-    const { node } = selectPeerborneState(getState());
-    if (!node) {
-      console.warn(
-        'Node not initialized yet! Unable to connect to:',
-        addresses,
-      );
-      return;
-    }
+    const { node } = requirePeerborneState(selectPeerborneState, getState());
     await node.connect(addresses);
     dispatch(connect(addresses, captureTrace()));
   };
@@ -238,16 +255,9 @@ export function openDocumentAsync<
   | SyncDocumentAction<DocType>
 > {
   return async (dispatch, getState) => {
-    const { node } = selectPeerborneState(getState());
-    if (!node) {
-      console.warn(
-        'Node not initialized yet! Unable to open document:',
-        documentId,
-      );
-      return null;
-    }
+    const { node } = requirePeerborneState(selectPeerborneState, getState());
     // Close previous document if one is already open with this ID.
-    const { documents } = selectPeerborneState(getState());
+    const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {
       const prevRef = documents[documentId].documentRef;
       prevRef.unsubscribe(documentId);
@@ -363,7 +373,7 @@ export function closeDocumentAsync<
   CloseDocumentAction | SyncDocumentAction<DocType>
 > {
   return async (dispatch, getState) => {
-    const { documents } = selectPeerborneState(getState());
+    const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {
       const documentRef = documents[documentId].documentRef;
       documentRef.unsubscribe(documentId);
@@ -435,7 +445,7 @@ export function changeDocumentAsync<
   ChangeDocumentAction<DocType>
 > {
   return async (dispatch, getState) => {
-    const { documents } = selectPeerborneState(getState());
+    const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {
       const documentRef = documents[documentId].documentRef;
       const changePromise = documentRef.change(changeFn, message);
