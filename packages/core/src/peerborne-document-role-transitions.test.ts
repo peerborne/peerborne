@@ -423,6 +423,7 @@ describe('membership call-boundary snapshots', () => {
       new Uint8Array(65).fill(4),
       'reader',
       undefined,
+      undefined,
     );
   });
 

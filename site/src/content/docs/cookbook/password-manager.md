@@ -73,8 +73,8 @@ changing the ACL. Invitations require the attested Automerge capacity profile,
 which the bundled Yjs adapter does not declare, so this Yjs example cannot
 share a vault.
 
-The example restores its persistent KEM identity before opening each document
-and shows its public half on the Settings page. Its permissions table lists
+The example restores its persistent KEM identity before opening each document,
+because checkpoints of BeeKEM state need it. Its permissions table lists
 the members and changes the role of an existing member; entering a key that is
 not already a member shows that the example cannot add one. Its Chromium tests
 cover that refusal and the last-editor guard.

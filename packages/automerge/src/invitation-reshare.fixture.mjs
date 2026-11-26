@@ -30,6 +30,14 @@ import {
 for (const method of ['log', 'info', 'debug', 'warn'])
   console[method] = () => {};
 
+const wallClock = Date.now.bind(Date);
+let clockSkewMs = 0;
+Date.now = () => wallClock() + clockSkewMs;
+const leaveRemaining = (offer, remainingMs) => {
+  clockSkewMs += offer.expiresAtMs - Date.now() - remainingMs;
+};
+const unstored = async () => {};
+
 async function until(label, predicate, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -202,6 +210,7 @@ test('addReader rejects a new identity without consuming the collaborator slot',
   const offer = await document.createInvitation({
     role: 'reader',
     rendezvous: [founder.circuit],
+    beforeAcceptance: unstored,
   });
   const joined = await recipient.swarm.acceptInvitation(offer, recipient.kem);
   await until('invited reader state', () => joined.document?.body === 'shared');
@@ -219,10 +228,12 @@ test('a founder re-shares after revoking its only collaborator', async (t) => {
   const staleOffer = await document.createInvitation({
     role: 'reader',
     rendezvous,
+    beforeAcceptance: unstored,
   });
   const firstOffer = await document.createInvitation({
     role: 'editor',
     rendezvous,
+    beforeAcceptance: unstored,
   });
 
   const former = await removed.swarm.acceptInvitation(firstOffer, removed.kem);
@@ -239,7 +250,11 @@ test('a founder re-shares after revoking its only collaborator', async (t) => {
   );
 
   await assert.rejects(
-    document.createInvitation({ role: 'reader', rendezvous }),
+    document.createInvitation({
+      role: 'reader',
+      rendezvous,
+      beforeAcceptance: unstored,
+    }),
     /requires exactly one founder writer/,
   );
   await document.removeWriter(removed.identity.publicKey);
@@ -254,7 +269,11 @@ test('a founder re-shares after revoking its only collaborator', async (t) => {
   );
   assert.equal(replacement.swarm._documentRegistry.has(path), false);
 
-  const offer = await document.createInvitation({ role: 'editor', rendezvous });
+  const offer = await document.createInvitation({
+    role: 'editor',
+    rendezvous,
+    beforeAcceptance: unstored,
+  });
   const joined = await replacement.swarm.acceptInvitation(
     offer,
     replacement.kem,
@@ -297,45 +316,37 @@ test('a founder re-shares after revoking its only collaborator', async (t) => {
   );
 });
 
-test('a founder that persists before acceptance can revoke the collaborator after a crash', async (t) => {
+test('a founder restored from its acceptance checkpoint revokes the collaborator and re-shares', async (t) => {
   const path = `/reshare/crash-${crypto.randomUUID()}`;
   const [founder, member, join] = await network(t, path, 2);
   const document = await founded(founder, path, 'before crash');
-  await assert.rejects(
-    document.createInvitation({
-      role: 'editor',
-      rendezvous: [founder.circuit],
-      beforeAcceptance: 'persist',
-    }),
-    TypeError,
-  );
+  for (const beforeAcceptance of [undefined, 'persist']) {
+    await assert.rejects(
+      document.createInvitation({
+        role: 'editor',
+        rendezvous: [founder.circuit],
+        beforeAcceptance,
+      }),
+      TypeError,
+    );
+  }
   let accepted = false;
-  let attempts = 0;
   let saved;
   const offer = await document.createInvitation({
     role: 'editor',
     rendezvous: [founder.circuit],
     beforeAcceptance: async () => {
-      attempts++;
       assert.equal(accepted, false);
       assert.equal(
         await document._readers.check(member.identity.publicKey),
         true,
       );
-      if (attempts === 1) throw new Error('storage unavailable');
       saved = await document.exportCheckpoint();
     },
   });
-
-  await assert.rejects(
-    member.swarm.acceptInvitation(offer, member.kem),
-    /Unable to accept invitation/,
-  );
-  assert.equal(member.swarm._documentRegistry.has(path), false);
   const joined = await member.swarm.acceptInvitation(offer, member.kem);
   accepted = true;
   await until('member state', () => joined.document?.body === 'before crash');
-  assert.equal(attempts, 2);
 
   await founder.swarm.heliaNode.stop();
   const restarted = await join({
@@ -361,21 +372,13 @@ test('a founder that persists before acceptance can revoke the collaborator afte
   await restored.change((draft) => {
     draft.body = 'after revocation';
   });
-  await delay(1500);
-  assert.equal(joined.document.body, 'before crash');
 
-  const revoked = await restored.exportCheckpoint();
-  await restarted.swarm.heliaNode.stop();
-  const reopened = await join({ identity: founder.identity, kem: founder.kem });
-  const resumed = reopened.swarm.doc(path);
-  await resumed.setKemKeyPair(founder.kem);
-  await resumed.restoreCheckpoint(revoked);
-  await resumed.open();
   const replacement = await join();
   const shared = await replacement.swarm.acceptInvitation(
-    await resumed.createInvitation({
+    await restored.createInvitation({
       role: 'reader',
-      rendezvous: [reopened.circuit],
+      rendezvous: [restarted.circuit],
+      beforeAcceptance: unstored,
     }),
     replacement.kem,
   );
@@ -384,5 +387,191 @@ test('a founder that persists before acceptance can revoke the collaborator afte
     () => shared.document?.body === 'after revocation',
   );
   assert.equal(await holdsKey(shared, epoch), true);
+  await restored.change((draft) => {
+    draft.body = 'shared again';
+  });
+  await until(
+    'replacement edit',
+    () => shared.document.body === 'shared again',
+  );
+  await delay(1000);
   assert.equal(joined.document.body, 'before crash');
+});
+
+test('an exact retry completes a committed membership inside the last 30 seconds', async (t) => {
+  const path = `/reshare/late-retry-${crypto.randomUUID()}`;
+  const [founder, member] = await network(t, path, 2);
+  const document = await founded(founder, path, 'late');
+  let attempts = 0;
+  const offer = await document.createInvitation({
+    role: 'editor',
+    rendezvous: [founder.circuit],
+    expiresInMs: 60_000,
+    beforeAcceptance: async () => {
+      attempts++;
+      if (attempts > 1) return;
+      leaveRemaining(offer, 6_000);
+      throw new Error('storage unavailable');
+    },
+  });
+
+  await assert.rejects(
+    member.swarm.acceptInvitation(offer, member.kem),
+    /Unable to accept invitation/,
+  );
+  assert.equal(member.swarm._documentRegistry.has(path), false);
+  assert.equal(await document._writers.check(member.identity.publicKey), true);
+  assert.ok(offer.expiresAtMs - Date.now() < 30_000);
+
+  const joined = await member.swarm.acceptInvitation(offer, member.kem);
+  await until('late member state', () => joined.document?.body === 'late');
+  assert.equal(attempts, 2);
+
+  await delay(7_000);
+  assert.ok(Date.now() > offer.expiresAtMs);
+  assert.equal(await document._writers.check(member.identity.publicKey), true);
+  await document.change((draft) => {
+    draft.body = 'after expiry';
+  });
+  await until(
+    'member after expiry',
+    () => joined.document.body === 'after expiry',
+  );
+});
+
+test('an acceptance that is never produced is revoked when its offer expires', async (t) => {
+  const path = `/reshare/unsent-${crypto.randomUUID()}`;
+  const [founder, member] = await network(t, path, 2);
+  const document = await founded(founder, path, 'unsent');
+  const offer = await document.createInvitation({
+    role: 'editor',
+    rendezvous: [founder.circuit],
+    expiresInMs: 60_000,
+    beforeAcceptance: async () => {
+      leaveRemaining(offer, 2_000);
+      throw new Error('storage unavailable');
+    },
+  });
+
+  await assert.rejects(
+    member.swarm.acceptInvitation(offer, member.kem),
+    /Unable to accept invitation/,
+  );
+  assert.equal(await document._readers.check(member.identity.publicKey), true);
+  await assert.rejects(
+    document.createInvitation({
+      role: 'reader',
+      rendezvous: [founder.circuit],
+      beforeAcceptance: unstored,
+    }),
+    /requires exactly one founder writer/,
+  );
+  const [unsentEpoch] = await document._keychain.current();
+
+  await until(
+    'unsent membership revocation',
+    async () =>
+      (await document._readers.check(member.identity.publicKey)) !== true &&
+      document._beekem.hasOnlyLocalLiveLeaf(),
+    10_000,
+  );
+  assert.notEqual(
+    hex((await document._keychain.current())[0]),
+    hex(unsentEpoch),
+  );
+
+  const joined = await member.swarm.acceptInvitation(
+    await document.createInvitation({
+      role: 'reader',
+      rendezvous: [founder.circuit],
+      beforeAcceptance: unstored,
+    }),
+    member.kem,
+  );
+  await until(
+    're-invited member state',
+    () => joined.document?.body === 'unsent',
+  );
+});
+
+test('a removal that races the acceptance withholds it from the claimant', async (t) => {
+  const path = `/reshare/race-${crypto.randomUUID()}`;
+  const [founder, member] = await network(t, path, 2);
+  const document = await founded(founder, path, 'raced');
+  const guard = member.swarm._recipientInvitationReplayGuard;
+  const observeAcceptance = guard.observeAcceptance.bind(guard);
+  let received = 0;
+  guard.observeAcceptance = (...args) => {
+    received++;
+    return observeAcceptance(...args);
+  };
+  const remove = async () => {
+    await document.removeWriter(member.identity.publicKey);
+    await document.removeReader(member.identity.publicKey);
+  };
+  const process = founder.swarm._processInvitationJoin.bind(founder.swarm);
+  const outcomes = [];
+  let raceWriting = false;
+  founder.swarm._processInvitationJoin = async (...args) => {
+    let acceptance;
+    try {
+      acceptance = await process(...args);
+    } catch (error) {
+      outcomes.push('withheld');
+      throw error;
+    }
+    outcomes.push('produced');
+    if (raceWriting) {
+      raceWriting = false;
+      await remove();
+    }
+    return acceptance;
+  };
+
+  const signer = founder.swarm._invitationSignatureProvider.bind(founder.swarm);
+  let raceSigning = false;
+  founder.swarm._invitationSignatureProvider = () => {
+    const provider = signer();
+    return {
+      ...provider,
+      sign: async (data, key) => {
+        if (raceSigning) {
+          raceSigning = false;
+          await remove();
+        }
+        return provider.sign(data, key);
+      },
+    };
+  };
+  const signingOffer = await document.createInvitation({
+    role: 'editor',
+    rendezvous: [founder.circuit],
+    beforeAcceptance: unstored,
+  });
+  raceSigning = true;
+  await assert.rejects(
+    member.swarm.acceptInvitation(signingOffer, member.kem),
+    /Unable to accept invitation/,
+  );
+  assert.equal(raceSigning, false);
+  assert.deepEqual(outcomes, ['withheld']);
+  assert.equal(received, 0);
+  assert.equal(document._beekem.hasOnlyLocalLiveLeaf(), true);
+
+  const writingOffer = await document.createInvitation({
+    role: 'editor',
+    rendezvous: [founder.circuit],
+    beforeAcceptance: unstored,
+  });
+  raceWriting = true;
+  await assert.rejects(
+    member.swarm.acceptInvitation(writingOffer, member.kem),
+    /Unable to accept invitation/,
+  );
+  assert.equal(raceWriting, false);
+  assert.deepEqual(outcomes, ['withheld', 'produced']);
+  assert.equal(received, 0);
+  assert.equal(member.swarm._documentRegistry.has(path), false);
+  assert.equal(await document._readers.check(member.identity.publicKey), false);
+  assert.equal(document._beekem.hasOnlyLocalLiveLeaf(), true);
 });

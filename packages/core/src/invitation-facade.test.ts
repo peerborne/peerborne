@@ -147,13 +147,11 @@ describe('public invitation facade', () => {
       document,
     );
 
-    const creating = peerborne.createInvitationForDocument(
-      document as never,
-      {
-        role: 'reader',
-        rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
-      },
-    );
+    const creating = peerborne.createInvitationForDocument(document as never, {
+      role: 'reader',
+      rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
+      beforeAcceptance: async () => {},
+    });
     await signStarted.promise;
     (peerborne as any)._documentRegistry.delete(document.documentPath);
     signature.resolve(new Uint8Array(64).fill(7));
@@ -204,6 +202,7 @@ describe('public invitation facade', () => {
       peerborne.createInvitationForDocument(document as never, {
         role: 'reader',
         rendezvous: ['/ip4/127.0.0.1/tcp/4001'],
+        beforeAcceptance: async () => {},
       }),
     );
     await bothSigning.promise;

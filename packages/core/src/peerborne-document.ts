@@ -1127,9 +1127,9 @@ export class PeerborneDocument<
   // `_evaluateAndApplyBeeKEMWelcome`). When `undefined`, sealed Welcomes
   // addressed to us cannot be opened and are dropped (the recipient needs a
   // fresh Welcome after installing its KEM key pair). The application is
-  // responsible for plumbing in a stable KEM key pair via
-  // `setKemKeyPair` and sharing the matching raw public key with inviters
-  // out-of-band so they can pass it to `addReader`.
+  // responsible for plumbing in a stable KEM key pair via `setKemKeyPair`.
+  // An invitation recipient passes its key pair to `acceptInvitation`, which
+  // installs it; the founder's pair seeds BeeKEM leaf 0.
   private _kemKeyPair: CryptoKeyPair | undefined;
 
   // Cached raw SEC1-uncompressed bytes for `_kemKeyPair.publicKey`,
@@ -1141,13 +1141,11 @@ export class PeerborneDocument<
   private _kemPublicKeyRaw: Uint8Array | undefined;
 
   /**
-   * Install the recipient-side ECDH (P-256) key pair used to open
-   * incoming BeeKEM Welcome sealed payloads. The application is
-   * responsible for persisting and re-supplying this key pair across
-   * sessions; the matching raw public key (see
-   * `getKemPublicKeyRaw`) must be communicated out-of-band to any
-   * writer who will invite this user, so they can pass it to
-   * `addReader(reader, readerKemPublicKey)`.
+   * Install the ECDH (P-256) key pair that seeds the founder's BeeKEM leaf
+   * and opens BeeKEM Welcome sealed payloads addressed to this user. The
+   * application is responsible for persisting and re-supplying this key pair
+   * across sessions. A founder installs it before `createInvitation`; an
+   * invitation recipient supplies its pair to `acceptInvitation` instead.
    *
    * Idempotent: calling with the same key pair more than once is
    * fine. Pass `undefined` to clear (subsequent Welcomes will be
@@ -1201,8 +1199,7 @@ export class PeerborneDocument<
   /**
    * Returns the raw SEC1-uncompressed bytes (65 bytes) of the
    * installed ECDH public key, or `undefined` if no key pair has been
-   * set via `setKemKeyPair`. The bytes are what inviters pass to
-   * `addReader(reader, readerKemPublicKey)`.
+   * set via `setKemKeyPair`.
    *
    * The raw bytes are cached on `setKemKeyPair`, so this is a
    * synchronous lookup. A defensive copy of the cached `Uint8Array` is
@@ -7588,11 +7585,11 @@ export class PeerborneDocument<
           : checkpointDecode(state.invitationEpoch);
       const restoredFounder =
         state.invitationEpoch === null &&
-        (beekem === null ||
-          (beekem.myLeafIndex === 0 && beekem.hasOnlyLocalLiveLeaf())) &&
-        (await writers.users()).length === 1 &&
-        (await readers.users()).length === 0 &&
-        (await writers.check(this._userPublicKey)) === true;
+        (await writers.check(this._userPublicKey)) === true &&
+        (beekem === null
+          ? (await writers.users()).length === 1 &&
+            (await readers.users()).length === 0
+          : beekem.myLeafIndex === 0);
       this._document = document;
       this._readers = readers;
       this._writers = writers;
@@ -9564,15 +9561,15 @@ export class PeerborneDocument<
 
   /**
    * Grant write authorization to an existing explicit reader. Users are
-   * identified by their public keys. Call `addReader()` before promoting a new
-   * writer so a later `removeWriter()` can safely return them to read-only
-   * access without misrepresenting retained document-key access as revocation.
+   * identified by their public keys. The target must already be a reader,
+   * normally through a `reader` invitation, so a later `removeWriter()` can
+   * safely return them to read-only access without misrepresenting retained
+   * document-key access as revocation.
    *
    * Promotion also requires the target's identity-bound reader KEM public key
-   * and a matching live BeeKEM leaf. That binding is recorded in memory when
-   * this document instance adds the reader; readers added before this
-   * instance was opened cannot be promoted. Requires
-   * `AuthProvider.serializePublicKey`.
+   * and a matching live BeeKEM leaf. The founder document records that binding
+   * when the invitation onboards the reader, and its checkpoints carry it
+   * across restarts. Requires `AuthProvider.serializePublicKey`.
    *
    * The local ACL commits only after GossipSub publication resolves. A rejected
    * publish rolls back local DAG bookkeeping, but transport rejection is
@@ -10152,6 +10149,9 @@ export class PeerborneDocument<
    * Only an exact, same-process retry is eligible to complete and attest that
    * state. It publishes only the membership deltas that are still missing;
    * committed ACL nodes reach the recipient through the signed bootstrap tree.
+   * `assertCanMutate` guards the first membership mutation. `assertCanContinue`
+   * guards the remaining checkpoints and defaults to `assertCanMutate`, so a
+   * retry whose membership is already committed can use a weaker guard.
    *
    * @internal
    */
@@ -10160,6 +10160,7 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    assertCanContinue: (() => void) | undefined = assertCanMutate,
   ): Promise<InvitationBootstrapBundle> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
@@ -10181,6 +10182,7 @@ export class PeerborneDocument<
         stableReaderKemPublicKey,
         role,
         assertCanMutate,
+        assertCanContinue,
       );
     });
   }
@@ -10217,8 +10219,9 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    assertCanContinue?: () => void,
   ): Promise<InvitationBootstrapBundle> {
-    assertCanMutate?.();
+    assertCanContinue?.();
     assertInitialInvitationHistoryVisibility(this._historyVisibility);
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
@@ -10238,7 +10241,7 @@ export class PeerborneDocument<
         // Recheck after asynchronous capacity and topology preflight. The
         // one-shot guard passed below checks again immediately before the
         // first ACL or BeeKEM state writer, then admits the rest of that commit.
-        assertCanMutate?.();
+        assertCanContinue?.();
         return this._addReaderUnlocked(
           reader,
           serializedReader,
@@ -11918,6 +11921,29 @@ export class PeerborneDocument<
           'need explicit recipient-bound recovery or re-invitation.',
       );
     }
+  }
+
+  /**
+   * @internal Revoke an invitation claimant whose acceptance was never
+   * produced. It never received the document key from that invitation, so the
+   * revocation frees the collaborator slot. A claimant that is no longer a
+   * member is left alone.
+   */
+  public async revokeUnacceptedInvitationMember(
+    recipient: PublicKey,
+  ): Promise<void> {
+    const serialized = await requireSerializePublicKey(
+      this._authProvider,
+      'Invitation rollback',
+    )(recipient);
+    if (
+      (await retryACLConflict(() => this._readers.check(recipient))) !== true &&
+      !this._readerKemPublicKeys.has(serialized)
+    ) {
+      return;
+    }
+    await this.removeWriter(recipient);
+    await this.removeReader(recipient);
   }
 
   private async _assertKemPublicKeyAvailableForNewLeaf(

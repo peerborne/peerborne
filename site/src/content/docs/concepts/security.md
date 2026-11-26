@@ -108,6 +108,8 @@ await document.setKemKeyPair(kemKeyPair);
 const offer = await document.createInvitation({
   role: 'reader',
   rendezvous: [founderCircuitAddress],
+  // Store a checkpoint that records the new member before the key is released.
+  beforeAcceptance: async () => saveCheckpoint(await document.exportCheckpoint()),
 });
 
 // Promote an existing explicit reader to write access

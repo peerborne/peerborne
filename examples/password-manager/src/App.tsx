@@ -168,7 +168,6 @@ function App() {
                 <Settings
                   peerborne={session.peerborne}
                   publicKey={session.identity.signing.publicKey}
-                  kemKeyPair={session.identity.kem}
                 />
               ) : (
                 <Navigate to="/login" replace />

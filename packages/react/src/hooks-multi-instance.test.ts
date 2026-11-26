@@ -78,7 +78,7 @@ describe('multiple Peerborne instances at the same document path', () => {
     firstCapture.current.changeFn(firstChange, 'first change');
     secondCapture.current.changeFn(secondChange, 'second change');
     const readerKemPublicKey = new Uint8Array(65).fill(4);
-    await firstCapture.current.acl.addReader(
+    await firstCapture.current.acl.resendReaderWelcome(
       'first-new-reader',
       readerKemPublicKey,
     );

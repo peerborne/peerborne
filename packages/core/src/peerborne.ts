@@ -31,6 +31,7 @@ import {
   InMemoryInvitationAcceptanceCoordinator,
   invitationAcceptanceExpiresAt,
   assertInvitationProcessingWindow,
+  runInvitationBeforeAcceptance,
 } from './invitation-policy.js';
 import { withInvitationProtocolStream } from './invitation-catch-up.js';
 import {
@@ -141,14 +142,22 @@ export interface CreateInvitationOptions {
   expiresInMs?: number;
   /**
    * Runs after the claimant's membership is committed locally and before the
-   * acceptance that delivers the document key is signed and returned. Persist
-   * a local checkpoint here: if the founder stops after the claimant has the
+   * acceptance that delivers the document key is signed and returned. Store a
+   * local checkpoint here: if the founder stops after the claimant has the
    * key but before its membership is stored, a restored founder has no record
-   * of that collaborator and cannot revoke it. A rejection withholds the
-   * acceptance; the claimant's exact retry runs this again.
+   * of that collaborator and cannot revoke it. Peerborne cannot store the
+   * checkpoint itself, so every offer must supply this.
+   *
+   * It must settle within 10 seconds and before the offer expires. A rejection
+   * or timeout withholds the acceptance; the claimant's exact retry runs it
+   * again while the offer is unexpired. If no acceptance has been produced
+   * when the offer expires, the founder revokes the claimant's membership.
    */
-  beforeAcceptance?: () => Promise<void>;
+  beforeAcceptance: () => Promise<void>;
 }
+
+/** Let a retry that raced the offer's expiry settle before rolling back. */
+const UNSENT_ACCEPTANCE_ROLLBACK_GRACE_MS = 1_000;
 
 function bytesToHex(bytes: Uint8Array): string {
   let result = '';
@@ -561,11 +570,19 @@ export class Peerborne<
         DocumentKey
       >;
       readerRevocationCount: number;
-      beforeAcceptance?: () => Promise<void>;
+      beforeAcceptance: () => Promise<void>;
+      rollbackScheduled?: boolean;
       replayGuard: InMemoryInvitationReplayGuard;
       acceptanceCoordinator:
         InMemoryInvitationAcceptanceCoordinator<InvitationAcceptanceV1>;
     }
+  >();
+  private _unsentAcceptanceRollbacks = new Set<ReturnType<typeof setTimeout>>();
+  // Document -> claimant identity -> reader-revocation count when an
+  // acceptance for that claimant was produced.
+  private _producedInvitationAcceptances = new WeakMap<
+    object,
+    Map<string, number>
   >();
   private _recipientInvitationReplayGuard =
     new InMemoryInvitationReplayGuard();
@@ -674,6 +691,8 @@ export class Peerborne<
     // Outstanding online invitations are bound to the current libp2p
     // endpoint and in-memory replay state. Reinitialization invalidates them.
     this._invitationRegistry.clear();
+    for (const timer of this._unsentAcceptanceRollbacks) clearTimeout(timer);
+    this._unsentAcceptanceRollbacks.clear();
     this._recipientInvitationReplayGuard =
       new InMemoryInvitationReplayGuard();
     this._outboundInvitationRequests.clear();
@@ -844,21 +863,8 @@ export class Peerborne<
     }
 
     const { offer } = registration;
-    const assertRegistrationAvailable = (): void => {
-      if (
-        this._invitationRegistry.get(offerKey) !== registration ||
-        this._documentRegistry.get(registration.document.documentPath) !==
-          registration.document ||
-        registration.document.readerRevocationCount !==
-          registration.readerRevocationCount
-      ) {
-        if (this._invitationRegistry.get(offerKey) === registration) {
-          this._invitationRegistry.delete(offerKey);
-        }
-        throw new Error('Invitation offer is unavailable');
-      }
-      if (this.beekemForkStore) registration.document.assertBeeKEMForkAdmission();
-    };
+    const assertRegistrationAvailable = (): void =>
+      this._assertInvitationOfferAvailable(offerKey, registration);
     assertRegistrationAvailable();
     assertInvitationOfferUsable(offer);
     await assertInvitationJoinMatchesOffer(request, offer);
@@ -904,67 +910,166 @@ export class Peerborne<
         assertInvitationOfferUsable(offer);
       },
       async () => {
-        const assertCanMutate = (): void => {
-          assertRegistrationAvailable();
-          assertInvitationOfferUsable(offer);
-          assertInvitationProcessingWindow(offer.expiresAtMs);
-          if (signal?.aborted) {
-            throw signal.reason instanceof Error
-              ? signal.reason
-              : new Error('Invitation stream closed before onboarding started');
-          }
-        };
-        const bootstrap =
-          await registration.document.buildInvitationBootstrap(
+        try {
+          const acceptance = await this._buildInvitationAcceptance(
+            registration,
+            request,
+            requestDigest,
             recipientPublicKey,
-            request.recipientKemPublicKey,
-            offer.role,
-            assertCanMutate,
+            signatureProvider,
+            assertRegistrationAvailable,
+            signal,
           );
-        const { beforeAcceptance } = registration;
-        if (beforeAcceptance) {
-          await beforeAcceptance();
-          assertRegistrationAvailable();
+          const produced =
+            this._producedInvitationAcceptances.get(registration.document) ??
+            new Map<string, number>();
+          produced.set(
+            request.recipient,
+            registration.document.readerRevocationCount,
+          );
+          this._producedInvitationAcceptances.set(
+            registration.document,
+            produced,
+          );
+          return acceptance;
+        } catch (error) {
+          this._scheduleUnsentAcceptanceRollback(
+            registration,
+            request.recipient,
+            recipientPublicKey,
+          );
+          throw error;
         }
-        const now = Date.now();
-        const expiresAtMs = invitationAcceptanceExpiresAt(
-          offer.expiresAtMs,
-          now,
-        );
-        const unsignedAcceptance: UnsignedInvitationAcceptanceV1 = {
-          version: 1,
-          acceptanceId: crypto.getRandomValues(
-            new Uint8Array(INVITATION_ID_LENGTH),
-          ),
-          offerDigest: request.offerDigest,
-          requestDigest,
-          documentId: offer.documentId,
-          issuer: offer.issuer,
-          recipient: request.recipient,
-          recipientKemPublicKey: new Uint8Array(
-            request.recipientKemPublicKey,
-          ),
-          role: offer.role,
-          welcomeEpochId: bootstrap.welcomeEpochId,
-          sealedWelcome: bootstrap.sealedWelcome,
-          encryptedBootstrap: bootstrap.encryptedBootstrap,
-          issuedAtMs: now,
-          expiresAtMs,
-        };
-        const acceptance = await signInvitationAcceptance(
-          unsignedAcceptance,
-          this._userKey,
-          this._userPublicKey,
-          signatureProvider,
-        );
-        await registration.replayGuard.observeAcceptance(
-          offer,
-          request,
-          acceptance,
-        );
-        return acceptance;
       },
     );
+  }
+
+  private async _buildInvitationAcceptance(
+    registration: NonNullable<ReturnType<typeof this._invitationRegistry.get>>,
+    request: InvitationJoinRequestV1,
+    requestDigest: Uint8Array,
+    recipientPublicKey: PublicKey,
+    signatureProvider: ReturnType<typeof this._invitationSignatureProvider>,
+    assertRegistrationAvailable: () => void,
+    signal?: AbortSignal,
+  ): Promise<InvitationAcceptanceV1> {
+    const { offer } = registration;
+    const assertCanContinue = (): void => {
+      assertRegistrationAvailable();
+      assertInvitationOfferUsable(offer);
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new Error('Invitation stream closed before onboarding started');
+      }
+    };
+    const assertCanMutate = (): void => {
+      assertCanContinue();
+      assertInvitationProcessingWindow(offer.expiresAtMs);
+    };
+    const bootstrap = await registration.document.buildInvitationBootstrap(
+      recipientPublicKey,
+      request.recipientKemPublicKey,
+      offer.role,
+      assertCanMutate,
+      assertCanContinue,
+    );
+    await runInvitationBeforeAcceptance(
+      registration.beforeAcceptance,
+      offer.expiresAtMs,
+    );
+    assertRegistrationAvailable();
+    const now = Date.now();
+    const expiresAtMs = invitationAcceptanceExpiresAt(offer.expiresAtMs, now);
+    const unsignedAcceptance: UnsignedInvitationAcceptanceV1 = {
+      version: 1,
+      acceptanceId: crypto.getRandomValues(
+        new Uint8Array(INVITATION_ID_LENGTH),
+      ),
+      offerDigest: request.offerDigest,
+      requestDigest,
+      documentId: offer.documentId,
+      issuer: offer.issuer,
+      recipient: request.recipient,
+      recipientKemPublicKey: new Uint8Array(request.recipientKemPublicKey),
+      role: offer.role,
+      welcomeEpochId: bootstrap.welcomeEpochId,
+      sealedWelcome: bootstrap.sealedWelcome,
+      encryptedBootstrap: bootstrap.encryptedBootstrap,
+      issuedAtMs: now,
+      expiresAtMs,
+    };
+    const acceptance = await signInvitationAcceptance(
+      unsignedAcceptance,
+      this._userKey,
+      this._userPublicKey,
+      signatureProvider,
+    );
+    await registration.replayGuard.observeAcceptance(
+      offer,
+      request,
+      acceptance,
+    );
+    assertRegistrationAvailable();
+    return acceptance;
+  }
+
+  private _assertInvitationOfferAvailable(
+    offerKey: string,
+    expected = this._invitationRegistry.get(offerKey),
+  ): void {
+    const registration = this._invitationRegistry.get(offerKey);
+    if (
+      registration === undefined ||
+      registration !== expected ||
+      this._documentRegistry.get(registration.document.documentPath) !==
+        registration.document ||
+      registration.document.readerRevocationCount !==
+        registration.readerRevocationCount
+    ) {
+      if (registration !== undefined && registration === expected) {
+        this._invitationRegistry.delete(offerKey);
+      }
+      throw new Error('Invitation offer is unavailable');
+    }
+    if (this.beekemForkStore) registration.document.assertBeeKEMForkAdmission();
+  }
+
+  /**
+   * A failed attempt can leave the claimant's membership committed without an
+   * acceptance. Its exact retry can still complete it, so wait until the offer
+   * expires; if no acceptance was produced by then, revoke that membership.
+   */
+  private _scheduleUnsentAcceptanceRollback(
+    registration: NonNullable<ReturnType<typeof this._invitationRegistry.get>>,
+    recipientId: string,
+    recipient: PublicKey,
+  ): void {
+    if (registration.rollbackScheduled) return;
+    registration.rollbackScheduled = true;
+    const { document, offer } = registration;
+    const timer = setTimeout(
+      () => {
+        this._unsentAcceptanceRollbacks.delete(timer);
+        if (
+          this._documentRegistry.get(document.documentPath) !== document ||
+          this._producedInvitationAcceptances
+            .get(document)
+            ?.get(recipientId) === document.readerRevocationCount
+        ) {
+          return;
+        }
+        void document.revokeUnacceptedInvitationMember(recipient).catch(() => {
+          console.warn(
+            'Unable to revoke an invitation member whose acceptance was never sent',
+          );
+        });
+      },
+      Math.max(0, offer.expiresAtMs - Date.now()) +
+        UNSENT_ACCEPTANCE_ROLLBACK_GRACE_MS,
+    );
+    (timer as { unref?: () => void }).unref?.();
+    this._unsentAcceptanceRollbacks.add(timer);
   }
 
   /**
@@ -1291,13 +1396,9 @@ export class Peerborne<
               request,
               signal,
             );
-            if (this.beekemForkStore) {
-              const registration = this._invitationRegistry.get(bytesToHex(request.offerDigest));
-              if (!registration || this._documentRegistry.get(registration.document.documentPath) !== registration.document) {
-                throw new Error('Invitation offer is unavailable');
-              }
-              registration.document.assertBeeKEMForkAdmission();
-            }
+            this._assertInvitationOfferAvailable(
+              bytesToHex(request.offerDigest),
+            );
             await writeStream(stream, [
               encodeInvitationProtocolFrame(
                 encodeInvitationAcceptance(acceptance),
@@ -1399,6 +1500,13 @@ export class Peerborne<
     if (this._documentRegistry.get(document.documentPath) !== document) {
       throw new Error('Invitations can only be created for an open document');
     }
+    const readerRevocationCount = document.readerRevocationCount;
+    const beforeAcceptance = options.beforeAcceptance;
+    if (typeof beforeAcceptance !== 'function') {
+      throw new TypeError(
+        'Invitation creation requires a beforeAcceptance function that stores the founder checkpoint',
+      );
+    }
     if (this.config?.enableSigning === false) {
       throw new Error(
         'Initial-release invitations require application-level signing',
@@ -1424,13 +1532,6 @@ export class Peerborne<
     assertInvitationOfferLifetime(expiresInMs);
     if (options.role !== 'reader' && options.role !== 'editor') {
       throw new Error('Invitation role must be "reader" or "editor"');
-    }
-    const beforeAcceptance = options.beforeAcceptance;
-    if (
-      beforeAcceptance !== undefined &&
-      typeof beforeAcceptance !== 'function'
-    ) {
-      throw new TypeError('Invitation beforeAcceptance must be a function');
     }
 
     const signatureProvider = this._invitationSignatureProvider();
@@ -1470,7 +1571,7 @@ export class Peerborne<
     this._invitationRegistry.set(offerKey, {
       offer: registeredOffer,
       document,
-      readerRevocationCount: document.readerRevocationCount,
+      readerRevocationCount,
       beforeAcceptance,
       replayGuard: new InMemoryInvitationReplayGuard(),
       acceptanceCoordinator:

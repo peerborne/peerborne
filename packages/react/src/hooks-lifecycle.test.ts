@@ -677,7 +677,7 @@ describe('usePeerborneDocumentState return value', () => {
     expect(mockDoc.change).toHaveBeenCalledWith(mockChangeFn, 'test message');
   });
 
-  test('returns ACL helpers (readers, writers, addReader, etc.)', async () => {
+  test('returns ACL helpers (readers, writers, resendReaderWelcome, etc.)', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
     const captureRef = { current: null as any };
@@ -700,7 +700,7 @@ describe('usePeerborneDocumentState return value', () => {
 
     const acl = captureRef.current.acl;
     expect(acl).toBeDefined();
-    expect(typeof acl.addReader).toBe('function');
+    expect(typeof acl.resendReaderWelcome).toBe('function');
     expect(typeof acl.removeReader).toBe('function');
     expect(typeof acl.addWriter).toBe('function');
     expect(typeof acl.removeWriter).toBe('function');

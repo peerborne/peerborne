@@ -75,14 +75,19 @@ const offerBytes = encodeInvitationOffer(offer);
 // Encode offerBytes as unpadded Base64url in a URL fragment or QR code.
 ```
 
-`beforeAcceptance` runs after the recipient's membership is committed in the
-founder document and before the acceptance that carries the document key is
-signed. Store a checkpoint there. If the founder stops after the recipient has
-the key but before a checkpoint records it, a founder restored from an earlier
-checkpoint has no record of the collaborator and cannot remove it, while the
-collaborator keeps reading every later founder edit. A rejection from
-`beforeAcceptance` withholds the acceptance; the recipient's retry from the
-same process runs it again.
+Every offer requires `beforeAcceptance`. It runs after the recipient's
+membership is committed in the founder document and before the acceptance that
+carries the document key is signed. Store a checkpoint there. If the founder
+stops after the recipient has the key but before a checkpoint records it, a
+founder restored from an earlier checkpoint has no record of the collaborator
+and cannot remove it, while the collaborator keeps reading every later founder
+edit. Peerborne cannot store the checkpoint for the application.
+
+`beforeAcceptance` must settle within 10 seconds and before the offer expires.
+A rejection or timeout withholds the acceptance. The recipient's retry from the
+same process runs it again and can complete the committed membership until the
+offer expires. If no acceptance was produced by then, the founder removes the
+claimant and frees the slot.
 
 The default lifetime is 15 minutes, the minimum is 60 seconds, and the maximum
 is seven days. The founder must keep the same `Peerborne` process, open
@@ -140,6 +145,7 @@ await note.removeReader(editorSigningPublicKey);
 const replacement = await note.createInvitation({
   role: 'reader',
   rendezvous: [founderCircuitAddress],
+  beforeAcceptance: async () => saveCheckpoint(await note.exportCheckpoint()),
 });
 ```
 
@@ -168,14 +174,17 @@ freed slot. The removed member keeps whatever it already received.
   Add-side BeeKEM updates for larger groups are not implemented. The bounded
   invitation path supports the first collaborator, exact retries for that
   identity, and a replacement after the founder removes that collaborator.
-- Only the online founder process that created the document, or a founder
-  restored from a checkpoint that records no collaborator, can issue an
-  initial-release offer. Founder and recipient signing identities must be
-  distinct, and a `reader` acceptance is rejected if its bootstrap grants
-  writer access.
+- Only the founder that created the document, in its original process or
+  restored from its own checkpoint, can issue an initial-release offer, and
+  only while it has no collaborator. Founder and recipient signing identities
+  must be distinct, and a `reader` acceptance is rejected if its bootstrap
+  grants writer access.
 - A founder that stops during acceptance and restores a checkpoint from before
   it has no record of the new collaborator unless `beforeAcceptance` stored a
   newer checkpoint. A commitment pin does not close that window.
+- A founder that restarts while an unsent acceptance is pending loses the
+  timer that would remove its claimant at expiry. If its checkpoint recorded
+  the claimant, remove it with `removeWriter()` and `removeReader()`.
 - Offers and replay protection are in memory. An inviter restart invalidates
   outstanding links. A lost response can be retried only from the same
   recipient `Peerborne` process, which reuses the exact signed request. The

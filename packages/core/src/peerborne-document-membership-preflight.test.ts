@@ -703,3 +703,47 @@ describe('revoked founder tree replacement', () => {
     expect(document._invitationBeeKEMMemberCount()).toBe(2);
   });
 });
+
+describe('unaccepted invitation rollback', () => {
+  test.each([
+    ['an explicit reader', true, new Map()],
+    [
+      'a recorded KEM binding',
+      false,
+      new Map([['"claimant"', new Uint8Array(65)]]),
+    ],
+  ] as const)(
+    'demotes and revokes a claimant with %s',
+    async (_label, isReader, bindings) => {
+      const calls: string[] = [];
+      const document = fakeDocument({
+        _readers: { check: jest.fn(async () => isReader) },
+        _readerKemPublicKeys: bindings,
+        removeWriter: jest.fn(async () => {
+          calls.push('removeWriter');
+        }),
+        removeReader: jest.fn(async () => {
+          calls.push('removeReader');
+        }),
+      });
+
+      await document.revokeUnacceptedInvitationMember('claimant');
+      expect(calls).toEqual(['removeWriter', 'removeReader']);
+    },
+  );
+
+  test('leaves a claimant that is no longer a member alone', async () => {
+    const removeWriter = jest.fn();
+    const removeReader = jest.fn();
+    const document = fakeDocument({
+      _readers: { check: jest.fn(async () => false) },
+      _readerKemPublicKeys: new Map(),
+      removeWriter,
+      removeReader,
+    });
+
+    await document.revokeUnacceptedInvitationMember('claimant');
+    expect(removeWriter).not.toHaveBeenCalled();
+    expect(removeReader).not.toHaveBeenCalled();
+  });
+});
