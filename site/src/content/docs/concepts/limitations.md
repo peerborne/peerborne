@@ -169,9 +169,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   only by its signer. A change function that applies another document's
   operations, such as `Y.applyUpdate` of an unrelated `Y.Doc`, is refused,
   and a Yjs or Loro instance is then retired; seed such content under an
-  actor from `document.reserveActor()`. Coordinator-backed documents, the ACL
-  and keychain CRDTs, `enableSigning: false`, and devices that share one
-  signer are not covered.
+  actor from `document.reserveActor()`. Reader and writer ACL changes are
+  bound the same way. Coordinator-backed documents, the keychain CRDT,
+  `enableSigning: false`, and devices that share one signer are not covered.
   See [actor binding](../security/#crdt-actors-are-bound-to-change-signers).
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM restore depends on the application.** Checkpoints preserve the accepted generation. Rollback protection requires an independent current pin. Revoked readers retain access to content and keys they already received.

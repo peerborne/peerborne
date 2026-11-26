@@ -3,7 +3,9 @@ import test from 'node:test';
 import { MemoryBlockstore } from 'blockstore-core/memory';
 import { CID } from 'multiformats/cid';
 import {
+  aclActor,
   documentFixture,
+  publishACLChange,
   publishedMessage,
   receiveEncrypted,
   shuffled,
@@ -55,8 +57,9 @@ function isHeld(fixture, cid) {
 
 /**
  * Scenarios for ACL changes that arrive before the ACL history they depend
- * on. `orphan(acl, publicKey)` returns a well-formed ACL change for `acl`
- * that adds `publicKey` and depends on history no replica holds.
+ * on. `orphan(acl, publicKey, actor)` returns a well-formed ACL change for
+ * `acl`, made under its bound `actor`, that adds `publicKey` and depends on
+ * history no replica holds.
  */
 export function aclDependencyScenarios({ adapter, orphan, write }) {
   async function fixture(t, fixtures, options) {
@@ -117,9 +120,9 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
       const attacker = await join(t, fixtures, victor, mallory, 3);
       const before = await members(aclOf(victor, kind));
 
-      await attacker.document._makeChangeOnce(
-        await orphan(aclOf(attacker, kind), stranger.publicKey),
-        kind,
+      const actor = await aclActor(attacker, kind);
+      await publishACLChange(attacker, kind, (acl) =>
+        orphan(acl, stranger.publicKey, actor),
       );
       const orphanCid = attacker.document._lastSyncMessage.changeId;
       assert.equal(
@@ -193,16 +196,16 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
 
       const acl = aclOf(founder, kind);
       const operations = [
-        () => acl.add(keys[0].publicKey),
-        () => acl.add(keys[1].publicKey),
-        () => acl.remove(keys[0].publicKey),
-        () => acl.add(keys[2].publicKey),
-        () => acl.add(keys[3].publicKey),
-        () => acl.remove(keys[2].publicKey),
+        (acl) => acl.add(keys[0].publicKey),
+        (acl) => acl.add(keys[1].publicKey),
+        (acl) => acl.remove(keys[0].publicKey),
+        (acl) => acl.add(keys[2].publicKey),
+        (acl) => acl.add(keys[3].publicKey),
+        (acl) => acl.remove(keys[2].publicKey),
       ];
       const nodes = [];
       for (const operation of operations) {
-        await founder.document._makeChangeOnce(await operation(), kind);
+        await publishACLChange(founder, kind, operation);
         const message = await publishedMessage(founder);
         nodes.push(
           await signedMessage(founder, {
@@ -248,14 +251,10 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
       const replica = await join(t, fixtures, founder, founder.identity, 2);
       const acl = aclOf(founder, kind);
       for (const key of keys) {
-        await founder.document._makeChangeOnce(
-          await acl.add(key.publicKey),
-          kind,
-        );
+        await publishACLChange(founder, kind, (acl) => acl.add(key.publicKey));
       }
-      await founder.document._makeChangeOnce(
-        await acl.remove(keys[1].publicKey),
-        kind,
+      await publishACLChange(founder, kind, (acl) =>
+        acl.remove(keys[1].publicKey),
       );
       const message = await publishedMessage(founder);
       let held = 0;
@@ -276,14 +275,12 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
   // The founder adds a writer and then removes it. The removal depends on
   // the addition.
   async function revocation(fixture, revoked) {
-    await fixture.document._makeChangeOnce(
-      await fixture.document._writers.add(revoked.publicKey),
-      'writer',
+    await publishACLChange(fixture, 'writer', (acl) =>
+      acl.add(revoked.publicKey),
     );
     const addition = await publishedMessage(fixture);
-    await fixture.document._makeChangeOnce(
-      await fixture.document._writers.remove(revoked.publicKey),
-      'writer',
+    await publishACLChange(fixture, 'writer', (acl) =>
+      acl.remove(revoked.publicKey),
     );
     return { addition, removal: await publishedMessage(fixture) };
   }

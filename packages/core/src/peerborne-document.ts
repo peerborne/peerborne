@@ -120,9 +120,11 @@ import {
   CRDTActorBindingError,
   CRDTActorBindings,
   MAX_CRDT_ACTOR_BINDINGS,
+  aclChangeAuthorPayload,
   createCRDTActorNonce,
   crdtActorRegistrationPayload,
   crdtChangeAuthorPayload,
+  deriveACLActorDigest,
   decodeCRDTActorManifest,
   decodeCRDTChangeAuthor,
   deriveCRDTActorDigest,
@@ -250,11 +252,14 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import {
+  ACLActorUnavailableError,
   ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   mergeACLChanges,
   retryACLConflict,
+  type ACL,
+  type ACLActorBinding,
 } from './acl.js';
 import { HeldACLChanges, type HeldACLKind } from './held-acl-changes.js';
 import { KeychainProvider } from './keychain-provider.js';
@@ -1553,6 +1558,24 @@ export class PeerborneDocument<
   private readonly _changeAuthorKeys = new Map<string, Promise<PublicKey>>();
   private readonly _verifiedRegistrations = new Set<string>();
   private readonly _refusedChanges = new Set<string>();
+  // First-seen actor registrations of each ACL, which derives its actors in
+  // its own domain, and the actor this instance writes each ACL under.
+  private _aclActorBindings?: Record<HeldACLKind, CRDTActorBindings>;
+  private _aclActors?: Map<
+    HeldACLKind,
+    {
+      readonly acl: object;
+      readonly actor: string;
+      readonly registration: CRDTSignedActorRegistration;
+    }
+  >;
+  // Admission results of ACL changes already verified in this sync, keyed by
+  // the delivered change object.
+  private _admittedACL?: WeakMap<
+    object,
+    | { readonly changes: ChangesType; readonly signer: string }
+    | { readonly refusal: unknown }
+  >;
   private _writerAuthorities?: {
     readonly version: number;
     readonly authorities: Promise<ReadonlySet<string>>;
@@ -3684,7 +3707,12 @@ export class PeerborneDocument<
   ): Promise<void> {
     for (const { nodeId, kind, change } of entries) {
       assertStillActive?.();
-      if (change === undefined) continue;
+      // A recorded ACL node is already merged.
+      if (
+        change === undefined ||
+        (nodeId !== undefined && this._hashes?.has(nodeId) === true)
+      )
+        continue;
       if (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode) {
         await this._mergeRemoteACL(
           kind,
@@ -3700,12 +3728,14 @@ export class PeerborneDocument<
   }
 
   /**
-   * Merge a delivered ACL node. A node whose changes depend on ACL history
-   * this replica lacks is held outside the live ACL and noted as waiting, so
-   * it is not recorded and later deliveries still carry it. A merge that
-   * changes the same ACL then merges the held changes whose dependencies it
-   * may have supplied and records their nodes. Returns whether `changes` are
-   * in the live ACL.
+   * Merge a delivered ACL node. When the ACL binds actors, its authored
+   * envelope must verify first; a node that fails is merged nowhere and
+   * waits. A node whose changes depend on ACL history this replica lacks is
+   * held outside the live ACL, counted against its author, and noted as
+   * waiting, so it is not recorded and later deliveries still carry it. A
+   * merge that changes the same ACL then merges the held changes whose
+   * dependencies it may have supplied and records their nodes. Returns
+   * whether `changes` are in the live ACL.
    */
   private async _mergeRemoteACL(
     kind: HeldACLKind,
@@ -3715,16 +3745,30 @@ export class PeerborneDocument<
     assertStillActive?: () => void,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    let bare = changes;
+    let author = signer;
+    if (this._aclActorBinding(this._aclOf(kind)) !== undefined) {
+      try {
+        ({ changes: bare, signer: author } = await this._admitACLChange(
+          kind,
+          changes,
+        ));
+      } catch (error) {
+        if (!(error instanceof CRDTActorBindingError)) throw error;
+        if (cid !== undefined) this._noteWaiting(cid, kind, undefined, true);
+        return false;
+      }
+    }
     let changed: boolean | void;
     try {
-      changed = await this._mergeACL(kind, changes, assertStillActive, signal);
+      changed = await this._mergeACL(kind, bare, assertStillActive, signal);
     } catch (error) {
       if (!(error instanceof ACLMergeDependencyError)) throw error;
       if (cid === undefined) return false;
       // Hold without yielding: a concurrent merge that supplies the
       // dependency then finds this change held. One that already ran before
       // the hold is caught by `ready()`.
-      this._holdACLChange(kind, cid, changes, signer, error.ready);
+      this._holdACLChange(kind, cid, bare, author, error.ready);
       if (error.ready?.() !== false) {
         await this._mergeReadyHeldACL(kind, assertStillActive, signal);
       }
@@ -3787,19 +3831,18 @@ export class PeerborneDocument<
     for (let progressed = true; progressed;) {
       progressed = false;
       for (const entry of held.ready(kind)) {
-        if (!held.has(entry.cid)) continue;
+        // Taken out first, so a concurrent drain cannot merge it as well.
+        if (held.release(entry.cid) === undefined) continue;
         try {
           await this._mergeACL(kind, entry.changes, assertStillActive, signal);
         } catch (error) {
           if (error instanceof ACLMergeDependencyError) {
-            entry.ready = error.ready;
+            held.hold({ ...entry, ready: error.ready });
             continue;
           }
           if (!(error instanceof ACLMergeRejectedError)) throw error;
-          held.release(entry.cid);
           continue;
         }
-        held.release(entry.cid);
         this._recordRemoteChange(entry.cid, kind);
         this._trackTip(entry.cid, kind);
         (this._mergedHeldACL ??= []).push(entry.cid);
@@ -4321,8 +4364,12 @@ export class PeerborneDocument<
       'prepareAdd',
       'Writer ACL prepareAdd',
     );
-    const prepared = await retryACLConflict(() =>
-      documentReflectApply(prepareAdd.method, prepareAdd.receiver, [publicKey]),
+    const prepared = await this._stageACLChange(crdtWriterChangeNode, () =>
+      retryACLConflict(() =>
+        documentReflectApply(prepareAdd.method, prepareAdd.receiver, [
+          publicKey,
+        ]),
+      ),
     );
     return this._capturePreparedWriterChange(prepared, 'addition');
   }
@@ -4336,10 +4383,12 @@ export class PeerborneDocument<
       'prepareRemove',
       'Writer ACL prepareRemove',
     );
-    const prepared = await retryACLConflict(() =>
-      documentReflectApply(prepareRemove.method, prepareRemove.receiver, [
-        publicKey,
-      ]),
+    const prepared = await this._stageACLChange(crdtWriterChangeNode, () =>
+      retryACLConflict(() =>
+        documentReflectApply(prepareRemove.method, prepareRemove.receiver, [
+          publicKey,
+        ]),
+      ),
     );
     return this._capturePreparedWriterChange(prepared, 'removal');
   }
@@ -4379,8 +4428,12 @@ export class PeerborneDocument<
       'prepareAdd',
       'Reader ACL prepareAdd',
     );
-    const prepared = await retryACLConflict(() =>
-      documentReflectApply(prepareAdd.method, prepareAdd.receiver, [publicKey]),
+    const prepared = await this._stageACLChange(crdtReaderChangeNode, () =>
+      retryACLConflict(() =>
+        documentReflectApply(prepareAdd.method, prepareAdd.receiver, [
+          publicKey,
+        ]),
+      ),
     );
     const changes = preparedDataProperty(
       prepared,
@@ -4409,10 +4462,12 @@ export class PeerborneDocument<
       'prepareRemove',
       'Reader ACL prepareRemove',
     );
-    const prepared = await retryACLConflict(() =>
-      documentReflectApply(prepareRemove.method, prepareRemove.receiver, [
-        publicKey,
-      ]),
+    const prepared = await this._stageACLChange(crdtReaderChangeNode, () =>
+      retryACLConflict(() =>
+        documentReflectApply(prepareRemove.method, prepareRemove.receiver, [
+          publicKey,
+        ]),
+      ),
     );
     const changes = preparedDataProperty(
       prepared,
@@ -4482,8 +4537,12 @@ export class PeerborneDocument<
   ): Promise<void> {
     this._writerPublicationsInFlight++;
     try {
+      const changes = await this._authorACLChange(
+        crdtWriterChangeNode,
+        prepared.changes,
+      );
       await this._runWriterMutation(() =>
-        this._makeChange(prepared.changes, crdtWriterChangeNode, {
+        this._makeChange(changes, crdtWriterChangeNode, {
           operation,
           commit: () => {
             finalizePreparedCommitClaim(
@@ -4514,7 +4573,11 @@ export class PeerborneDocument<
   ): Promise<void> {
     this._readerPublicationsInFlight++;
     try {
-      await this._makeChange(prepared.changes, crdtReaderChangeNode, {
+      const changes = await this._authorACLChange(
+        crdtReaderChangeNode,
+        prepared.changes,
+      );
+      await this._makeChange(changes, crdtReaderChangeNode, {
         operation,
         commit,
       });
@@ -4770,9 +4833,24 @@ export class PeerborneDocument<
         const block = prefetchedBlocks.get(nodeId);
         if (block === undefined || decoded.has(nodeId)) continue;
         decoded.add(nodeId);
-        changes.push(
-          await this._decodeBlock(CID.parse(nodeId), block, signal, getKey),
+        const change = await this._decodeBlock(
+          CID.parse(nodeId),
+          block,
+          signal,
+          getKey,
         );
+        if (this._aclActorBinding(writers) === undefined) {
+          changes.push(change);
+          continue;
+        }
+        try {
+          changes.push(
+            (await this._verifyACLChange(crdtWriterChangeNode, writers, change))
+              .changes,
+          );
+        } catch (error) {
+          if (!(error instanceof CRDTActorBindingError)) throw error;
+        }
       }
       // A writer change still waiting for history would leave the set
       // partial, so no writer is established.
@@ -8330,7 +8408,7 @@ export class PeerborneDocument<
           ? await this._beekem.exportLocalState(this._kemKeyPair!.publicKey)
           : null;
       const payload = encodeCheckpointState({
-        format: 'peerborne/local-document-checkpoint/3',
+        format: 'peerborne/local-document-checkpoint/4',
         documentPath: this.documentPath,
         owner: await requireSerializePublicKey(
           this._authProvider,
@@ -8352,6 +8430,18 @@ export class PeerborneDocument<
         ),
         actors: checkpointEncode(
           encodeCRDTActorManifest(this._actorBindings.registrations()),
+        ),
+        writerActors: checkpointEncode(
+          encodeCRDTActorManifest(
+            this._aclActorBindings?.[crdtWriterChangeNode].registrations() ??
+              [],
+          ),
+        ),
+        readerActors: checkpointEncode(
+          encodeCRDTActorManifest(
+            this._aclActorBindings?.[crdtReaderChangeNode].registrations() ??
+              [],
+          ),
         ),
         message: checkpointEncode(
           this._syncMessageSerializer.serializeSyncMessage(message),
@@ -8509,6 +8599,18 @@ export class PeerborneDocument<
           'Checkpoint carries actor bindings this provider cannot check',
         );
       }
+      const aclActorBindings = {
+        [crdtWriterChangeNode]: await this._restoreACLActorBindings(
+          crdtWriterChangeNode,
+          writers,
+          state.writerActors,
+        ),
+        [crdtReaderChangeNode]: await this._restoreACLActorBindings(
+          crdtReaderChangeNode,
+          readers,
+          state.readerActors,
+        ),
+      };
       const document = this._crdtProvider.remoteChange(
         this._crdtProvider.newDocument(),
         history,
@@ -8584,6 +8686,8 @@ export class PeerborneDocument<
       this._document = document;
       this._actorBindings = actorBindings;
       this._localActor = undefined;
+      this._aclActorBindings = aclActorBindings;
+      this._aclActors = undefined;
       this._readers = readers;
       this._writers = writers;
       // Held ACL changes and waiting nodes belong to the replaced state.
@@ -9897,6 +10001,12 @@ export class PeerborneDocument<
     // It runs before the keychain merge so a rejected ACL merge leaves the
     // keychain unchanged.
     if (changeTreePreflight && changeTreePreflight.aclEntries.length > 0) {
+      await this._admitACLEntries(
+        incomingChangeId,
+        changeTreePreflight.aclEntries,
+        changeFetchOptions.signal,
+      );
+      assertStillActive();
       beginStateApplication();
       await this._applyCollectedACL(
         changeTreePreflight.aclEntries,
@@ -10677,9 +10787,10 @@ export class PeerborneDocument<
 
   private async _recordBindings(
     entries: readonly (readonly [string, CRDTSignedActorRegistration])[],
+    bindings: CRDTActorBindings = this._actorBindings,
   ): Promise<void> {
     if (entries.length === 0) return;
-    this._actorBindings.record(entries, await this._currentWriterAuthorities());
+    bindings.record(entries, await this._currentWriterAuthorities());
   }
 
   private _changeAuthorKey(signer: string): Promise<PublicKey> {
@@ -10723,11 +10834,12 @@ export class PeerborneDocument<
   private async _verifyRegistration(
     actor: string,
     registration: CRDTSignedActorRegistration,
+    bindings: CRDTActorBindings = this._actorBindings,
   ): Promise<void> {
-    const known = this._actorBindings.get(actor);
+    const known = bindings.get(actor);
     if (known !== undefined) {
       if (sameCRDTActorRegistration(known, registration)) return;
-      this._actorBindings.check([[actor, registration]]);
+      bindings.check([[actor, registration]]);
     }
     if (!this._isSigningEnabled()) return;
     const key = [
@@ -10874,6 +10986,300 @@ export class PeerborneDocument<
     return { admitted, rejected };
   }
 
+  private _aclOf(kind: HeldACLKind): ACL<ChangesType, PublicKey> {
+    return kind === crdtWriterChangeNode ? this._writers : this._readers;
+  }
+
+  /** The binding hooks of an ACL whose changes this document binds to signers. */
+  private _aclActorBinding(
+    acl: ACL<ChangesType, PublicKey> | undefined,
+  ): ACLActorBinding<ChangesType> | undefined {
+    return this._coordinated ? undefined : acl?.actorBinding;
+  }
+
+  private _aclBindings(kind: HeldACLKind): CRDTActorBindings {
+    this._aclActorBindings ??= {
+      [crdtWriterChangeNode]: new CRDTActorBindings(),
+      [crdtReaderChangeNode]: new CRDTActorBindings(),
+    };
+    return this._aclActorBindings[kind];
+  }
+
+  /**
+   * Make the ACL of `kind` write under an actor derived from the local
+   * signer. A replaced ACL instance, such as one a checkpoint restored, or a
+   * `fresh` request gets a new nonce, so a position that may already be
+   * published is never reused.
+   */
+  private async _bindACLActor(kind: HeldACLKind, fresh = false): Promise<void> {
+    const acl = this._aclOf(kind);
+    const binding = this._aclActorBinding(acl);
+    if (binding === undefined) return;
+    this._aclActors ??= new Map();
+    const current = this._aclActors.get(kind);
+    if (!fresh && current?.acl === acl) return;
+    const registration = {
+      signer: await this._localSignerAuthority(),
+      nonce: createCRDTActorNonce(),
+    };
+    const registrationSignature = this._isSigningEnabled()
+      ? await this._authProvider.sign(
+          crdtActorRegistrationPayload(this.documentPath, registration),
+          this._userKey,
+        )
+      : new Uint8Array(0);
+    const actor = binding.actorFromDigest(
+      await deriveACLActorDigest(this.documentPath, kind, registration),
+    );
+    binding.setLocalActor(actor);
+    this._aclActors.set(kind, {
+      acl,
+      actor,
+      registration: { ...registration, registrationSignature },
+    });
+  }
+
+  /** Stage an ACL change under this instance's bound actor for that ACL. */
+  private async _stageACLChange<T>(
+    kind: HeldACLKind,
+    stage: () => Promise<T>,
+  ): Promise<T> {
+    await this._bindACLActor(kind);
+    try {
+      return await stage();
+    } catch (error) {
+      if (!(error instanceof ACLActorUnavailableError)) throw error;
+      await this._bindACLActor(kind, true);
+      return stage();
+    }
+  }
+
+  /** Sign a staged local ACL change and attach its authorship. */
+  private async _authorACLChange(
+    kind: HeldACLKind,
+    changes: ChangesType,
+  ): Promise<ChangesType> {
+    const acl = this._aclOf(kind);
+    const binding = this._aclActorBinding(acl);
+    if (binding === undefined) return changes;
+    const local = this._aclActors?.get(kind);
+    if (local === undefined || local.acl !== acl)
+      throw new CRDTActorBindingError('No local ACL actor is bound');
+    const actors = binding.changeActors(changes);
+    if ([...actors].some((actor) => actor !== local.actor))
+      throw new CRDTActorBindingError(
+        'A local ACL change may only add operations under its own actor',
+      );
+    const signature = this._isSigningEnabled()
+      ? await this._authProvider.sign(
+          aclChangeAuthorPayload(
+            this.documentPath,
+            kind,
+            local.registration,
+            this._changesSerializer.serializeChanges(changes),
+          ),
+          this._userKey,
+        )
+      : new Uint8Array(0);
+    if (actors.size > 0)
+      await this._recordBindings(
+        [[local.actor, local.registration]],
+        this._aclBindings(kind),
+      );
+    return binding.attach(
+      changes,
+      encodeCRDTChangeAuthor({ ...local.registration, signature }),
+    );
+  }
+
+  /**
+   * Verify a delivered ACL change before it is merged: its author's
+   * signatures over the change and this ACL, and that every actor it adds
+   * operations for is the actor its registration derives for this ACL and is
+   * not bound to another registration. Nothing is recorded; the returned
+   * binding is recorded by the caller.
+   */
+  private async _verifyACLChange(
+    kind: HeldACLKind,
+    acl: ACL<ChangesType, PublicKey>,
+    changes: ChangesType,
+  ): Promise<{
+    readonly changes: ChangesType;
+    readonly signer: string;
+    readonly binding?: readonly [string, CRDTSignedActorRegistration];
+  }> {
+    const binding = this._aclActorBinding(acl)!;
+    const [prefix, bare] = binding.detach(changes);
+    const author = decodeCRDTChangeAuthor(prefix);
+    const actors = binding.changeActors(bare);
+    const actor = binding.actorFromDigest(
+      await deriveACLActorDigest(this.documentPath, kind, author),
+    );
+    if ([...actors].some((changed) => changed !== actor))
+      throw new CRDTActorBindingError(
+        'An ACL change adds operations under an actor its signer does not own',
+      );
+    if (
+      this._isSigningEnabled() &&
+      (await this._authProvider.verify(
+        aclChangeAuthorPayload(
+          this.documentPath,
+          kind,
+          author,
+          this._changesSerializer.serializeChanges(bare),
+        ),
+        await this._changeAuthorKey(author.signer),
+        author.signature,
+      )) !== true
+    )
+      throw new CRDTActorBindingError('Invalid ACL change author signature');
+    if (actors.size === 0) return { changes: bare, signer: author.signer };
+    const registration = {
+      signer: author.signer,
+      nonce: author.nonce,
+      registrationSignature: author.registrationSignature,
+    };
+    await this._verifyRegistration(
+      actor,
+      registration,
+      this._aclBindings(kind),
+    );
+    return {
+      changes: bare,
+      signer: author.signer,
+      binding: [actor, registration],
+    };
+  }
+
+  /**
+   * Verify and record one delivered ACL change, returning it bare. The
+   * outcome is remembered for the delivered change object, so the passes of
+   * one sync verify it once.
+   */
+  private async _admitACLChange(
+    kind: HeldACLKind,
+    changes: ChangesType,
+  ): Promise<{ readonly changes: ChangesType; readonly signer: string }> {
+    const cached = this._admittedACLOutcome(changes);
+    if (cached !== undefined) {
+      if ('refusal' in cached) throw cached.refusal;
+      return cached;
+    }
+    let verified: Awaited<ReturnType<typeof this._verifyACLChange>>;
+    try {
+      verified = await this._verifyACLChange(kind, this._aclOf(kind), changes);
+    } catch (error) {
+      if (error instanceof CRDTActorBindingError)
+        this._rememberACLAdmission(changes, { refusal: error });
+      throw error;
+    }
+    if (verified.binding)
+      await this._recordBindings([verified.binding], this._aclBindings(kind));
+    const admitted = { changes: verified.changes, signer: verified.signer };
+    this._rememberACLAdmission(changes, admitted);
+    return admitted;
+  }
+
+  private _admittedACLOutcome(changes: ChangesType) {
+    return (typeof changes === 'object' && changes !== null) ||
+      typeof changes === 'function'
+      ? this._admittedACL?.get(changes as object)
+      : undefined;
+  }
+
+  private _rememberACLAdmission(
+    changes: ChangesType,
+    outcome:
+      | { readonly changes: ChangesType; readonly signer: string }
+      | { readonly refusal: unknown },
+  ): void {
+    if (
+      (typeof changes === 'object' && changes !== null) ||
+      typeof changes === 'function'
+    )
+      (this._admittedACL ??= new WeakMap()).set(changes as object, outcome);
+  }
+
+  /**
+   * Verify the inline ACL changes of a sync tree before any is merged. A
+   * relayed change that fails actor binding is merged nowhere and waits, so
+   * a forgery inside an honest writer's tree cannot block that tree. A failing
+   * root rejects the message.
+   */
+  private async _admitACLEntries(
+    rootId: string | undefined,
+    entries: readonly BoundedChangeTreeEntry<ChangesType>[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (
+      this._aclActorBinding(this._writers) === undefined &&
+      this._aclActorBinding(this._readers) === undefined
+    )
+      return;
+    const pending = entries.filter(
+      (
+        entry,
+      ): entry is BoundedChangeTreeEntry<ChangesType> & {
+        readonly nodeId: string;
+        readonly kind: HeldACLKind;
+        readonly change: ChangesType;
+      } =>
+        entry.nodeId !== undefined &&
+        entry.change !== undefined &&
+        (entry.kind === crdtWriterChangeNode ||
+          entry.kind === crdtReaderChangeNode) &&
+        this._aclActorBinding(this._aclOf(entry.kind)) !== undefined &&
+        !this._hashes.has(entry.nodeId),
+    );
+    const outcomes = await awaitLoadWork(
+      mapWithConcurrency(
+        pending,
+        CRDT_AUTHOR_VERIFICATION_CONCURRENCY,
+        async ({ kind, change }) => {
+          try {
+            return {
+              ok: true as const,
+              verified: await this._verifyACLChange(
+                kind,
+                this._aclOf(kind),
+                change,
+              ),
+            };
+          } catch (error) {
+            return { ok: false as const, error };
+          }
+        },
+      ),
+      signal,
+    );
+    let refused = 0;
+    const preferred = await awaitLoadWork(
+      this._currentWriterAuthorities(),
+      signal,
+    );
+    pending.forEach(({ nodeId, kind, change }, index) => {
+      const outcome = outcomes[index]!;
+      try {
+        if (!outcome.ok) throw outcome.error;
+        if (outcome.verified.binding)
+          this._aclBindings(kind).record([outcome.verified.binding], preferred);
+        this._rememberACLAdmission(change, {
+          changes: outcome.verified.changes,
+          signer: outcome.verified.signer,
+        });
+      } catch (error) {
+        if (nodeId === rootId || !(error instanceof CRDTActorBindingError))
+          throw error;
+        this._rememberACLAdmission(change, { refusal: error });
+        refused++;
+      }
+    });
+    if (refused > 0)
+      console.warn(
+        `Skipped ${refused} relayed ACL change(s) in ${this.documentPath} that failed actor binding`,
+      );
+  }
+
   /**
    * Validate a snapshot state's actor manifest: each signed registration
    * derives a distinct actor present in the state and does not conflict with
@@ -10922,6 +11328,39 @@ export class PeerborneDocument<
       actors[index]!,
       registration,
     ]);
+  }
+
+  /** Remembered ACL actor bindings a checkpoint carries, derived again. */
+  private async _restoreACLActorBindings(
+    kind: HeldACLKind,
+    acl: ACL<ChangesType, PublicKey>,
+    encoded: string,
+  ): Promise<CRDTActorBindings> {
+    const registrations = decodeCRDTActorManifest(checkpointDecode(encoded));
+    const bindings = new CRDTActorBindings();
+    if (registrations.length === 0) return bindings;
+    const binding = this._aclActorBinding(acl);
+    if (binding === undefined)
+      throw new CRDTActorBindingError(
+        'Checkpoint carries ACL actor bindings this ACL cannot check',
+      );
+    const actors = await mapWithConcurrency(
+      registrations,
+      CRDT_AUTHOR_VERIFICATION_CONCURRENCY,
+      async (registration) =>
+        binding.actorFromDigest(
+          await deriveACLActorDigest(this.documentPath, kind, registration),
+        ),
+    );
+    if (new Set(actors).size !== actors.length)
+      throw new CRDTActorBindingError('ACL actor manifest repeats an actor');
+    bindings.record(
+      registrations.map((registration, index) => [
+        actors[index]!,
+        registration,
+      ]),
+    );
+    return bindings;
   }
 
   /** Attach the remembered registrations of the actors in a snapshot state. */
