@@ -1,6 +1,7 @@
 import {
   ACLProvider,
   AuthProvider,
+  ChangeDeliveryFailure,
   ChangesSerializer,
   Peerborne,
   CRDTProvider,
@@ -91,6 +92,8 @@ function deleteCacheEntry<Cache extends Record<string, unknown>>(
     return next;
   });
 }
+
+const RETAINED_DOCUMENT_SUBSCRIPTION = 'usePeerborneDocumentState-retained';
 
 export function usePeerborne<
   DocType,
@@ -185,6 +188,7 @@ export function usePeerborneDocumentState<
     setKemKeyPair: (keyPair: CryptoKeyPair | undefined) => Promise<void>;
   },
   Error | undefined,
+  ChangeDeliveryFailure | undefined,
 ] {
   const {
     docCache,
@@ -204,6 +208,10 @@ export function usePeerborneDocumentState<
     key: string;
     error: Error;
   }>();
+  const [delivery, setDelivery] = useState<{
+    key: string;
+    failure: ChangeDeliveryFailure | undefined;
+  }>();
 
   useEffect(() => {
     const {
@@ -212,6 +220,9 @@ export function usePeerborneDocumentState<
       openTaskResults,
       subscriberCounts,
       activationRetries,
+      createdPaths,
+      retainedDocuments,
+      retentionTimers,
     } = hookCaches;
     let active = true;
     let subscribedDocRef: PeerborneDocument<
@@ -255,12 +266,16 @@ export function usePeerborneDocumentState<
       >
     >;
 
+    // A path this node created opens instead: creating it again would found
+    // a different document.
     const activate = async (mode: PeerborneDocumentInitialization): OpenTask => {
       const docRef = peerborne.doc(documentPath);
       if (!docRef) {
         throw new Error(`Failed to open/find document: ${documentPath}`);
       }
-      await docRef[mode]();
+      const creating = mode === 'create' && !createdPaths.has(documentPath);
+      await (creating ? docRef.create() : docRef.open());
+      if (creating) createdPaths.add(documentPath);
       try {
         const readers = await docRef.getReaders();
         const writers = await docRef.getWriters();
@@ -328,12 +343,29 @@ export function usePeerborneDocumentState<
           PublicKey,
           DocumentKey
         >;
-        const current = (cachedResult?.document ?? docRef.document) as DocType;
-        const readers = (cachedResult?.readers ?? result.readers ?? []) as PublicKey[];
-        const writers = (cachedResult?.writers ?? result.writers ?? []) as PublicKey[];
+        let { readers: activatedReaders, writers: activatedWriters } = result;
+        if (!cachedResult && retainedDocuments.has(docRef)) {
+          [activatedReaders, activatedWriters] = await Promise.all([
+            docRef.getReaders(),
+            docRef.getWriters(),
+          ]);
+          if (!active) return;
+        }
+        const settled = openTaskResults.get(documentPath);
+        const current = (settled?.document ?? docRef.document) as DocType;
+        const readers = (settled?.readers ?? activatedReaders ?? []) as PublicKey[];
+        const writers = (settled?.writers ?? activatedWriters ?? []) as PublicKey[];
         openTaskResults.set(documentPath, { docRef, document: current, readers, writers });
         updateContext(docRef, current, readers, writers);
 
+        const syncDelivery = (failure = docRef.deliveryFailure) => {
+          if (!active) return;
+          setDelivery((previous) =>
+            previous?.key === activationKey && previous.failure === failure
+              ? previous
+              : { key: activationKey, failure },
+          );
+        };
         docRef.subscribe(
           subscriptionIdRef.current,
           (current, nextReaders, nextWriters) => {
@@ -348,7 +380,9 @@ export function usePeerborneDocumentState<
           },
           originFilter,
         );
+        docRef.subscribeDeliveryState(subscriptionIdRef.current, syncDelivery);
         subscribedDocRef = docRef;
+        syncDelivery();
         setActivationFailure(undefined);
       } catch (error) {
         if (active) {
@@ -377,6 +411,7 @@ export function usePeerborneDocumentState<
       active = false;
       setActivationFailure(undefined);
       subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
+      subscribedDocRef?.unsubscribeDeliveryState(subscriptionIdRef.current);
 
       const retries = activationRetries.get(documentPath);
       retries?.delete(run);
@@ -402,17 +437,48 @@ export function usePeerborneDocumentState<
         return;
       }
 
+      const unused = () =>
+        (subscriberCounts.get(documentPath) || 0) === 0 &&
+        openTasks.get(documentPath) === pendingTask;
+      const release = (docRef: NonNullable<Awaited<OpenTask>['docRef']>) => {
+        clearTimeout(retentionTimers.get(documentPath));
+        retentionTimers.delete(documentPath);
+        docRef.unsubscribeDeliveryState(RETAINED_DOCUMENT_SUBSCRIPTION);
+        openTasks.delete(documentPath);
+        if (typeof docRef.close === 'function') docRef.close().catch(() => {});
+      };
+      // A document this node created stays open while a change is not known
+      // to have reached a member, because it may hold the only copy, for at
+      // most retainedCloseDelayMs.
       pendingTask
         .then((result) => {
-          if (
-            (subscriberCounts.get(documentPath) || 0) === 0 &&
-            openTasks.get(documentPath) === pendingTask
-          ) {
+          if (!unused()) return;
+          const docRef = result.docRef;
+          if (!docRef) {
             openTasks.delete(documentPath);
-            if (result.docRef && typeof result.docRef.close === 'function') {
-              result.docRef.close().catch(() => {});
-            }
+            return;
           }
+          if (
+            createdPaths.has(documentPath) &&
+            !docRef.retired &&
+            docRef.deliveryFailure !== undefined
+          ) {
+            retainedDocuments.add(docRef);
+            clearTimeout(retentionTimers.get(documentPath));
+            const expiry = setTimeout(() => {
+              if (unused()) release(docRef);
+            }, hookCaches.retainedCloseDelayMs);
+            (expiry as { unref?: () => void }).unref?.();
+            retentionTimers.set(documentPath, expiry);
+            docRef.subscribeDeliveryState(
+              RETAINED_DOCUMENT_SUBSCRIPTION,
+              (failure) => {
+                if (failure === undefined && unused()) release(docRef);
+              },
+            );
+            return;
+          }
+          release(docRef);
         })
         .catch(() => {
           if (openTasks.get(documentPath) === pendingTask) {
@@ -456,5 +522,6 @@ export function usePeerborneDocumentState<
       },
     },
     activationFailure?.key === activationKey ? activationFailure.error : undefined,
+    delivery?.key === activationKey ? delivery.failure : undefined,
   ];
 }

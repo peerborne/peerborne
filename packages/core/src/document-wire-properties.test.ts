@@ -7,6 +7,8 @@ import {
   encodeDocumentContent,
   encodeEncryptedDocumentContent,
   encodeSignedDocumentContent,
+  MAX_DOCUMENT_PUBLICATION_FRAMES,
+  splitDocumentPublication,
 } from './document-security-wire.js';
 import { publicState, id } from './__testutils__/group-security-coordinator.js';
 
@@ -94,5 +96,66 @@ describe('bounded coordinated document wire boundaries', () => {
       }),
       { seed: 2011162, numRuns: 1200 },
     );
+  });
+
+  test('splits concatenated encrypted frames exactly and rejects truncated, trailing or oversized publications', () => {
+    const frame = fc
+      .tuple(
+        fc.uint8Array({ minLength: 16, maxLength: 16 }),
+        fc.uint8Array({ minLength: 12, maxLength: 12 }),
+        fc.uint8Array({ minLength: 16, maxLength: 300 }),
+      )
+      .map(([tag, nonce, ciphertext]) =>
+        encodeEncryptedDocumentContent(tag, nonce, ciphertext),
+      );
+    const join = (frames: readonly Uint8Array[]) => {
+      const bytes = new Uint8Array(
+        frames.reduce((sum, value) => sum + value.length, 0),
+      );
+      let offset = 0;
+      for (const value of frames) {
+        bytes.set(value, offset);
+        offset += value.length;
+      }
+      return bytes;
+    };
+    fc.assert(
+      fc.property(
+        fc.array(frame, { minLength: 1, maxLength: 8 }),
+        fc.nat(),
+        fc.uint8Array({ minLength: 1, maxLength: 40 }),
+        (frames, cut, trailer) => {
+          const publication = join(frames);
+          expect(splitDocumentPublication(publication)).toEqual(frames);
+          const length = cut % publication.length || 1;
+          const boundary = frames.findIndex(
+            (_, index) => join(frames.slice(0, index + 1)).length === length,
+          );
+          if (boundary === -1)
+            expect(() =>
+              splitDocumentPublication(publication.slice(0, length)),
+            ).toThrow();
+          else
+            expect(
+              splitDocumentPublication(publication.slice(0, length)),
+            ).toEqual(frames.slice(0, boundary + 1));
+          expect(() =>
+            splitDocumentPublication(join([publication, trailer])),
+          ).toThrow();
+        },
+      ),
+      { seed: 2011163, numRuns: 300 },
+    );
+    const smallest = encodeEncryptedDocumentContent(
+      new Uint8Array(16),
+      new Uint8Array(12),
+      new Uint8Array(16),
+    );
+    const most = Array(MAX_DOCUMENT_PUBLICATION_FRAMES).fill(smallest);
+    expect(splitDocumentPublication(join(most))).toHaveLength(most.length);
+    expect(() => splitDocumentPublication(join([...most, smallest]))).toThrow(
+      'too many frames',
+    );
+    expect(() => splitDocumentPublication(new Uint8Array())).toThrow();
   });
 });

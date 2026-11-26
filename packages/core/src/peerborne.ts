@@ -554,6 +554,8 @@ export class Peerborne<
     PeerborneDocument<DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey>
   >();
 
+  private readonly _foundedDocumentPaths = new Set<string>();
+
   // Online invitation offers are intentionally in-memory for the initial
   // founder-plus-one flow. A durable store is required before invitations can
   // survive an inviter restart; until then, restart invalidates outstanding
@@ -802,6 +804,29 @@ export class Peerborne<
       );
     }
     this._documentRegistry.set(documentPath, document);
+  }
+
+  /**
+   * Whether this node founded `documentPath` or holds an open or reserved
+   * instance of it. `create()` rejects such a path.
+   *
+   * @internal
+   */
+  hasLocalDocument(documentPath: string): boolean {
+    return (
+      this._foundedDocumentPaths.has(documentPath) ||
+      this._documentRegistry.has(documentPath) ||
+      this._pendingInvitationDocuments.has(documentPath)
+    );
+  }
+
+  /**
+   * Records a path that `create()` founded on this node.
+   *
+   * @internal
+   */
+  recordFoundedDocument(documentPath: string): void {
+    this._foundedDocumentPaths.add(documentPath);
   }
 
   /**

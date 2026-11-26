@@ -71,7 +71,7 @@ export async function documentCheckpointCommitment(
 
 /** @internal Current local checkpoint format; independent of network message formats. */
 export interface DocumentCheckpointState {
-  format: 'peerborne/local-document-checkpoint/3';
+  format: 'peerborne/local-document-checkpoint/4';
   documentPath: string;
   owner: string;
   document: string;
@@ -79,6 +79,8 @@ export interface DocumentCheckpointState {
   writers: string;
   keychain: string;
   actors: string;
+  writerActors: string;
+  readerActors: string;
   message: string;
   hashes: string[];
   ancestors: string[];
@@ -180,6 +182,8 @@ export function decodeCheckpointState(
     'writers',
     'keychain',
     'actors',
+    'writerActors',
+    'readerActors',
     'message',
     'hashes',
     'ancestors',
@@ -201,7 +205,7 @@ export function decodeCheckpointState(
     Array.isArray(state) ||
     Object.keys(state).length !== fields.length ||
     fields.some((field) => !Object.hasOwn(state, field)) ||
-    state.format !== 'peerborne/local-document-checkpoint/3' ||
+    state.format !== 'peerborne/local-document-checkpoint/4' ||
     typeof state.documentPath !== 'string' ||
     state.documentPath.length === 0 ||
     state.documentPath.length > 4096 ||
@@ -225,6 +229,8 @@ export function decodeCheckpointState(
     'writers',
     'keychain',
     'actors',
+    'writerActors',
+    'readerActors',
     'message',
   ])
     checkpointDecode(state[name]);

@@ -862,6 +862,57 @@ describe('BeeKEM transactional state changes', () => {
     );
   });
 
+  test('a fixed-leaf update cannot add, blank, or replace a leaf', async () => {
+    const alice = new BeeKEM();
+    const aliceKeys = await keyPair();
+    await alice.initialize(aliceKeys.privateKey, aliceKeys.publicKey);
+    const bobKeys = await keyPair();
+    const { welcome: bobWelcome } = await alice.addMember(bobKeys.publicKey);
+    const bob = new BeeKEM();
+    await bob.processWelcome(bobWelcome, bobKeys.privateKey, bobKeys.publicKey);
+    const carolKeys = await keyPair();
+    const { pathUpdate: addCarol, welcome: carolWelcome } =
+      await alice.addMember(carolKeys.publicKey);
+    await bob.processPathUpdate(addCarol);
+    const carol = new BeeKEM();
+    await carol.processWelcome(
+      carolWelcome,
+      carolKeys.privateKey,
+      carolKeys.publicKey,
+    );
+    const apply = (update: PathUpdateV2) =>
+      carol.processPathUpdateTransactionally(update, async (root) => root, {
+        fixedLeaves: true,
+      });
+    const before = stateMetadata(carol);
+    const beforeTree = await treeFingerprint(carol);
+
+    const ghostKeys = await keyPair();
+    const { pathUpdate: addsGhost } = await bob
+      .clone()
+      .addMember(ghostKeys.publicKey);
+    await expect(apply(addsGhost)).rejects.toThrow(
+      /member update cannot add a leaf/,
+    );
+    const { pathUpdate: removesAlice } = await bob.clone().removeMember(0);
+    await expect(apply(removesAlice)).rejects.toThrow(
+      /member update cannot remove a leaf/,
+    );
+    const { pathUpdate: refresh } = await bob.clone().update();
+    await expect(apply(refresh)).rejects.toThrow(
+      /member update cannot replace its leaf key/,
+    );
+    expect(stateMetadata(carol)).toEqual(before);
+    expect(await treeFingerprint(carol)).toBe(beforeTree);
+
+    const pathOnly = await bob.clone().updatePath();
+    expect(await apply(pathOnly.pathUpdate)).toEqual(pathOnly.rootSecret);
+    expect(carol.memberCount).toBe(3);
+    expect(await carol.findLeafByPublicKey(bobKeys.publicKey)).toBe(
+      bobWelcome.leafIndex,
+    );
+  });
+
   test('concurrent updates serialize into distinct generations', async () => {
     const alice = new BeeKEM();
     const aliceKeys = await keyPair();

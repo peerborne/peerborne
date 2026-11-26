@@ -6,12 +6,14 @@ import {
   CHANGE_DOCUMENT,
   INITIALIZE,
   CLOSE_DOCUMENT,
+  DELIVERY_FAILURE,
   PEER_CONNECT,
   PEER_DISCONNECT,
 } from './actions.js';
 import {
   ACLProvider,
   AuthProvider,
+  ChangeDeliveryFailure,
   ChangesSerializer,
   Peerborne,
   PeerborneDocument,
@@ -39,6 +41,8 @@ export interface PeerborneDocumentState<
   >;
   document: DocType;
   peers?: string[];
+  /** The document's latest local change not known to have reached a member. */
+  deliveryFailure?: ChangeDeliveryFailure;
 }
 
 export interface PeerborneState<
@@ -194,6 +198,7 @@ export function peerborneReducer<
             documentRef: action.documentRef,
             document: action.documentRef.document,
             peers: [],
+            deliveryFailure: action.documentRef.deliveryFailure,
           },
         };
 
@@ -239,6 +244,21 @@ export function peerborneReducer<
         return {
           ...state,
           documents,
+        };
+      }
+      case DELIVERY_FAILURE: {
+        if (!Object.hasOwn(state.documents, action.documentId)) {
+          return state;
+        }
+        return {
+          ...state,
+          documents: {
+            ...state.documents,
+            [action.documentId]: {
+              ...state.documents[action.documentId],
+              deliveryFailure: action.deliveryFailure,
+            },
+          },
         };
       }
       case PEER_CONNECT: {

@@ -1,6 +1,7 @@
 import { describe, expect, test, jest, beforeEach } from '@jest/globals';
 
 const actions = require('./actions');
+const { peerborneReducer } = require('./reducers');
 
 describe('peerborne-redux sync action creators', () => {
   test('initialize action includes node', () => {
@@ -78,6 +79,9 @@ describe('peerborne-redux async thunks', () => {
       change: jest.fn().mockImplementation(async (fn: any) => mockDocRef.document),
       subscribe: jest.fn(),
       unsubscribe: jest.fn(),
+      deliveryFailure: undefined,
+      subscribeDeliveryState: jest.fn(),
+      unsubscribeDeliveryState: jest.fn(),
     };
     getState = jest.fn();
   });
@@ -184,6 +188,41 @@ describe('peerborne-redux async thunks', () => {
     expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/existing');
     expect(mockDocRef.close).toHaveBeenCalledTimes(1);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test('records the document delivery state until the document clears it', async () => {
+    const reducer = peerborneReducer(...Array(9).fill({}));
+    let state = { node: mockNode, documents: {}, peers: [] };
+    dispatch = jest.fn((action: any) => {
+      state = reducer(state, action);
+    });
+    getState = () => state;
+    mockNode.doc.mockReturnValue(mockDocRef);
+    await actions.openDocumentAsync('/doc')(dispatch, getState);
+    const [[subscriptionId, onDeliveryState]] =
+      mockDocRef.subscribeDeliveryState.mock.calls;
+    expect(subscriptionId).toBe('/doc');
+
+    const failure = {
+      documentPath: '/doc',
+      changeId: 'cid-1',
+      error: new Error('NoDeliveryPeersError'),
+    };
+    onDeliveryState(failure);
+    expect(state.documents['/doc'].deliveryFailure).toBe(failure);
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'PEERBORNE_DELIVERY_FAILURE' }),
+    );
+    onDeliveryState(undefined);
+    expect(state.documents['/doc'].deliveryFailure).toBeUndefined();
+
+    await actions.closeDocumentAsync('/doc')(dispatch, getState);
+    expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc');
+    expect(mockDocRef.unsubscribeDeliveryState).toHaveBeenCalledWith('/doc');
+    const dispatched = dispatch.mock.calls.length;
+    onDeliveryState(failure);
+    expect(dispatch).toHaveBeenCalledTimes(dispatched);
+    expect(state.documents['/doc']).toBeUndefined();
   });
 
   test('closeDocumentAsync closes open document', async () => {

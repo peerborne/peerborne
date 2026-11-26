@@ -105,6 +105,8 @@ async function fixture(forkStore?: DurableBeeKEMForkStore) {
       unregisterDocument(path: string, doc: unknown) {
         if (registry.get(path) === doc) registry.delete(path);
       },
+      hasLocalDocument: () => false,
+      recordFoundedDocument() {},
     };
     const doc = new PeerborneDocument(
       swarm as never,

@@ -447,7 +447,7 @@ describe('document load response boundaries', () => {
     );
     document._bootstrapLoadApplicationState = 'complete';
     document._syncUnlocked = jest.fn(async (...args: any[]) => {
-      const options = args[6];
+      const options = args[5];
       expect(options.maxBlockBytes).toBeUndefined();
       expect(options.maxAggregateBlockBytes).toBeUndefined();
       expect(options.aggregateBudget).toBeUndefined();
@@ -1997,7 +1997,6 @@ describe('document load response boundaries', () => {
           _context: string,
           onStateApplicationStart?: () => void,
           _continuePending?: boolean,
-          _onLogicalKeychainChange?: () => void,
           options?: { applySnapshotAfterChanges?: boolean },
         ) => {
           onStateApplicationStart?.();
@@ -2380,7 +2379,6 @@ describe('document load response boundaries', () => {
         _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
-        _onLogicalKeychainChange: (() => void) | undefined,
         fetchOptions: any,
       ) => {
         onStateApplicationStart?.();
@@ -2522,7 +2520,6 @@ describe('document load response boundaries', () => {
           _context: string,
           _onStateApplicationStart: (() => void) | undefined,
           _continuePending: boolean,
-          _onLogicalKeychainChange: (() => void) | undefined,
           fetchOptions: any,
         ) => {
           expect(appliedMessage.changes.change).toBeUndefined();
@@ -2593,7 +2590,6 @@ describe('document load response boundaries', () => {
         _context: string,
         _onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
-        _onLogicalKeychainChange: (() => void) | undefined,
         fetchOptions: any,
       ) => {
         expect([...fetchOptions.prefetchedBlocks.keys()]).toEqual(['HEAD']);
@@ -2718,7 +2714,6 @@ describe('document load response boundaries', () => {
         _context: string,
         onStateApplicationStart: (() => void) | undefined,
         _continuePending: boolean,
-        _onLogicalKeychainChange: (() => void) | undefined,
         fetchOptions: any,
       ) => {
         expect(fetchOptions.prefetchedBlocks.has('HEAD')).toBe(true);
@@ -3832,17 +3827,16 @@ describe('document load response boundaries', () => {
     expect(document._bootstrapLoadApplicationState).toBe(commitFails ? 'pending' : 'pristine');
   });
 
-  test('hydrates staged logical keychain changes before reservation and redacts failures', async () => {
-    const sentinel = new Error('SECRET_KEYCHAIN_SENTINEL');
-    const hydrateKeys = jest.fn(async () => {
-      throw sentinel;
-    });
+  test('refuses a load response that would add keys before reservation', async () => {
+    const hydrateKeys = jest.fn(async () => []);
     const commit = jest.fn();
     const beginStateApplication = jest.fn();
+    const mergeWriters = jest.fn(async () => undefined);
     const document = fakeDocument({
-      documentPath: '/keychain-hydration-failure',
+      documentPath: '/keychain-addition',
       swarm: { config: { enableSigning: false } },
       _bootstrapLoadApplicationState: 'pristine',
+      _mergeWriters: mergeWriters,
       _keychain: {
         stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
         prepareMerge: jest.fn(() => ({
@@ -3855,32 +3849,33 @@ describe('document load response boundaries', () => {
         })),
       },
     });
-    const consoleError = jest
-      .spyOn(console, 'error')
+    const consoleWarn = jest
+      .spyOn(console, 'warn')
       .mockImplementation(() => undefined);
 
     try {
       await expect(
         document._syncUnlocked(
           {
-            documentId: '/keychain-hydration-failure',
+            documentId: '/keychain-addition',
             signatureContext: 'load-response-v4',
+            changeId: 'root',
+            changes: { kind: crdtWriterChangeNode, change: { writer: true } },
             keychainChanges: { providerEncoding: 'one-key' },
           },
           false,
           'load-response-v4',
           beginStateApplication,
         ),
-      ).rejects.toBe(sentinel);
-
-      expect(consoleError).toHaveBeenCalledWith(
-        'Failed to merge keychain changes in /keychain-hydration-failure',
+      ).resolves.toBe(false);
+      expect(consoleWarn).toHaveBeenCalledWith(
+        'Rejected keychain changes that would add keys to /keychain-addition',
       );
-      expect(consoleError.mock.calls.flat()).not.toContain(sentinel);
     } finally {
-      consoleError.mockRestore();
+      consoleWarn.mockRestore();
     }
-    expect(hydrateKeys).toHaveBeenCalledTimes(1);
+    expect(hydrateKeys).not.toHaveBeenCalled();
+    expect(mergeWriters).not.toHaveBeenCalled();
     expect(beginStateApplication).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(document._bootstrapLoadApplicationState).toBe('pristine');
@@ -4020,9 +4015,12 @@ describe('document load response boundaries', () => {
     }
   });
 
-  test.each(['pinned'] as const)(
-    'counts a committed logical keychain change as %s load progress',
-    async (admission) => {
+  test.each([
+    ['pinned', 'pinned-writer'],
+    ['bootstrap', undefined],
+  ] as const)(
+    'refuses a %s load response that only adds keys',
+    async (_label, session) => {
       const message = {
         documentId: '/load-race',
         signatureContext: 'load-response-v4',
@@ -4031,7 +4029,7 @@ describe('document load response boundaries', () => {
       };
       const { document, stream } = signedLoadHarness(
         async () => {
-          if (admission === 'pinned') {
+          if (session !== undefined) {
             throw new Error('pinned admission must not read the writer ACL');
           }
           return [];
@@ -4039,9 +4037,7 @@ describe('document load response boundaries', () => {
         async () => true,
         message,
       );
-      if (admission === 'unsigned') {
-        document.swarm.config.enableSigning = false;
-      }
+      const hydrateKeys = jest.fn(async () => []);
       const commit = jest.fn();
       document._keychain = {
         getKey: jest.fn(() => ({})),
@@ -4049,7 +4045,7 @@ describe('document load response boundaries', () => {
         prepareMerge: jest.fn(() => ({
           keyIds: [new Uint8Array([7])],
           currentKeyId: new Uint8Array([7]),
-          hydrateKeys: jest.fn(async () => []),
+          hydrateKeys,
           getKey: jest.fn(),
           stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
           commit,
@@ -4058,48 +4054,20 @@ describe('document load response boundaries', () => {
       };
 
       await expect(
-        document._sendLoadRequestAndSync(await loadSessionFixture(document, admission === 'pinned' ? 'pinned-writer' : undefined), stream, new Uint8Array([1]), null),
-      ).resolves.toBe(true);
+        document._sendLoadRequestAndSync(
+          await loadSessionFixture(document, session),
+          stream,
+          new Uint8Array([1]),
+          null,
+        ),
+      ).resolves.toBe(false);
 
-      expect(commit).toHaveBeenCalledTimes(1);
-      expect(document._bootstrapLoadApplicationState).toBe('complete');
+      expect(hydrateKeys).not.toHaveBeenCalled();
+      expect(commit).not.toHaveBeenCalled();
+      expect(document._keychain.merge).not.toHaveBeenCalled();
+      expect(document._bootstrapLoadApplicationState).toBe('pristine');
     },
   );
-
-  test('does not establish unpinned bootstrap authority from a keychain-only change', async () => {
-    const message = {
-      documentId: '/load-race',
-      signatureContext: 'load-response-v4',
-      signature: 'AAAA',
-      keychainChanges: { providerEncoding: 'one-key' },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => [],
-      async () => true,
-      message,
-    );
-    const commit = jest.fn();
-    document._keychain = {
-      getKey: jest.fn(() => ({})),
-      stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
-      prepareMerge: jest.fn(() => ({
-        keyIds: [new Uint8Array([7])],
-        currentKeyId: new Uint8Array([7]),
-        hydrateKeys: jest.fn(async () => []),
-        getKey: jest.fn(),
-        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
-        commit,
-      })),
-      merge: jest.fn(),
-    };
-
-    await expect(
-      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1])),
-    ).resolves.toBe(false);
-
-    expect(commit).toHaveBeenCalledTimes(1);
-    expect(document._bootstrapLoadApplicationState).toBe('pending');
-  });
 
   test('does not admit bootstrap state on an already-subscribed instance', async () => {
     const { document, stream } = signedLoadHarness(
@@ -4229,7 +4197,6 @@ describe('document load response boundaries', () => {
       'load-response-v4',
       undefined,
       true,
-      undefined,
       { assertStillActive },
     );
     await firstMergeStarted.promise;
@@ -4734,7 +4701,6 @@ describe('document load response boundaries', () => {
     verify: (...args: unknown[]) => Promise<boolean>;
     hydrateKeys?: (keyIds: Uint8Array[]) => Promise<unknown[]>;
     sealedPlaintext?: Uint8Array;
-    invitationEpoch?: Uint8Array;
     started: Promise<void>;
     release: () => void;
   }) {
@@ -4778,12 +4744,7 @@ describe('document load response boundaries', () => {
         true,
       );
     }
-    const keyIds = [
-      ...(options.invitationEpoch === undefined
-        ? []
-        : [new Uint8Array(options.invitationEpoch)]),
-      new Uint8Array(welcomeEpochId),
-    ];
+    const keyIds = [new Uint8Array(welcomeEpochId)];
     const epochKey = { algorithm: { name: 'AES-GCM' } };
     const merge = jest.fn();
     const claimCommit = jest.fn((changes: unknown) => ({
@@ -4822,8 +4783,10 @@ describe('document load response boundaries', () => {
       _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
       _kemKeyPair: kemKeyPair,
       _kemPublicKeyRaw: kemPublicKeyRaw,
-      _keychain: { prepareMerge },
-      _invitationEpoch: options.invitationEpoch,
+      _keychain: { prepareMerge, keys: async () => [] },
+      _beekem: null,
+      _beekemInitialized: false,
+      _invitationEpoch: undefined,
       _prepareDeferredBootstrapRemoteUpdateNotification: jest.fn(
         async () => undefined,
       ),
@@ -4911,8 +4874,7 @@ describe('document load response boundaries', () => {
     expect(document._invitationEpoch).toBeUndefined();
   });
 
-  test('drops the finalization Welcome epoch advance when keychain hydration settles after the deadline', async () => {
-    const existingEpoch = new Uint8Array(32).fill(9);
+  test('drops the finalization Welcome when keychain hydration settles after the deadline', async () => {
     const started = deferred<void>();
     const release = deferred<void>();
 
@@ -4926,13 +4888,12 @@ describe('document load response boundaries', () => {
           { algorithm: { name: 'AES-GCM' } },
         ]);
       },
-      invitationEpoch: existingEpoch,
       started: started.promise,
       release: () => release.resolve(),
     });
 
     expect(hydrateKeys).toHaveBeenCalledTimes(1);
-    expect(document._invitationEpoch).toBe(existingEpoch);
+    expect(document._invitationEpoch).toBeUndefined();
   });
 
   test('a failed open never authorizes founding a new document', async () => {
@@ -5920,8 +5881,8 @@ describe('document load response boundaries', () => {
       async () => true,
       message,
     );
-    const hydrationStarted = deferred<void>();
-    const releaseHydration = deferred<void>();
+    const commitmentStarted = deferred<void>();
+    const releaseCommitment = deferred<void>();
     const backgroundFinished = deferred<void>();
     document._bootstrapLoadApplicationState = 'complete';
     document._bootstrapLoadApplicationRevision = 2;
@@ -5931,15 +5892,11 @@ describe('document load response boundaries', () => {
       getKey: jest.fn(() => ({})),
       stateCommitment: jest.fn(async () => new Uint8Array(32).fill(1)),
       prepareMerge: jest.fn(() => ({
-        keyIds: [new Uint8Array([7])],
-        currentKeyId: new Uint8Array([7]),
-        hydrateKeys: jest.fn(async () => {
-          hydrationStarted.resolve();
-          await releaseHydration.promise;
-          return [];
+        stateCommitment: jest.fn(async () => {
+          commitmentStarted.resolve();
+          await releaseCommitment.promise;
+          return new Uint8Array(32).fill(1);
         }),
-        getKey: jest.fn(),
-        stateCommitment: jest.fn(async () => new Uint8Array(32).fill(2)),
         commit,
       })),
       merge: jest.fn(),
@@ -5967,14 +5924,14 @@ describe('document load response boundaries', () => {
         25,
       );
 
-      await hydrationStarted.promise;
+      await commitmentStarted.promise;
       jest.advanceTimersByTime(25);
       await expect(load).rejects.toThrow(/deadline exceeded/);
       await backgroundFinished.promise;
       await expect(
         document._mutationQueue.run(async () => 'released'),
       ).resolves.toBe('released');
-      releaseHydration.resolve();
+      releaseCommitment.resolve();
 
       expect(commit).not.toHaveBeenCalled();
       expect(document._bootstrapLoadApplicationState).toBe('complete');
@@ -5990,7 +5947,11 @@ describe('document load response boundaries', () => {
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
-      keychainChanges: { providerEncoding: 'one-key' },
+      changeId: 'APPLIED',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'caught-up' },
+      },
     };
     const handler = jest.fn();
     const { document, stream } = signedLoadHarness(
@@ -6005,19 +5966,11 @@ describe('document load response boundaries', () => {
     document._bootstrapLoadApplicationRevision = 2;
     document._hashes.add('EXISTING');
     document._remoteHandlers.preBootstrap = handler;
-    const merge = jest.fn(() => {
+    const merge = jest.fn(async () => {
+      document._hashes.add('APPLIED');
       document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
     });
-    document._keychain = {
-      getKey: jest.fn(() => ({})),
-      merge: jest.fn(),
-      stateCommitment: async () => new Uint8Array(32).fill(1),
-      prepareMerge: () => ({
-        stateCommitment: async () => new Uint8Array(32).fill(2),
-        hydrateKeys: async () => [],
-        commit: merge,
-      }),
-    };
+    document._syncDocumentChanges = merge;
     const rawStream = {
       ...stream,
       close: jest.fn(async () => undefined),
@@ -6064,7 +6017,11 @@ describe('document load response boundaries', () => {
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
-      keychainChanges: { providerEncoding: 'one-key' },
+      changeId: 'APPLIED',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { document: 'caught-up' },
+      },
     };
     const handler = jest.fn();
     const { document, stream } = signedLoadHarness(
@@ -6089,18 +6046,10 @@ describe('document load response boundaries', () => {
       check: jest.fn(async () => false),
     };
     document._writers = { users: jest.fn(async () => ['writer']) };
-    document._keychain = {
-      getKey: jest.fn(() => ({})),
-      merge: jest.fn(),
-      stateCommitment: async () => new Uint8Array(32).fill(1),
-      prepareMerge: () => ({
-        stateCommitment: async () => new Uint8Array(32).fill(2),
-        hydrateKeys: async () => [],
-        commit: () => {
-          document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
-        },
-      }),
-    };
+    document._syncDocumentChanges = jest.fn(async () => {
+      document._hashes.add('APPLIED');
+      document._pendingBootstrapRemoteUpdateHashes.add('APPLIED');
+    });
     const rawStream = {
       ...stream,
       close: jest.fn(async () => undefined),

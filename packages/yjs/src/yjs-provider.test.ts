@@ -8,8 +8,10 @@ import {
   encodeStateAsUpdateV2,
   encodeStateVector,
   Map as YMap,
+  mergeUpdatesV2,
 } from 'yjs';
 import {
+  ACLActorUnavailableError,
   ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
@@ -1342,6 +1344,110 @@ describe('YjsACL', () => {
     expect(await receiver.check(key2)).toBe(true);
   });
 
+  test('ready() turns true as soon as a refused update can merge', async () => {
+    const extra = await Promise.all(
+      Array.from({ length: 2 }, async () =>
+        serializeKey(
+          (
+            await crypto.subtle.generateKey(
+              { name: 'ECDSA', namedCurve: 'P-384' },
+              true,
+              ['sign', 'verify'],
+            )
+          ).publicKey,
+        ),
+      ),
+    );
+    const names = [
+      await serializeKey(key1),
+      await serializeKey(key2),
+      ...extra,
+    ];
+    const writer = (clientID: number, ...updates: Uint8Array[]) => {
+      const doc = new Doc({ gc: false });
+      for (const update of updates) applyUpdateV2(doc, update);
+      doc.clientID = clientID;
+      return doc;
+    };
+    const edit = (doc: Doc, apply: (users: YMap<boolean>) => void) => {
+      const before = encodeStateVector(doc);
+      doc.transact(() => apply(doc.getMap<boolean>('users')));
+      return encodeStateAsUpdateV2(doc, before);
+    };
+    const probe = (change: Uint8Array, dependencies: Uint8Array[]) => {
+      const live = new YjsACL();
+      let refusal: unknown;
+      try {
+        live.merge(change);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(ACLMergeDependencyError);
+      const { ready } = refusal as ACLMergeDependencyError;
+      for (const dependency of dependencies) {
+        live.merge(dependency);
+        const copy = new YjsACL();
+        copy.merge(live.current());
+        let merges = true;
+        try {
+          copy.merge(change);
+        } catch {
+          merges = false;
+        }
+        expect(ready?.()).toBe(merges);
+      }
+      expect(live.merge(change)).toBe(true);
+    };
+
+    // One update whose first struct integrates and whose second waits for E:0.
+    const elsewhere = writer(500);
+    const origin = edit(elsewhere, (users) => users.set(names[1]!, true));
+    const both = writer(600, origin);
+    probe(
+      edit(both, (users) => {
+        users.set(names[2]!, true);
+        users.set(names[1]!, true);
+      }),
+      [origin],
+    );
+
+    // Merged updates of one client with a gap at C:0, then at C:2.
+    const chain = writer(700);
+    const steps = names.map((name) =>
+      edit(chain, (users) => users.set(name, true)),
+    );
+    probe(mergeUpdatesV2([steps[1]!, steps[2]!]), [steps[0]!]);
+    probe(mergeUpdatesV2([steps[1]!, steps[3]!]), [
+      steps[0]!,
+      mergeUpdatesV2([steps[1]!, steps[2]!]),
+    ]);
+
+    // Deletions spanning several structs of another client.
+    const added = writer(800);
+    const additions = edit(added, (users) => {
+      for (const name of names.slice(0, 3)) users.set(name, true);
+    });
+    probe(
+      edit(writer(801, additions), (users) => {
+        for (const name of names.slice(0, 3)) users.delete(name);
+      }),
+      [additions],
+    );
+
+    // A re-addition whose origin and deletion belong to other clients.
+    const first = writer(900);
+    const addition = edit(first, (users) => users.set(names[0]!, true));
+    const removal = edit(writer(901, addition), (users) =>
+      users.delete(names[0]!),
+    );
+    probe(
+      edit(writer(902, addition, removal), (users) =>
+        users.set(names[0]!, true),
+      ),
+      [addition, removal],
+    );
+  });
+
   test('merge() refuses dependency-incomplete updates until dependencies arrive', async () => {
     const source = new Doc();
     const users = source.getMap('users');
@@ -1832,6 +1938,30 @@ describe('YjsACL', () => {
     expect(() => receiver.merge(new Uint8Array([255, 255, 255]))).toThrow();
     expect(receiver.merge(added)).toBe(true);
     expect(await receiver.check(key1)).toBe(true);
+  });
+
+  test('a bound ACL stages under its actor and never falls back to another', async () => {
+    const acl = new YjsACL();
+    acl.actorBinding.setLocalActor('4242');
+    const first = await acl.prepareAdd(key1);
+
+    expect([...acl.actorBinding.changeActors(first.changes)]).toEqual(['4242']);
+    await expect(acl.prepareAdd(key1)).rejects.toThrow(
+      ACLActorUnavailableError,
+    );
+    acl.actorBinding.setLocalActor('4343');
+    const retried = await acl.prepareAdd(key1);
+    expect([...acl.actorBinding.changeActors(retried.changes)]).toEqual([
+      '4343',
+    ]);
+    retried.commit();
+    const [prefix, bare] = acl.actorBinding.detach(
+      acl.actorBinding.attach(retried.changes, new Uint8Array([1, 2])),
+    );
+    expect([...prefix]).toEqual([1, 2]);
+    expect(bare).toEqual(retried.changes);
+    expect(() => acl.actorBinding.setLocalActor('-1')).toThrow(TypeError);
+    expect(() => acl.actorBinding.setLocalActor('01')).toThrow(TypeError);
   });
 
   test('YjsACLProvider.initialize() returns a new YjsACL', () => {

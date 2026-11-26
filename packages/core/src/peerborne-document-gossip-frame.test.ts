@@ -78,6 +78,7 @@ function writerDocument(name: string, inPlace = false) {
     _localHandlers: {},
     _remoteHandlers: {},
     _deliveryFailureHandlers: {},
+    _deliveryStateHandlers: {},
     _keychain: {
       current: jest.fn(async () => [new Uint8Array(32).fill(1), { key: 1 }]),
     },

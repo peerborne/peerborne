@@ -141,7 +141,12 @@ async function appendRaw(
 }
 
 /** The current entry plaintext with a caller-written operation path tail. */
-function encodeEntry(f: Fixture, checkpoint: boolean, tail?: Writer) {
+function encodeEntry(
+  f: Fixture,
+  checkpoint: boolean,
+  tail?: Writer,
+  trailer = true,
+) {
   const writer = new DocumentBinaryWriter(4 * 1024 * 1024);
   writeDocumentContext(writer, f.coordinator.documentContext);
   writer.fixed(f.authority.headId).bytes(new Uint8Array([1]));
@@ -154,6 +159,8 @@ function encodeEntry(f: Fixture, checkpoint: boolean, tail?: Writer) {
       .fixed(new Uint8Array(32).fill(1));
   writer.integer(0, 2).integer(0, 1);
   tail?.(writer);
+  // No carried frames on a checkpoint, and no frame nonce on an entry.
+  if (trailer) writer.integer(0, checkpoint ? 2 : 1);
   return writer.finish();
 }
 
@@ -331,6 +338,176 @@ test('restores each entry with its operation paths and its still-unsent publicat
   expect(items[2].operationPaths).toEqual([]);
   expect(items[2].outboundFrame).toEqual(unsent);
 });
+
+test.each(['memory', 'indexeddb'] as const)(
+  'a %s journal restores carried frames and frame nonces',
+  async (kind) => {
+    const s = await setup(kind);
+    try {
+      const journal = s.make();
+      await journal.restore();
+      const context = s.f.coordinator.documentContext;
+      const earlier = {
+        ...context,
+        controlHead: new Uint8Array(32).fill(9),
+      };
+      const carried = [
+        {
+          context: earlier,
+          sequence: 4,
+          nonce: new Uint8Array(12).fill(1),
+          changes: new Uint8Array([1]),
+          operationPaths: [['a']],
+        },
+        {
+          context,
+          sequence: 1,
+          nonce: new Uint8Array(12).fill(2),
+          changes: new Uint8Array([2]),
+          operationPaths: [[]],
+        },
+        {
+          context,
+          sequence: 2,
+          nonce: new Uint8Array(12).fill(3),
+          changes: new Uint8Array([3]),
+          operationPaths: [],
+        },
+      ];
+      await append(journal, { ...s.checkpoint(), carriedFrames: carried });
+      const nonce = new Uint8Array(12).fill(4);
+      await append(journal, { ...s.entry(3), frameNonce: nonce });
+      await append(journal, s.entry(4));
+      const items = await s.make().restore();
+      expect(items[0].carriedFrames).toEqual(carried);
+      expect(items[1].frameNonce).toEqual(nonce);
+      expect(items[2].frameNonce).toBeUndefined();
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test('only checkpoints carry frames and only entries carry a frame nonce', async () => {
+  const s = await setup();
+  const journal = s.make();
+  await journal.restore();
+  const frame = {
+    context: s.f.coordinator.documentContext,
+    sequence: 1,
+    nonce: new Uint8Array(12),
+    changes: new Uint8Array([1]),
+    operationPaths: [],
+  };
+  await expect(
+    journal.prepare({ ...s.checkpoint(), frameNonce: new Uint8Array(12) }),
+  ).rejects.toThrow();
+  await expect(
+    journal.prepare({
+      ...s.checkpoint(),
+      carriedFrames: [{ ...frame, nonce: new Uint8Array(11) }],
+    }),
+  ).rejects.toThrow();
+  await expect(
+    journal.prepare({ ...s.checkpoint(), carriedFrames: [{ ...frame, sequence: 0 }] }),
+  ).rejects.toThrow();
+  const fresh = s.make(
+    new InMemoryDocumentJournalStore(),
+    new InMemoryDocumentJournalRollbackAnchor(),
+  );
+  await fresh.restore();
+  await append(fresh, s.checkpoint());
+  await expect(
+    fresh.prepare({ ...s.entry(1), carriedFrames: [frame] }),
+  ).rejects.toThrow('Only journal checkpoints carry frames');
+});
+
+const carriedFrame =
+  (f: Fixture, same: number, explicit: boolean): Writer =>
+  (writer) => {
+    writer.integer(same, 1);
+    if (explicit) writeDocumentContext(writer, f.coordinator.documentContext);
+    writer
+      .integer(1, 8)
+      .fixed(new Uint8Array(12))
+      .bytes(new Uint8Array([1]))
+      .integer(0, 2);
+  };
+
+test.each<[string, (f: Fixture) => Writer]>([
+  [
+    'a first frame that repeats a context it has not named',
+    (f) => (writer) => {
+      writer.integer(1, 2);
+      carriedFrame(f, 1, false)(writer);
+    },
+  ],
+  [
+    'a context named again for the next frame',
+    (f) => (writer) => {
+      writer.integer(2, 2);
+      carriedFrame(f, 0, true)(writer);
+      carriedFrame(f, 0, true)(writer);
+    },
+  ],
+  [
+    'more frames than it holds',
+    (f) => (writer) => {
+      writer.integer(2, 2);
+      carriedFrame(f, 0, true)(writer);
+    },
+  ],
+  [
+    'trailing bytes after its frames',
+    (f) => (writer) => {
+      writer.integer(1, 2);
+      carriedFrame(f, 0, true)(writer);
+      writer.integer(0, 1);
+    },
+  ],
+])('a sealed checkpoint carrying %s is rejected', async (_name, tail) => {
+  const s = await setup();
+  const journal = s.make();
+  await journal.restore();
+  await appendRaw(
+    journal,
+    s.store,
+    s.storageKey,
+    1,
+    encodeEntry(s.f, true, (writer) => tail(s.f)(writer), false),
+  );
+  await expect(s.make().restore()).rejects.toThrow();
+});
+
+test.each(['memory', 'indexeddb'] as const)(
+  'a %s journal replaces an unsent publication in its place and keeps its binding',
+  async (kind) => {
+    const s = await setup(kind);
+    try {
+      const journal = s.make();
+      await journal.restore();
+      await append(journal, s.checkpoint());
+      const first = new Uint8Array([1, 1]),
+        second = new Uint8Array([2, 2, 2]),
+        replaced = new Uint8Array([3]);
+      await append(journal, s.entry(1, [['a']], first));
+      await append(journal, s.entry(2, [['a']], second));
+      await journal.replacePublication(first, replaced);
+      expect(await journal.pendingPublications()).toEqual([replaced, second]);
+      await expect(journal.replacePublication(first, second)).rejects.toThrow(
+        'not queued',
+      );
+      const restored = s.make();
+      const items = await restored.restore();
+      expect(items[1].outboundFrame).toEqual(replaced);
+      expect(await restored.pendingPublications()).toEqual([replaced, second]);
+      await restored.publicationSent(replaced);
+      expect(await restored.pendingPublications()).toEqual([second]);
+    } finally {
+      await s.close();
+    }
+  },
+);
 
 test('journal entries require operation paths exactly on non-checkpoints', async () => {
   const s = await setup();

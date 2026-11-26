@@ -385,7 +385,9 @@ async function welcomeHarness() {
     _changesSerializer: { deserializeChanges: () => ({ delta: 1 }) },
     _kemKeyPair: kemKeyPair,
     _kemPublicKeyRaw: kemPublicKeyRaw,
-    _keychain: { prepareMerge },
+    _keychain: { prepareMerge, keys: async () => [] },
+    _beekem: null,
+    _beekemInitialized: false,
     _invitationEpoch: undefined,
   });
   return { document, merge, message, verify };
