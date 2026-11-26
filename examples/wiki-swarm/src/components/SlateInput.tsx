@@ -24,7 +24,10 @@ export function SlateInput({placeholder, disabled, value, onChange}: {
         <Slate
             editor={editor}
             initialValue={value}
-            onChange={onChange}
+            onChange={(next) => {
+                if (editor.operations.some((operation) => operation.type !== 'set_selection'))
+                    onChange(next);
+            }}
         >
             <Toolbar className="mb-1" />
             <Editable

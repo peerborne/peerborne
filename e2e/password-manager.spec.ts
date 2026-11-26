@@ -1,4 +1,4 @@
-import { chromium, expect, test } from '@playwright/test';
+import { chromium, expect, test, type Page } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -240,6 +240,185 @@ test('reports failed writes and saves the current edits after retry', async ({
   await expect(page.getByPlaceholder('Enter a secret here...')).toHaveValue(
     'retry fixture value',
   );
+});
+
+async function openSecretWithStorageFailures(page: Page) {
+  await page.addInitScript(() => {
+    const failure = window as unknown as {
+      failAllWrites?: boolean;
+      failCheckpointReads?: boolean;
+    };
+    for (const method of ['put', 'add'] as const) {
+      const original = IDBObjectStore.prototype[method];
+      IDBObjectStore.prototype[method] = function (
+        this: IDBObjectStore,
+        ...args: Parameters<IDBObjectStore['put']>
+      ) {
+        if (failure.failAllWrites) {
+          this.transaction.abort();
+          throw new DOMException(
+            'Injected quota failure',
+            'QuotaExceededError',
+          );
+        }
+        return Reflect.apply(original, this, args);
+      };
+    }
+    const get = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (
+      ...args: Parameters<IDBObjectStore['get']>
+    ) {
+      if (failure.failCheckpointReads && this.name === 'documents') {
+        this.transaction.abort();
+        throw new DOMException('Injected read failure', 'UnknownError');
+      }
+      return Reflect.apply(get, this, args);
+    };
+  });
+  const status = page.getByRole('status');
+  const value = page
+    .getByPlaceholder('Enter a secret here...')
+    .filter({ visible: true });
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true })
+    .fill('Bank');
+  await value.fill('old-password');
+  await expect(status).toHaveText('Saved in this browser.');
+  return {
+    status,
+    value,
+    failStorage: (failures: {
+      failAllWrites: boolean;
+      failCheckpointReads?: boolean;
+    }) =>
+      page.evaluate((next) => {
+        Object.assign(window, next);
+      }, failures),
+  };
+}
+
+test('discards an edit lost to a write failure and never reports it saved', async ({
+  page,
+}) => {
+  const { status, value, failStorage } =
+    await openSecretWithStorageFailures(page);
+  const discarded =
+    'An edit could not be saved and was discarded. The vault shows its last saved state. Dismiss';
+
+  await failStorage({ failAllWrites: true });
+  await value.fill('new-password');
+  await expect(page.getByRole('alert')).toHaveText(discarded);
+  await expect(status).toHaveText('Vault changes have not been saved.');
+  await expect(value).toHaveValue('old-password');
+
+  await failStorage({ failAllWrites: false });
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await expect(page.getByText(/^Unnamed Secret/u)).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(discarded);
+  await expect(status).toHaveText('Vault changes have not been saved.');
+  await page.getByText('Bank', { exact: true }).click();
+  await expect(value).toHaveValue('old-password');
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await page.getByText('Bank', { exact: true }).click();
+  await expect(value).toHaveValue('old-password');
+});
+
+test('reopens a document retired by a storage failure when the user retries', async ({
+  page,
+}) => {
+  const { status, value, failStorage } =
+    await openSecretWithStorageFailures(page);
+
+  await failStorage({ failAllWrites: true, failCheckpointReads: true });
+  await value.fill('new-password');
+  await expect(status).toHaveText('Vault changes have not been saved.');
+  await expect(page.getByRole('alert')).toHaveText(
+    'An edit could not be saved, and this tab could not reopen the vault from its last saved state. Retry, or reload the page. Retry saving',
+  );
+
+  await failStorage({ failAllWrites: false, failCheckpointReads: false });
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await expect(page.getByText(/^Unnamed Secret/u)).toBeVisible();
+  await expect(status).toHaveText('Vault changes have not been saved.');
+  await page.getByText('Bank', { exact: true }).click();
+  await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(
+    'An edit could not be saved and was discarded. The vault shows its last saved state. Dismiss',
+  );
+  await expect(value).toHaveValue('old-password');
+  await expect(status).toHaveText('Vault changes have not been saved.');
+
+  await value.fill('after recovery');
+  await expect(value).toHaveValue('after recovery');
+  await expect(status).toHaveText('Vault changes have not been saved.');
+  await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(status).toHaveText('Saved in this browser.');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await page.getByText('Bank', { exact: true }).click();
+  await expect(value).toHaveValue('after recovery');
+});
+
+test('lists a new secret in the vault only after the secret is saved', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      ...args: Parameters<IDBObjectStore['put']>
+    ) {
+      if (
+        this.name === 'documents' &&
+        String(args[1]).includes('/passwords/') &&
+        (window as unknown as { failSecretWrites?: boolean }).failSecretWrites
+      ) {
+        this.transaction.abort();
+        throw new DOMException('The tab is closing', 'AbortError');
+      }
+      return Reflect.apply(original, this, args);
+    };
+  });
+  const secrets = page.locator('.list-group-item-action');
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create a vault', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await page
+    .getByPlaceholder('Enter a name here...')
+    .filter({ visible: true })
+    .fill('First secret');
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+
+  await page.evaluate(() => {
+    (window as unknown as { failSecretWrites?: boolean }).failSecretWrites =
+      true;
+  });
+  await page.getByRole('button', { name: 'New Secret', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Could not create the secret. Your saved data was left unchanged.',
+  );
+  await expect(secrets).toHaveText(['First secret']);
+  await expect(page.getByRole('status')).toHaveText('Saved in this browser.');
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault 1', exact: true }).click();
+  await expect(secrets).toHaveText(['First secret']);
 });
 
 test('restores the same vault and keys after reload, including another saved edit', async ({

@@ -30,7 +30,8 @@ yarn test:e2e:password-manager
 The Chromium suite creates a vault, saves a secret, reloads and logs in as the
 same identity, reopens the vault, and edits it again. A separate persistent-profile
 test closes and relaunches Chromium before reopening. It also checks damaged
-checkpoints, failed writes and retry, and the existing permissions UI. Run the
+checkpoints, failed writes and retry, an edit discarded after a storage
+failure, and the existing permissions UI. Run the
 focused storage and document tests with `yarn test:password-manager`.
 
 ## Browser-local recovery
@@ -43,9 +44,12 @@ history, and membership state. Open a saved vault from the vault selector after
 logging in. Wait for **Saved in this browser** before closing the tab.
 
 Checkpoint writes are atomic per document and carry revision checks. A vault
-index edit and a secret edit are separate writes. A storage failure is shown in
-the UI with a retry action; missing or invalid identity/checkpoint data never
-creates an empty replacement. Only one active tab may write this browser's vaults.
+index edit and a secret edit are separate writes, and a new secret is saved
+before the index lists it. A storage failure is shown in the UI with a retry
+action; missing or invalid identity/checkpoint data never creates an empty
+replacement. A storage failure while an edit is applied retires the Yjs
+instance, so the example reopens that document from its last checkpoint and
+reports the discarded edit until you dismiss it. Only one active tab may write this browser's vaults.
 
 This path restores authenticated local state without a network load. It does
 not implement peer-assisted recovery, multi-device identity transfer, backup,
