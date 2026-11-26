@@ -59,7 +59,42 @@ GossipSub is **best-effort**:
 - Messages are relayed through the mesh, not stored
 - Peers that join late may miss announcements
 - There is no message persistence, acknowledgment, or guaranteed delivery
-- Initial load and catch-up use point-to-point bitswap / HTTP fetch, not GossipSub
+- Initial load uses direct libp2p streams and Bitswap; `requestSync()` responses
+  are published on the document topic
+
+### Frame size and receive capacity
+
+`@libp2p/gossipsub` sends and accepts RPCs of at most 4 MiB, and the outbound
+limit is not configurable. A longer RPC is never sent: `publish()` resolves
+with no recipients and no error. Peerborne therefore caps one serialized sync
+message on GossipSub at 3.5 MiB (`MAX_GOSSIP_SYNC_MESSAGE_BYTES`), leaving room
+for encryption, the GossipSub envelope and piggybacked control messages.
+
+Each update frame carries the signed change tree retained since the last
+compaction. When that tree would exceed the cap, the writer sends its oldest
+document changes by CID and keeps the newest inline. A single change larger
+than the cap is sent by CID as well. A receiver that lacks a change sent by
+CID fetches its block over Bitswap. A request that gets no answer within 15
+seconds is retried, and after four attempts the block is skipped with a logged
+failure, so an unreachable block cannot stall later frames for long. A later
+frame that names the block tries again. Peers that already applied the change
+fetch nothing.
+
+A `requestSync()` response that does not fit, usually because of its
+snapshot, is sent directly to the requesting peer over
+`/peerborne/sync-frame/1.0.0`, within the shared 10 MiB request limit. The
+receiver admits and verifies it like a GossipSub frame and ignores a sync
+request sent this way. A response larger than 10 MiB, or one to a peer that
+cannot be dialed, is not delivered: the responder logs a warning and the
+requester must load the document.
+
+Each open document processes at most 16 frames and 16 MiB of ciphertext at a
+time, and all documents together at most 64 frames and 64 MiB. A frame that
+arrives while either budget is full is skipped, but the most recently arrived
+skipped frame is kept and processed once a credit frees. A writer's later
+frames carry its earlier changes inline, so this recovers the end of a burst
+from one writer. When several writers burst at once, an earlier writer's last
+changes can wait for its next frame or a `requestSync()`.
 
 ## Peer discovery
 

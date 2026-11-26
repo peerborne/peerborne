@@ -15,6 +15,13 @@
       "entry": "echoStorm"
     },
     {
+      "id": "oversized-frames",
+      "name": "Oversized changes, catch-up and typing bursts between real Peerborne nodes",
+      "runtime": "node",
+      "module": "./node/frames.mjs",
+      "entry": "oversizedFrames"
+    },
+    {
       "id": "slow-peer",
       "name": "Ordered SCTP loss and healthy-peer progress",
       "runtime": "browser",

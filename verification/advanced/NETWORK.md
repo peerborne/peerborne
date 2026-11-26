@@ -38,6 +38,16 @@ must each reach D through both branches but enter application crypto exactly
 once. Gossip settings require both links and disable peer exchange; this is
 dependency/ingress evidence, not default discovery or WebRTC routing evidence.
 
+`oversized-frames` joins a founder and an invited reader through a loopback
+WebSocket Circuit Relay with production GossipSub, topic validators, Bitswap
+and the sync-frame protocol. A change larger than one GossipSub frame must reach
+the reader by CID over Bitswap, while every published frame stays under the
+4 MiB RPC limit and reaches a peer. A burst of 30 (full: 60) concurrent edits
+must leave the reader on the final edit. A reader that drops megabyte edits
+must then converge through `requestSync()` without a GossipSub response,
+because the founder's snapshot no longer fits one frame. Slow links, relay data
+limits, browser transports and an offline block holder remain outside it.
+
 `slow-peer` places one replica in a separate CDP target and makes the other
 three mutate concurrently over ordered SCTP channels. A no-loss baseline and
 100% blackout control precede 80% WebRTC packet-loss emulation. The control

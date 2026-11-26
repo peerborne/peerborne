@@ -59,6 +59,7 @@ import {
   invitationJoinV1,
   invitationCatchUpV1,
   snapshotLoadV4,
+  syncFrameV1,
   securityAdvertiseV1,
 } from './wire-protocols.js';
 import {
@@ -233,7 +234,8 @@ type SharedProtocolName =
   | 'snapshot-load'
   | 'beekem-welcome'
   | 'beekem-pathupdate'
-  | 'security-advertise';
+  | 'security-advertise'
+  | 'sync-frame';
 
 function sharedProtocolRequestTimeoutMs(configured: unknown): number {
   return typeof configured === 'number' &&
@@ -1195,6 +1197,54 @@ export class Peerborne<
       });
     };
 
+    // Handler for sync frame V1: the path-prefix header, then one encrypted
+    // ordinary sync frame that was too large for GossipSub. The document
+    // admits and verifies it like a GossipSub frame.
+    const syncFrameHandler = (rawStream: Stream) => {
+      const stream: ProtocolStream = rawStream;
+      return pipe(
+        stream,
+        async (source: AsyncIterable<Uint8ArrayList | Uint8Array>) => {
+          let header;
+          try {
+            header = await withSharedProtocolRequestDeadline(
+              () =>
+                readPathPrefixedProtocolHeader(
+                  source,
+                  this._documentRegistry,
+                  'sync-frame',
+                  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+                  MAX_DOCUMENT_PATH_LENGTH,
+                ),
+              requestTimeoutMs,
+            );
+          } catch (err) {
+            const reason =
+              err instanceof SharedProtocolRequestTimeoutError
+                ? 'request timed out'
+                : 'failed to read request';
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            console.warn(`Shared sync-frame handler: ${reason}, dropping`);
+            return [];
+          }
+          if (header.kind !== 'ok') {
+            await abortRejectedSharedProtocolStream(stream, requestTimeoutMs);
+            return [];
+          }
+          await runSharedProtocolHandlerPhase(
+            stream,
+            requestTimeoutMs,
+            'sync-frame',
+            (admission) =>
+              header.doc.handleSyncFrameData(header.payload, admission),
+          );
+          return [];
+        },
+      ).then(() => undefined).catch(() => {
+        console.error('Shared sync-frame handler failed');
+      });
+    };
+
     // Handler implementation for security-advertise requests (initial-load
     // quorum probe; see `wire-protocols.ts::securityAdvertiseV1`). Wire format
     // mirrors documentLoadV4: a single serialized CRDTLoadRequest in,
@@ -1305,6 +1355,7 @@ export class Peerborne<
       this.libp2p.handle(beekemWelcomeV2, beekemWelcomeHandler, relayProtocolOptions),
       this.libp2p.handle(beekemPathUpdateV2, beekemPathUpdateHandler, relayProtocolOptions),
       this.libp2p.handle(securityAdvertiseV1, securityAdvertiseHandler, relayProtocolOptions),
+      this.libp2p.handle(syncFrameV1, syncFrameHandler, relayProtocolOptions),
       this.libp2p.handle(invitationJoinV1, invitationJoinHandler, relayProtocolOptions),
     ]).then(() => undefined);
     this._sharedHandlersRegistration = registration;

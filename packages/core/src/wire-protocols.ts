@@ -58,5 +58,14 @@ export const beekemWelcomeV2 = '/peerborne/beekem-welcome/2.0.0';
 // explicit key-recovery flow.
 export const beekemPathUpdateV2 = '/peerborne/beekem-pathupdate/2.0.0';
 
+// Sync frame v1 carries one encrypted ordinary sync message that does not fit
+// a GossipSub frame: a `requestSync()` response whose snapshot is too large is
+// sent to the requesting peer this way. The request is the shared 4-byte
+// big-endian document-path length and UTF-8 path, then the same encrypted
+// frame a GossipSub message carries. There is no response. The receiver admits
+// the frame under the document's GossipSub receive budget and applies it only
+// as a writer-signed ordinary sync message; a sync request is ignored.
+export const syncFrameV1 = '/peerborne/sync-frame/1.0.0';
+
 export const searchIndexAdvertiseV1 = '/peerborne/search-index-advertise/1.0.0';
 export const searchQueryV1 = '/peerborne/search-query/1.0.0';

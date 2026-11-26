@@ -9,6 +9,7 @@ import {
   documentLoadV4,
   snapshotLoadV4,
   securityAdvertiseV1,
+  syncFrameV1,
 } from './wire-protocols.js';
 
 jest.mock(
@@ -61,6 +62,7 @@ const rawProtocols = [
     beekemPathUpdateV2,
     'handleBeeKEMPathUpdateRequestData',
   ],
+  ['sync-frame', syncFrameV1, 'handleSyncFrameData'],
 ] as const;
 
 async function registerHandlers(

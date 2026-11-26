@@ -418,6 +418,7 @@ export {
   snapshotLoadV4,
   securityAdvertiseV1,
   invitationCatchUpV1,
+  syncFrameV1,
 } from './wire-protocols.js';
 export type {
   ACLChainConfig,
@@ -435,6 +436,10 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+export {
+  GossipFrameLimitError,
+  MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+} from './gossip-frame.js';
 
 export { canonicalKeychain } from './keychain-canonical.js';
 export type {

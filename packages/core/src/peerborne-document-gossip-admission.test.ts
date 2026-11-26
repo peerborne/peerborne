@@ -2,9 +2,20 @@ import { expect, jest, test } from '@jest/globals';
 import { DEFAULT_DOCUMENT_OPERATION_COUNT } from './group-document-operation.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { PeerborneDocument } from './peerborne-document.js';
+import { encodeSyncRequest } from './sync-request.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
-jest.mock('multiformats', () => ({ CID: class {} }), { virtual: true });
+jest.mock(
+  'multiformats',
+  () => ({
+    CID: class {
+      static parse(value: string) {
+        return { toString: () => value };
+      }
+    },
+  }),
+  { virtual: true },
+);
 jest.mock('@helia/unixfs', () => ({ unixfs: jest.fn() }), { virtual: true });
 jest.mock(
   '@libp2p/gossipsub',
@@ -130,15 +141,94 @@ test('the active receive paths share document and aggregate limits until work ac
     pending[0].resolve(new Uint8Array([3]));
     await turn();
     expect(fixtures[0].deserialize).not.toHaveBeenCalled();
-    const fresh = target.validator()({}, { data: frame() });
+    // The freed shared credit goes to the target's latest skipped frame.
     expect(decrypt).toHaveBeenCalledTimes(charged + 1);
+    pending.at(-1)!.resolve(new Uint8Array([3]));
+    for (let index = 0; index < 5; index++) await turn();
+    expect(target.sync).toHaveBeenCalledTimes(1);
+    const fresh = target.validator()({}, { data: frame() });
+    expect(decrypt).toHaveBeenCalledTimes(charged + 2);
     pending.at(-1)!.resolve(new Uint8Array([3]));
     await expect(fresh).resolves.toBe('accept');
   } finally {
-    for (const completion of pending) completion.resolve(undefined);
+    for (let index = 0; index < pending.length; index++) {
+      pending[index].resolve(undefined);
+      await turn();
+    }
     await Promise.all(validators);
     await turn();
     await Promise.all(fixtures.map(({ document }) => document.close()));
+  }
+});
+
+test('a validated burst that exceeds the document limit still applies its final frame', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  const burst = DEFAULT_DOCUMENT_OPERATION_COUNT + 14;
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from({ length: burst }, (_, index) =>
+      validate({}, { data: frame(index + 1) }),
+    );
+    await turn();
+    expect(decrypt).toHaveBeenCalledTimes(DEFAULT_DOCUMENT_OPERATION_COUNT);
+    unblock.resolve();
+    const outcomes = await Promise.all(results);
+    expect(outcomes.filter((outcome) => outcome === 'accept')).toHaveLength(
+      DEFAULT_DOCUMENT_OPERATION_COUNT,
+    );
+    for (let index = 0; index < 10; index++) await turn();
+    expect(decrypt).toHaveBeenCalledTimes(DEFAULT_DOCUMENT_OPERATION_COUNT + 1);
+    expect(fixture.sync).toHaveBeenCalledTimes(1);
+    expect(fixture.sync).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: String(burst) }),
+      true,
+      'ordinary-sync-v1',
+      undefined,
+      false,
+      undefined,
+      {
+        assertStillActive: expect.any(Function),
+        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+      },
+    );
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
+  }
+});
+
+test('closing discards a skipped frame before it can be retried', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from(
+      { length: DEFAULT_DOCUMENT_OPERATION_COUNT + 1 },
+      (_, index) => validate({}, { data: frame(index + 1) }),
+    );
+    await turn();
+    await fixture.document.close();
+    unblock.resolve();
+    await Promise.all(results);
+    for (let index = 0; index < 10; index++) await turn();
+    expect(decrypt).toHaveBeenCalledTimes(DEFAULT_DOCUMENT_OPERATION_COUNT);
+    expect(fixture.sync).not.toHaveBeenCalled();
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
   }
 });
 
@@ -179,7 +269,10 @@ test('closing and reopening skips old queued receive work and applies fresh fram
       undefined,
       false,
       undefined,
-      { assertStillActive: expect.any(Function) },
+      {
+        assertStillActive: expect.any(Function),
+        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+      },
     );
   } finally {
     unblock.resolve();
@@ -229,6 +322,65 @@ test('a closing subscriber stops an authenticated frame whose verification is st
     expect(applyChanges.mock.calls[0]![0]).toBe('7');
   } finally {
     verification.resolve(true);
+    await fixture.document.close();
+  }
+});
+
+test('a direct sync frame is applied like a GossipSub frame but never as a sync request', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const handleSyncRequest = jest.fn(async () => {});
+  Object.assign(fixture.document, { _handleSyncRequest: handleSyncRequest });
+  const request = encodeSyncRequest({
+    documentId: '/document',
+    requester: 'member',
+    requestId: '00'.repeat(16),
+    issuedAtMs: Date.now(),
+    knownTips: ['tip'],
+    knownSnapshots: [],
+    signature: 'AQ==',
+  });
+  const requestFrame = new Uint8Array([1, 2, ...request]);
+  const active = { isActive: () => true } as never;
+  try {
+    await fixture.document.open();
+    await fixture.document.handleSyncFrameData(requestFrame, active);
+    await fixture.document.handleSyncFrameData(frame(8), {
+      isActive: () => false,
+    } as never);
+    await fixture.document.handleSyncFrameData(new Uint8Array(0), active);
+    for (let index = 0; index < 5; index++) await turn();
+    expect(handleSyncRequest).not.toHaveBeenCalled();
+    expect(fixture.deserialize).not.toHaveBeenCalled();
+    expect(fixture.sync).not.toHaveBeenCalled();
+
+    fixture.deliver(requestFrame);
+    for (let index = 0; index < 5; index++) await turn();
+    expect(handleSyncRequest).toHaveBeenCalledTimes(1);
+
+    await fixture.document.handleSyncFrameData(frame(9), active);
+    for (let index = 0; index < 5; index++) await turn();
+    expect(fixture.sync).toHaveBeenCalledTimes(1);
+    expect(fixture.sync).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: '9' }),
+      true,
+      'ordinary-sync-v1',
+      undefined,
+      false,
+      undefined,
+      {
+        assertStillActive: expect.any(Function),
+        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+      },
+    );
+
+    await fixture.document.close();
+    await fixture.document.handleSyncFrameData(frame(10), active);
+    for (let index = 0; index < 5; index++) await turn();
+    expect(decrypt).toHaveBeenCalledTimes(3);
+  } finally {
     await fixture.document.close();
   }
 });

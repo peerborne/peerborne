@@ -45,6 +45,12 @@ import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
 import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipFrameLimitError,
+  MAX_DIRECT_SYNC_MESSAGE_BYTES,
+  MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+  boundSyncMessage,
+} from './gossip-frame.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -142,6 +148,7 @@ import {
 } from './ecies.js';
 import {
   beekemPathUpdateV2,
+  syncFrameV1,
   beekemWelcomeV2,
   documentLoadV4,
   snapshotLoadV4,
@@ -259,6 +266,13 @@ export type { HistoryVisibility } from './invitation-policy.js';
 
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
 const loadCandidateResponders = new WeakMap<object, string>();
+
+const DIRECT_SYNC_FRAME_TIMEOUT_MS = 30_000;
+const GOSSIP_BLOCK_FETCH_ATTEMPT = { timeoutMs: 15_000, attempts: 4 };
+
+function gossipSource(message: Message): PeerId | undefined {
+  return message.type === 'signed' ? message.from : undefined;
+}
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -773,6 +787,11 @@ interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly canDispatch?: () => boolean;
 }
 
+interface BlockFetchAttempt {
+  readonly timeoutMs: number;
+  readonly attempts: number;
+}
+
 interface DocumentChangeFetchOptions<DocumentKey> {
   readonly signal?: AbortSignal;
   readonly maxBlockBytes?: number;
@@ -782,6 +801,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
+  /** Abandon each attempt to fetch one missing block after a bound. */
+  readonly blockFetchAttempt?: BlockFetchAttempt;
 }
 
 /**
@@ -1434,6 +1455,7 @@ export class PeerborneDocument<
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
+  private _receiveDirectSyncFrame?: (payload: Uint8Array) => Promise<void>;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
@@ -1999,6 +2021,35 @@ export class PeerborneDocument<
       options?.signal,
       getKey,
     );
+  }
+
+  /**
+   * A block request can stall without a holder ever answering it, while a
+   * fresh request for the same CID succeeds, so each attempt is bounded.
+   */
+  private async _getBlockWithAttempts(
+    hash: CID,
+    options: DocumentBlockReadOptions,
+    getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
+    bound?: BlockFetchAttempt,
+  ): Promise<ChangesType> {
+    if (bound === undefined) return this._getBlock(hash, options, getKey);
+    for (let attempt = 1; ; attempt++) {
+      const signal = AbortSignal.any([
+        ...(options.signal ? [options.signal] : []),
+        AbortSignal.timeout(bound.timeoutMs),
+      ]);
+      try {
+        return await this._getBlock(hash, { ...options, signal }, getKey);
+      } catch (error) {
+        if (
+          attempt >= bound.attempts ||
+          options.signal?.aborted ||
+          !signal.aborted
+        )
+          throw error;
+      }
+    }
   }
 
   private async _putBlock(
@@ -2695,7 +2746,7 @@ export class PeerborneDocument<
                     fetchSignal,
                     fetchOptions.getKey,
                   )
-                : this._getBlock(
+                : this._getBlockWithAttempts(
                     cid,
                     {
                       signal: fetchSignal,
@@ -2703,6 +2754,7 @@ export class PeerborneDocument<
                       consumeBytes,
                     },
                     fetchOptions.getKey,
+                    fetchOptions.blockFetchAttempt,
                   ),
               fetchSignal,
             );
@@ -4124,25 +4176,7 @@ export class PeerborneDocument<
       if (!postPublishCommit) {
         this._lastSyncMessage = updateMessage;
       }
-      const serializedUpdate =
-        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
-
-      // Encrypt sync message.
-      const [documentKeyID, documentKey] = await this._keychain.current();
-      if (!documentKey) {
-        throw new Error(`Document ${this.documentPath} has an empty keychain!`);
-      }
-      const { nonce, data } = await this._authProvider.encrypt(
-        serializedUpdate,
-        documentKey,
-      );
-      if (!nonce) {
-        throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
-      }
-      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-        this._topic,
-        concatUint8Arrays(documentKeyID, nonce, data),
-      );
+      await this._publishSyncMessage(updateMessage);
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -4331,10 +4365,11 @@ export class PeerborneDocument<
    * `keepCount`.
    *
    * @param keepCount Maximum number of change nodes to retain in the sync tree.
-   * @param depthBound Count every node that carries an inline change, ACL or
-   *   document, and no deferred leaves, so `keepCount` bounds both the retained
-   *   depth and the changes a lagging peer can still receive inline. ACL nodes
-   *   below the cut are still preserved as re-attached leaves.
+   * @param depthBound Count every node, ACL or document, except deferred
+   *   leaves, so `keepCount` bounds both the retained depth and the changes a
+   *   lagging peer can still receive inline. A node whose payload was sent by
+   *   CID still nests its children, so it counts. ACL nodes below the cut are
+   *   still preserved as re-attached leaves.
    * @returns Set of CID strings for document nodes that were pruned from the tree.
    *   ACL node CIDs are never included (they are always preserved).
    */
@@ -4454,7 +4489,11 @@ export class PeerborneDocument<
         current.kind === crdtReaderChangeNode ||
         current.kind === crdtWriterChangeNode;
 
-      if (depthBound ? current.change !== undefined : !isACLNode) {
+      if (
+        depthBound
+          ? current.change !== undefined || current.children !== undefined
+          : !isACLNode
+      ) {
         documentNodesVisited++;
       }
 
@@ -6781,8 +6820,9 @@ export class PeerborneDocument<
   private async _handleSyncRequest(
     request: SyncRequest,
     isCurrent: () => boolean = () => this._subscribed,
+    source?: PeerId,
   ): Promise<void> {
-    await this._runStateMutation(async () => {
+    const direct = await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
       const previous = this._lastSyncMessage,
@@ -6846,22 +6886,131 @@ export class PeerborneDocument<
           ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
         };
         message.signature = await this._signAsWriter(message);
-        await this._publishSyncBytes(
-          this._syncMessageSerializer.serializeSyncMessage(message),
-          () => {
-            const dispatch = this._observeSyncRequestClock();
-            return (
-              isCurrent() &&
-              dispatch !== undefined &&
-              isSyncRequestFresh(request, dispatch)
-            );
-          },
-        );
+        const isDispatchCurrent = () => {
+          const dispatch = this._observeSyncRequestClock();
+          return (
+            isCurrent() &&
+            dispatch !== undefined &&
+            isSyncRequestFresh(request, dispatch)
+          );
+        };
+        try {
+          await this._publishSyncMessage(message, isDispatchCurrent);
+          return;
+        } catch (error) {
+          if (!(error instanceof GossipFrameLimitError)) throw error;
+        }
+        // Too large for GossipSub: answer the publishing peer directly.
+        const bounded =
+          source === undefined
+            ? undefined
+            : await boundSyncMessage(
+                message,
+                MAX_DIRECT_SYNC_MESSAGE_BYTES,
+                (candidate) =>
+                  this._syncMessageSerializer.serializeSyncMessage(candidate),
+                (candidate) => this._signAsWriter(candidate),
+              );
+        if (bounded === undefined) {
+          console.warn(
+            `Sync response for ${this.documentPath} exceeds the frame limit; the requester must load the document`,
+          );
+          return;
+        }
+        if (!isDispatchCurrent()) return;
+        return {
+          peer: source!,
+          payload: this._buildPathPrefixedFrame(
+            'sync-frame',
+            await this._encryptSyncFrame(bounded.bytes),
+          ),
+        };
       } finally {
         const settled = this._observeSyncRequestClock();
         if (settled !== undefined) this._lastSyncResponseAt = settled;
       }
     });
+    if (direct === undefined || !isCurrent()) return;
+    try {
+      await this._sendDirectSyncFrame(direct.peer, direct.payload);
+    } catch {
+      console.warn(
+        `Direct sync response for ${this.documentPath} could not be delivered`,
+      );
+    }
+  }
+
+  private async _sendDirectSyncFrame(
+    peer: PeerId,
+    payload: Uint8Array,
+  ): Promise<void> {
+    const signal = AbortSignal.timeout(DIRECT_SYNC_FRAME_TIMEOUT_MS);
+    const stream = await this.libp2p.dialProtocol(peer, [syncFrameV1], {
+      runOnLimitedConnection: true,
+      signal,
+    });
+    try {
+      if (!stream.send(payload)) await stream.onDrain({ signal });
+    } catch (error) {
+      stream.abort(error instanceof Error ? error : new Error('Direct sync frame failed'));
+      throw error;
+    }
+    // The receiver reads to our FIN, then resets the stream, so a failed close
+    // does not mean the frame was lost.
+    await stream.close({ signal }).catch(() => undefined);
+  }
+
+  /**
+   * Handle an inbound `syncFrameV1` payload (already de-framed of the
+   * path-prefix header by the shared handler in `peerborne.ts`). The frame is
+   * admitted and applied exactly like a GossipSub frame, except that a sync
+   * request is ignored.
+   *
+   * @internal Invoked by the shared protocol handler in `peerborne.ts`.
+   */
+  public async handleSyncFrameData(
+    payload: Uint8Array,
+    admission?: SharedProtocolHandlerAdmission,
+  ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
+    if (!isSharedProtocolHandlerActive(admission)) return;
+    void this._receiveDirectSyncFrame?.(payload);
+  }
+
+  /**
+   * Publish a signed sync message, deferring old change payloads to CIDs when
+   * the whole tree would not fit one GossipSub frame.
+   */
+  private async _publishSyncMessage(
+    message: CRDTSyncMessage<ChangesType>,
+    isCurrent?: () => boolean,
+  ): Promise<boolean> {
+    const bounded = await boundSyncMessage(
+      message,
+      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+      (candidate) =>
+        this._syncMessageSerializer.serializeSyncMessage(candidate),
+      (candidate) => this._signAsWriter(candidate),
+    );
+    if (bounded === undefined) throw new GossipFrameLimitError();
+    if (
+      message.changes?.change !== undefined &&
+      bounded.message.changes?.change === undefined
+    ) {
+      console.warn(
+        `A change to ${this.documentPath} exceeds the GossipSub frame limit; peers fetch it by CID`,
+      );
+    }
+    return this._publishSyncBytes(bounded.bytes, isCurrent);
+  }
+
+  private async _encryptSyncFrame(bytes: Uint8Array): Promise<Uint8Array> {
+    const [keyId, key] = await this._keychain.current();
+    if (!key) throw new Error('Document has no encryption key');
+    const { nonce, data } = await this._authProvider.encrypt(bytes, key);
+    if (!nonce) throw new Error('Encrypted sync requires a nonce');
+    return concatUint8Arrays(keyId, nonce, data);
   }
 
   private async _publishSyncBytes(
@@ -6873,11 +7022,7 @@ export class PeerborneDocument<
       'Document sync message',
     );
     if (isCurrent && !isCurrent()) return false;
-    const [keyId, key] = await this._keychain.current();
-    if (!key) throw new Error('Document has no encryption key');
-    const { nonce, data } = await this._authProvider.encrypt(bytes, key);
-    if (!nonce) throw new Error('Encrypted sync requires a nonce');
-    const frame = concatUint8Arrays(keyId, nonce, data);
+    const frame = await this._encryptSyncFrame(bytes);
     if (isCurrent && !isCurrent()) return false;
     await this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
@@ -7526,53 +7671,84 @@ export class PeerborneDocument<
     // won't try to unsubscribe if open() failed during validation.
     const receiveAdmission = new GossipReceiveAdmission();
     this._gossipReceiveAdmission = receiveAdmission;
+    const reportReceiveFailure = () => {
+      if (receiveAdmission.active)
+        console.error('Inbound sync message handling failed');
+    };
+    // `source` is the GossipSub publisher; a direct frame has none and may
+    // not carry a sync request.
+    const receiveFrame = async (
+      frame: Uint8Array,
+      source: PeerId | undefined,
+      direct = false,
+    ): Promise<void> => {
+      const rawContent = await this._decryptGossipFrame(frame);
+      if (!rawContent || !receiveAdmission.active) return;
+
+      if (isSyncRequest(rawContent)) {
+        if (direct) return;
+        const request = decodeSyncRequest(rawContent);
+        if (request) {
+          await this._handleSyncRequest(
+            request,
+            () => this._subscribed && receiveAdmission.active,
+            source,
+          );
+        }
+        return;
+      }
+
+      const message = snapshotSyncMessageForContext<ChangesType>(
+        this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+        'ordinary-sync-v1',
+      );
+      if (message.documentId !== this.documentPath) return;
+
+      await this._runStateMutation(async () => {
+        if (!receiveAdmission.active) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!receiveAdmission.active)
+                throw new Error('GossipSub receive subscription closed');
+            },
+            // A change sent by CID must not hold the state queue while no
+            // reachable peer serves its block.
+            blockFetchAttempt: GOSSIP_BLOCK_FETCH_ATTEMPT,
+          },
+        );
+      });
+    };
+    // A frame skipped for capacity is retried through the full receive path,
+    // which repeats every validator check before applying it.
+    const retryFrame =
+      (source: PeerId | undefined, direct = false) => (frame: Uint8Array) =>
+        receiveFrame(frame, source, direct).catch(reportReceiveFailure);
+    this._receiveDirectSyncFrame = (payload) =>
+      receiveAdmission
+        .run(
+          payload,
+          (frame) => receiveFrame(frame, undefined, true),
+          retryFrame(undefined, true),
+        )
+        .then(() => undefined, reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
+      const source = gossipSource(rawMessage.detail);
 
       void receiveAdmission
-        .run(rawMessage.detail.data, async (frame) => {
-          const rawContent = await this._decryptGossipFrame(frame);
-          if (!rawContent || !receiveAdmission.active) return;
-
-          if (isSyncRequest(rawContent)) {
-            const request = decodeSyncRequest(rawContent);
-            if (request) {
-              await this._handleSyncRequest(
-                request,
-                () => this._subscribed && receiveAdmission.active,
-              );
-            }
-            return;
-          }
-
-          const message = snapshotSyncMessageForContext<ChangesType>(
-            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-            'ordinary-sync-v1',
-          );
-          if (message.documentId !== this.documentPath) return;
-
-          await this._runStateMutation(async () => {
-            if (!receiveAdmission.active) return;
-            await this._syncUnlocked(
-              message,
-              true,
-              'ordinary-sync-v1',
-              undefined,
-              false,
-              undefined,
-              {
-                assertStillActive: () => {
-                  if (!receiveAdmission.active)
-                    throw new Error('GossipSub receive subscription closed');
-                },
-              },
-            );
-          });
-        })
-        .catch(() => {
-          if (receiveAdmission.active)
-            console.error('Inbound sync message handling failed');
-        });
+        .run(
+          rawMessage.detail.data,
+          (frame) => receiveFrame(frame, source),
+          retryFrame(source),
+        )
+        .catch(reportReceiveFailure);
     };
 
     // All registration and subscription steps are inside try/catch so that
@@ -7690,6 +7866,7 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
+                retryFrame(gossipSource(message)),
               );
               return receiveAdmission.active
                 ? (result ?? TopicValidatorResult.Ignore)
@@ -7795,6 +7972,7 @@ export class PeerborneDocument<
   private async _closeResources(): Promise<void> {
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
+    this._receiveDirectSyncFrame = undefined;
     this._gcClosed = true;
     this._gcLifecycle = {};
     const coordinatedClose = this._coordinated?.close();
