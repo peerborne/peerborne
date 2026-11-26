@@ -382,12 +382,14 @@ ID are detected as conflicting prefixes rather than merged.
 
 Received publications wait in their own queue, separate from the 16 local
 operations and 16 MiB a document admits. Received work runs the document's
-waiting local edits and publication bookkeeping before each frame from another
-author, so a received backlog never delays them. Every frame they carry is
-charged twice its ciphertext size, covering the plaintext that
-pre-authentication keeps for its turn. A document queues at most 49,152 frames and 96 MiB of charged
-bytes, and all coordinated documents in a process at most 131,072 frames and
-192 MiB. One GossipSub sender may hold 20,480 frames and 40 MiB of a document's
+waiting local edits, publication bookkeeping and redelivery requests when each
+turn starts and between frames, so a received backlog never delays them. It
+does not while a frame of the replica's own author, from another device, is
+waiting or held, so an edit cannot take that frame's sequence. Every frame
+they carry is charged twice its ciphertext size, covering the plaintext that
+pre-authentication keeps for its turn. A document queues at most 49,152 frames
+and 96 MiB of charged bytes, and all coordinated documents in a process at
+most 131,072 frames and 192 MiB. One GossipSub sender may hold 20,480 frames and 40 MiB of a document's
 queue, which covers one full outbox backlog plus live edits sent while it
 drains, and two senders' shares leave room for everyone else. Each frame's
 charge is released once it is processed. A publication that arrives beyond
@@ -461,8 +463,8 @@ sends one at once. A document sends at most one request every 2.5 s.
 
 A request is authenticated outside the document queue and charged against the
 received bounds and its sender's share, never the local operation budget, so
-requests from outsiders cannot hold up local edits. A fresh request no newer
-than the member's last is refused before its signature is checked.
+requests from outsiders cannot hold up local edits. A stale request, or one no
+newer than the member's last, is refused before its signature is checked.
 
 A current member that authenticates the request resends, on the topic, the
 exact encrypted frames it retains after each of the requester's heads. It

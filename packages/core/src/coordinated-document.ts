@@ -654,6 +654,10 @@ export class CoordinatedDocument<
   };
   private tail: Promise<void> = Promise.resolve();
   private readonly localLane: Array<() => Promise<unknown>> = [];
+  // Received publications whose author is not decoded yet, and frames of the
+  // replica's own author that are waiting or queued for another turn.
+  private undecidedPublications = 0;
+  private ownFramesPending = 0;
   private receipts = new Map<string, Receipt>();
   private receiptsContext?: GroupSecurityDocumentContext;
   private recovered = false;
@@ -875,8 +879,8 @@ export class CoordinatedDocument<
 
   /**
    * Queue document work. A `local` edit also joins the local lane: received
-   * work holding the queue runs it before its next frame from another author,
-   * so a received backlog never delays the replica's own edits.
+   * work holding the queue runs it at each turn and frame boundary, so a
+   * received backlog never delays the replica's own edits.
    */
   private enqueue<T>(
     bytes: number,
@@ -926,13 +930,25 @@ export class CoordinatedDocument<
     }
   }
 
-  /** Run the local edits waiting while received work holds the queue. */
+  /**
+   * Run the local edits waiting while received work holds the queue, unless
+   * a frame of the replica's own author, from another device, is waiting,
+   * queued for another turn or held: an edit run first would sign the same
+   * sequence.
+   */
   private async serveLocal(): Promise<void> {
-    while (this.localLane.length !== 0)
+    while (this.localLane.length !== 0 && !this.ownFramesWaiting())
       await this.localLane[0]().then(
         () => {},
         () => {},
       );
+  }
+
+  private ownFramesWaiting(): boolean {
+    if (this.undecidedPublications > 0 || this.ownFramesPending > 0)
+      return true;
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    return this.held?.frames.some((entry) => entry.author === local) ?? false;
   }
 
   async activate(): Promise<void> {
@@ -1058,7 +1074,10 @@ export class CoordinatedDocument<
       );
       admitted.then(undefined, () => release());
       const result = this.tail.then(async () => {
+        // A turn that admits no frames, such as a copy's, still serves them.
+        await this.serveLocal();
         const accepted = await admitted;
+        await this.serveLocal();
         this.assertUsable();
         this.assertActivated();
         let applied = false,
@@ -1074,10 +1093,8 @@ export class CoordinatedDocument<
           accepted.length === 0
             ? undefined
             : this.copyObserver(accepted[0].context);
-        const local = documentBytesId(this.options.coordinator.localMemberId);
         for (const [index, value] of accepted.entries()) {
-          // The replica's own frames keep their order against its new edits.
-          if (value.author !== local) await this.serveLocal();
+          await this.serveLocal();
           let processed = false;
           try {
             if (delivered!(value))
@@ -1205,6 +1222,37 @@ export class CoordinatedDocument<
     releaser: (index: number) => () => void,
     recharge: (index: number) => boolean,
   ): Promise<AdmittedFrame[]> {
+    // Until its author is known, a publication may hold the replica's own frames.
+    let undecided = true;
+    this.undecidedPublications++;
+    const own = new Set<number>();
+    const decide = (local: boolean) => {
+      if (!undecided) return;
+      undecided = false;
+      this.undecidedPublications--;
+      if (!local) return;
+      for (let index = 0; index < frames.length; index++) own.add(index);
+      this.ownFramesPending += frames.length;
+    };
+    const settle = (index: number) => {
+      if (own.delete(index)) this.ownFramesPending--;
+    };
+    try {
+      return await this.admitPublication(frames, releaser, recharge, decide, settle);
+    } catch (error) {
+      decide(false);
+      for (const index of [...own]) settle(index);
+      throw error;
+    }
+  }
+
+  private async admitPublication(
+    frames: readonly Uint8Array[],
+    releaser: (index: number) => () => void,
+    recharge: (index: number) => boolean,
+    decide: (local: boolean) => void,
+    settle: (index: number) => void,
+  ): Promise<AdmittedFrame[]> {
     const context = this.options.coordinator.documentContext;
     const delivered = this.deliveryCheck(context);
     const key = await this.frameKey();
@@ -1243,6 +1291,10 @@ export class CoordinatedDocument<
       const { unsigned } = decodeSignedDocumentContent(plaintext);
       const content = decodeDocumentContent(unsigned);
       const author = documentBytesId(content.memberId);
+      if (index === 0)
+        decide(
+          author === documentBytesId(this.options.coordinator.localMemberId),
+        );
       if (
         index !== 0 &&
         (author !== decoded[0].author ||
@@ -1283,10 +1335,14 @@ export class CoordinatedDocument<
         if (waiting) waiting.copied = true;
         else observe(value.author, value.sequence, frames[index]);
         release();
+        settle(index);
         continue;
       }
       // Its original was released unapplied while this frame decoded.
-      if (value.released && !recharge(index)) continue;
+      if (value.released && !recharge(index)) {
+        settle(index);
+        continue;
+      }
       const entry: WaitingFrame = { copied: false };
       this.admittedFrames.set(value.id, entry);
       let done = false;
@@ -1302,6 +1358,7 @@ export class CoordinatedDocument<
           if (done) return false;
           done = true;
           release();
+          settle(index);
           if (this.admittedFrames.get(value.id) === entry)
             this.admittedFrames.delete(value.id);
           return !processed && entry.copied;
@@ -1375,22 +1432,31 @@ export class CoordinatedDocument<
     }
     if (fitting === 0) return;
     const turns = frames.slice(0, fitting);
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    let own = turns.filter((value) => value.author === local).length;
+    this.ownFramesPending += own;
     const result = this.tail
       .then(async () => {
         const delivered = this.deliveryCheck(turns[0].context);
-        const local = documentBytesId(this.options.coordinator.localMemberId);
         for (const value of turns) {
-          if (value.author !== local) await this.serveLocal();
+          await this.serveLocal();
           this.assertUsable();
-          if (delivered(value)) continue;
           try {
-            await this.receiveOwned(value.frame, value);
+            if (!delivered(value)) await this.receiveOwned(value.frame, value);
           } catch {
             // Its later frames are still tried and may be held as gaps.
+          } finally {
+            if (value.author === local) {
+              own--;
+              this.ownFramesPending--;
+            }
           }
         }
       })
-      .finally(release);
+      .finally(() => {
+        this.ownFramesPending -= own;
+        release();
+      });
     this.tail = result.then(
       () => {},
       () => {},
@@ -1935,7 +2001,7 @@ export class CoordinatedDocument<
           encodeEncryptedDocumentRedelivery,
         );
       });
-    });
+    }, false, true);
   }
 
   /**
@@ -2023,12 +2089,12 @@ export class CoordinatedDocument<
         documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
       )
         throw new Error('Document redelivery requester is unauthorized');
-      // A fresh request no newer than the member's last is refused before its
-      // signature check; a stale one is verified so it can be counted.
-      if (
-        body.issuedAt <= (this.redelivery.issued.get(requesterId) ?? -1) &&
-        Math.abs(Date.now() - body.issuedAt) <= REDELIVERY_FRESHNESS_MS
-      )
+      // Stale or replayed requests are refused before their signature check.
+      if (Math.abs(Date.now() - body.issuedAt) > REDELIVERY_FRESHNESS_MS) {
+        this.staleRedeliveries++;
+        return this.noRedelivery(lease, requesterId);
+      }
+      if (body.issuedAt <= (this.redelivery.issued.get(requesterId) ?? -1))
         return this.noRedelivery(lease, requesterId);
       await this.verifySigned(signed, requester);
       this.assertPublicationDispatchAllowed(this.rosterBinding, false);
@@ -2150,7 +2216,10 @@ export class CoordinatedDocument<
     });
   }
 
-  /** Authenticated requests ignored because their issue time was over 60 s from this clock. */
+  /**
+   * Requests sealed under the current epoch key and ignored, before their
+   * signature check, because their issue time was over 60 s from this clock.
+   */
   get staleRedeliveryRequests(): number {
     return this.staleRedeliveries;
   }

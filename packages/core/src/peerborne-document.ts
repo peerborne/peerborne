@@ -8904,8 +8904,9 @@ export class PeerborneDocument<
    * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
    */
   /**
-   * Redelivery requests from members ignored because their issue time was more
-   * than 60 s from this node's clock. Redelivery needs clocks within that range.
+   * Redelivery requests sealed under the current epoch key and ignored because
+   * their issue time was more than 60 s from this node's clock. Redelivery
+   * needs clocks within that range.
    */
   public get securityRedeliveryStaleRequests(): number {
     return this._coordinated?.staleRedeliveryRequests ?? 0;

@@ -654,6 +654,64 @@ describe('coordinated document delivery', () => {
     }
   }, 60_000);
 
+  test('serves a local edit between copies that admit no frames', async () => {
+    const g = await group(2);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 1024; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      expect(await g.deliver(publication, [0])).toEqual([]);
+      const receiver = engine(g.doc(0));
+      let done = 0;
+      const copies = Array.from({ length: 40 }, (_, index) =>
+        receiver.receive(publication.data, `r${index % 8}`).finally(() => done++),
+      );
+      await g.doc(0).change(push(-1));
+      expect(done).toBeLessThan(40);
+      await Promise.all(copies);
+      expect(g.doc(0).document.at(-1)).toBe(-1);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('keeps a local edit behind its own author’s frames from another device', async () => {
+    const g = await group(3);
+    try {
+      await g.doc(1).change(push(1));
+      await g.doc(1).change(push(2));
+      const own = g.take();
+      for (const publication of own)
+        expect(await g.deliver(publication, [0, 2])).toEqual([]);
+      // The same identity on a replica that has none of its earlier frames.
+      await g.doc(1).close();
+      g.resetJournal(1);
+      await g.open(1);
+      g.offline.add(2);
+      for (let value = 0; value < 200; value++)
+        await g.doc(2).change(push(100 + value));
+      const backlog = g.take().at(-1)!;
+      g.offline.delete(2);
+      const receiver = engine(g.doc(1));
+      const received = [
+        receiver.receive(backlog.data, 'member-2'),
+        ...own.map((publication) =>
+          receiver.receive(publication.data, 'other-device'),
+        ),
+      ];
+      await g.doc(1).change(push(3));
+      expect(await Promise.all(received)).toEqual([true, true, true]);
+      const [edit] = g.take().filter((publication) => publication.sender === 1);
+      expect(await g.deliver(edit, [0])).toEqual([]);
+      expect(g.doc(0).document.slice(0, 2)).toEqual([1, 2]);
+      expect(g.doc(0).document.at(-1)).toBe(3);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
   test('keeps junk redelivery requests off the local edit budgets', async () => {
     const g = await group(2);
     try {
