@@ -266,7 +266,14 @@ export interface CoordinatedDocumentOptions {
   readonly persistPublications?: boolean;
   /** Append each local frame to the queued tail publication while it fits. */
   readonly joinPublications?: boolean;
-  /** Require the signed roles to enumerate the provider's exact decrypting roster. */
+  /**
+   * Require the signed roles to enumerate the provider's exact decrypting
+   * roster. Defaults to true when `authority` is a `DocumentAuthorityLog` and
+   * the coordinator's provider implements `getAuthenticatedMemberIds`, the
+   * configuration strict matching needs, and to false otherwise. Pass false
+   * to opt out. With true, another authority throws here and a provider that
+   * cannot report its members fails activation.
+   */
   readonly requireGroupRosterMatch?: boolean;
   /**
    * Allow catch-up from the current unrestricted controller: requested on the
@@ -843,7 +850,11 @@ export class CoordinatedDocument<
       typeof requireGroupRosterMatch !== 'boolean'
     )
       throw new TypeError('Group roster matching flag must be boolean');
-    if (requireGroupRosterMatch && !(authority instanceof DocumentAuthorityLog))
+    const strictGroupRoster =
+      requireGroupRosterMatch ??
+      (authority instanceof DocumentAuthorityLog &&
+        coordinator.reportsAuthenticatedMembers === true);
+    if (strictGroupRoster && !(authority instanceof DocumentAuthorityLog))
       throw new Error(
         'Strict group roster matching requires a signed document authority log',
       );
@@ -863,7 +874,7 @@ export class CoordinatedDocument<
       throw new TypeError('Catch-up refusal handler must be a function');
     if (
       enableAuthenticatedCatchUp &&
-      (!requireGroupRosterMatch ||
+      (!strictGroupRoster ||
         !journal ||
         typeof crdt.getSnapshot !== 'function')
     )
@@ -878,7 +889,7 @@ export class CoordinatedDocument<
       persistPublications,
       joinPublications:
         persistPublications === true && joinPublications === true,
-      requireGroupRosterMatch,
+      requireGroupRosterMatch: strictGroupRoster,
       enableAuthenticatedCatchUp,
       authorizeCatchUp,
       onCatchUpRefused,

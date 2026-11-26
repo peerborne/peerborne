@@ -12,6 +12,7 @@
  */
 import {
   DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+  DefaultConfigOptions,
   PeerborneConfig,
   IceServer,
   cloneIceServer,
@@ -49,6 +50,7 @@ import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import { hasBootstrapPeers } from './bootstrap-config.js';
+import { denyLocalNetworkDial } from './dial-policy.js';
 import { createNodeHeliaStores } from './node-stores.js';
 import {
   DEFAULT_PEER_DISCOVERY_TOPIC,
@@ -76,16 +78,23 @@ import {
  * connections, append an address a configured transport can bind, such as
  * `/ip4/127.0.0.1/tcp/0/ws`, to `config.helia.libp2p.addresses.listen`.
  *
+ * The connection gater refuses loopback, private, link-local, cloud metadata
+ * and other non-public addresses (see `isLocalNetworkAddress`), so a remote
+ * peer cannot make this node connect to local services. LAN deployments and
+ * local relays need {@link DefaultConfigOptions.allowLocalNetworkDials}.
+ *
  * @param bootstrapConfig Bootstrap peer list to seed peer discovery.
  * @param webrtcIceServers Optional override for the WebRTC ICE server list.
  *   When undefined, the package-level `DEFAULT_WEBRTC_ICE_SERVERS` list is
  *   used (see `./peerborne-config`) so peers can discover their public
  *   address mappings via STUN without relying on relay infrastructure for
  *   data plane forwarding (issue #236 phase 3).
+ * @param options Dial policy options.
  */
 export const defaultNodeConfig = (
   bootstrapConfig: BootstrapInit,
   webrtcIceServers?: ReadonlyArray<Readonly<IceServer>>,
+  options: DefaultConfigOptions = {},
 ) => {
   // Resolve the source list and a deeply-frozen exposed view in one place so
   // the browser and Node defaults stay in sync. Each transport below still
@@ -147,11 +156,18 @@ export const defaultNodeConfig = (
             selectors: { ipns: ipnsSelector },
           }),
         },
-        // https://github.com/libp2p/js-libp2p/blob/master/doc/CONFIGURATION.md#configuring-connection-gater
-        connectionGater: { denyDialMultiaddr: async () => false },
+        connectionGater: {
+          denyDialMultiaddr:
+            options.allowLocalNetworkDials === true
+              ? async () => false
+              : denyLocalNetworkDial,
+        },
       },
     },
     ...defaultDocumentPubsubConfig(),
+    ...(options.allowLocalNetworkDials === true && {
+      allowLocalNetworkDials: true,
+    }),
     webrtcIceServers: exposedIceServers,
   // Cast required: libp2p sub-dependency types have version mismatches that prevent structural compatibility
   } as unknown as PeerborneConfig);

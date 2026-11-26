@@ -50,8 +50,11 @@ libp2p.addresses = {
 };
 ```
 
-Another node can then `connect()` to
-`/ip4/127.0.0.1/tcp/4010/ws/p2p/<peer-id>`. Bind a non-loopback interface only
+Another node built with `allowLocalNetworkDials: true` can then `connect()` to
+`/ip4/127.0.0.1/tcp/4010/ws/p2p/<peer-id>`. By default both builders refuse to
+dial loopback, private, link-local and other non-public addresses, so a remote
+peer cannot make a node connect to local services; in browsers the default
+also refuses insecure `/ws` WebSockets. Bind a non-loopback interface only
 when the process should be reachable from the network.
 
 Opening an existing document from peers also needs trusted-load configuration;

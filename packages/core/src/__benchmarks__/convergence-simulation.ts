@@ -12,11 +12,14 @@
  */
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { SubtleCrypto } from '../auth-subtlecrypto.js';
+import { documentPayloadAAD } from '../document-payload-aad.js';
 import { JSONSerializer } from '../json-serializer.js';
 import {
   generateSigningKeyPair,
   generateEncryptionKey,
 } from './crypto-setup.js';
+
+const PAYLOAD_AAD = documentPayloadAAD('/benchmark', new Uint8Array(16), 'frame');
 
 const PEER_COUNTS = [2, 4, 8, 16, 32];
 const EDITS_PER_PEER = 10;
@@ -88,7 +91,7 @@ export async function runConvergenceSimulationBenchmarks(
           const signature = await auth.sign(changeBytes, peer.keyPair.privateKey);
 
           // Encrypt the serialized changes
-          const encrypted = await auth.encrypt(changeBytes, documentKey);
+          const encrypted = await auth.encrypt(changeBytes, documentKey, PAYLOAD_AAD);
 
           const byteSize = signature.length + encrypted.data.length + encrypted.nonce.length;
 
@@ -113,7 +116,7 @@ export async function runConvergenceSimulationBenchmarks(
           if (msg.fromPeer === peer.id) continue; // skip own messages
 
           // Decrypt
-          const decrypted = await auth.decrypt(msg.encryptedPayload, documentKey, msg.nonce);
+          const decrypted = await auth.decrypt(msg.encryptedPayload, documentKey, msg.nonce, PAYLOAD_AAD);
 
           // Verify the decrypted payload
           const senderKey = peerKeys[msg.fromPeer].publicKey;
@@ -154,7 +157,7 @@ export async function runConvergenceSimulationBenchmarks(
         const changeData = `peer-0-edit-${e}`;
         const changeBytes = serializer.serializeChanges(changeData);
         const signature = await auth.sign(changeBytes, peer.keyPair.privateKey);
-        const encrypted = await auth.encrypt(changeBytes, documentKey);
+        const encrypted = await auth.encrypt(changeBytes, documentKey, PAYLOAD_AAD);
         // Simulate broadcast
         void signature.length;
         void encrypted.data.length;
@@ -165,7 +168,7 @@ export async function runConvergenceSimulationBenchmarks(
     const sampleChange = `sample-edit-peer-0`;
     const sampleBytes = serializer.serializeChanges(sampleChange);
     const sampleSig = await auth.sign(sampleBytes, peerKeys[0].privateKey);
-    const sampleEnc = await auth.encrypt(sampleBytes, documentKey);
+    const sampleEnc = await auth.encrypt(sampleBytes, documentKey, PAYLOAD_AAD);
     const singleMsgBytes = sampleSig.length + sampleEnc.data.length + sampleEnc.nonce.length;
 
     const sentBytesPerPeer = expectedMsgsSent * singleMsgBytes;

@@ -179,9 +179,14 @@ export async function keyCompromise({ full }) {
     const oldRoot = await a.getRootSecret();
     const oldKey = await deriveDocumentKeyFromRootSecret(oldRoot);
     await install(authFixture, oldRoot);
+    const aad = authFixture.document._payloadAAD(
+      await deriveEpochIdFromRootSecret(oldRoot),
+      'frame',
+    );
     const past = await authFixture.auth.encrypt(
       new Uint8Array([1, 2, 3]),
       oldKey,
+      aad,
     );
     const first = await a.update();
     await b.processPathUpdate(first.pathUpdate);
@@ -191,6 +196,7 @@ export async function keyCompromise({ full }) {
     const sameEpochPast = await authFixture.auth.encrypt(
       new Uint8Array([7, 8]),
       leakedEpochKey,
+      aad,
     );
     assert(
       same(
@@ -198,13 +204,14 @@ export async function keyCompromise({ full }) {
           sameEpochPast.data,
           leakedEpochKey,
           sameEpochPast.nonce,
+          aad,
         ),
         new Uint8Array([7, 8]),
       ),
       'a sole epoch key leak reveals earlier operations in that same epoch',
     );
     await assert.rejects(() =>
-      authFixture.auth.decrypt(past.data, leakedEpochKey, past.nonce),
+      authFixture.auth.decrypt(past.data, leakedEpochKey, past.nonce, aad),
     );
     // A current member can read retained key history despite distinct AES keys.
     await install(authFixture, await b.getRootSecret());
@@ -231,6 +238,7 @@ export async function keyCompromise({ full }) {
     const future = await authFixture.auth.encrypt(
       new Uint8Array([4, 5, 6]),
       nextKey,
+      aad,
     );
     const application = await Promise.allSettled([
       attacker.processPathUpdate(healing.pathUpdate),
@@ -239,10 +247,15 @@ export async function keyCompromise({ full }) {
       await attacker.getRootSecret(),
     );
     const staleDecryption = await Promise.allSettled([
-      authFixture.auth.decrypt(future.data, staleAttackerKey, future.nonce),
+      authFixture.auth.decrypt(
+        future.data,
+        staleAttackerKey,
+        future.nonce,
+        aad,
+      ),
     ]);
     await assert.rejects(() =>
-      authFixture.auth.decrypt(future.data, leakedEpochKey, future.nonce),
+      authFixture.auth.decrypt(future.data, leakedEpochKey, future.nonce, aad),
     );
     const fullStateHealed = staleDecryption[0].status === 'rejected';
     const timing = await measure(async () =>
@@ -250,6 +263,7 @@ export async function keyCompromise({ full }) {
         future.data,
         await deriveDocumentKeyFromRootSecret(await a.getRootSecret()),
         future.nonce,
+        aad,
       ),
     );
     assert(
@@ -300,12 +314,11 @@ export async function documentReplay({ full, seed }) {
     );
     const original = a.stats.lastFrame;
     const before = project(b);
-    const raw = await b.document._decryptBlock(
-      original.slice(0, 32),
-      original.slice(32, 44),
-      original.slice(44),
+    assert.equal(
+      await b.document._decryptGossipFrame(original),
+      undefined,
+      'a frame sealed for A must not decrypt as a frame of B',
     );
-    const decryptedAtCryptoLayer = raw !== undefined;
     assert.equal(
       await receiveEncrypted(b, original),
       false,
@@ -376,23 +389,19 @@ export async function documentReplay({ full, seed }) {
     );
     return {
       scope:
-        'Same signing authority and shared key material across two actual documents; raw AEAD ingress, signed document/parent/context binding, and ciphertext boundary mutations.',
+        'Same signing authority and shared key material across two actual documents; AEAD associated data binding the document path, key ID and payload kind, signed document/parent/context binding, and ciphertext boundary mutations.',
       metrics: {
         exactCrossDocumentReplayRejected: true,
+        crossDocumentFrameRejectedAtDecryption: true,
         documentIdRebindingRejected: true,
         parentTamperingRejected: true,
-        decryptionSucceededBeforeRouting: decryptedAtCryptoLayer,
         corruptedFrames: count,
         uncorruptedIntendedDocumentControlAccepted: true,
         truncatedFrames: 9,
         wrongContexts: 3,
         recipientStateUnchanged: true,
       },
-      gaps: decryptedAtCryptoLayer
-        ? [
-            'Cross-document rejection occurs at signed message routing/verification after AEAD decryption. The shared-key ciphertext is not bound to the target document through AEAD additional authenticated data; this is not rejection at the cryptographic decryption layer.',
-          ]
-        : [],
+      gaps: [],
     };
   } finally {
     await b?.close();

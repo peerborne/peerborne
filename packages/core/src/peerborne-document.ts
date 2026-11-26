@@ -33,6 +33,7 @@ import {
 } from './remote-block-fetch.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
+import { buildSnapshotSignaturePayload } from './snapshot-signature-payload.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
 import type {
   InitialLoadSession,
@@ -155,6 +156,10 @@ import {
   requireDeserializePublicKey,
   requireSerializePublicKey,
 } from './auth-provider.js';
+import {
+  documentPayloadAAD,
+  type DocumentPayloadKind,
+} from './document-payload-aad.js';
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import {
   CRDTChangeNode,
@@ -2325,10 +2330,15 @@ export class PeerborneDocument<
     }
   }
 
+  private _payloadAAD(keyID: Uint8Array, kind: DocumentPayloadKind) {
+    return documentPayloadAAD(this.documentPath, keyID, kind);
+  }
+
   private async _decryptBlock(
     blockKeyID: Uint8Array,
     nonce: Uint8Array,
     data: Uint8Array,
+    kind: DocumentPayloadKind,
     getKey: (keyID: Uint8Array) => DocumentKey | undefined = (keyID) =>
       this._keychain.getKey(keyID),
   ) {
@@ -2337,7 +2347,12 @@ export class PeerborneDocument<
     try {
       const key = getKey(blockKeyID);
       if (key) {
-        return await this._authProvider.decrypt(data, key, nonce);
+        return await this._authProvider.decrypt(
+          data,
+          key,
+          nonce,
+          this._payloadAAD(blockKeyID, kind),
+        );
       }
     } catch {
       return undefined;
@@ -2373,7 +2388,7 @@ export class PeerborneDocument<
       this._keychainProvider.keyIDLength + this._authProvider.nonceBytes,
     );
     const content = await awaitLoadWork(
-      this._decryptBlock(blockKeyID, blockNonce, blockData, getKey),
+      this._decryptBlock(blockKeyID, blockNonce, blockData, 'block', getKey),
       signal,
     );
     throwIfLoadAborted(signal);
@@ -2414,6 +2429,7 @@ export class PeerborneDocument<
     const { nonce, data } = await this._authProvider.encrypt(
       content,
       documentKey,
+      this._payloadAAD(documentKeyID, 'block'),
     );
     if (!nonce) {
       throw new Error(`Failed to encrypt change block! Nonce cannot be empty`);
@@ -5537,6 +5553,7 @@ export class PeerborneDocument<
       const { nonce, data } = await this._authProvider.encrypt(
         serializedUpdate,
         documentKey,
+        this._payloadAAD(documentKeyID, 'frame'),
       );
       if (!nonce) {
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
@@ -6278,6 +6295,7 @@ export class PeerborneDocument<
       const { nonce, data } = await this._authProvider.encrypt(
         serializedLoad,
         documentKey,
+        this._payloadAAD(documentKeyID, 'response'),
       );
       if (!nonce) {
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
@@ -6367,6 +6385,7 @@ export class PeerborneDocument<
       const { nonce, data } = await this._authProvider.encrypt(
         serialized,
         documentKey,
+        this._payloadAAD(documentKeyID, 'response'),
       );
       if (!nonce) {
         throw new Error(`Failed to encrypt snapshot response! Nonce cannot be empty`);
@@ -6491,6 +6510,7 @@ export class PeerborneDocument<
       const { nonce, data } = await this._authProvider.encrypt(
         serialized,
         documentKey,
+        this._payloadAAD(documentKeyID, 'response'),
       );
       if (!nonce) {
         throw new Error(`Failed to encrypt security-advertise response! Nonce cannot be empty`);
@@ -6518,70 +6538,19 @@ export class PeerborneDocument<
     }
   }
 
-  /**
-   * Build the deterministic binary payload used for snapshot signing/verification.
-   *
-   * Binary layout (big-endian integers):
-   *   [0]       uint8   version (1)
-   *   [1..8]    uint64  timestamp
-   *   [9..12]   uint32  compactedCount
-   *   [13..16]  uint32  cidLen
-   *   [17..]    bytes   UTF-8(lastChangeNodeCID)
-   *   [..]      uint32  stateLen
-   *   [..]      bytes   stateBytes
-   */
   private _buildSnapshotSignPayload(
     stateBytes: Uint8Array,
     lastChangeNodeCID: string,
     timestamp: number,
     compactedCount: number,
   ): Uint8Array {
-    // Validate inputs to prevent runtime errors (e.g. BigInt(NaN) throws TypeError)
-    // and silent uint32 overflow/truncation via DataView.setUint32.
-    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
-      throw new Error(`Invalid snapshot timestamp: ${timestamp}`);
-    }
-    if (!Number.isInteger(compactedCount) || compactedCount < 0 || compactedCount > 0xFFFFFFFF) {
-      throw new Error(`Invalid snapshot compactedCount: ${compactedCount}`);
-    }
-    const cidBytes = this._encoder.encode(lastChangeNodeCID);
-    if (cidBytes.length > 0xFFFFFFFF) {
-      throw new Error(`lastChangeNodeCID too large: ${cidBytes.length} bytes`);
-    }
-    if (stateBytes.length > 0xFFFFFFFF) {
-      throw new Error(`Snapshot state too large: ${stateBytes.length} bytes`);
-    }
-    // 1 (version) + 8 (timestamp) + 4 (compactedCount) + 4 (cidLen) + cidBytes + 4 (stateLen) + stateBytes
-    const totalLen = 1 + 8 + 4 + 4 + cidBytes.length + 4 + stateBytes.length;
-    const buf = new ArrayBuffer(totalLen);
-    const view = new DataView(buf);
-    const out = new Uint8Array(buf);
-    let offset = 0;
-
-    // version
-    view.setUint8(offset, 1);
-    offset += 1;
-
-    // timestamp as uint64
-    view.setBigUint64(offset, BigInt(timestamp), false);
-    offset += 8;
-
-    // compactedCount as uint32
-    view.setUint32(offset, compactedCount, false);
-    offset += 4;
-
-    // lastChangeNodeCID (length-prefixed)
-    view.setUint32(offset, cidBytes.length, false);
-    offset += 4;
-    out.set(cidBytes, offset);
-    offset += cidBytes.length;
-
-    // stateBytes (length-prefixed)
-    view.setUint32(offset, stateBytes.length, false);
-    offset += 4;
-    out.set(stateBytes, offset);
-
-    return out;
+    return buildSnapshotSignaturePayload(
+      this.documentPath,
+      stateBytes,
+      lastChangeNodeCID,
+      timestamp,
+      compactedCount,
+    );
   }
 
   private async _ensureCurrentUserCanWrite() {
@@ -6785,7 +6754,12 @@ export class PeerborneDocument<
           const blockNonce = assembled.slice(keyIDLength, headerLength);
           const blockData = assembled.slice(headerLength);
           const decrypted = await awaitLoadWork(
-            this._authProvider.decrypt(blockData, key, blockNonce),
+            this._authProvider.decrypt(
+              blockData,
+              key,
+              blockNonce,
+              this._payloadAAD(blockKeyID, 'response'),
+            ),
             signal,
           );
           if (!decrypted) {
@@ -7813,7 +7787,12 @@ export class PeerborneDocument<
       }
       const blockNonce = assembled.slice(keyIDLength, headerLength);
       const blockData = assembled.slice(headerLength);
-      const decrypted = await this._authProvider.decrypt(blockData, key, blockNonce);
+      const decrypted = await this._authProvider.decrypt(
+        blockData,
+        key,
+        blockNonce,
+        this._payloadAAD(blockKeyID, 'response'),
+      );
       if (!decrypted) {
         return null;
       }
@@ -8787,7 +8766,11 @@ export class PeerborneDocument<
     if (isCurrent && !isCurrent()) return undefined;
     const [keyId, key] = await this._keychain.current();
     if (!key) throw new Error('Document has no encryption key');
-    const { nonce, data } = await this._authProvider.encrypt(bytes, key);
+    const { nonce, data } = await this._authProvider.encrypt(
+      bytes,
+      key,
+      this._payloadAAD(keyId, 'frame'),
+    );
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
     const frame = concatUint8Arrays(keyId, nonce, data);
     if (isCurrent && !isCurrent()) return undefined;
@@ -9870,6 +9853,7 @@ export class PeerborneDocument<
       frame.subarray(0, keyEnd),
       frame.subarray(keyEnd, nonceEnd),
       frame.subarray(nonceEnd),
+      'frame',
     );
   }
 
@@ -13200,6 +13184,7 @@ export class PeerborneDocument<
     const encrypted = await this._authProvider.encrypt(
       bootstrapPlaintext,
       documentKey,
+      this._payloadAAD(welcomeEpochId, 'invitation-bootstrap'),
     );
     if (!encrypted.nonce) {
       throw new Error(
@@ -13633,7 +13618,12 @@ export class PeerborneDocument<
           try {
             bootstrapPlaintext = copyUnsharedUint8Array(
               await awaitLoadWork(
-                this._authProvider.decrypt(ciphertext, bootstrapKey, nonce),
+                this._authProvider.decrypt(
+                  ciphertext,
+                  bootstrapKey,
+                  nonce,
+                  this._payloadAAD(bootstrapKeyId, 'invitation-bootstrap'),
+                ),
                 signal,
               ),
               1,

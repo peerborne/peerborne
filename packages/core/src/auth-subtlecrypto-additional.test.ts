@@ -2,6 +2,8 @@ import { describe, expect, test } from '@jest/globals';
 import { SubtleCrypto } from './auth-subtlecrypto';
 import { Base64 } from 'js-base64';
 
+const AAD = new Uint8Array([7, 7, 7]);
+
 describe('SubtleCrypto additional coverage', () => {
   describe('_encryptionAlgorithmParams validation', () => {
     test('AES-GCM rejects wrong nonce length (line 164)', () => {
@@ -105,7 +107,7 @@ describe('SubtleCrypto additional coverage', () => {
         ['encrypt', 'decrypt'],
       );
       const c = new SubtleCrypto();
-      await expect(c.decrypt(new Uint8Array([1, 2, 3]), key)).rejects.toThrow(
+      await expect(c.decrypt(new Uint8Array([1, 2, 3]), key, undefined, AAD)).rejects.toThrow(
         'Nonce is required',
       );
     });

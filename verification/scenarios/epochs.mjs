@@ -107,12 +107,17 @@ export async function group({ full, budgetMs, progress }) {
         );
       }
       const newKey = await deriveDocumentKeyFromRootSecret(root);
+      const aad = fixture.document._payloadAAD(
+        await deriveEpochIdFromRootSecret(root),
+        'frame',
+      );
       const encrypted = await fixture.auth.encrypt(
         new Uint8Array([1, 2, 3]),
         newKey,
+        aad,
       );
       await assert.rejects(() =>
-        fixture.auth.decrypt(encrypted.data, removedKey, encrypted.nonce),
+        fixture.auth.decrypt(encrypted.data, removedKey, encrypted.nonce, aad),
       );
       rows.push({
         peers: size,
@@ -297,11 +302,16 @@ export async function offline({ full, budgetMs, progress }) {
     const payload = new TextEncoder().encode(
       'synthetic current document state',
     );
-    const encrypted = await fixture.auth.encrypt(payload, key);
+    const aad = fixture.document._payloadAAD(
+      await deriveEpochIdFromRootSecret(onlineRoot),
+      'frame',
+    );
+    const encrypted = await fixture.auth.encrypt(payload, key, aad);
     const plaintext = await fixture.auth.decrypt(
       encrypted.data,
       recoveredKey,
       encrypted.nonce,
+      aad,
     );
     assert(
       Buffer.from(plaintext).equals(payload),

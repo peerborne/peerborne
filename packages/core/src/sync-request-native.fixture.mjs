@@ -5,6 +5,7 @@ import { TopicValidatorResult } from '@libp2p/gossipsub';
 import { Base64 } from 'js-base64';
 import { PeerborneDocument } from './peerborne-document.ts';
 import { SubtleCrypto } from './auth-subtlecrypto.ts';
+import { documentPayloadAAD } from './document-payload-aad.ts';
 import { JSONSerializer } from './json-serializer.ts';
 import {
   decodeSyncRequest,
@@ -127,6 +128,7 @@ async function plaintext(bytes) {
     bytes.subarray(keyId.length + auth.nonceBytes),
     encryptionKey,
     bytes.subarray(keyId.length, keyId.length + auth.nonceBytes),
+    documentPayloadAAD('/resume', keyId, 'frame'),
   );
 }
 
@@ -179,7 +181,10 @@ async function registeredValidator(document) {
 }
 
 let requestFrameSequence = 0;
-async function encryptedRequest(signed) {
+async function encryptedRequest(
+  signed,
+  additionalData = documentPayloadAAD('/resume', keyId, 'frame'),
+) {
   const nonce = new Uint8Array(auth.nonceBytes);
   new DataView(nonce.buffer).setUint32(
     nonce.length - 4,
@@ -187,7 +192,7 @@ async function encryptedRequest(signed) {
   );
   const data = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: nonce },
+      { name: 'AES-GCM', iv: nonce, additionalData },
       encryptionKey,
       encodeSyncRequest(signed),
     ),
@@ -919,6 +924,34 @@ test('a request is ignored unless the PeerId it signs published it', async () =>
     await validate({}, gossipMessage(frame)),
     TopicValidatorResult.Accept,
   );
+});
+
+test('a frame sealed as another payload kind, document or key ID is ignored before verification', async () => {
+  const signed = await request(reader);
+  const validated = harness();
+  const validate = await registeredValidator(validated.document);
+  const otherKeyId = new Uint8Array(keyId.length).fill(2);
+  for (const additionalData of [
+    documentPayloadAAD('/resume', keyId, 'block'),
+    documentPayloadAAD('/resume', keyId, 'response'),
+    documentPayloadAAD('/resume', keyId, 'invitation-bootstrap'),
+    documentPayloadAAD('/other', keyId, 'frame'),
+    documentPayloadAAD('/resume', otherKeyId, 'frame'),
+    new Uint8Array(),
+  ])
+    assert.equal(
+      await validate(
+        {},
+        gossipMessage(await encryptedRequest(signed, additionalData)),
+      ),
+      TopicValidatorResult.Ignore,
+    );
+  assert.equal(validated.work.verifications, 0);
+  assert.equal(
+    await validate({}, gossipMessage(await encryptedRequest(signed))),
+    TopicValidatorResult.Accept,
+  );
+  assert.equal(validated.work.verifications, 1);
 });
 
 test('requests matching the local head postpone the periodic request without verification', async () => {

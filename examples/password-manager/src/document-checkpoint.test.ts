@@ -34,6 +34,7 @@ import {
   INVITATION_ID_LENGTH,
   signInvitationOffer,
 } from '../../../packages/core/src/invitation-wire.js';
+import { documentPayloadAAD } from '../../../packages/core/src/document-payload-aad.js';
 
 Object.defineProperty(globalThis, 'crypto', {
   value: webcrypto,
@@ -212,6 +213,11 @@ function decryptBroadcast(frame: Uint8Array, key: CryptoKey) {
     frame.slice(dataStart),
     key,
     frame.slice(nonceStart, dataStart),
+    documentPayloadAAD(
+      '/checkpoint-fixture',
+      frame.slice(0, nonceStart),
+      'frame',
+    ),
   );
 }
 

@@ -81,6 +81,7 @@ test('the document reader reconstructs native UnixFS ciphertext and authenticate
           },
         };
         const document = Object.assign(Object.create(PeerborneDocument.prototype), {
+          documentPath: '/block-reader',
           swarm: { heliaNode: { blockstore: readStore } },
           heliaFs: {
             addBytes: (bytes) => fs.addBytes(bytes, {
@@ -122,6 +123,16 @@ test('the document reader reconstructs native UnixFS ciphertext and authenticate
           document._getBlock(hash, undefined, () => otherKey),
           /Failed to decrypt block/,
         );
+        const otherDocument = Object.assign(
+          Object.create(PeerborneDocument.prototype),
+          document,
+          { documentPath: '/other-block-reader' },
+        );
+        await assert.rejects(
+          otherDocument._getBlock(hash, undefined, lookup),
+          /Failed to decrypt block/,
+        );
+        assert.equal(decodes, 1);
         const earlierLoadBytes = 17;
         let aggregate = earlierLoadBytes;
         await assert.rejects(document._getBlock(hash, {
@@ -345,6 +356,7 @@ test('UnixFS cancellation closes an in-flight child before opening its siblings'
 
 test('the writer does not persist a ciphertext file larger than the reader can open', async () => {
   const document = Object.assign(Object.create(PeerborneDocument.prototype), {
+    documentPath: '/oversized',
     _keychain: { current: async () => [new Uint8Array(32), {}] },
     _changesSerializer: { serializeChanges: (bytes) => bytes },
     _authProvider: {

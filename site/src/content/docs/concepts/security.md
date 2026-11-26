@@ -309,6 +309,16 @@ supports AES-CTR and AES-CBC, but that primitive support is not a bundled
 document-key path. Peers can decrypt content only when they hold the needed
 epoch key.
 
+Each payload's associated data names its document path, the key ID written
+before its nonce, and its kind: a stored block, a GossipSub frame, a load
+response or an invitation bootstrap. A ciphertext therefore decrypts only as the
+same kind of payload of the same document, so a peer cannot replay a stored
+block as a frame or move a payload to another document that shares its key.
+`SubtleCrypto` uses random 96-bit nonces and counts encryptions per key object
+in each process: it logs a warning once after 2^31 and refuses encryption after
+2^32, NIST SP 800-38D's limit for random nonces. The count does not cover other
+devices or restarts, so rotate long-lived document keys.
+
 `historyVisibility` controls which document-key epochs are supplied in some
 load and Welcome responses. It does not remove or redact retained CRDT
 operations, force a key rotation per operation, or guarantee that earlier
@@ -332,6 +342,12 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 |---|---|
 | **`enableSigning: true`** (default) | Ordinary sync messages are signed with ECDSA P-384, then serialized and encrypted with the document key. Post-load receivers verify outer message signatures against current writers. |
 | **`enableSigning: false`** | Stored payloads and sync envelopes remain encrypted with the document key, but application-level signing and verification for ordinary sync messages and snapshots are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. Invitation creation and acceptance are rejected. |
+
+`initialize()` captures a frozen copy of the configuration, so changing the
+object afterwards cannot switch signing, topic validators or load-quorum
+checks off for open documents. It logs a warning when `enableSigning` or
+`loadQuorumEnabled` is `false`. Topic validators check writer signatures, so
+`enableTopicValidators` has no effect while signing is off.
 
 Initial loads, security advertisements, and the BeeKEM Welcome and PathUpdate
 membership-control protocols are a deliberate exception to that toggle. Load
@@ -401,7 +417,10 @@ one of its writers signed the snapshot, the same rule the apply-time check
 uses. An agreeing responder can substitute neither other snapshot bytes nor a
 snapshot that would fail after application began; it is skipped instead. A
 later load ignores a snapshot that does not verify against the current writer
-ACL. The snapshot's compacted count is signed advisory metadata: snapshot
+ACL. A snapshot signature covers a versioned domain tag and the document path
+as well as the state, boundary CID, timestamp and compacted count, so a
+writer's snapshot of one document does not verify for another. The snapshot's
+compacted count is signed advisory metadata: snapshot
 creation clamps it to the 32-bit limit, so an inflated count cannot stop a
 writer from compacting. One credential contributes only one vote, even
 through multiple PeerIds; when devices sharing a credential advertise different

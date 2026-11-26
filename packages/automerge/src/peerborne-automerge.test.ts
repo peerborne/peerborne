@@ -4821,7 +4821,7 @@ describe('bounded initial invitation profile', () => {
     );
     const measuredOverheads: number[] = [];
     for (const sample of [plaintext, new Uint8Array(16)]) {
-      const encrypted = await auth.encrypt(sample, key);
+      const encrypted = await auth.encrypt(sample, key, new Uint8Array());
       const framedBytes =
         32 + encrypted.nonce.byteLength + encrypted.data.byteLength;
       measuredOverheads.push(framedBytes - sample.byteLength);

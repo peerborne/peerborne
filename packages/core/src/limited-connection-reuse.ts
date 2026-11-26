@@ -2,6 +2,7 @@ import { isPeerId } from '@libp2p/interface';
 import type { Connection, Libp2p } from '@libp2p/interface';
 import { isMultiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
+import { isLocalNetworkAddress } from './dial-policy.js';
 
 type ReusableLibp2p = Pick<
   Libp2p,
@@ -14,6 +15,12 @@ interface Target {
   readonly addresses: () => Promise<readonly Multiaddr[]>;
 }
 
+function withPeer(address: Multiaddr, peer: string): Multiaddr {
+  return address.getComponents().at(-1)?.name === 'p2p'
+    ? address
+    : address.encapsulate(`/p2p/${peer}`);
+}
+
 function dialTarget(
   libp2p: ReusableLibp2p,
   target: DialTarget,
@@ -22,8 +29,8 @@ function dialTarget(
     return {
       connections: libp2p.getConnections(target),
       addresses: async () =>
-        (await libp2p.peerStore.get(target)).addresses.map(
-          ({ multiaddr }) => multiaddr,
+        (await libp2p.peerStore.get(target)).addresses.map(({ multiaddr }) =>
+          withPeer(multiaddr, target.toString()),
         ),
     };
   }
@@ -51,18 +58,28 @@ function openLimitedConnection(
   return open.sort((a, b) => a.timeline.open - b.timeline.open)[0];
 }
 
-async function canUpgrade(
+async function upgradeAddresses(
   libp2p: ReusableLibp2p,
   target: Target,
-): Promise<boolean> {
+  allowLocalNetwork: boolean,
+): Promise<Multiaddr[] | undefined> {
   try {
     const upgrades = (await target.addresses()).filter(
-      (address) => !isRelayOnly(address),
+      (address) =>
+        !isRelayOnly(address) &&
+        (allowLocalNetwork || !isLocalNetworkAddress(address)),
     );
-    return upgrades.length > 0 && (await libp2p.isDialable(upgrades));
+    return upgrades.length > 0 && (await libp2p.isDialable(upgrades))
+      ? upgrades
+      : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+export interface LimitedConnectionReuseOptions {
+  /** Let upgrade dials use loopback, private and link-local addresses. */
+  readonly allowLocalNetworkUpgrades?: boolean;
 }
 
 /**
@@ -82,21 +99,35 @@ async function canUpgrade(
  * dial per relayed connection runs in the background to upgrade it, and later
  * streams use the unlimited connection if it succeeds. Streams that need an
  * unlimited connection and forced dials always go to libp2p.
+ *
+ * The peer chooses the addresses it advertises, so the upgrade dials only the
+ * public ones unless `allowLocalNetworkUpgrades` is set, whatever the
+ * connection gater admits.
  */
-export function reuseLimitedConnections(libp2p: ReusableLibp2p): void {
+export function reuseLimitedConnections(
+  libp2p: ReusableLibp2p,
+  { allowLocalNetworkUpgrades = false }: LimitedConnectionReuseOptions = {},
+): void {
   const dialProtocol = libp2p.dialProtocol.bind(libp2p);
   const upgrading = new WeakSet<Connection>();
   const upgrade = async (
     connection: Connection,
-    peer: DialTarget,
     target: Target,
   ): Promise<void> => {
-    if (upgrading.has(connection) || !(await canUpgrade(libp2p, target))) {
+    if (upgrading.has(connection)) return;
+    const addresses = await upgradeAddresses(
+      libp2p,
+      target,
+      allowLocalNetworkUpgrades,
+    );
+    if (
+      addresses === undefined ||
+      upgrading.has(connection) ||
+      connection.status !== 'open'
+    )
       return;
-    }
-    if (upgrading.has(connection) || connection.status !== 'open') return;
     upgrading.add(connection);
-    await libp2p.dial(peer).catch(() => undefined);
+    await libp2p.dial(addresses).catch(() => undefined);
   };
   libp2p.dialProtocol = async (peer, protocols, options = {}) => {
     const target =
@@ -107,7 +138,7 @@ export function reuseLimitedConnections(libp2p: ReusableLibp2p): void {
     if (target === undefined || connection === undefined) {
       return dialProtocol(peer, protocols, options);
     }
-    void upgrade(connection, peer, target);
+    void upgrade(connection, target);
     try {
       return await connection.newStream(protocols, options);
     } catch (error) {

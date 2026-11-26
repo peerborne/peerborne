@@ -248,6 +248,7 @@
       ],
       "sources": [
         "packages/core/src/auth-subtlecrypto.ts",
+        "packages/core/src/document-payload-aad.ts",
         "packages/core/src/ucan.ts"
       ]
     },

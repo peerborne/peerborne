@@ -24,6 +24,7 @@ import { PendingWelcomeBuffer } from './pending-welcome-buffer.js';
 import { encodeWelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
 import { BeeKEM } from './beekem/beekem.js';
 import { MAX_DOCUMENT_BLOCK_BYTES } from './document-block-reader.js';
+import { documentPayloadAAD } from './document-payload-aad.js';
 
 jest.mock(
   'it-pipe',
@@ -2472,6 +2473,11 @@ describe('document load response boundaries', () => {
         new Uint8Array([9]),
         stagedKey,
         new Uint8Array([8]),
+        documentPayloadAAD(
+          '/staged-block-decryption',
+          new Uint8Array([7]),
+          'block',
+        ),
       );
       expect(remoteChange).toHaveBeenCalledTimes(1);
       expect(document._hashes).toContain('HEAD');

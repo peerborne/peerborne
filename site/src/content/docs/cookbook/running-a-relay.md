@@ -62,6 +62,13 @@ const relay = import.meta.env.VITE_RELAY_MULTIADDR;
 const config = defaultConfig(defaultBootstrapConfig(relay ? [relay] : []));
 ```
 
+`defaultConfig` keeps libp2p's browser dial policy, which refuses insecure `/ws`
+WebSockets and loopback or private addresses, so give applications a `/wss/`
+relay address. The browser-test harness passes
+`{ allowLocalNetworkDials: true }` as the third argument of `defaultConfig` so
+it can use plain `/ws`, local and Docker relays; see
+[Dial policy](../../concepts/networking/#dial-policy).
+
 ## TLS and reverse proxying
 
 An HTTPS page must dial secure WebSockets. Terminate TLS at a reverse proxy on 443, configure it to preserve the WebSocket HTTP Upgrade and proxy that connection to relay port 9001, then use:

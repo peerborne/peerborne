@@ -1,6 +1,8 @@
 import { describe, expect, test } from '@jest/globals';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 
+const AAD = new Uint8Array([7, 7, 7]);
+
 describe('Peerborne crypto key generation', () => {
   const auth = new SubtleCrypto();
 
@@ -111,12 +113,12 @@ describe('Peerborne crypto key generation', () => {
       ['encrypt', 'decrypt']
     );
     
-    const { data: encrypted, nonce } = await auth.encrypt(data, documentKey);
+    const { data: encrypted, nonce } = await auth.encrypt(data, documentKey, AAD);
     expect(encrypted).toBeDefined();
     expect(nonce).toBeDefined();
     expect(encrypted.length).toBeGreaterThan(0);
     
-    const decrypted = await auth.decrypt(encrypted, documentKey, nonce);
+    const decrypted = await auth.decrypt(encrypted, documentKey, nonce, AAD);
     expect(decrypted).toEqual(data);
   });
 
@@ -141,9 +143,9 @@ describe('Peerborne crypto key generation', () => {
       ['encrypt', 'decrypt']
     );
     
-    const { data: encrypted, nonce } = await auth.encrypt(data, key1);
+    const { data: encrypted, nonce } = await auth.encrypt(data, key1, AAD);
     
-    await expect(auth.decrypt(encrypted, key2, nonce)).rejects.toThrow();
+    await expect(auth.decrypt(encrypted, key2, nonce, AAD)).rejects.toThrow();
   });
 });
 
@@ -197,10 +199,10 @@ describe('Multi-user simulation basics', () => {
 
     // User 1 encrypts data
     const data = new Uint8Array([1, 2, 3, 4, 5]);
-    const { data: encrypted, nonce } = await auth.encrypt(data, documentKey);
+    const { data: encrypted, nonce } = await auth.encrypt(data, documentKey, AAD);
 
     // User 2 can decrypt with the same key
-    const decrypted = await auth.decrypt(encrypted, documentKey, nonce);
+    const decrypted = await auth.decrypt(encrypted, documentKey, nonce, AAD);
     expect(decrypted).toEqual(data);
   });
 });
