@@ -32,12 +32,15 @@ user a save succeeded. A successful local operation is not a durable
 acknowledgment from every other replica. A change that is committed locally
 but whose frame could not be published still resolves and reaches peers with
 the next change; `document.subscribeDeliveryFailures(id, handler)` reports
-it.
+it, and `document.deliveryFailure` holds the latest one until a later local
+frame is published.
 
 ## Open existing documents
 
-`create()` founds a new document without querying peers. `open()` never creates
-one. It activates state without a network load only when the same document
+`create()` founds a new document without querying peers. It rejects a path that
+the node already created or holds open, and an instance with restored or loaded
+state, since creating the path again would found a different document with a
+new key; open such a path instead. `open()` never creates one. It activates state without a network load only when the same document
 instance already holds restored state from `restoreCheckpoint()`.
 `peerborne.doc(path)` returns a new, unopened instance on each call, so the
 React hook's and Redux thunk's default `'open'` mode always loads from peers.

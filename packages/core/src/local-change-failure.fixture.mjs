@@ -124,19 +124,24 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
             undelivered[0].changeId,
             writer.document._lastSyncMessage.changeId,
           );
+          assert.equal(writer.document.deliveryFailure, undelivered[0]);
+          assert.equal(writer.document.retired, false);
         } else {
           const error = await edit(writer, adapter, 'b', 2, entry).then(
             () => assert.fail('the failed change resolved'),
             (reason) => reason,
           );
           assert.deepEqual(undelivered, []);
+          assert.equal(writer.document.deliveryFailure, undefined);
           if (adapter === 'automerge') {
             assert.equal(error, failure);
             assert.deepEqual(rootOf(writer, adapter), { a: 1 });
+            assert.equal(writer.document.retired, false);
           } else {
             // An in-place edit cannot be undone, so the instance retires.
             assert.match(error.message, /could not be rolled back/);
             assert.equal(error.cause, failure);
+            assert.equal(writer.document.retired, true);
             await assert.rejects(edit(writer, adapter, 'c', 3), /retired/);
             await assert.rejects(writer.document.exportCheckpoint(), /retired/);
             await writer.close();
@@ -150,6 +155,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
           ['d', 4],
         ]) {
           await edit(author, adapter, key, value, entry);
+          assert.equal(author.document.deliveryFailure, undefined);
           assert.equal(
             await receiveEncrypted(replica, author.stats.lastFrame),
             true,

@@ -1132,6 +1132,19 @@ export class PeerborneDocument<
     return this._competingBeeKEMGeneration ?? this._beekemForkGuard?.competingGeneration;
   }
 
+  /**
+   * Whether this instance was retired and refuses further work: after an
+   * oversized edit, a failed change it could not roll back, or a failure that
+   * left its authorization state indeterminate. Continue with a fresh
+   * instance opened from accepted state, such as the last checkpoint.
+   */
+  get retired(): boolean {
+    return (
+      this._oversizedEditClose !== undefined ||
+      this._bootstrapLoadApplicationState === 'poisoned'
+    );
+  }
+
   private _competingBeeKEMGeneration: number | undefined;
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
@@ -1719,6 +1732,7 @@ export class PeerborneDocument<
   private _deliveryFailureHandlers: {
     [id: string]: PeerborneDocumentDeliveryFailureHandler;
   } = {};
+  private _deliveryFailure?: ChangeDeliveryFailure;
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -4957,6 +4971,7 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
+      this._deliveryFailure = undefined;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -5038,6 +5053,7 @@ export class PeerborneDocument<
       changeId,
       error,
     });
+    this._deliveryFailure = failure;
     const report = () =>
       console.error(`[${this.documentPath}] a delivery failure handler failed.`);
     for (const handler of Object.values(this._deliveryFailureHandlers)) {
@@ -8409,10 +8425,15 @@ export class PeerborneDocument<
     });
   }
 
-  /** Create a new document under an application-owned path without querying peers. */
+  /**
+   * Create a new document under an application-owned path without querying
+   * peers. Rejects a path that this node already created or holds open, and
+   * an instance with restored or loaded state: open that path instead, since
+   * creating it again would found a different document with a new key.
+   */
   public async create(): Promise<boolean> {
     this._assertNoIncompleteBootstrapLoad(true);
-    if (this._activationInProgress || this._subscribed || this._hashes.size > 0 || this._createdLocally) {
+    if (this._activationInProgress || this._subscribed || this._hashes.size > 0 || this._createdLocally || this._localCheckpointReady) {
       throw new Error('Cannot create a document with existing local state');
     }
     this._activationInProgress = true;
@@ -8899,6 +8920,11 @@ export class PeerborneDocument<
       }
     }
     assertCanOpen();
+    if (!isExisting && this.swarm.hasLocalDocument(this.documentPath)) {
+      throw new Error(
+        `Document ${this.documentPath} was already created or is open on this node; open it instead`,
+      );
+    }
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
@@ -9138,6 +9164,7 @@ export class PeerborneDocument<
             'open founder writer',
           );
         });
+        this.swarm.recordFoundedDocument(this.documentPath);
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -10020,6 +10047,16 @@ export class PeerborneDocument<
   ) {
     this._assertNoIncompleteBootstrapLoad(true);
     this._deliveryFailureHandlers[id] = handler;
+  }
+
+  /**
+   * The latest local change that is committed but was not delivered, as
+   * reported to `subscribeDeliveryFailures()` handlers, until a later local
+   * change's frame is published and carries it. Local update handlers see the
+   * value after their change. A coordinated document never sets it.
+   */
+  public get deliveryFailure(): ChangeDeliveryFailure | undefined {
+    return this._deliveryFailure;
   }
 
   /**
