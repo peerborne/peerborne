@@ -288,14 +288,29 @@ A frame can arrive before its author's previous frame, or before another
 author's change that it natively depends on. After full decryption, signature,
 role and context checks, such a frame is held instead of rejected, and
 `receive` resolves `false`. Each accepted frame or catch-up merge retries the
-held frames whose author prefix is now complete, or whose dependency may have
-arrived. A retried frame goes through the whole admission path again, including
-field-scope inspection. A document holds at most 64 frames, 32 per author and
-8 MiB, and all documents in a process at most 1,024 frames and 64 MiB. A frame
-beyond those bounds is rejected. A second frame for a held author sequence with
-different content is rejected as equivocation. Held frames are memory-only and
-are dropped at a new group context and on close. A held frame whose
-predecessor never arrives stays held; nothing requests it yet.
+held frames whose author prefix is now complete. A frame held for a native
+dependency is retried only once the session holds every struct, deletion or
+change hash the provider named for it, so unrelated accepted frames cost no
+staging; a provider that names nothing is retried after each accepted frame.
+Automerge names missing change hashes before it clones the document, and a Yjs
+update that integrated nothing keeps the private mirror instead of rebuilding
+it from a snapshot. A retried frame goes through the whole admission path
+again, including field-scope inspection. A document holds at most 64 frames
+and 8 MiB; each author holds at most 32 of those frames and 4 MiB. All
+documents in a process hold at most 1,024 frames and 64 MiB, and one author at
+most a quarter of that. A held frame expires two minutes after it was held, by
+a timer even in a document that receives nothing more; frames that an arriving
+predecessor makes admissible are retried before anything expires. When a bound
+is reached, the author occupying the largest fraction of its frame or byte
+share gives up its farthest-ahead frame, in any document for the process-wide
+bound, so one writer's far-ahead frames cannot push out another author's
+out-of-order frame. Evictions are planned first and applied only if the new
+frame is then admitted; a frame farther ahead than everything its author holds,
+or whose author already uses its whole process-wide share, is rejected without
+evicting anything. A second frame for a held author sequence with different
+content is rejected as equivocation. Held frames are memory-only and are
+dropped at a new group context and on close. A held frame whose predecessor
+never arrives expires; nothing requests it yet.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
