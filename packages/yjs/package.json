@@ -124,6 +124,7 @@
       "^@libp2p/mdns$": "<rootDir>/src/__mocks__/empty-module.js",
       "^@libp2p/peer-id$": "<rootDir>/src/__mocks__/empty-module.js",
       "^@libp2p/ping$": "<rootDir>/src/__mocks__/empty-module.js",
+      "^@libp2p/utils$": "<rootDir>/src/__mocks__/empty-module.js",
       "^ipns/selector$": "<rootDir>/src/__mocks__/empty-module.js",
       "^ipns/validator$": "<rootDir>/src/__mocks__/empty-module.js",
       "^@helia/bitswap$": "<rootDir>/src/__mocks__/empty-module.js",

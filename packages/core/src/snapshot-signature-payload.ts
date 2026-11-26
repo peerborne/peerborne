@@ -6,8 +6,6 @@ const SNAPSHOT_SIGNATURE_DOMAIN = Uint8Array.from(
   (value) => value.charCodeAt(0),
 );
 
-const encoder = new TextEncoder();
-
 /**
  * Build the deterministic binary payload that a writer signs for a snapshot
  * of `documentPath`, and that receivers verify.
@@ -37,6 +35,7 @@ export function buildSnapshotSignaturePayload(
   ) {
     throw new Error('Invalid snapshot document path');
   }
+  const encoder = new TextEncoder();
   const pathBytes = encoder.encode(documentPath);
   if (pathBytes.length > MAX_DOCUMENT_PATH_LENGTH) {
     throw new Error(
