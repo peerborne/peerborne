@@ -1,5 +1,6 @@
 import {
   advanceBlockGc,
+  canRetainGcCandidate,
   selectDeletableCids,
   type BlockGcPhase,
 } from './policy/retention.js';
@@ -18,6 +19,30 @@ import { CRDTChangeNode } from './crdt-change-node.js';
 import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import { crdtChangeNodeDeferred } from './crdt-change-node.js';
 import { reachableCids, type CidEdge } from './policy/graph-reachability.js';
+
+/** Bound on the blocks a document remembers storing, and so on its GC candidates. */
+export const MAX_OWN_BLOCKS = 32_768;
+
+/**
+ * Remember a block this document stored itself. Only remembered blocks may be
+ * deleted, because the blockstore is shared by every document and the
+ * application. When the set is full, the oldest block is forgotten with any
+ * pending deletion of it, and stays in the blockstore.
+ */
+export function rememberOwnBlock(
+  ownBlocks: Set<string>,
+  candidates: Set<string>,
+  cid: string,
+): void {
+  if (ownBlocks.has(cid)) return;
+  if (ownBlocks.size >= MAX_OWN_BLOCKS) {
+    const [oldest] = ownBlocks;
+    ownBlocks.delete(oldest);
+    candidates.delete(oldest);
+  }
+  if (canRetainGcCandidate(false, ownBlocks.size, cid.length))
+    ownBlocks.add(cid);
+}
 
 export interface BlockGcLease {
   readonly candidates: ReadonlySet<string>;

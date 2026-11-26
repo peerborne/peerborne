@@ -82,6 +82,7 @@ export interface DocumentCheckpointState {
   hashes: string[];
   ancestors: string[];
   recentTips: [string, string][];
+  ownBlocks: string[];
   gcCandidates: string[];
   documentChangeCount: number;
   changesSinceSnapshot: number;
@@ -181,6 +182,7 @@ export function decodeCheckpointState(
     'hashes',
     'ancestors',
     'recentTips',
+    'ownBlocks',
     'gcCandidates',
     'documentChangeCount',
     'changesSinceSnapshot',
@@ -253,12 +255,24 @@ export function decodeCheckpointState(
     }
     cid(entry[0]);
   });
+  array(state.ownBlocks);
+  const ownBlocks = new Set<string>();
+  for (const block of state.ownBlocks) {
+    cid(block);
+    if (
+      ownBlocks.has(block) ||
+      !canRetainGcCandidate(false, ownBlocks.size, block.length)
+    )
+      throw new TypeError('Invalid checkpoint own block');
+    ownBlocks.add(block);
+  }
   array(state.gcCandidates);
   const gcCandidates = new Set<string>();
   for (const candidate of state.gcCandidates) {
     cid(candidate);
     if (
       gcCandidates.has(candidate) ||
+      !ownBlocks.has(candidate) ||
       !canRetainGcCandidate(false, gcCandidates.size, candidate.length)
     )
       throw new TypeError('Invalid checkpoint garbage collection candidate');

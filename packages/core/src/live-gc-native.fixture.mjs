@@ -41,6 +41,7 @@ test('real offline Helia pin and blockstore behavior agrees with live document r
               _mutationQueue: new InvitationMembershipQueue(),
               _gcLifecycle: {},
               _gcCandidates: new Set(),
+              _ownBlocks: new Set([root, ...ids].map((cid) => cid.toString())),
               _recentTips: [],
               _latestSnapshot: { lastChangeNodeCID: root.toString() },
               _lastSyncMessage: {
