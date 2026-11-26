@@ -6,6 +6,7 @@ import {
   getChanges,
   load,
   save,
+  getMissingDeps,
   type Change,
 } from '@automerge/automerge';
 import {
@@ -67,6 +68,7 @@ function automergeDocument(): any {
       },
       _topic: '/topic',
       swarm: {
+        unregisterDocument: jest.fn(),
         heliaNode: {
           libp2p: {
             services: {
@@ -106,6 +108,19 @@ async function batch(document: any, entry: string): Promise<void> {
   document.startChange();
   document.addChange(push(entry));
   await document.endChange();
+}
+
+// G holds A's a2, which waits for B's b1, in Automerge's queue.
+function queuedRemoteChange() {
+  const b1 = getChanges(
+    genesis,
+    change(clone(genesis, { actor: '07' }), push('b1')),
+  );
+  const withB1 = provider.remoteChange(clone(genesis, { actor: '08' }), b1);
+  const a2 = getChanges(withB1, change(withB1, push('a2')));
+  const queued = provider.remoteChange(clone(genesis, { actor: '02' }), a2);
+  expect(getMissingDeps(queued, [])).toHaveLength(1);
+  return { queued, b1 };
 }
 
 // Automerge rejects every remote change and snapshot merge into an outdated
@@ -281,4 +296,64 @@ describe('a remote sync whose ACL entry throws after a document entry', () => {
       applyRemoteChangeAndSnapshot(document);
     },
   );
+});
+
+describe('a rollback while Automerge holds changes waiting for dependencies', () => {
+  test('cloneDocument() declines, because a clone would drop the queue', () => {
+    const { queued, b1 } = queuedRemoteChange();
+    const outdated = queued;
+    const live = provider.localChange(queued, '', push('g1'))[0];
+
+    expect(provider.cloneDocument(outdated)).toBeUndefined();
+    const synced = provider.remoteChange(live, b1);
+    expect(synced.log).toContain('a2');
+    expect(provider.cloneDocument(synced)?.log).toEqual(synced.log);
+  });
+
+  test('a transaction that fails before publication retires the instance', async () => {
+    const document = automergeDocument();
+    const { queued, b1 } = queuedRemoteChange();
+    document._document = queued;
+    const failure = new Error('commit failed');
+    document._putBlock.mockRejectedValueOnce(failure);
+
+    document.startChange();
+    document.addChange(push('lost'));
+    const error: any = await document
+      .endChange()
+      .catch((reason: unknown) => reason);
+    expect(error.message).toMatch(/could not be rolled back/);
+    expect(error.cause).toBe(failure);
+    await expect(document.change(push('next'))).rejects.toThrow(
+      /could not be rolled back/,
+    );
+    expect(() => document.document).toThrow(/could not be rolled back/);
+    expect(document.frames).toHaveLength(0);
+    // The retained document still holds the queued change.
+    expect(provider.remoteChange(document._document, b1).log).toContain('a2');
+  });
+
+  test('a sync whose ACL entry throws keeps the applied entries and the queue', async () => {
+    const document = automergeDocument();
+    const { queued, b1 } = queuedRemoteChange();
+    document._document = queued;
+    document._mergeWriters = jest.fn(async () => {
+      throw new ACLMergeRejectedError(new Error('rejected'));
+    });
+    const remote = change(clone(genesis, { actor: '03' }), push('remote'));
+
+    await expect(
+      document._syncDocumentChanges('remote-cid', {
+        kind: 'document',
+        change: getChanges(genesis, remote),
+        children: { 'writer-cid': { kind: 'writer', change: [] } },
+      }),
+    ).rejects.toBeInstanceOf(ACLMergeRejectedError);
+    expect(document._hashes.has('remote-cid')).toBe(false);
+    expect(document._document.log).toEqual(['remote']);
+
+    await document.change(push('local'));
+    const synced = provider.remoteChange(document._document, b1);
+    expect([...synced.log].sort()).toEqual(['a2', 'b1', 'local', 'remote']);
+  });
 });

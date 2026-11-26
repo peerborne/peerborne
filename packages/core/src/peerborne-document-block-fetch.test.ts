@@ -73,7 +73,7 @@ function fakeDocument(fields: Record<string, unknown> = {}): any {
     _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
     _refreshLastSyncMessageFromSync: jest.fn(),
     _maybeCompact: jest.fn(async () => undefined),
-    _remoteBlockFetches: new RemoteBlockFetches(20),
+    _remoteBlockFetches: new RemoteBlockFetches({ deadlineMs: 20 }),
     ...fields,
   });
 }
@@ -89,7 +89,16 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('a sync citing a block that no reachable peer holds', () => {
+async function boundedSync(document: any, root: string, changes: unknown) {
+  const remoteFetches = document._blockFetches().begin();
+  try {
+    await document._syncDocumentChanges(root, changes, { remoteFetches });
+  } finally {
+    remoteFetches.end();
+  }
+}
+
+describe('an ordinary sync citing a block that no reachable peer holds', () => {
   test('applies its inline changes once the fetch deadline passes and skips the block while it backs off', async () => {
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     const document = fakeDocument({
@@ -98,7 +107,7 @@ describe('a sync citing a block that no reachable peer holds', () => {
       ),
     });
 
-    await document._syncDocumentChanges('ROOT', tree('inline', 'MISSING'));
+    await boundedSync(document, 'ROOT', tree('inline', 'MISSING'));
     expect(document._document).toEqual(['inline']);
     expect(document._hashes.has('ROOT')).toBe(true);
     expect(document._hashes.has('MISSING')).toBe(false);
@@ -108,7 +117,7 @@ describe('a sync citing a block that no reachable peer holds', () => {
       'MISSING',
     );
 
-    await document._syncDocumentChanges('NEXT', tree('next', 'MISSING'));
+    await boundedSync(document, 'NEXT', tree('next', 'MISSING'));
     expect(document._getBlock).toHaveBeenCalledTimes(1);
     expect(document._document).toEqual(['inline', 'next']);
     expect(document._hashes.has('NEXT')).toBe(true);
@@ -129,15 +138,40 @@ describe('a sync citing a block that no reachable peer holds', () => {
       }),
     });
 
-    const syncing = document._syncDocumentChanges(
-      'ROOT',
-      tree('inline', 'MISSING'),
-    );
+    const syncing = boundedSync(document, 'ROOT', tree('inline', 'MISSING'));
     await fetching;
     await document.close();
     await expect(syncing).resolves.toBeUndefined();
     expect(document._hashes.has('ROOT')).toBe(true);
     expect(fetches.isBackedOff('MISSING')).toBe(false);
+  });
+});
+
+describe('a load or invitation sync citing blocks', () => {
+  test('fetches every block, under its own deadline rather than the ordinary bounds', async () => {
+    const deferred = Array.from({ length: 10 }, (_value, index) => `D${index}`);
+    const document = fakeDocument({
+      _getBlock: jest.fn(async (cid: { toString(): string }) => [
+        cid.toString(),
+      ]),
+    });
+
+    await document._syncDocumentChanges(
+      'ROOT',
+      {
+        kind: crdtDocumentChangeNode,
+        change: ['inline'],
+        children: Object.fromEntries(
+          deferred.map((cid) => [cid, { kind: crdtDocumentChangeNode }]),
+        ),
+      },
+      { signal: new AbortController().signal },
+    );
+    expect(document._getBlock).toHaveBeenCalledTimes(10);
+    expect([...document._document].sort()).toEqual(
+      ['inline', ...deferred].sort(),
+    );
+    for (const cid of deferred) expect(document._hashes.has(cid)).toBe(true);
   });
 });
 
@@ -201,11 +235,11 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     });
     document._hashes.add('MISSING');
 
-    await document._syncGossipMessage(message, () => true);
+    await document._syncGossipMessage(message, () => true, 123);
     expect(document._verifyOrdinarySyncSignature).not.toHaveBeenCalled();
     expect(document._readBlock).not.toHaveBeenCalled();
-    expect(document._syncUnlocked.mock.calls[0][6].prefetchedBlocks).toBe(
-      undefined,
-    );
+    const options = document._syncUnlocked.mock.calls[0][6];
+    expect(options.prefetchedBlocks).toBe(undefined);
+    expect(options.frameBytes).toBe(123);
   });
 });

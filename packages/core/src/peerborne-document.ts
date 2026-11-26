@@ -1021,6 +1021,8 @@ export class PeerborneDocument<
   private readonly _beekemForkGuard?: BeeKEMForkQuarantine;
   private _guardedClose?: Promise<void>;
   private _oversizedEditClose?: Promise<void>;
+  // Why a retired instance refuses work, when not for an oversized edit.
+  private _retirementReason?: string;
 
   private readonly _coordinated?: CoordinatedDocument<
     DocType, ChangesType, ChangeFnType, PrivateKey, PublicKey, DocumentKey
@@ -1740,8 +1742,9 @@ export class PeerborneDocument<
   private _assertDocumentStateNotPoisoned(): void {
     if (this._oversizedEditClose) {
       throw new Error(
-        `Document ${this.documentPath} was retired after an oversized edit; ` +
-          'open a fresh instance from accepted state before continuing',
+        this._retirementReason ??
+          `Document ${this.documentPath} was retired after an oversized edit; ` +
+            'open a fresh instance from accepted state before continuing',
       );
     }
     if (this._bootstrapLoadApplicationState === 'poisoned') {
@@ -2698,11 +2701,14 @@ export class PeerborneDocument<
       if (newDocumentHashes.length) assertStillActive();
     } catch (error) {
       // Automerge outdated the document these entries consumed, so restore a
-      // writable copy of the state the sync started from.
+      // writable copy of the state the sync started from. When no faithful
+      // copy exists, keep the applied entries: they are published remote
+      // changes, and they stay unrecorded, so a redelivery records them.
       if (newDocument !== documentBeforeSync) {
         this._document =
-          this._crdtProvider.cloneDocument?.(documentBeforeSync) ??
-          documentBeforeSync;
+          (this._crdtProvider.cloneDocument
+            ? this._crdtProvider.cloneDocument(documentBeforeSync)
+            : documentBeforeSync) ?? newDocument;
       }
       throw error;
     }
@@ -2751,7 +2757,8 @@ export class PeerborneDocument<
     // update handlers are notified of what those siblings applied before the
     // rejection propagates, because a retry skips their recorded hashes.
     // A block that was not prefetched is read within the message's
-    // `RemoteBlockFetches` bounds; one they leave unread stays missing.
+    // `RemoteBlockFetches` bounds, when it has them; one they leave unread
+    // stays missing.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
@@ -2778,10 +2785,17 @@ export class PeerborneDocument<
         assertStillActive();
         throwIfLoadAborted(fetchSignal);
       };
-      let ownRemoteFetches: RemoteBlockFetchScope | undefined;
-      const remoteFetches = (): RemoteBlockFetchScope =>
-        fetchOptions.remoteFetches ??
-        (ownRemoteFetches ??= this._blockFetches().begin());
+      const fetchMissingBlock = (cid: CID, missingHash: string) => {
+        const read = (readSignal: AbortSignal) =>
+          this._getBlock(
+            cid,
+            { signal: readSignal, maxBlockBytes, consumeBytes },
+            fetchOptions.getKey,
+          );
+        return fetchOptions.remoteFetches === undefined
+          ? read(fetchSignal)
+          : fetchOptions.remoteFetches.fetch(missingHash, read, fetchSignal);
+      };
       let certifiedACLRejection: ACLMergeRejectedError | undefined;
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded && !certifiedACLRejection) {
@@ -2801,20 +2815,7 @@ export class PeerborneDocument<
                     fetchSignal,
                     fetchOptions.getKey,
                   )
-                : remoteFetches().fetch(
-                    missingHash,
-                    (readSignal) =>
-                      this._getBlock(
-                        cid,
-                        {
-                          signal: readSignal,
-                          maxBlockBytes,
-                          consumeBytes,
-                        },
-                        fetchOptions.getKey,
-                      ),
-                    fetchSignal,
-                  ),
+                : fetchMissingBlock(cid, missingHash),
               fetchSignal,
             );
             assertWorkerActive();
@@ -2921,7 +2922,6 @@ export class PeerborneDocument<
         workerResults = workerPoolOutcome.results;
       } finally {
         signal?.removeEventListener('abort', forwardAbort);
-        ownRemoteFetches?.end();
       }
       assertStillActive();
       const appliedHashes = appliedMissingDocumentHashes.filter(
@@ -8159,11 +8159,13 @@ export class PeerborneDocument<
         );
         if (cids === undefined) return;
         if (cids.length > 0) {
+          // The scope starts no fetch after the prefetch, so the frame then
+          // applies without the blocks it could not prefetch.
           remoteFetches = this._blockFetches().begin();
-          prefetchedBlocks = await this._blockFetches().prefetch(
-            remoteFetches,
+          prefetchedBlocks = await remoteFetches.prefetch(
             cids,
-            (cid, signal) => this._readBlock(CID.parse(cid), { signal }),
+            (cid, signal, consumeBytes) =>
+              this._readBlock(CID.parse(cid), { signal, consumeBytes }),
             LOAD_PREFETCH_MAX_CONCURRENCY,
           );
         }
@@ -8214,7 +8216,7 @@ export class PeerborneDocument<
   /**
    * CIDs a sync tree cites without their changes that this replica lacks.
    * `validate` checks and canonicalizes the tree first, as `_syncUnlocked()`
-   * will, and ignores history below the message's snapshot.
+   * will, and ignores history below a snapshot newer than the latest one.
    */
   private _unknownDeferredCids(
     message: CRDTSyncMessage<ChangesType>,
@@ -8222,7 +8224,12 @@ export class PeerborneDocument<
   ): string[] {
     const { changeId, changes } = message;
     if (changeId === undefined || changes === undefined) return [];
-    const boundary = validate ? message.snapshot?.lastChangeNodeCID : undefined;
+    const boundary =
+      validate &&
+      message.snapshot !== undefined &&
+      this._supersedesLatestSnapshot(message.snapshot)
+        ? message.snapshot.lastChangeNodeCID
+        : undefined;
     const known = boundary ? new Set(this._hashes).add(boundary) : this._hashes;
     try {
       return mergeRemoteSyncTree(
@@ -8236,6 +8243,18 @@ export class PeerborneDocument<
     } catch {
       return [];
     }
+  }
+
+  private _supersedesLatestSnapshot(
+    incoming: NonNullable<CRDTSyncMessage<ChangesType>['snapshot']>,
+  ): boolean {
+    return (
+      !this._latestSnapshot ||
+      incoming.compactedCount > this._latestSnapshot.compactedCount ||
+      (incoming.compactedCount === this._latestSnapshot.compactedCount &&
+        String(incoming.lastChangeNodeCID ?? '') >
+          String(this._latestSnapshot.lastChangeNodeCID ?? ''))
+    );
   }
 
   private async _syncValidatedProtocolMessage(
@@ -8612,13 +8631,7 @@ export class PeerborneDocument<
           }
         } catch {}
       }
-      if (
-        !this._latestSnapshot ||
-        incoming.compactedCount > this._latestSnapshot.compactedCount ||
-        (incoming.compactedCount === this._latestSnapshot.compactedCount &&
-          String(incoming.lastChangeNodeCID ?? '') >
-            String(this._latestSnapshot.lastChangeNodeCID ?? ''))
-      ) {
+      if (this._supersedesLatestSnapshot(incoming)) {
         // Verify the snapshot signature against the deterministic payload
         // by trying all authorized writers.
         // When signing is disabled, skip serialization and signature
@@ -8699,11 +8712,24 @@ export class PeerborneDocument<
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
     if (changeTreePreflight) {
       beginStateApplication();
-      await this._syncDocumentChanges(
-        message.changeId,
-        changeTreePreflight.changes,
-        changeFetchOptions,
-      );
+      // An ordinary sync bounds the block fetches it starts. Loads and
+      // invitations need every block and bound them with their own deadlines.
+      const remoteFetches =
+        context === 'ordinary-sync-v1' &&
+        changeFetchOptions.remoteFetches === undefined
+          ? this._blockFetches().begin()
+          : undefined;
+      try {
+        await this._syncDocumentChanges(
+          message.changeId,
+          changeTreePreflight.changes,
+          remoteFetches === undefined
+            ? changeFetchOptions
+            : { ...changeFetchOptions, remoteFetches },
+        );
+      } finally {
+        remoteFetches?.end();
+      }
       assertStillActive();
     }
 
@@ -8829,7 +8855,10 @@ export class PeerborneDocument<
    * `endChange()` was called, and the attempt's history bookkeeping is
    * removed. Automerge outdates the document a change consumes, so the
    * rollback restores a writable copy from `CRDTProvider.cloneDocument()`,
-   * which makes later changes under a new actor. A failure after
+   * which makes later changes under a new actor. While Automerge holds remote
+   * changes waiting for missing dependencies, a copy would lose them, so the
+   * call instead retires the instance and rejects with an error whose `cause`
+   * is the failure; reopen it from accepted state. A failure after
    * publication, from a local update handler or compaction, keeps the
    * published change and its bookkeeping, ends the transaction and rejects
    * with that error, as `change()` does.
@@ -8970,10 +8999,14 @@ export class PeerborneDocument<
       // Roll back document and internal metadata (best-effort for in-place
       // mutating providers like Yjs). Automerge outdated `originalDocument`
       // when it made the change, so restore a writable copy of it instead.
-      if (this._document !== originalDocument) {
-        this._document =
-          this._crdtProvider.cloneDocument?.(originalDocument) ??
-          originalDocument;
+      // A retired instance is closed and keeps its document.
+      if (this._document !== originalDocument && !this._oversizedEditClose) {
+        const restored = this._crdtProvider.cloneDocument
+          ? this._crdtProvider.cloneDocument(originalDocument)
+          : originalDocument;
+        if (restored === undefined)
+          throw this._retireAfterUnrecoverableRollback(thrown);
+        this._document = restored;
       }
       // Remove only the CIDs appended by _makeChange instead of clearing and
       // re-populating the entire Set. This avoids mutating the Set during
@@ -9068,6 +9101,25 @@ export class PeerborneDocument<
       throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
     }
     if (failure) throw failure.error;
+  }
+
+  /**
+   * A failed local change that the provider cannot roll back without losing
+   * state, such as Automerge changes waiting for missing dependencies, stays
+   * in the document unpublished. A later change would depend on it, so the
+   * instance is retired and must be reopened from accepted state.
+   */
+  private _retireAfterUnrecoverableRollback(cause: unknown): Error {
+    this._retirementReason =
+      `Document ${this.documentPath} was retired because a failed change ` +
+      'could not be rolled back; open a fresh instance from accepted state ' +
+      'before continuing';
+    this._bootstrapLoadApplicationRevision++;
+    this._oversizedEditClose ??= Promise.resolve().then(() =>
+      this._closeDocument(),
+    );
+    void this._oversizedEditClose.catch(() => {});
+    return new Error(this._retirementReason, { cause });
   }
 
   /**
