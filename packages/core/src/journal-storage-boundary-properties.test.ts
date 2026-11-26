@@ -314,6 +314,7 @@ test('authenticated replay copies each stored ciphertext once while isolating la
           await (
             await journal.prepare({
               checkpoint: index === 0,
+              ...(index === 0 ? {} : { operationPaths: [] }),
               context: f.coordinator.documentContext,
               changes: changes[index],
               receipts:

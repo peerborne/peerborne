@@ -48,6 +48,7 @@ async function fixture(changes: Uint8Array, pending: boolean) {
   if (pending)
     await journal.prepare({
       checkpoint: false,
+      operationPaths: [],
       context: f.coordinator.documentContext,
       changes: new Uint8Array([99]),
       receipts: [

@@ -1,4 +1,8 @@
-import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
+import {
+  CoordinatedDocument,
+  type CoordinatedAuthorityUpdateResult,
+  type CoordinatedDocumentOptions,
+} from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import { isDocumentRedeliveryFrame } from './document-redelivery-wire.js';
 import {
@@ -8470,13 +8474,21 @@ export class PeerborneDocument<
     }
   }
 
+  /**
+   * Apply a controller-signed role update. At a new group context, this
+   * author's unsent frames from the retired context are re-signed and sent
+   * when it can still write them, and removed otherwise.
+   */
   public async applySecurityAuthorityUpdate(
     encoded: Uint8Array,
-  ): Promise<void> {
+  ): Promise<CoordinatedAuthorityUpdateResult> {
     if (!this._coordinated)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    await this._coordinated.applyAuthorityUpdate(encoded);
+    const result = await this._coordinated.applyAuthorityUpdate(encoded);
+    if (result.resent > 0 || result.waiting > 0)
+      void this.retrySecurityPublications().catch(() => {});
+    return result;
   }
 
   /**
@@ -8644,19 +8656,25 @@ export class PeerborneDocument<
           const pending = await engine.hasQueuedPublications();
           if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
         }
-        const { frames, dropped } = await engine.dispatchablePublications();
-        if (unreachable)
-          return { sent: 0, pending: frames.length !== 0, dropped };
-        let sent = 0;
-        for (const frame of frames) {
-          engine.assertPublicationDispatchAllowed();
-          const result: unknown = await pubsub.publish(this._topic, frame);
-          // Keep this frame and its successors until a topic peer receives them.
-          if (!securityPublicationReachedPeers(result)) break;
-          await engine.publicationSent(frame);
-          sent++;
-        }
-        return { sent, pending: sent !== frames.length, dropped };
+        let sent = 0,
+          dropped = 0;
+        do {
+          const batch = await engine.dispatchablePublications();
+          dropped += batch.dropped;
+          if (unreachable)
+            return { sent, pending: batch.frames.length !== 0, dropped };
+          for (const frame of batch.frames) {
+            engine.assertPublicationDispatchAllowed();
+            const result: unknown = await pubsub.publish(this._topic, frame);
+            // Keep this frame and its successors until a topic peer receives them.
+            if (!securityPublicationReachedPeers(result))
+              return { sent, pending: true, dropped };
+            await engine.publicationSent(frame);
+            sent++;
+          }
+          // Re-signed retired frames that waited for outbox space follow.
+        } while (await engine.continueResend());
+        return { sent, pending: false, dropped };
       })
       .finally(() => {
         if (this._securityPublicationTask === task)

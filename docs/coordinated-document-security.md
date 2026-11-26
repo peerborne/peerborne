@@ -71,8 +71,87 @@ and the document stays open.
 
 This option relies on the provider reporting its actual decrypting membership.
 An offline replica retains its earlier keys and roles until it learns the
-transition. The outbox can retry historical ciphertext that the local replica
-committed before it learned of the removal.
+transition.
+
+Peers in a new group context cannot decrypt a frame from the retired one, even
+one the author already published there. When `applySecurityAuthorityUpdate`
+installs a new context, the author re-signs its frames from the retired
+context that peers may lack, in original write order, as new frames in the new
+context with the same native delta. Peers may lack a frame that is still in
+the outbox, or one written after the last frame the author accepted from a
+peer in that context. Earlier frames reached a reachable group and are not
+re-sent, so re-signing does not repeat every epoch. The controller of the
+retired context commits its successor itself, so it published all its frames
+there while that context was current for every member. It carries only the
+frames still in its outbox, and a member that missed one catches up from the
+controller's checkpoint. Duplicates are harmless
+because native CRDT changes are idempotent. The document keeps each author's
+latest 64 own frames, up to 32 MiB, apart from the shared retention pool. After
+a restart it rebuilds them from the journal entries since its last checkpoint,
+together with each entry's publication while it is still in the outbox.
+
+A frame needs an outbox slot until it is published. When the outbox is full,
+the remaining frames wait and are re-signed as publication frees space. A
+retired frame in the outbox is removed only after its re-signed copy is
+accepted. A new local edit natively depends on every waiting frame, so it
+first re-signs them, and fails with `Document publication queue is full` if it
+cannot. Any other failure leaves the queue in place. A re-sign failure never
+fails the role update itself, which resolves with
+`{ resent, waiting, skipped, dropped, diverged }`.
+
+Every local edit is inspected when it is written, whether or not its author is
+restricted, and its operation paths are recorded with the frame and sealed in
+its journal entry with the device key. The record is exact. Only duplicates and
+paths under a recorded prefix are dropped, so grants cover the record exactly
+when they cover every operation. It has the bounds receivers inspect with: at
+most 4,096 paths of at most 32 segments, 1,024 units per segment and 1,048,576
+units in all. The journal compacts 4 MiB earlier to keep room for a full list.
+When an unrestricted author's edit cannot be inspected within those bounds, the
+record is the whole document instead of failing the edit. A non-checkpoint
+journal entry without a valid path list fails decoding.
+
+When re-signed, a restricted author's frame is checked against its current
+grants using those recorded paths, including after a restart and for edits
+written before the author was restricted. A whole-document record means the
+edit could not be inspected. Receivers of a restricted author inspect within
+the same bounds and cannot accept it, so a restricted author treats it as
+denied under any grants. An unrestricted author re-signs it unchecked.
+
+- A denied frame that was already published is skipped. Peers have it, or the
+  author's later frames are held until a catch-up.
+- A denied frame still in the outbox reached no one. It and every later frame,
+  which depends on it natively, are dropped and counted.
+- A reader or removed member keeps its replica readable.
+- An author that can still write in that case has `diverged`. Its replica holds
+  content the group cannot accept. Before the role update resolves, the
+  journal appends an authenticated divergence marker. The marker advances the
+  independent rollback anchor, so storage that drops it is rejected as a
+  rollback. The journal then takes no further entries. The live document
+  rejects every operation with `DocumentDivergedError`, and so does every
+  later open of that journal.
+- Frames re-signed earlier in the same pass precede the denied one and do not
+  depend on it. The diverged document still publishes them through
+  `retrySecurityPublications()` while it stays open. A restart before they are
+  sent leaves them in the diverged journal.
+- To rebuild, open the document with a journal in a new store and a new
+  rollback anchor namespace, then request a controller checkpoint. With
+  `IndexedDBDocumentJournalStore`, a new store means a new database name, or
+  removing the old journal first with `DocumentReplayJournal.deleteDiverged()`
+  after restoring it. That refuses while any publication is still unsent,
+  unless `discardUnsent: true` drops them. The old anchor still holds the
+  diverged head, so it cannot be reused either way. The new journal starts
+  without the marker.
+- A replica never adopts its own receipt from a checkpoint. A rebuild therefore
+  works only while the controller holds none of the author's frames in the
+  current context. Once the frames re-signed before the denial reach the
+  controller, the rebuilt replica's catch-up conflicts on its own receipt until
+  the next epoch.
+
+Receivers admit re-signed frames through normal admission, including their
+own field-scope checks. A document opened without a publication outbox does
+not re-sign. Frames still waiting for outbox space are kept in memory, and a
+restart after the role update loses their delivery. A member that joins in the
+new context gets earlier content from the controller checkpoint.
 
 ## Resume with a controller checkpoint
 
@@ -131,8 +210,8 @@ and merge costs still depend on the document and adapter.
 
 The application relays the messages and retains identity, trust roots and the
 independent rollback anchor across restart. This profile leaves peer discovery,
-control-message delivery, old-epoch edit rebasing and recovery after key or
-anchor loss to the application.
+control-message delivery, re-signs still waiting for outbox space at a restart and recovery
+after key or anchor loss to the application.
 
 ## Native field write scopes
 
@@ -483,8 +562,8 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Redelivery beyond the retained window, old-epoch edit rebasing and
-epoch-fork reconciliation remain future work. The controller
+Redelivery beyond the retained window, re-signs waiting for outbox space
+across a restart, and epoch-fork reconciliation remain future work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

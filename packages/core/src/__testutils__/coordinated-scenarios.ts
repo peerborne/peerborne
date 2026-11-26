@@ -154,3 +154,70 @@ export async function lostFrameRedeliveryScenario<Document, Changes, Change>(
     await g.close();
   }
 }
+
+/**
+ * Member 1 edits while its publication fails, then the controller adds
+ * member 2 in a new epoch. Member 2 resumes from the controller checkpoint;
+ * member 1 learns the epoch, re-signs its unsent edit and keeps editing.
+ */
+export async function retiredEpochScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    catchUp: true,
+  });
+  const errors: string[] = [];
+  const deliverAll = async (recipients: number[]) => {
+    for (const publication of g.take())
+      errors.push(...(await g.deliver(publication, recipients)));
+  };
+  try {
+    await g.addMember(1);
+    await g.open(0);
+    await g.open(1);
+    await g.doc(0).change(adapter.edit('c0'));
+    await g.doc(1).change(adapter.edit('m1a'));
+    await deliverAll([0, 1]);
+    const publish = g.pubsubs[1].publish;
+    g.pubsubs[1].publish = async () => {
+      throw new Error('offline');
+    };
+    let offline = '';
+    try {
+      await g.doc(1).change(adapter.edit('offlineEdit'));
+    } catch (error) {
+      offline = (error as Error).message;
+    }
+    const { delivery, record } = await g.addMember(2, { applyTo: [] });
+    await g.open(2);
+    const request = await g.doc(2).createSecurityCatchUpRequest();
+    await g
+      .doc(2)
+      .applySecurityCatchUpCheckpoint(
+        await g.doc(0).createSecurityCatchUpCheckpoint(request),
+      );
+    g.pubsubs[1].publish = publish;
+    await g.coordinators[1].applyCommit(
+      delivery.commit!,
+      delivery.controlRecord,
+      delivery.welcomes,
+    );
+    const update = await g.doc(1).applySecurityAuthorityUpdate(record);
+    await g.doc(1).retrySecurityPublications();
+    await deliverAll([0, 2]);
+    await g.doc(1).change(adapter.edit('afterReturn'));
+    await deliverAll([0, 2]);
+    await g.doc(1).retrySecurityPublications();
+    const leftover = g.take().length;
+    return {
+      offline,
+      update,
+      errors,
+      leftover,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}

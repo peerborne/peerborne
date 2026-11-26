@@ -5,7 +5,12 @@ import {
 import type { DocumentWritePaths } from './document-field-authorization.js';
 
 export interface DocumentPreparationOptions {
-  readonly inspectOperations?: boolean;
+  /**
+   * `true` fails preparation when inspection fails or exceeds its bounds.
+   * `'record'` inspects the same way but reports the whole document, `[[]]`,
+   * instead of failing.
+   */
+  readonly inspectOperations?: boolean | 'record';
 }
 
 /**
