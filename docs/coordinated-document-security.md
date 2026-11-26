@@ -71,8 +71,20 @@ and the document stays open.
 
 This option relies on the provider reporting its actual decrypting membership.
 An offline replica retains its earlier keys and roles until it learns the
-transition. The outbox can retry historical ciphertext that the local replica
-committed before it learned of the removal.
+transition.
+
+Peers in a new group context cannot decrypt a frame from the retired one. When
+`applySecurityAuthorityUpdate` installs a new context, the author's frames from
+the retired context that are still in the outbox are resolved in order. While
+the new roles still let the author write, each is re-signed as a new frame in
+the new context with the same native delta and sent. A restricted author's
+delta is inspected against its current grants first. Otherwise the frame is
+removed, and the delta stays only in the author's replica. The update resolves
+with `{ resent, dropped }`. Receivers apply the re-sent frame through normal
+admission, so their field-scope checks use the new grants. Re-signing uses
+the signed content the document retains in memory. After a restart before the
+update, retired-context frames stay in the outbox undelivered. A member that
+joins in the new context gets earlier content from the controller checkpoint.
 
 ## Resume with a controller checkpoint
 
@@ -116,8 +128,8 @@ and merge costs still depend on the document and adapter.
 
 The application relays the messages and retains identity, trust roots and the
 independent rollback anchor across restart. This profile leaves peer discovery,
-control-message delivery, old-epoch edit rebasing and recovery after key or
-anchor loss to the application.
+control-message delivery, retired-context edits after a restart and recovery
+after key or anchor loss to the application.
 
 ## Native field write scopes
 
@@ -366,8 +378,8 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery requests, old-epoch edit
-rebasing and epoch-fork reconciliation remain future work. The controller
+Automatic anti-entropy, missing-prefix redelivery requests, retired-context
+edits after a restart and epoch-fork reconciliation remain future work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

@@ -1,7 +1,10 @@
 import { expect, jest, test } from '@jest/globals';
 import type { Doc } from 'yjs';
 import { YjsJSONSerializer, YjsProvider } from './peerborne-yjs.js';
-import { missedTailCatchUpScenario } from '../../core/src/__testutils__/coordinated-scenarios.js';
+import {
+  missedTailCatchUpScenario,
+  retiredEpochScenario,
+} from '../../core/src/__testutils__/coordinated-scenarios.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
 
@@ -21,4 +24,14 @@ test('resumes a Yjs member that missed a writer’s tail through the controller 
   expect(errors).toEqual([]);
   for (const view of views)
     expect(view).toEqual(['ctl', 'four', 'one', 'three', 'two']);
+}, 30_000);
+
+test('re-signs a Yjs edit written offline across an epoch change', async () => {
+  const result = await retiredEpochScenario(adapter);
+  expect(result.offline).toContain('Document change committed');
+  expect(result.update).toEqual({ resent: 1, dropped: 0 });
+  expect(result.errors).toEqual([]);
+  expect(result.leftover).toBe(0);
+  for (const view of result.views)
+    expect(view).toEqual(['afterReturn', 'c0', 'm1a', 'offlineEdit']);
 }, 30_000);
