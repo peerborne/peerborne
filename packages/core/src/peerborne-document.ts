@@ -2639,13 +2639,10 @@ export class PeerborneDocument<
   }
 
   private _createSyncMessage(context: SyncMessageContext): CRDTSyncMessage<ChangesType> {
-    const message: CRDTSyncMessage<ChangesType> = {
-      ...(this._lastSyncMessage || {
-        documentId: this.documentPath,
-      }),
-      signatureContext: context,
+    const { snapshot: _snapshot, ...retained } = this._lastSyncMessage || {
+      documentId: this.documentPath,
     };
-    return message;
+    return { ...retained, signatureContext: context };
   }
 
   /**
@@ -8758,6 +8755,7 @@ export class PeerborneDocument<
       );
       const hashes = new Set(state.hashes);
       assertCheckpointChangeHistory(this.documentPath, message, hashes);
+      const { snapshot, ...retainedMessage } = message;
       const beekem = state.beekem === null ? null : new BeeKEM();
       if (beekem !== null && state.beekem !== null) {
         if (!this._kemKeyPair)
@@ -8829,13 +8827,13 @@ export class PeerborneDocument<
       this._mergedHeldACL = undefined;
       this._waiting = undefined;
       this._keychain = keychain;
-      this._lastSyncMessage = message;
+      this._lastSyncMessage = retainedMessage;
       this._hashes = hashes;
       this._referencedAncestors = ancestors;
       this._recentTips = recentTips;
       this._ownBlocks = new Set(state.ownBlocks);
       this._gcCandidates = new Set(state.gcCandidates);
-      this._latestSnapshot = message.snapshot;
+      this._latestSnapshot = snapshot;
       this._documentChangeCount = state.documentChangeCount;
       this._changesSinceSnapshot = state.changesSinceSnapshot;
       this._historyVisibility = state.historyVisibility;
