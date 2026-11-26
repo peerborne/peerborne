@@ -26,6 +26,7 @@ jest.mock('./peerborne.js', () => ({
 }));
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+const writer = { toString: () => 'writer' };
 const frame = (value = 3) => new Uint8Array([1, 2, value]);
 type Receive = (message: {
   detail: { topic: string; data: Uint8Array };
@@ -119,26 +120,142 @@ test('the active receive paths share document and aggregate limits until work ac
       await expect(validate({}, { data: frame() })).resolves.toBe('ignore');
     }
     const charged = 4 * DEFAULT_DOCUMENT_OPERATION_COUNT;
-    expect(decrypt).toHaveBeenCalledTimes(charged);
+    // Each skipped frame waits for one authentication check, outside credits.
+    expect(decrypt).toHaveBeenCalledTimes(charged + 4);
     await expect(target.validator()({}, { data: frame() })).resolves.toBe(
       'ignore',
     );
+    expect(decrypt).toHaveBeenCalledTimes(charged + 5);
     await fixtures[0].document.close();
     target.deliver();
-    expect(decrypt).toHaveBeenCalledTimes(charged);
+    expect(decrypt).toHaveBeenCalledTimes(charged + 5);
 
     pending[0].resolve(new Uint8Array([3]));
     await turn();
     expect(fixtures[0].deserialize).not.toHaveBeenCalled();
     const fresh = target.validator()({}, { data: frame() });
-    expect(decrypt).toHaveBeenCalledTimes(charged + 1);
+    expect(decrypt).toHaveBeenCalledTimes(charged + 6);
     pending.at(-1)!.resolve(new Uint8Array([3]));
     await expect(fresh).resolves.toBe('accept');
   } finally {
-    for (const completion of pending) completion.resolve(undefined);
+    for (let index = 0; index < pending.length; index++) {
+      pending[index].resolve(undefined);
+      await turn();
+    }
     await Promise.all(validators);
     await turn();
     await Promise.all(fixtures.map(({ document }) => document.close()));
+  }
+});
+
+test('a validated burst that exceeds the document limit still applies its final frame', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  const burst = DEFAULT_DOCUMENT_OPERATION_COUNT + 14;
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from({ length: burst }, (_, index) =>
+      validate({}, {
+        type: 'signed',
+        from: writer,
+        data: frame(index + 1),
+      } as never),
+    );
+    await turn();
+    unblock.resolve();
+    const outcomes = await Promise.all(results);
+    expect(outcomes.filter((outcome) => outcome === 'accept')).toHaveLength(
+      DEFAULT_DOCUMENT_OPERATION_COUNT,
+    );
+    for (let index = 0; index < 10; index++) await turn();
+    expect(fixture.sync).toHaveBeenCalledTimes(1);
+    expect(fixture.sync.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({ changeId: String(burst) }),
+    );
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
+  }
+});
+
+test('frames that do not decrypt never displace a member frame kept for capacity', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) =>
+      data[0] === 255 ? undefined : data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from(
+      { length: DEFAULT_DOCUMENT_OPERATION_COUNT + 1 },
+      (_, index) =>
+        validate({}, {
+          type: 'signed',
+          from: writer,
+          data: frame(index + 1),
+        } as never),
+    );
+    for (let index = 0; index < 4; index++) await turn();
+    for (let index = 0; index < 20; index++) {
+      results.push(
+        validate({}, {
+          type: 'signed',
+          from: { toString: () => `stranger-${index}` },
+          data: frame(255),
+        } as never),
+      );
+      fixture.deliver(frame(255));
+      await turn();
+    }
+    unblock.resolve();
+    await Promise.all(results);
+    for (let index = 0; index < 10; index++) await turn();
+    expect(fixture.sync).toHaveBeenCalledTimes(1);
+    expect(fixture.sync.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        changeId: String(DEFAULT_DOCUMENT_OPERATION_COUNT + 1),
+      }),
+    );
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
+  }
+});
+
+test('closing discards a frame kept for capacity before it can be retried', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from(
+      { length: DEFAULT_DOCUMENT_OPERATION_COUNT + 1 },
+      (_, index) => validate({}, { data: frame(index + 1) }),
+    );
+    for (let index = 0; index < 4; index++) await turn();
+    await fixture.document.close();
+    unblock.resolve();
+    await Promise.all(results);
+    for (let index = 0; index < 10; index++) await turn();
+    expect(fixture.sync).not.toHaveBeenCalled();
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
   }
 });
 

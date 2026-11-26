@@ -15,6 +15,13 @@
       "entry": "echoStorm"
     },
     {
+      "id": "typing-burst",
+      "name": "Typing burst beyond the receive limit between real Peerborne nodes",
+      "runtime": "node",
+      "module": "./node/burst.mjs",
+      "entry": "typingBurst"
+    },
+    {
       "id": "slow-peer",
       "name": "Ordered SCTP loss and healthy-peer progress",
       "runtime": "browser",

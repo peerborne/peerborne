@@ -61,6 +61,19 @@ GossipSub is **best-effort**:
 - There is no message persistence, acknowledgment, or guaranteed delivery
 - Initial load and catch-up use point-to-point bitswap / HTTP fetch, not GossipSub
 
+### Receive capacity
+
+Each open document processes at most 16 frames and 16 MiB of ciphertext at a
+time, and all documents together at most 64 frames and 64 MiB. A frame that
+arrives while either budget is full is skipped. If a skipped frame decrypts
+under a document key, it is kept as its sender's latest frame and processed
+once a credit frees; one such check runs at a time per document, and a newer
+arrival replaces a frame still waiting for it. A writer's later frames carry
+its earlier changes inline, so this recovers the end of a typing burst. A
+frame that does not decrypt never displaces a kept one. At most eight senders
+are kept per document; beyond that, the oldest kept frame is dropped until
+its sender's next frame or a `requestSync()`.
+
 ## Peer discovery
 
 Peerborne peers find each other through several mechanisms:

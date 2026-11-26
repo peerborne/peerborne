@@ -115,6 +115,75 @@ test('receive credits follow started work through rejection, close, and replacem
   );
 });
 
+test('the newest frame of every open scope is processed once work drains, within the same credits', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(
+        fc.record({
+          action: fc.constantFrom('start', 'start', 'start', 'settle'),
+          scope: fc.nat(1),
+          selector: fc.nat(20),
+          bytes: fc.integer({ min: 1, max: 5 }),
+        }),
+        { minLength: 5, maxLength: 80 },
+      ),
+      async (steps) => {
+        const aggregate = new GroupDocumentOperationBudget(3, 10);
+        const scopes = [0, 1].map(() => {
+          const local = new GroupDocumentOperationBudget(2, 6);
+          return {
+            local,
+            receive: new GossipReceiveAdmission(local, aggregate),
+            processed: new Set<number>(),
+            newest: -1,
+          };
+        });
+        const gates: PromiseWithResolvers<void>[] = [];
+        let sequence = 0;
+        const process =
+          (scope: (typeof scopes)[number]) => async (frame: Uint8Array) => {
+            const id = frame[0]!;
+            expect(scope.processed.has(id)).toBe(false);
+            scope.processed.add(id);
+            const gate = Promise.withResolvers<void>();
+            gates.push(gate);
+            await gate.promise;
+          };
+        const runs: Promise<unknown>[] = [];
+        for (const { action, scope: index, selector, bytes } of steps) {
+          const scope = scopes[index];
+          if (action === 'settle') {
+            gates[selector % Math.max(gates.length, 1)]?.resolve();
+            await turn();
+          } else {
+            const id = sequence++;
+            const input = new Uint8Array(bytes).fill(id);
+            scope.newest = id;
+            runs.push(scope.receive.run(input, process(scope), process(scope)));
+          }
+          expect(aggregate.usage.operations).toBeLessThanOrEqual(3);
+          expect(aggregate.usage.bytes).toBeLessThanOrEqual(10);
+          for (const { local, receive } of scopes) {
+            expect(local.usage.operations).toBeLessThanOrEqual(2);
+            expect(receive.keptBytes).toBeLessThanOrEqual(5);
+          }
+        }
+        for (let index = 0; index < gates.length; index++) {
+          gates[index].resolve();
+          await turn();
+        }
+        await Promise.all(runs);
+        for (const { local, processed, newest } of scopes) {
+          if (newest >= 0) expect(processed.has(newest)).toBe(true);
+          expect(local.usage).toEqual({ operations: 0, bytes: 0 });
+        }
+        expect(aggregate.usage).toEqual({ operations: 0, bytes: 0 });
+      },
+    ),
+    { seed: 20261125, numRuns: 60 },
+  );
+});
+
 test('member signatures use bounded batches and wait for outstanding native work', async () => {
   await fc.assert(
     fc.asyncProperty(

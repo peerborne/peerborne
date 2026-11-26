@@ -41,6 +41,7 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 
 - **Browsers typically need a relay.** Browser peers cannot accept incoming connections directly. A Circuit Relay is needed for initial connectivity and as a fallback; direct WebRTC or WebTransport connections may be possible when NAT traversal succeeds, but this is not yet verified in CI.
 - **GossipSub is best-effort.** Message delivery is not guaranteed. Late-joining peers miss earlier announcements.
+- **Receive bursts keep one frame per sender.** Beyond 16 in-flight frames per document, only the latest skipped frame that decrypts under a document key is kept for each of up to eight senders. A burst from one writer converges; a member using more than eight GossipSub identities can push out other senders' kept frames until their next frame. See [receive capacity](../networking/#receive-capacity).
 - **Custom document topics require coordination.** Every participant sharing a document must use the same runtime and document topic prefix, and a custom prefix must be added to each relay's allowlist. Topic names are routing labels, not authentication or authorization.
 - **Many transports lack document-path evidence in CI.** The current cross-NAT
   proof verifies invitation acceptance, initial document-history load, and live

@@ -260,6 +260,11 @@ export type { HistoryVisibility } from './invitation-policy.js';
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
 const loadCandidateResponders = new WeakMap<object, string>();
 
+/** GossipSub publisher of a message, for per-sender receive admission. */
+function gossipSender(message: Message): string {
+  return message.type === 'signed' ? message.from.toString() : '';
+}
+
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error
@@ -7534,55 +7539,72 @@ export class PeerborneDocument<
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
-    const receiveAdmission = new GossipReceiveAdmission();
+    // A frame skipped for capacity is kept only if it decrypts under a
+    // document key, so a non-member cannot displace a member's frame.
+    const receiveAdmission = new GossipReceiveAdmission(
+      undefined,
+      undefined,
+      async (frame) => (await this._decryptGossipFrame(frame)) !== undefined,
+    );
     this._gossipReceiveAdmission = receiveAdmission;
+    const reportReceiveFailure = () => {
+      if (receiveAdmission.active)
+        console.error('Inbound sync message handling failed');
+    };
+    const receiveFrame = async (frame: Uint8Array): Promise<void> => {
+      const rawContent = await this._decryptGossipFrame(frame);
+      if (!rawContent || !receiveAdmission.active) return;
+
+      if (isSyncRequest(rawContent)) {
+        const request = decodeSyncRequest(rawContent);
+        if (request) {
+          await this._handleSyncRequest(
+            request,
+            () => this._subscribed && receiveAdmission.active,
+          );
+        }
+        return;
+      }
+
+      const message = snapshotSyncMessageForContext<ChangesType>(
+        this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+        'ordinary-sync-v1',
+      );
+      if (message.documentId !== this.documentPath) return;
+
+      await this._runStateMutation(async () => {
+        if (!receiveAdmission.active) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!receiveAdmission.active)
+                throw new Error('GossipSub receive subscription closed');
+            },
+          },
+        );
+      });
+    };
+    // A kept frame is retried through the full receive path, which repeats
+    // every validator check before applying it.
+    const retryFrame = (frame: Uint8Array) =>
+      receiveFrame(frame).catch(reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
       void receiveAdmission
-        .run(rawMessage.detail.data, async (frame) => {
-          const rawContent = await this._decryptGossipFrame(frame);
-          if (!rawContent || !receiveAdmission.active) return;
-
-          if (isSyncRequest(rawContent)) {
-            const request = decodeSyncRequest(rawContent);
-            if (request) {
-              await this._handleSyncRequest(
-                request,
-                () => this._subscribed && receiveAdmission.active,
-              );
-            }
-            return;
-          }
-
-          const message = snapshotSyncMessageForContext<ChangesType>(
-            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-            'ordinary-sync-v1',
-          );
-          if (message.documentId !== this.documentPath) return;
-
-          await this._runStateMutation(async () => {
-            if (!receiveAdmission.active) return;
-            await this._syncUnlocked(
-              message,
-              true,
-              'ordinary-sync-v1',
-              undefined,
-              false,
-              undefined,
-              {
-                assertStillActive: () => {
-                  if (!receiveAdmission.active)
-                    throw new Error('GossipSub receive subscription closed');
-                },
-              },
-            );
-          });
-        })
-        .catch(() => {
-          if (receiveAdmission.active)
-            console.error('Inbound sync message handling failed');
-        });
+        .run(
+          rawMessage.detail.data,
+          receiveFrame,
+          retryFrame,
+          gossipSender(rawMessage.detail),
+        )
+        .catch(reportReceiveFailure);
     };
 
     // All registration and subscription steps are inside try/catch so that
@@ -7700,6 +7722,8 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
+                retryFrame,
+                gossipSender(message),
               );
               return receiveAdmission.active
                 ? (result ?? TopicValidatorResult.Ignore)
