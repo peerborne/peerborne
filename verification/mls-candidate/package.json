@@ -8,9 +8,9 @@
   },
   "name": "peerborne-mls-candidate-verification",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.1"
   },
-  "packageManager": "yarn@4.5.0",
+  "packageManager": "yarn@4.19.0",
   "resolutions": {
     "@hpke/common": "1.10.1"
   }

@@ -1,7 +1,8 @@
-FROM node:22.19.0-alpine
-RUN corepack enable \
+FROM node:26.13.1-alpine
+RUN npm install --global corepack@0.36.0 \
+    && corepack enable \
     && for attempt in 1 2 3; do \
-      corepack prepare yarn@4.5.0 --activate && break; \
+      corepack prepare yarn@4.19.0 --activate && break; \
       if [ "$attempt" = 3 ]; then exit 1; fi; \
       sleep $((attempt * 2)); \
     done

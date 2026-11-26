@@ -2,7 +2,7 @@
   "name": "@peerborne/integration-test-app",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "yarn@4.5.0",
+  "packageManager": "yarn@4.19.0",
   "type": "module",
   "scripts": {
     "build": "node build.js",
@@ -12,24 +12,29 @@
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@libp2p/bootstrap": "^12.0.29",
-    "@libp2p/circuit-relay-v2": "^4.2.11",
-    "@libp2p/gossipsub": "^17.0.0",
-    "@libp2p/identify": "^4.1.12",
-    "@libp2p/interface": "^3.2.5",
+    "@libp2p/bootstrap": "^12.0.37",
+    "@libp2p/circuit-relay-v2": "^4.2.18",
+    "@libp2p/gossipsub": "^17.2.2",
+    "@libp2p/identify": "^4.1.19",
+    "@libp2p/interface": "^3.4.0",
     "@libp2p/pubsub-peer-discovery": "^12.0.0",
-    "@libp2p/webrtc": "^6.0.29",
-    "@libp2p/websockets": "^10.1.19",
-    "@libp2p/webtransport": "^6.0.35",
-    "libp2p": "^3.3.11",
+    "@libp2p/webrtc": "^7.0.3",
+    "@libp2p/websockets": "^10.1.26",
+    "@libp2p/webtransport": "^6.0.45",
+    "libp2p": "^3.5.2",
     "uint8arraylist": "^3.0.2"
   },
   "resolutions": {
-    "glob": "14.0.3",
-    "minimatch": "11.0.4",
+    "glob": "14.0.6",
+    "minimatch": "11.0.9",
     "uint8arraylist": "^3.0.2"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2"
+  },
+  "dependenciesMeta": {
+    "esbuild": {
+      "built": false
+    }
   }
 }

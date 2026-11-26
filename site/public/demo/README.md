@@ -5,7 +5,7 @@
 All displayed traffic, timing, byte counts, and epoch transitions are simulated.
 No cryptographic material or real user payloads are used.
 
-From the repository root with Node.js 22.19.0, installed workspace dependencies,
+From the repository root with Node.js 26.13.1, installed workspace dependencies,
 and `ffmpeg` on PATH:
 
 ```sh

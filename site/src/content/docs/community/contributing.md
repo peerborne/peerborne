@@ -7,11 +7,12 @@ Discuss non-trivial, architecture-changing, or security-sensitive work before im
 
 ## Setup
 
-Use Node.js **22.19.0** and Yarn **4.5.0** for the libraries and examples, as pinned by `.tool-versions` and `package.json`. The documentation site has a separate Node pin.
+Use Node.js **26.13.1** and Yarn **4.19.0**, as pinned by `.tool-versions` and `package.json`. Node.js 26 no longer bundles Corepack, so install it first.
 
 ```sh
 git clone https://github.com/Peerborne/peerborne.git
 cd peerborne
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 ```
@@ -54,9 +55,7 @@ yarn test:e2e                     # four Vite example smoke suites; no Docker
 yarn test:e2e:peerborne-note:live # deployed app + public relay; set PEERBORNE_NOTE_LIVE_URL
 ```
 
-For the documentation build, use Node.js **22.23.5**, as pinned in
-[`site/.tool-versions`](https://github.com/Peerborne/peerborne/blob/main/site/.tool-versions).
-Run the build from `site/` after selecting that runtime.
+Build the documentation from `site/` with the same runtime.
 
 ```sh
 (cd site && yarn build)

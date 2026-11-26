@@ -58,7 +58,10 @@ describe('relay gateway', () => {
     const socket = connect({ host: '127.0.0.1', port })
     cleanup.push(async () => { socket.destroy() })
     await once(socket, 'connect')
-    const received = once(socket, 'data') as Promise<[Buffer]>
+    const received = Promise.race([
+      once(socket, 'data') as Promise<[Buffer]>,
+      once(socket, 'close').then((): [Buffer] => [Buffer.alloc(0)]),
+    ])
     socket.write([
       'GET / HTTP/1.1', `Host: ${host}`, 'Connection: Upgrade', 'Upgrade: websocket',
       'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: MDEyMzQ1Njc4OTAxMjM0NQ==',
@@ -117,11 +120,12 @@ describe('relay gateway', () => {
   })
 
   it('rejects duplicate credentials beyond the parsed header limit', async () => {
-    const { gateway } = await fixture()
+    const { gateway, headers } = await fixture()
     const padding = Array.from({ length: 64 }, (_, index) => `X-Padding-${index}: present`)
     expect((await upgrade(gateway.port, [
       ...trusted(), ...padding, `X-Peerborne-Origin: ${secret}`,
-    ])).response).toContain('403')
+    ])).response).toBe('')
+    expect(headers()).toEqual({})
   })
 
   it('rejects repeated connection attempts from one IP', async () => {

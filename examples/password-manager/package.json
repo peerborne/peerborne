@@ -6,29 +6,29 @@
     "@peerborne/core": "workspace:packages/core",
     "@peerborne/yjs": "workspace:packages/yjs",
     "@popperjs/core": "^2.11.8",
-    "@types/node": "^26.6.6",
+    "@types/node": "^26.6.7",
     "@types/uuid": "^11.0.0",
-    "bootstrap": "^5.3.8",
+    "bootstrap": "^5.3.9",
     "quill-delta": "^5.1.0",
     "react": "^19.3.1",
     "react-bootstrap": "^2.10.10",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.5",
-    "typescript": "^5.9.3",
-    "uuid": "^14.0.2",
+    "react-router-dom": "^7.18.7",
+    "typescript": "^6.0.3",
+    "uuid": "^14.0.3",
     "yjs": "^13.6.33"
   },
   "type": "module",
   "devDependencies": {
     "@types/bootstrap": "^5.2.11",
-    "@types/react": "^19.3.0",
+    "@types/react": "^19.3.1",
     "@types/react-bootstrap": "^1.1.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.2",
+    "@vitejs/plugin-react": "^6.3.0",
     "blockstore-core": "^7.0.1",
-    "fake-indexeddb": "^6.2.7",
+    "fake-indexeddb": "^6.2.8",
     "tsx": "4.23.15",
-    "vite": "^8.3.5"
+    "vite": "^8.3.8"
   },
   "scripts": {
     "test": "node --import tsx --test src/vault-store.test.ts src/document-checkpoint.test.ts",
@@ -37,6 +37,6 @@
     "start": "vite"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.1"
   }
 }

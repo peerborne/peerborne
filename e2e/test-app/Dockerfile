@@ -1,12 +1,12 @@
-FROM node:22-alpine AS build
-RUN corepack enable
+FROM node:26.13.1-alpine AS build
+RUN npm install --global corepack@0.36.0 && corepack enable
 WORKDIR /app
 COPY package.json yarn.lock .yarnrc.yml ./
 RUN yarn install --immutable --mode=skip-build
 COPY app.js build.js index.html ./
 RUN yarn build
 
-FROM node:22-alpine
+FROM node:26.13.1-alpine
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY entrypoint.sh ./
