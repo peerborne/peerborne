@@ -7,7 +7,7 @@ import {
   cloneLoadSecurityCommitments,
   validateLoadSecurityCommitments,
 } from './load-security-state.js';
-import { snapshotEnumerableOwnDataObject } from './utils.js';
+import { isPaddedBase64, snapshotEnumerableOwnDataObject } from './utils.js';
 
 export interface LoadSecurityCommitmentsWire {
   version: typeof LOAD_SECURITY_STATE_VERSION;
@@ -33,9 +33,7 @@ function canonicalBase64(name: string, value: unknown): Uint8Array {
   if (
     typeof value !== 'string' ||
     value.length !== 44 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      value,
-    )
+    !isPaddedBase64(value)
   ) {
     throw new TypeError(`${name} must be canonical padded base64`);
   }
