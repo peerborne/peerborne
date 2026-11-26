@@ -306,6 +306,16 @@ supports AES-CTR and AES-CBC, but that primitive support is not a bundled
 document-key path. Peers can decrypt content only when they hold the needed
 epoch key.
 
+Each payload's associated data names its document path, the key ID written
+before its nonce, and its kind: a stored block, a GossipSub frame, a load
+response or an invitation bootstrap. A ciphertext therefore decrypts only as the
+same kind of payload of the same document, so a peer cannot replay a stored
+block as a frame or move a payload to another document that shares its key.
+`SubtleCrypto` uses random 96-bit nonces and counts encryptions per key object
+in each process: it logs a warning once after 2^31 and refuses encryption after
+2^32, NIST SP 800-38D's limit for random nonces. The count does not cover other
+devices or restarts, so rotate long-lived document keys.
+
 `historyVisibility` controls which document-key epochs are supplied in some
 load and Welcome responses. It does not remove or redact retained CRDT
 operations, force a key rotation per operation, or guarantee that earlier

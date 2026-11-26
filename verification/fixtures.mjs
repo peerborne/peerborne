@@ -243,11 +243,7 @@ export async function publishACLChange(fixture, kind, stage) {
 
 export async function publishedMessage(fixture) {
   const bytes = fixture.stats.lastFrame;
-  const raw = await fixture.document._decryptBlock(
-    bytes.slice(0, 32),
-    bytes.slice(32, 44),
-    bytes.slice(44),
-  );
+  const raw = await fixture.document._decryptGossipFrame(bytes);
   if (raw === undefined)
     throw new Error('Fixture could not decrypt its published frame');
   return fixture.serializer.deserializeSyncMessage(raw);
@@ -316,11 +312,7 @@ export function project(fixture) {
 }
 
 export async function receiveEncrypted(fixture, bytes) {
-  const raw = await fixture.document._decryptBlock(
-    bytes.slice(0, 32),
-    bytes.slice(32, 44),
-    bytes.slice(44),
-  );
+  const raw = await fixture.document._decryptGossipFrame(bytes);
   if (raw === undefined) return false;
   return fixture.document.sync(fixture.serializer.deserializeSyncMessage(raw));
 }

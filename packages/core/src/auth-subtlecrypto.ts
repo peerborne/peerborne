@@ -3,6 +3,7 @@ import { concatUint8Arrays } from './utils.js';
 import { Base64 } from 'js-base64';
 import { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 import { decodeCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
+import { EncryptionUsageCounter } from './encryption-usage.js';
 
 /** HMAC-SHA256 tag length in bytes. */
 const HMAC_TAG_LENGTH = 32;
@@ -36,6 +37,9 @@ export class SubtleCrypto
 
   /** Cache derived HMAC keys to avoid re-deriving per call. */
   private _hmacKeyCache = new WeakMap<CryptoKey, CryptoKey>();
+
+  /** Encryptions under each key object, warned about and capped per key. */
+  private _encryptionUsage = new EncryptionUsageCounter<CryptoKey>();
 
   /**
    * Nonce size follows the configured encryption algorithm: 12 bytes for GCM
@@ -178,11 +182,12 @@ export class SubtleCrypto
         // length: 32 splits the 128-bit counter block into a 96-bit per-message
         // nonce (upper bits) and a 32-bit counter (lower bits). When we
         // generate the counter ourselves, randomize the upper 96 bits as the
-        // nonce and zero the lower 32 counter bits. This matches NIST SP 800-38A
-        // guidance and keeps collision risk negligible up to ~2^48 messages
-        // (birthday bound on a 96-bit random nonce). An externally supplied
-        // `nonce` is used as-is; the caller is responsible for choosing a safe
-        // initial counter value.
+        // nonce and zero the lower 32 counter bits, as NIST SP 800-38A allows.
+        // After n messages under one key, two random 96-bit nonces collide
+        // with probability about n^2 / 2^97: about 2^-33 at 2^32 messages,
+        // and roughly even odds around 2^48. Encryptions are capped per key at
+        // 2^32. An externally supplied `nonce` is used as-is; the caller is
+        // responsible for choosing a safe initial counter value.
         let counter: Uint8Array;
         if (nonce) {
           counter = nonce;
@@ -345,19 +350,21 @@ export class SubtleCrypto
   /**
    * Decrypt data using the configured encryption algorithm.
    *
-   * For AES-GCM, authentication is built-in (AEAD). For AES-CTR and
-   * AES-CBC, the HMAC-SHA256 tag appended by `encrypt()` is verified
-   * **before** decryption to prevent padding oracle attacks (CBC) and
-   * ciphertext tampering (CTR).
+   * `associatedData` must equal the value passed to `encrypt()`. For AES-GCM,
+   * authentication is built-in (AEAD). For AES-CTR and AES-CBC, the
+   * HMAC-SHA256 tag appended by `encrypt()` is verified **before** decryption
+   * to prevent padding oracle attacks (CBC) and ciphertext tampering (CTR).
    */
   public async decrypt(
     data: Uint8Array,
     documentKey: CryptoKey,
-    nonce?: Uint8Array,
+    nonce: Uint8Array | undefined,
+    associatedData: Uint8Array,
   ): Promise<Uint8Array> {
     if (!nonce) {
       throw new Error('Nonce is required for decryption');
     }
+    assertAssociatedData(associatedData);
 
     if (this._encryptionAlgorithmName !== 'AES-GCM') {
       // Split ciphertext and HMAC tag
@@ -369,12 +376,11 @@ export class SubtleCrypto
 
       // Verify HMAC before decrypting (encrypt-then-MAC)
       const hmacKey = await this._deriveHmacKey(documentKey);
-      const macInput = concatUint8Arrays(nonce!, ciphertext);
       const valid = await crypto.subtle.verify(
         'HMAC',
         hmacKey,
         receivedTag as Uint8Array<ArrayBuffer>,
-        macInput as Uint8Array<ArrayBuffer>,
+        macInput(associatedData, nonce, ciphertext) as Uint8Array<ArrayBuffer>,
       );
       if (!valid) {
         throw new Error(
@@ -394,7 +400,10 @@ export class SubtleCrypto
     // AES-GCM path — authentication is built into the algorithm.
     return new Uint8Array(
       await crypto.subtle.decrypt(
-        this._encryptionAlgorithmParams(nonce),
+        {
+          ...(this._encryptionAlgorithmParams(nonce) as AesGcmParams),
+          additionalData: associatedData as Uint8Array<ArrayBuffer>,
+        },
         documentKey,
         data as Uint8Array<ArrayBuffer>,
       ),
@@ -402,38 +411,52 @@ export class SubtleCrypto
   }
 
   /**
-   * Encrypt data using the configured encryption algorithm.
+   * Encrypt data using the configured encryption algorithm, authenticating
+   * `associatedData` with it.
    *
-   * For AES-CTR and AES-CBC, an HMAC-SHA256 tag over (nonce || ciphertext)
-   * is appended to the returned data for authentication. The document layer
-   * treats this as opaque ciphertext — the wire format is unchanged.
+   * For AES-CTR and AES-CBC, an HMAC-SHA256 tag over the length-prefixed
+   * associated data, the nonce and the ciphertext is appended to the returned
+   * data. The document layer treats this as opaque ciphertext.
+   *
+   * One provider encrypts at most 2^32 times under each key object and logs a
+   * warning once after 2^31. Rotate the document key before either.
    */
   public async encrypt(
     data: Uint8Array,
     documentKey: CryptoKey,
+    associatedData: Uint8Array,
   ): Promise<SubtleCryptoEncryptionResult> {
+    assertAssociatedData(associatedData);
+    this._encryptionUsage.record(documentKey);
     const algorithmParams = this._encryptionAlgorithmParams();
     // Note: WebCrypto's AES-CBC implementation applies PKCS#7 padding automatically
     // per the W3C WebCrypto spec, so plaintext of any length is accepted here.
     // See: https://www.w3.org/TR/WebCryptoAPI/#aes-cbc-operations
     const ciphertext = new Uint8Array(
       await crypto.subtle.encrypt(
-        algorithmParams,
+        this._encryptionAlgorithmName === 'AES-GCM'
+          ? {
+              ...(algorithmParams as AesGcmParams),
+              additionalData: associatedData as Uint8Array<ArrayBuffer>,
+            }
+          : algorithmParams,
         documentKey,
         data as Uint8Array<ArrayBuffer>,
       ),
     );
 
     if (this._encryptionAlgorithmName !== 'AES-GCM') {
-      // Encrypt-then-MAC: HMAC-SHA256(nonce || ciphertext)
       const hmacKey = await this._deriveHmacKey(documentKey);
       const nonce = this._extractNonce(algorithmParams);
-      const macInput = concatUint8Arrays(nonce, ciphertext);
       const tag = new Uint8Array(
         await crypto.subtle.sign(
           'HMAC',
           hmacKey,
-          macInput as Uint8Array<ArrayBuffer>,
+          macInput(
+            associatedData,
+            nonce,
+            ciphertext,
+          ) as Uint8Array<ArrayBuffer>,
         ),
       );
       return {
@@ -447,4 +470,20 @@ export class SubtleCrypto
       nonce: this._extractNonce(algorithmParams),
     };
   }
+}
+
+function assertAssociatedData(value: unknown): asserts value is Uint8Array {
+  if (!(value instanceof Uint8Array))
+    throw new TypeError('Associated data must be a Uint8Array');
+}
+
+/** Encrypt-then-MAC input: uint32 AAD length || AAD || nonce || ciphertext. */
+function macInput(
+  associatedData: Uint8Array,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array,
+): Uint8Array {
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, associatedData.byteLength, false);
+  return concatUint8Arrays(length, associatedData, nonce, ciphertext);
 }

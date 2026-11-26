@@ -95,11 +95,7 @@ export function actorBindingScenarios(adapter) {
 
   async function lastMessage(source) {
     const bytes = source.frames.at(-1);
-    const raw = await source.document._decryptBlock(
-      bytes.slice(0, 32),
-      bytes.slice(32, 44),
-      bytes.slice(44),
-    );
+    const raw = await source.document._decryptGossipFrame(bytes);
     return source.document._syncMessageSerializer.deserializeSyncMessage(raw);
   }
 
