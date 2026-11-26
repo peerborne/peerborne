@@ -10155,18 +10155,27 @@ export class PeerborneDocument<
   /** The current writers' signer authorities, whose bindings are kept longest. */
   private _currentWriterAuthorities(): Promise<ReadonlySet<string>> {
     const version = this._writerKeysVersion;
-    if (this._writerAuthorities?.version !== version) {
-      const serialize = requireSerializePublicKey(
-        this._authProvider,
-        'CRDT actor binding',
-      );
-      const authorities = this._getWriterKeys()
-        .then((keys) => Promise.all(keys.map(serialize)))
+    if (
+      this._writerAuthorities === undefined ||
+      this._writerAuthorities.version !== version
+    ) {
+      const authorities = Promise.resolve()
+        .then(() => this._getWriterKeys())
+        .then((keys) =>
+          Promise.all(
+            keys.map(
+              requireSerializePublicKey(
+                this._authProvider,
+                'CRDT actor binding',
+              ),
+            ),
+          ),
+        )
         .then((serialized) => new Set(serialized) as ReadonlySet<string>)
         .catch(() => new Set<string>() as ReadonlySet<string>);
       this._writerAuthorities = { version, authorities };
     }
-    return this._writerAuthorities!.authorities;
+    return this._writerAuthorities.authorities;
   }
 
   private async _recordBindings(
