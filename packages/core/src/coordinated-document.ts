@@ -54,7 +54,10 @@ import {
   encodeDocumentCatchUpCheckpoint,
   encodeDocumentCatchUpRequest,
   MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
+  MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES,
+  MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES,
   type DocumentCatchUpBinding,
+  type DocumentCatchUpCheckpoint,
   type DocumentCatchUpKind,
 } from './document-catch-up-wire.js';
 import {
@@ -177,6 +180,29 @@ class HeldDocumentFrame extends Error {
   }
 }
 
+/** An accepted frame kept for catch-up proofs and redelivery. */
+interface RetainedFrame {
+  readonly sequence: number;
+  readonly hash: Uint8Array;
+  /** Exact signed content: the unsigned frame and its author's signature. */
+  readonly signed: Uint8Array;
+  /** Exact encrypted wire frame. */
+  readonly frame: Uint8Array;
+  readonly order: number;
+}
+
+const MAX_RETAINED_FRAMES_PER_AUTHOR = 64;
+const MAX_RETAINED_BYTES = 16 * 1024 * 1024;
+
+/** True when a verified suffix may replace a conflicting receipt, beside the proved policy. */
+function catchUpReceiptExtends(
+  current: number,
+  offered: number,
+  suffixVerified: boolean,
+): boolean {
+  return current > 0 && offered > current && suffixVerified;
+}
+
 interface HeldFrame {
   readonly frame: Uint8Array;
   readonly author: string;
@@ -216,6 +242,12 @@ export class CoordinatedDocument<
     bytes: number;
   };
   private appliedFrames = 0;
+  private retained?: {
+    readonly context: GroupSecurityDocumentContext;
+    readonly authors: Map<string, RetainedFrame[]>;
+    bytes: number;
+    order: number;
+  };
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -594,6 +626,60 @@ export class CoordinatedDocument<
     }
   }
 
+  /** Keep each author's latest accepted frames in the current context, bounded. */
+  private retain(
+    context: GroupSecurityDocumentContext,
+    author: string,
+    value: Omit<RetainedFrame, 'order'>,
+  ): void {
+    if (
+      !this.retained ||
+      !documentContextsMatch(this.retained.context, context)
+    )
+      this.retained = { context, authors: new Map(), bytes: 0, order: 0 };
+    const retained = this.retained;
+    const frames = retained.authors.get(author) ?? [];
+    frames.push({ ...value, order: retained.order++ });
+    retained.authors.set(author, frames);
+    retained.bytes += value.signed.length + value.frame.length;
+    const evict = (list: RetainedFrame[], owner: string) => {
+      const [oldest] = list.splice(0, 1);
+      retained.bytes -= oldest.signed.length + oldest.frame.length;
+      if (list.length === 0) retained.authors.delete(owner);
+    };
+    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(frames, author);
+    while (retained.bytes > MAX_RETAINED_BYTES) {
+      let owner: string | undefined;
+      for (const [id, list] of retained.authors)
+        if (owner === undefined || list[0].order < retained.authors.get(owner)![0].order)
+          owner = id;
+      evict(retained.authors.get(owner!)!, owner!);
+    }
+  }
+
+  /** Retained frames of `author` after `sequence`, if they form its complete suffix. */
+  private retainedSuffix(
+    context: GroupSecurityDocumentContext,
+    author: string,
+    sequence: number,
+    hash: Uint8Array,
+    head: number,
+  ): RetainedFrame[] | undefined {
+    const retained = this.retained;
+    if (!retained || !documentContextsMatch(retained.context, context))
+      return undefined;
+    const frames = retained.authors.get(author) ?? [];
+    const base = frames.find((frame) => frame.sequence === sequence);
+    if (base && !documentBytesEqual(base.hash, hash)) return undefined;
+    const suffix = frames.filter((frame) => frame.sequence > sequence);
+    if (
+      suffix.length !== head - sequence ||
+      suffix.some((frame, index) => frame.sequence !== sequence + index + 1)
+    )
+      return undefined;
+    return suffix;
+  }
+
   createCatchUpRequest(): Promise<Uint8Array> {
     return this.enqueueCatchUp(undefined, 0, 0, (input) =>
       this.runCatchUp(input, async (stage) => {
@@ -608,6 +694,7 @@ export class CoordinatedDocument<
             ...stage.binding,
             requesterId,
             challenge,
+            receipts: receiptEntries(this.sortedReceipts(stage.binding.context)),
           }),
           member,
         );
@@ -640,21 +727,24 @@ export class CoordinatedDocument<
             throw new Error('Document catch-up requester is unauthorized');
           await this.verifyCatchUp(stage, signed, requester);
           stage.assertCurrent();
-          const receipts = new Map(
-            [...this.receiptsAt(stage.binding.context)].sort(([a], [b]) =>
-              a < b ? -1 : a === b ? 0 : 1,
-            ),
-          );
+          const receipts = this.sortedReceipts(stage.binding.context);
           const snapshot = this.serializer.serializeChanges(
             this.crdt.getSnapshot!(this.session.document),
           );
+          const { receipts: requested, ...request } = body;
           const value = await this.sealCatchUp(
             stage,
             'checkpoint',
             encodeDocumentCatchUpCheckpoint({
-              ...body,
+              ...request,
               controllerId,
               receipts: receiptEntries(receipts),
+              suffixes: this.catchUpSuffixes(
+                stage.binding.context,
+                receipts,
+                requested,
+                body.requesterId,
+              ),
               snapshot,
             }),
             controller,
@@ -942,11 +1032,14 @@ export class CoordinatedDocument<
           await this.verifyCatchUp(stage, signed, controller);
           stage.assertCurrent();
           const context = stage.binding.context;
+          const extended = await this.verifiedCatchUpExtensions(stage, body);
+          stage.assertCurrent();
           const receipts = this.mergeCatchUpReceipts(
             stage.lease,
             context,
             localId,
             body.receipts,
+            extended,
           );
           plan = this.session.prepareMergeSnapshot!(
             this.serializer.deserializeChanges(body.snapshot),
@@ -1010,6 +1103,7 @@ export class CoordinatedDocument<
     context: GroupSecurityDocumentContext,
     localId: Uint8Array,
     offered: readonly DocumentReplayReceipt[],
+    extended: ReadonlySet<string>,
   ): Map<string, Receipt> {
     const receipts = new Map(this.receiptsAt(context));
     const local = documentBytesId(localId);
@@ -1027,13 +1121,129 @@ export class CoordinatedDocument<
         current !== undefined && documentBytesEqual(current.hash, hash),
         id !== local,
       );
-      if (admission === 'conflict')
+      const extends_ =
+        admission === 'conflict' &&
+        id !== local &&
+        catchUpReceiptExtends(
+          current?.sequence ?? 0,
+          sequence,
+          extended.has(id),
+        );
+      if (admission === 'conflict' && !extends_)
         throw new Error(
           'Document catch-up receipt conflicts with the accepted head',
         );
-      if (admission === 'adopt') receipts.set(id, { sequence, hash });
+      if (admission === 'adopt' || extends_)
+        receipts.set(id, { sequence, hash });
     }
     return receipts;
+  }
+
+  private sortedReceipts(
+    context: GroupSecurityDocumentContext,
+  ): Map<string, Receipt> {
+    return new Map(
+      [...this.receiptsAt(context)].sort(([a], [b]) =>
+        a < b ? -1 : a === b ? 0 : 1,
+      ),
+    );
+  }
+
+  /** Retained signed frames that extend each of the requester's shorter heads. */
+  private catchUpSuffixes(
+    context: GroupSecurityDocumentContext,
+    receipts: ReadonlyMap<string, Receipt>,
+    requested: readonly DocumentReplayReceipt[],
+    requesterId: Uint8Array,
+  ): Uint8Array[] {
+    const requester = documentBytesId(requesterId);
+    const suffixes: Uint8Array[] = [];
+    let bytes = 0;
+    for (const { memberId, sequence, hash } of requested) {
+      const author = documentBytesId(memberId);
+      const head = receipts.get(author)?.sequence ?? 0;
+      if (author === requester || sequence >= head) continue;
+      const suffix = this.retainedSuffix(context, author, sequence, hash, head);
+      if (!suffix) continue;
+      const size = suffix.reduce((total, frame) => total + frame.signed.length, 0);
+      if (
+        suffixes.length + suffix.length > MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
+        bytes + size > MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES
+      )
+        continue;
+      suffixes.push(...suffix.map((frame) => frame.signed.slice()));
+      bytes += size;
+    }
+    return suffixes;
+  }
+
+  /**
+   * Authors whose offered head is proven to extend the local head: each suffix
+   * frame is signed by that author for this exact binding and links by parent
+   * hash from the local receipt to the offered one.
+   */
+  private async verifiedCatchUpExtensions(
+    stage: CatchUpWork,
+    body: DocumentCatchUpCheckpoint,
+  ): Promise<Set<string>> {
+    const current = this.receiptsAt(stage.binding.context);
+    const offered = new Map(
+      body.receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
+    );
+    const chains = new Map<
+      string,
+      { unsigned: Uint8Array; signature: Uint8Array; sequence: number; parent: Uint8Array }[]
+    >();
+    for (const encoded of body.suffixes) {
+      const signed = decodeSignedDocumentContent(encoded);
+      const frame = decodeDocumentContent(signed.unsigned);
+      if (
+        frame.documentId !== this.documentId ||
+        !documentBytesEqual(frame.genesisId, this.genesisId) ||
+        !documentBytesEqual(frame.authorityHead, stage.binding.authorityHead) ||
+        !documentContextsMatch(frame.context, stage.binding.context) ||
+        frame.kind !== 'change'
+      )
+        throw new Error('Document catch-up suffix context mismatch');
+      const author = documentBytesId(frame.memberId);
+      const chain = chains.get(author) ?? [];
+      chain.push({ ...signed, sequence: frame.sequence, parent: frame.parent });
+      chains.set(author, chain);
+    }
+    const extended = new Set<string>();
+    for (const [author, chain] of chains) {
+      const local = current.get(author);
+      const head = offered.get(author);
+      const writer = stage.lease.members.get(author);
+      if (!local || !head || !writer || !contentRolePermits(writer.role, false))
+        continue;
+      const links = chain.filter((link) => link.sequence > local.sequence);
+      if (links.length !== head.sequence - local.sequence) continue;
+      let parent = local.hash;
+      for (const [index, link] of links.entries()) {
+        if (
+          link.sequence !== local.sequence + index + 1 ||
+          !documentBytesEqual(link.parent, parent)
+        )
+          break;
+        try {
+          await this.verifyCatchUp(stage, link, writer);
+        } catch {
+          break;
+        }
+        const { value: digest } = await stage.work.observe<ArrayBuffer>(
+          (async () =>
+            crypto.subtle.digest(
+              'SHA-256',
+              link.unsigned as Uint8Array<ArrayBuffer>,
+            ))(),
+        );
+        parent = new Uint8Array(digest);
+        if (index === links.length - 1 && documentBytesEqual(parent, head.hash))
+          extended.add(author);
+      }
+    }
+    return extended;
   }
 
   private receiptsAt(
@@ -1108,6 +1318,7 @@ export class CoordinatedDocument<
               lease.headId,
             );
             let unsigned: Uint8Array,
+              signedContent: Uint8Array,
               memberId: Uint8Array,
               sequence: number,
               parent: Uint8Array;
@@ -1128,9 +1339,8 @@ export class CoordinatedDocument<
                     envelope.ciphertext as Uint8Array<ArrayBuffer>,
                   ))(),
               );
-              const signed = decodeSignedDocumentContent(
-                new Uint8Array(plaintext),
-              );
+              signedContent = new Uint8Array(plaintext);
+              const signed = decodeSignedDocumentContent(signedContent);
               unsigned = signed.unsigned;
               const frame = decodeDocumentContent(unsigned);
               if (
@@ -1261,6 +1471,7 @@ export class CoordinatedDocument<
                 );
               const signed = encodeSignedDocumentContent(unsigned, signature),
                 nonce = crypto.getRandomValues(new Uint8Array(12));
+              signedContent = signed;
               const { value: ciphertext } = await work.observe<ArrayBuffer>(
                 (async () =>
                   crypto.subtle.encrypt(
@@ -1357,6 +1568,12 @@ export class CoordinatedDocument<
                 this.receipts.set(documentBytesId(memberId), {
                   sequence,
                   hash,
+                });
+                this.retain(captured, documentBytesId(memberId), {
+                  sequence,
+                  hash,
+                  signed: signedContent,
+                  frame: input === undefined ? result.slice() : owned,
                 });
                 committed = true;
                 if (
@@ -1689,6 +1906,7 @@ export class CoordinatedDocument<
     this.closed = true;
     this.activated = false;
     this.clearHeld();
+    this.retained = undefined;
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
     this.material = undefined;

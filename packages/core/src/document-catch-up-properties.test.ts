@@ -65,6 +65,7 @@ function catchUpRequest(
     authorityHead: id(3),
     requesterId: id(4),
     challenge: id(5),
+    receipts: [],
   };
 }
 
@@ -89,7 +90,10 @@ function uncheckedCheckpoint(
       .integer(receipt.sequence, 8)
       .fixed(receipt.hash);
   }
-  return writer.bytes(snapshot, MAX_DOCUMENT_CONTENT_BYTES + 1).finish();
+  return writer
+    .integer(0, 2)
+    .bytes(snapshot, MAX_DOCUMENT_CONTENT_BYTES + 1)
+    .finish();
 }
 
 function withTrailer(frame: Uint8Array, byte: number): Uint8Array {
@@ -119,9 +123,19 @@ test('round trips owned canonical catch-up frames and rejects partial or extende
       fc.nat(65_535),
       fc.integer({ min: 0, max: 255 }),
       (documentId, epoch, heads, snapshot, cut, trailing) => {
-        const request = catchUpRequest(documentId, epoch);
+        const request = {
+          ...catchUpRequest(documentId, epoch),
+          receipts: [...heads]
+            .sort((a, b) => a.member - b.member)
+            .map(({ member, sequence, hash }) => ({
+              memberId: id(member),
+              sequence,
+              hash,
+            })),
+        };
         const checkpoint: DocumentCatchUpCheckpoint = {
           ...request,
+          suffixes: heads.map(({ hash }) => hash.slice(0, 1 + (hash[0] % 31))),
           controllerId: id(6),
           receipts: [...heads]
             .sort((a, b) => a.member - b.member)
@@ -218,6 +232,7 @@ test('rejects noncanonical receipt order and unusable sequences at the codec bou
               ...request,
               controllerId: id(6),
               snapshot,
+              suffixes: [],
               receipts: receipts.map((receipt) => ({
                 ...receipt,
                 sequence: Number(receipt.sequence),
@@ -230,6 +245,7 @@ test('rejects noncanonical receipt order and unusable sequences at the codec bou
             ...request,
             controllerId: id(6),
             snapshot,
+            suffixes: [],
             receipts: [{ ...first, sequence: sequence as unknown as number }],
           }),
         ).toThrow('receipt');
@@ -260,6 +276,7 @@ test('enforces the exact receipt and snapshot caps for encoding and decoding', (
           ...request,
           controllerId: id(6),
           receipts,
+          suffixes: [],
           snapshot,
         };
         const independent = uncheckedCheckpoint(
@@ -479,7 +496,11 @@ async function setup() {
       },
     };
   };
-  const forgeControllerCheckpoint = async (checkpoint: Uint8Array) => {
+  const resealCheckpoint = async (
+    checkpoint: Uint8Array,
+    edit: (value: DocumentCatchUpCheckpoint) => DocumentCatchUpCheckpoint,
+    signer: Uint8Array,
+  ) => {
     let material!: GroupDocumentEncryptionMaterial;
     let captured!: GroupSecurityDocumentContext;
     await targetCoordinator.runDocumentOperation(
@@ -513,13 +534,14 @@ async function setup() {
     );
     const claimed = decodeDocumentCatchUpCheckpoint(signed.unsigned);
     expect(documentBytesEqual(claimed.controllerId, members[0])).toBe(true);
+    const unsigned = encodeDocumentCatchUpCheckpoint(edit(claimed));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv: nonce, additionalData },
       material.key,
       encodeSignedDocumentContent(
-        signed.unsigned,
-        await auth.sign(signed.unsigned, members[1]),
+        unsigned,
+        await auth.sign(unsigned, signer),
       ) as Uint8Array<ArrayBuffer>,
     );
     return encodeEncryptedDocumentContent(
@@ -528,11 +550,18 @@ async function setup() {
       new Uint8Array(ciphertext),
     );
   };
+  const forgeControllerCheckpoint = (checkpoint: Uint8Array) =>
+    resealCheckpoint(checkpoint, (value) => value, members[1]);
+  const resealAsController = (
+    checkpoint: Uint8Array,
+    edit: (value: DocumentCatchUpCheckpoint) => DocumentCatchUpCheckpoint,
+  ) => resealCheckpoint(checkpoint, edit, members[0]);
   return {
     open,
     renew,
     pauseTargetAcceptance,
     forgeControllerCheckpoint,
+    resealAsController,
     targetJournalWrites: () => targetJournalWrites,
   };
 }
@@ -673,3 +702,145 @@ test('catch-up merges durably, keeps local receipts and rejects conflicting or s
     },
   );
 }, 30_000);
+
+test('catch-up extends a head that missed the tail only with a signed causal suffix', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.integer({ min: 1, max: 4 }),
+      fc.integer({ min: 1, max: 5 }),
+      fc.constantFrom('none', 'drop', 'tamper', 'truncate', 'reorder'),
+      async (delivered, missed, forgery) => {
+        const fixture = await setup();
+        const source = await fixture.open(0);
+        const target = await fixture.open(1);
+        try {
+          const frames: Uint8Array[] = [];
+          for (let index = 0; index < delivered + missed; index++)
+            frames.push(
+              await source.change((draft) => {
+                draft.push(1000 + index);
+              }),
+            );
+          for (const frame of frames.slice(0, delivered))
+            expect(await target.receive(frame)).toBe(true);
+          const request = await target.createCatchUpRequest();
+          let checkpoint = await source.createCatchUpCheckpoint(request);
+          if (forgery !== 'none')
+            checkpoint = await fixture.resealAsController(checkpoint, (value) => {
+              const suffixes = [...value.suffixes];
+              expect(suffixes).toHaveLength(missed);
+              if (forgery === 'drop') suffixes.length = 0;
+              if (forgery === 'truncate') suffixes.pop();
+              if (forgery === 'reorder') suffixes.reverse();
+              if (forgery === 'tamper') {
+                const damaged = suffixes[0].slice();
+                damaged[damaged.length - 1] ^= 1;
+                suffixes[0] = damaged;
+              }
+              return { ...value, suffixes };
+            });
+          const rejected =
+            forgery === 'drop' ||
+            forgery === 'truncate' ||
+            forgery === 'tamper' ||
+            (forgery === 'reorder' && missed > 1);
+          if (rejected) {
+            await expect(target.applyCatchUpCheckpoint(checkpoint)).rejects.toThrow(
+              'accepted head',
+            );
+            expect(target.document).not.toContain(1000 + delivered);
+            return;
+          }
+          await target.applyCatchUpCheckpoint(checkpoint);
+          expect(target.document).toEqual(
+            Array.from({ length: delivered + missed }, (_, index) => 1000 + index),
+          );
+          for (const frame of frames) expect(await target.receive(frame)).toBe(false);
+          expect(
+            await target.receive(
+              await source.change((draft) => {
+                draft.push(2000);
+              }),
+            ),
+          ).toBe(true);
+        } finally {
+          await Promise.all([source.close(), target.close()]);
+        }
+      },
+    ),
+    {
+      seed: 202611254,
+      numRuns: 10,
+      examples: [
+        [1, 1, 'none'],
+        [2, 3, 'tamper'],
+        [1, 2, 'reorder'],
+        [3, 2, 'drop'],
+      ],
+    },
+  );
+}, 60_000);
+
+test('bounds request receipts and checkpoint suffix frames at the codec boundary', () => {
+  const request = catchUpRequest('/catch-up-suffix-limits', 3n);
+  const receipt = (index: number) => {
+    const memberId = new Uint8Array(32);
+    new DataView(memberId.buffer).setUint16(0, index);
+    return { memberId, sequence: 1, hash: id(8) };
+  };
+  const many = Array.from({ length: 257 }, (_, index) => receipt(index));
+  expect(() =>
+    encodeDocumentCatchUpRequest({ ...request, receipts: many }),
+  ).toThrow('receipts');
+  expect(
+    decodeDocumentCatchUpRequest(
+      encodeDocumentCatchUpRequest({ ...request, receipts: many.slice(0, 256) }),
+    ).receipts,
+  ).toHaveLength(256);
+  expect(() =>
+    encodeDocumentCatchUpRequest({
+      ...request,
+      receipts: [receipt(2), receipt(1)],
+    }),
+  ).toThrow('Noncanonical');
+  const checkpoint = (suffixes: Uint8Array[]) => ({
+    ...request,
+    controllerId: id(6),
+    receipts: [],
+    suffixes,
+    snapshot: new Uint8Array(),
+  });
+  const frame = new Uint8Array(1024).fill(3);
+  const fits = Array.from({ length: 256 }, () => frame);
+  const decoded = decodeDocumentCatchUpCheckpoint(
+    encodeDocumentCatchUpCheckpoint(checkpoint(fits)),
+  );
+  expect(decoded.suffixes).toHaveLength(256);
+  for (const suffixes of [
+    [...fits, frame],
+    [new Uint8Array()],
+    [new Uint8Array(200 * 1024), new Uint8Array(57 * 1024)],
+  ])
+    expect(() =>
+      encodeDocumentCatchUpCheckpoint(checkpoint(suffixes)),
+    ).toThrow();
+  const header = () =>
+    new DocumentBinaryWriter()
+      .fixed(documentCatchUpAAD('checkpoint', request))
+      .fixed(request.requesterId)
+      .fixed(request.challenge)
+      .fixed(id(6))
+      .integer(0, 2);
+  expect(() =>
+    decodeDocumentCatchUpCheckpoint(header().integer(257, 2).finish()),
+  ).toThrow('suffix');
+  expect(() =>
+    decodeDocumentCatchUpCheckpoint(
+      header()
+        .integer(1, 2)
+        .bytes(new Uint8Array())
+        .bytes(new Uint8Array())
+        .finish(),
+    ),
+  ).toThrow('suffix');
+});

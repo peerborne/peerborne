@@ -95,7 +95,22 @@ document path, role head, recipient and one-shot request challenge bind the
 response. Only a current controller with whole-document write authority can
 issue it. A replica can import a missing receipt for another current writer.
 Overlapping receipts must agree on their sequence and hash, and the requester
-keeps its own sequence. A conflicting head requires ordered frame redelivery.
+keeps its own sequence.
+
+A requester that holds part of another writer's history and missed its tail
+can still resume. The request lists the requester's accepted heads, at most
+256. For each writer whose head is behind, the controller adds that writer's
+signed frames from the requester's head to its own, when it retains all of them.
+The requester accepts the higher head only after checking each frame: the
+writer's signature, this document, genesis, permission head and group context,
+consecutive sequences, and a parent hash chain from its own head to the offered
+one. Otherwise the conflict is rejected as before. Each document retains its
+latest 64 accepted frames per author in the current context, within 16 MiB, in
+memory only. A checkpoint carries at most 256 such frames and 256 KiB. A
+requester whose head is ahead of the controller's, a gap longer than the
+retained frames, or a controller restarted since accepting them still requires
+ordered frame redelivery. The proved receipt policy is unchanged; this extension
+runs beside it at runtime and is outside the formal proof.
 The encoded snapshot payload is limited to 512 KiB. Native snapshot generation
 and merge costs still depend on the document and adapter.
 
