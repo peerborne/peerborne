@@ -518,7 +518,7 @@ export function changeDocument<DocType>(
 export const DELIVERY_FAILURE = 'PEERBORNE_DELIVERY_FAILURE';
 /**
  * The document's latest local change that is committed but undelivered, or
- * `undefined` once a later local change's frame is published and carries it.
+ * `undefined` once a later local change's frame reaches a peer and carries it.
  */
 export interface DeliveryFailureAction extends Action<typeof DELIVERY_FAILURE> {
   documentId: string;

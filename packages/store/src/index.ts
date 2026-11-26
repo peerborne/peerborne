@@ -13,7 +13,7 @@ export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
   readonly document: Doc;
   /** True once the handle refuses further work and must be replaced. */
   readonly retired?: boolean;
-  /** The latest undelivered local change, until a later frame is published. */
+  /** The latest undelivered local change, until a later frame reaches a peer. */
   readonly deliveryFailure?: DocumentDeliveryFailure;
   open(): Promise<unknown>;
   close(): Promise<unknown>;
@@ -53,9 +53,9 @@ export interface DocumentSnapshot<Doc, PublicKey = unknown> {
   readonly error: unknown;
   /**
    * The latest change made on this device that is committed locally but was
-   * not delivered, because its frame could not be published. A later local
-   * change whose frame is published clears it, through this store or not,
-   * since that frame carries the earlier change.
+   * not delivered, because its frame could not be published or reached no
+   * peer. A later local change whose frame reaches a peer clears it, through
+   * this store or not, since that frame carries the earlier change.
    */
   readonly deliveryFailure: DocumentDeliveryFailure | undefined;
 }

@@ -144,7 +144,7 @@ export async function documentFixture({
       stats.publishedFrames++;
       stats.publishedBytes += bytes.byteLength;
       stats.lastFrame = bytes.slice();
-      await publish(topic, bytes);
+      return publish(topic, bytes);
     },
   });
   const helia = createHeliaLight({ blockstore, datastore, start: false });

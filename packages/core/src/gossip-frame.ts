@@ -22,6 +22,33 @@ export const RETAINED_TREE_HIGH_BYTES = MAX_CHANGE_FRAME_BYTES;
 /** Change payload bytes a size-bound compaction keeps inline. */
 export const RETAINED_TREE_KEEP_BYTES = 512 * 1024;
 
+/**
+ * A change's frame was published, but GossipSub sent it to no peer, for
+ * example because no peer has subscribed to the document topic yet and the
+ * node allows publishing to zero topic peers. The change stays committed
+ * locally, as for any other delivery failure.
+ */
+export class NoDeliveryPeersError extends Error {
+  constructor() {
+    super('The frame reached no peer subscribed to the document topic');
+    this.name = 'NoDeliveryPeersError';
+  }
+}
+
+/**
+ * Whether a GossipSub `publish()` result lists no recipient other than this
+ * node. A result without a recipient list proves nothing either way.
+ */
+export function publishedToNoPeer(
+  result: unknown,
+  localPeerId: string | undefined,
+): boolean {
+  if (typeof result !== 'object' || result === null) return false;
+  const { recipients } = result as { recipients?: unknown };
+  if (!Array.isArray(recipients)) return false;
+  return recipients.every((peer) => String(peer) === localPeerId);
+}
+
 /** A change or sync message cannot be published in one GossipSub frame. */
 export class GossipFrameLimitError extends RangeError {
   constructor(

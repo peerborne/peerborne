@@ -79,8 +79,10 @@ import {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,
   MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+  NoDeliveryPeersError,
   RETAINED_TREE_HIGH_BYTES,
   RETAINED_TREE_KEEP_BYTES,
+  publishedToNoPeer,
 } from './gossip-frame.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
@@ -4867,6 +4869,7 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
+    let reachedNoPeer = false;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
     if (kind === crdtDocumentChangeNode) {
@@ -4967,11 +4970,16 @@ export class PeerborneDocument<
       if (!nonce) {
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
-      await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-        this._topic,
-        concatUint8Arrays(documentKeyID, nonce, data),
+      const publication: unknown =
+        await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+          this._topic,
+          concatUint8Arrays(documentKeyID, nonce, data),
+        );
+      reachedNoPeer = publishedToNoPeer(
+        publication,
+        this.swarm.heliaNode.libp2p.peerId?.toString(),
       );
-      this._deliveryFailure = undefined;
+      if (!reachedNoPeer) this._deliveryFailure = undefined;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -5010,6 +5018,8 @@ export class PeerborneDocument<
         throw error;
       this._reportDeliveryFailure(hash, error);
     }
+    if (reachedNoPeer)
+      this._reportDeliveryFailure(hash, new NoDeliveryPeersError());
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
@@ -10026,13 +10036,15 @@ export class PeerborneDocument<
   /**
    * Subscribe to local changes that were committed but not delivered, because
    * encrypting or publishing their frame failed, for example when GossipSub
-   * has no topic peers and does not allow publishing to none. `change()` and
-   * `endChange()` still resolve for such a change: it stays in the document,
-   * and it reaches peers with the next change's frame or a sync or load
-   * response. Do not repeat the edit. A coordinated document reports a
+   * has no topic peers and does not allow publishing to none. A frame that is
+   * published but reaches no peer, as by default when no peer has subscribed
+   * to the document topic, is reported with a `NoDeliveryPeersError`.
+   * `change()` and `endChange()` still resolve for such a change: it stays in
+   * the document, and it reaches peers with the next change's frame or a sync
+   * or load response. Do not repeat the edit. A coordinated document reports a
    * delivery failure by rejecting instead, and does not call these handlers.
    *
-   * Until a later frame is published, the change exists only on this device.
+   * Until a later frame reaches a peer, the change exists only on this device.
    * Export a checkpoint after a delivery failure: if the instance is later
    * retired, it is reopened from the last checkpoint, and an undelivered
    * change made after that checkpoint is lost.
@@ -10052,8 +10064,8 @@ export class PeerborneDocument<
   /**
    * The latest local change that is committed but was not delivered, as
    * reported to `subscribeDeliveryFailures()` handlers, until a later local
-   * change's frame is published and carries it. Local update handlers see the
-   * value after their change. A coordinated document never sets it.
+   * change's frame reaches a peer and carries it. Local update handlers see
+   * the value after their change. A coordinated document never sets it.
    */
   public get deliveryFailure(): ChangeDeliveryFailure | undefined {
     return this._deliveryFailure;
@@ -10210,9 +10222,10 @@ export class PeerborneDocument<
    *
    * The change is committed locally once its block is stored and it is in the
    * retained change tree. When encrypting or publishing its frame then fails,
-   * for example because GossipSub has no topic peers, the call still
-   * resolves: the change stays in the document, the next change's frame
-   * carries it inline, and sync and load responses serve it. The failure is
+   * for example because GossipSub has no topic peers, or the frame reaches
+   * no peer, the call still resolves: the change stays in the document, the
+   * next change's frame carries it inline, and sync and load responses serve
+   * it. The failure is
    * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
    * update handler or compaction rejects the call but also keeps the change.
    *

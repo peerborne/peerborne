@@ -34,8 +34,10 @@ opens the document, and returns an idempotent release function. The final releas
 queues a close; a same-turn reconnect keeps the document open, and the
 `closeDelay` option, in milliseconds, keeps it open for a later remount. The
 final release never closes a document while `snapshot.deliveryFailure` is set,
-because that change exists only in the open handle; the store closes it once a
-later local frame delivers the change. Explicit `start()` and `stop()` return
+because that change exists only in the open handle. That includes an edit made
+with no connected peer, which the default GossipSub configuration reports as a
+`NoDeliveryPeersError`. The store closes the document once a later local frame
+reaches a peer and delivers the change. Explicit `start()` and `stop()` return
 promises for imperative applications: `start()` keeps the document open until
 `stop()`, and `stop()` closes it even with consumers or a delivery failure.
 Operations are serialized so a close waits for pending writes. `change` never
