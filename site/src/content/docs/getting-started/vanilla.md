@@ -64,7 +64,8 @@ instead needs `resolveLoadSecurityCommitments`; see
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 `subscribe` does not open anything. `connect` opens and retains the shared
 document until the last consumer releases it, and longer while
-`snapshot.deliveryFailure` reports a change that has not reached peers.
+`snapshot.deliveryFailure` reports a change not known to have reached a
+member, up to `undeliveredCloseDelay`.
 Imperative applications can instead `await store.start()` and
 `await store.stop()`. `store.change` never opens the document; it rejects with
 `Document store is closed` after the store closes. Every mutation returns a

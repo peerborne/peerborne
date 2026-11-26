@@ -726,8 +726,15 @@ describe('documents this hook created', () => {
       }),
     );
 
-  test('a remount reuses the created document instead of creating another', async () => {
+  const undelivered = {
+    documentPath: '/created-once',
+    changeId: 'cid-1',
+    error: new Error('NoDeliveryPeersError'),
+  };
+
+  test('a remount reuses a created document whose change has not reached a member', async () => {
     const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
     const mockSwarm = createMockPeerborne(mockDoc);
     const first = { current: null as any };
     const view = render(created(mockSwarm, first));
@@ -754,8 +761,47 @@ describe('documents this hook created', () => {
     expect(mockDoc.close).not.toHaveBeenCalled();
   });
 
+  test('a retained created document closes once its change reaches a member', async () => {
+    const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Hello ' }));
+    view.unmount();
+    await act(async () => {});
+    expect(mockDoc.close).not.toHaveBeenCalled();
+    const retained = mockDoc._deliveryHandlers.get(
+      'usePeerborneDocumentState-retained',
+    );
+    mockDoc.deliveryFailure = undefined;
+    act(() => retained(undefined));
+    expect(mockDoc.close).toHaveBeenCalledTimes(1);
+    expect(mockDoc._deliveryHandlers.size).toBe(0);
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+  });
+
+  test('a delivered created document closes on unmount, and a later mount opens the path', async () => {
+    const createdDoc = createMockDocument({ text: 'Created' });
+    const openedDoc = createMockDocument({ text: 'Opened' });
+    const docs = [createdDoc, openedDoc];
+    const mockSwarm = { doc: jest.fn(() => docs.shift()) } as any;
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Created' }));
+    view.unmount();
+    await waitFor(() => expect(createdDoc.close).toHaveBeenCalledTimes(1));
+
+    const remount = { current: null as any };
+    render(created(mockSwarm, remount));
+    await waitFor(() => expect(remount.current.docData).toEqual({ text: 'Opened' }));
+    expect(openedDoc.open).toHaveBeenCalledTimes(1);
+    expect(openedDoc.create).not.toHaveBeenCalled();
+  });
+
   test('a retired created document closes on unmount, and a later mount opens the path', async () => {
     const retiredDoc = createMockDocument({ text: 'Retired' });
+    retiredDoc.deliveryFailure = undelivered;
     const freshDoc = createMockDocument({ text: 'Opened' });
     const docs = [retiredDoc, freshDoc];
     const mockSwarm = { doc: jest.fn(() => docs.shift()) } as any;
@@ -781,7 +827,7 @@ describe('delivery failures', () => {
     resetCaches();
   });
 
-  test('reports a delivery failure until a later local frame is published', async () => {
+  test('reports a delivery failure until the document clears it', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
     const consumer = (captureRef: { current: any }) =>
@@ -801,9 +847,9 @@ describe('delivery failures', () => {
       error: new Error('NoPeersSubscribedToTopic'),
     };
     mockDoc.deliveryFailure = failure;
-    const [subscriptionId, onFailure] =
-      mockDoc.subscribeDeliveryFailures.mock.calls[0];
-    act(() => onFailure(failure));
+    const [subscriptionId, onDeliveryState] =
+      mockDoc.subscribeDeliveryState.mock.calls[0];
+    act(() => onDeliveryState(failure));
     expect(first.current.deliveryFailure).toBe(failure);
 
     const second = { current: null as any };
@@ -813,12 +859,11 @@ describe('delivery failures', () => {
     await waitFor(() => expect(second.current.deliveryFailure).toBe(failure));
 
     mockDoc.deliveryFailure = undefined;
-    const { handler } = mockDoc._subscriptions.get(subscriptionId);
-    act(() => handler({ test: 'delivered' }, ['reader1'], ['writer1'], ['cid-2']));
+    act(() => onDeliveryState(undefined));
     expect(first.current.deliveryFailure).toBeUndefined();
 
     view.unmount();
-    expect(mockDoc.unsubscribeDeliveryFailures).toHaveBeenCalledWith(subscriptionId);
+    expect(mockDoc.unsubscribeDeliveryState).toHaveBeenCalledWith(subscriptionId);
     expect(mockDoc._deliveryHandlers.size).toBe(0);
   });
 });

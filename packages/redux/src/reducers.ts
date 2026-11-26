@@ -41,10 +41,7 @@ export interface PeerborneDocumentState<
   >;
   document: DocType;
   peers?: string[];
-  /**
-   * The latest local change that is committed but was not delivered, until a
-   * later local change's frame reaches a peer and carries it.
-   */
+  /** The document's latest local change not known to have reached a member. */
   deliveryFailure?: ChangeDeliveryFailure;
 }
 

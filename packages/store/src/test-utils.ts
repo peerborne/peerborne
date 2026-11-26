@@ -63,15 +63,17 @@ export class TestDocument
     }
     change(this.document);
     const changeId = `cid-${this.writeCount}`;
-    if (this.undeliveredError) {
-      for (const handler of this.deliveryHandlers.values())
-        handler({
-          documentPath: '/test',
-          changeId,
-          error: this.undeliveredError,
-        });
-    }
+    this.setDeliveryFailure(
+      this.undeliveredError === undefined
+        ? undefined
+        : { documentPath: '/test', changeId, error: this.undeliveredError },
+    );
     this.emit('local', [changeId]);
+  }
+  setDeliveryFailure(failure: DocumentDeliveryFailure | undefined) {
+    if (this.deliveryFailure === failure) return;
+    this.deliveryFailure = failure;
+    for (const handler of this.deliveryHandlers.values()) handler(failure);
   }
   subscribe(
     id: string,
@@ -92,16 +94,16 @@ export class TestDocument
   }
   deliveryHandlers = new Map<
     string,
-    (failure: DocumentDeliveryFailure) => void
+    (failure: DocumentDeliveryFailure | undefined) => void
   >();
   undeliveredError?: Error;
-  subscribeDeliveryFailures(
+  subscribeDeliveryState(
     id: string,
-    handler: (failure: DocumentDeliveryFailure) => void,
+    handler: (failure: DocumentDeliveryFailure | undefined) => void,
   ) {
     this.deliveryHandlers.set(id, handler);
   }
-  unsubscribeDeliveryFailures(id: string) {
+  unsubscribeDeliveryState(id: string) {
     this.deliveryHandlers.delete(id);
   }
   emit(origin: 'local' | 'remote' = 'remote', hashes: string[] = []) {

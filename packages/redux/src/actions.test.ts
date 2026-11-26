@@ -80,8 +80,8 @@ describe('peerborne-redux async thunks', () => {
       subscribe: jest.fn(),
       unsubscribe: jest.fn(),
       deliveryFailure: undefined,
-      subscribeDeliveryFailures: jest.fn(),
-      unsubscribeDeliveryFailures: jest.fn(),
+      subscribeDeliveryState: jest.fn(),
+      unsubscribeDeliveryState: jest.fn(),
     };
     getState = jest.fn();
   });
@@ -190,7 +190,7 @@ describe('peerborne-redux async thunks', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  test('records a delivery failure until a later local frame is published', async () => {
+  test('records the document delivery state until the document clears it', async () => {
     const reducer = peerborneReducer(...Array(9).fill({}));
     let state = { node: mockNode, documents: {}, peers: [] };
     dispatch = jest.fn((action: any) => {
@@ -199,38 +199,29 @@ describe('peerborne-redux async thunks', () => {
     getState = () => state;
     mockNode.doc.mockReturnValue(mockDocRef);
     await actions.openDocumentAsync('/doc')(dispatch, getState);
-    const [[failureId, onFailure]] = mockDocRef.subscribeDeliveryFailures.mock.calls;
-    const local = mockDocRef.subscribe.mock.calls.find(
-      ([, , filter]: unknown[]) => filter === 'local',
-    );
-    expect(failureId).toBe('/doc');
-    expect(local[0]).toBe('/doc#delivery');
+    const [[subscriptionId, onDeliveryState]] =
+      mockDocRef.subscribeDeliveryState.mock.calls;
+    expect(subscriptionId).toBe('/doc');
 
     const failure = {
       documentPath: '/doc',
       changeId: 'cid-1',
-      error: new Error('NoPeersSubscribedToTopic'),
+      error: new Error('NoDeliveryPeersError'),
     };
-    mockDocRef.deliveryFailure = failure;
-    onFailure(failure);
-    local[1](mockDocRef.document, [], [], ['cid-1']);
+    onDeliveryState(failure);
     expect(state.documents['/doc'].deliveryFailure).toBe(failure);
     expect(dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'PEERBORNE_DELIVERY_FAILURE' }),
     );
-    const dispatched = dispatch.mock.calls.length;
-
-    mockDocRef.deliveryFailure = undefined;
-    local[1](mockDocRef.document, [], [], ['cid-2']);
+    onDeliveryState(undefined);
     expect(state.documents['/doc'].deliveryFailure).toBeUndefined();
-    local[1](mockDocRef.document, [], [], ['cid-3']);
-    expect(dispatch).toHaveBeenCalledTimes(dispatched + 1);
 
     await actions.closeDocumentAsync('/doc')(dispatch, getState);
     expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc');
-    expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc#delivery');
-    expect(mockDocRef.unsubscribeDeliveryFailures).toHaveBeenCalledWith('/doc');
-    onFailure(failure);
+    expect(mockDocRef.unsubscribeDeliveryState).toHaveBeenCalledWith('/doc');
+    const dispatched = dispatch.mock.calls.length;
+    onDeliveryState(failure);
+    expect(dispatch).toHaveBeenCalledTimes(dispatched);
     expect(state.documents['/doc']).toBeUndefined();
   });
 

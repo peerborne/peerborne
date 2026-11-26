@@ -1,7 +1,7 @@
 export type DocumentStatus =
   'idle' | 'opening' | 'ready' | 'retired' | 'error' | 'closed';
 
-/** A local change that was committed but whose frame could not be published. */
+/** A local change that was committed but is not known to have reached a member. */
 export interface DocumentDeliveryFailure {
   readonly documentPath: string;
   readonly changeId: string;
@@ -13,7 +13,7 @@ export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
   readonly document: Doc;
   /** True once the handle refuses further work and must be replaced. */
   readonly retired?: boolean;
-  /** The latest undelivered local change, until a later frame reaches a peer. */
+  /** The latest local change not known to have reached a member. */
   readonly deliveryFailure?: DocumentDeliveryFailure;
   open(): Promise<unknown>;
   close(): Promise<unknown>;
@@ -31,11 +31,12 @@ export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
     originFilter?: 'all' | 'local' | 'remote',
   ): void;
   unsubscribe(id: string): void;
-  subscribeDeliveryFailures?(
+  /** Call `handler` with `deliveryFailure` each time it is set or cleared. */
+  subscribeDeliveryState?(
     id: string,
-    handler: (failure: DocumentDeliveryFailure) => void,
+    handler: (failure: DocumentDeliveryFailure | undefined) => void,
   ): void;
-  unsubscribeDeliveryFailures?(id: string): void;
+  unsubscribeDeliveryState?(id: string): void;
 }
 
 /** A new snapshot is published even when the underlying CRDT mutates in place. */
@@ -52,10 +53,10 @@ export interface DocumentSnapshot<Doc, PublicKey = unknown> {
   readonly revision: number;
   readonly error: unknown;
   /**
-   * The latest change made on this device that is committed locally but was
-   * not delivered, because its frame could not be published or reached no
-   * peer. A later local change whose frame reaches a peer clears it, through
-   * this store or not, since that frame carries the earlier change.
+   * The handle's `deliveryFailure`: the latest change made on this device
+   * that is committed locally but not known to have reached a member, because
+   * its frame could not be published or reached no peer that serves one. It
+   * clears on evidence that a member holds or was sent the change.
    */
   readonly deliveryFailure: DocumentDeliveryFailure | undefined;
 }
@@ -88,6 +89,14 @@ export interface DocumentStoreOptions {
    * remount, keeps it open.
    */
   closeDelay?: number;
+  /**
+   * Milliseconds to keep the document open after the final release while
+   * `deliveryFailure` is set, because the undelivered change exists only in
+   * the open handle. Defaults to 30 minutes; the store then closes the handle
+   * and the change is lost unless a checkpoint holds it. `Infinity` keeps the
+   * document open until `stop()`.
+   */
+  undeliveredCloseDelay?: number;
 }
 
 /** Creates a handle, or resolves to one after restoring its state. */
@@ -96,6 +105,8 @@ export type DocumentHandleFactory<Doc, Change, PublicKey> = () =>
   | PromiseLike<DocumentHandle<Doc, Change, PublicKey>>;
 
 let nextSubscription = 0;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_UNDELIVERED_CLOSE_DELAY_MS = 30 * 60 * 1000;
 
 /**
  * Create one store per node/document path and share it between consumers.
@@ -105,8 +116,9 @@ let nextSubscription = 0;
  * A managed store calls `createHandle`, such as `() => peerborne.doc(path)`,
  * for every open and closes that handle when it stops. It never reopens a
  * closed handle: a durable BeeKEM fork guard or coordinated document refuses.
- * The final release does not close the document while a delivery failure is
- * outstanding, because the undelivered change exists only in that handle.
+ * While a delivery failure is outstanding, the final release keeps the
+ * document open for `undeliveredCloseDelay`, because the undelivered change
+ * exists only in that handle.
  * A fresh handle loads the document from a peer, so a remount after a close
  * needs a connected peer that holds it, or a factory that restores the
  * document's latest checkpoint before returning the handle.
@@ -127,9 +139,10 @@ export function createDocumentStore<Doc, Change, PublicKey>(
   options: DocumentStoreOptions = {},
 ): DocumentStore<Doc, Change, PublicKey> {
   const id = `peerborne-store-${nextSubscription++}`;
-  const localId = `${id}-local`;
   const manageLifecycle = options.manageLifecycle !== false;
   const closeDelay = options.closeDelay ?? 0;
+  const undeliveredCloseDelay =
+    options.undeliveredCloseDelay ?? DEFAULT_UNDELIVERED_CLOSE_DELAY_MS;
   if (manageLifecycle !== (typeof source === 'function')) {
     throw new TypeError(
       manageLifecycle
@@ -137,9 +150,17 @@ export function createDocumentStore<Doc, Change, PublicKey>(
         : 'An unmanaged document store needs the handle its caller opens',
     );
   }
-  if (!(closeDelay >= 0 && closeDelay <= 2_147_483_647)) {
+  if (!(closeDelay >= 0 && closeDelay <= MAX_TIMER_DELAY_MS)) {
     throw new RangeError(
       'closeDelay must be from 0 to 2147483647 milliseconds',
+    );
+  }
+  if (!(
+    undeliveredCloseDelay === Infinity ||
+    (undeliveredCloseDelay >= 0 && undeliveredCloseDelay <= MAX_TIMER_DELAY_MS)
+  )) {
+    throw new RangeError(
+      'undeliveredCloseDelay must be Infinity or from 0 to 2147483647 milliseconds',
     );
   }
   const createHandle = typeof source === 'function' ? source : () => source;
@@ -175,6 +196,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
   function retire(error: unknown) {
     retired = true;
     publish({ ...initial, status: 'retired', error });
+    cancelClose();
     scheduleClose();
   }
 
@@ -193,8 +215,15 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     pendingClose = undefined;
   }
 
+  function holding(): boolean {
+    return !retired && snapshot.deliveryFailure !== undefined;
+  }
+
   function scheduleClose() {
     if (!unused() || pendingClose) return;
+    const held = holding();
+    const delay = held ? undeliveredCloseDelay : closeDelay;
+    if (delay === Infinity) return;
     const scheduled: { timer?: ReturnType<typeof setTimeout> } = {};
     pendingClose = scheduled;
     const close = () => {
@@ -202,12 +231,17 @@ export function createDocumentStore<Doc, Change, PublicKey>(
       pendingClose = undefined;
       void enqueue(async () => {
         if (!unused()) return;
-        if (!retired && snapshot.deliveryFailure !== undefined) return;
+        if (!held && holding()) {
+          scheduleClose();
+          return;
+        }
         await deactivate();
       }).catch(() => {});
     };
-    if (closeDelay > 0) scheduled.timer = setTimeout(close, closeDelay);
-    else queueMicrotask(close);
+    if (delay > 0) {
+      scheduled.timer = setTimeout(close, delay);
+      (scheduled.timer as { unref?: () => void }).unref?.();
+    } else queueMicrotask(close);
   }
 
   async function finishCleanup(
@@ -221,8 +255,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     if (current) {
       try {
         current.unsubscribe(id);
-        current.unsubscribe(localId);
-        current.unsubscribeDeliveryFailures?.(id);
+        current.unsubscribeDeliveryState?.(id);
       } catch (error) {
         errors.push(error);
       }
@@ -279,29 +312,17 @@ export function createDocumentStore<Doc, Change, PublicKey>(
             error: undefined,
             deliveryFailure,
           });
-        current.subscribe(
-          id,
-          (data, readers, writers) => {
-            latest = { readers, writers };
-            if (live()) ready(data, readers, writers, snapshot.deliveryFailure);
-          },
-          'remote',
-        );
-        current.subscribe(
-          localId,
-          (data, readers, writers, hashes) => {
-            latest = { readers, writers };
-            if (!live()) return;
-            const failure = snapshot.deliveryFailure;
-            const delivered =
-              failure !== undefined && !hashes.includes(failure.changeId);
-            ready(data, readers, writers, delivered ? undefined : failure);
-            if (delivered) scheduleClose();
-          },
-          'local',
-        );
-        current.subscribeDeliveryFailures?.(id, (failure) => {
-          if (live()) publish({ ...snapshot, deliveryFailure: failure });
+        current.subscribe(id, (data, readers, writers) => {
+          latest = { readers, writers };
+          if (live()) ready(data, readers, writers, snapshot.deliveryFailure);
+        });
+        current.subscribeDeliveryState?.(id, (failure) => {
+          if (!live()) return;
+          publish({ ...snapshot, deliveryFailure: failure });
+          if (failure === undefined) {
+            cancelClose();
+            scheduleClose();
+          }
         });
         if (manageLifecycle) await current.open();
         const [readers, writers] = await Promise.all([

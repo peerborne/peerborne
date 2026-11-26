@@ -93,6 +93,8 @@ function deleteCacheEntry<Cache extends Record<string, unknown>>(
   });
 }
 
+const RETAINED_DOCUMENT_SUBSCRIPTION = 'usePeerborneDocumentState-retained';
+
 export function usePeerborne<
   DocType,
   ChangesType,
@@ -355,9 +357,8 @@ export function usePeerborneDocumentState<
         openTaskResults.set(documentPath, { docRef, document: current, readers, writers });
         updateContext(docRef, current, readers, writers);
 
-        const syncDelivery = () => {
+        const syncDelivery = (failure = docRef.deliveryFailure) => {
           if (!active) return;
-          const failure = docRef.deliveryFailure;
           setDelivery((previous) =>
             previous?.key === activationKey && previous.failure === failure
               ? previous
@@ -375,11 +376,10 @@ export function usePeerborneDocumentState<
               writers: nextWriters,
             });
             updateContext(docRef, current, nextReaders, nextWriters);
-            syncDelivery();
           },
           originFilter,
         );
-        docRef.subscribeDeliveryFailures(subscriptionIdRef.current, syncDelivery);
+        docRef.subscribeDeliveryState(subscriptionIdRef.current, syncDelivery);
         subscribedDocRef = docRef;
         syncDelivery();
         setActivationFailure(undefined);
@@ -410,7 +410,7 @@ export function usePeerborneDocumentState<
       active = false;
       setActivationFailure(undefined);
       subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
-      subscribedDocRef?.unsubscribeDeliveryFailures(subscriptionIdRef.current);
+      subscribedDocRef?.unsubscribeDeliveryState(subscriptionIdRef.current);
 
       const retries = activationRetries.get(documentPath);
       retries?.delete(run);
@@ -436,27 +436,39 @@ export function usePeerborneDocumentState<
         return;
       }
 
-      // A document this node created stays open, since closing it could
-      // discard the only copy; a retired one is replaced by an open.
+      const unused = () =>
+        (subscriberCounts.get(documentPath) || 0) === 0 &&
+        openTasks.get(documentPath) === pendingTask;
+      const release = (docRef: NonNullable<Awaited<OpenTask>['docRef']>) => {
+        docRef.unsubscribeDeliveryState(RETAINED_DOCUMENT_SUBSCRIPTION);
+        openTasks.delete(documentPath);
+        if (typeof docRef.close === 'function') docRef.close().catch(() => {});
+      };
+      // A document this node created stays open while a change is not known
+      // to have reached a member, because it may hold the only copy.
       pendingTask
         .then((result) => {
-          if (
-            (subscriberCounts.get(documentPath) || 0) === 0 &&
-            openTasks.get(documentPath) === pendingTask
-          ) {
-            if (
-              result.docRef &&
-              createdPaths.has(documentPath) &&
-              !result.docRef.retired
-            ) {
-              retainedDocuments.add(result.docRef);
-              return;
-            }
+          if (!unused()) return;
+          const docRef = result.docRef;
+          if (!docRef) {
             openTasks.delete(documentPath);
-            if (result.docRef && typeof result.docRef.close === 'function') {
-              result.docRef.close().catch(() => {});
-            }
+            return;
           }
+          if (
+            createdPaths.has(documentPath) &&
+            !docRef.retired &&
+            docRef.deliveryFailure !== undefined
+          ) {
+            retainedDocuments.add(docRef);
+            docRef.subscribeDeliveryState(
+              RETAINED_DOCUMENT_SUBSCRIPTION,
+              (failure) => {
+                if (failure === undefined && unused()) release(docRef);
+              },
+            );
+            return;
+          }
+          release(docRef);
         })
         .catch(() => {
           if (openTasks.get(documentPath) === pendingTask) {

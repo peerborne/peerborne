@@ -33,12 +33,19 @@ await document.close();
 opens the document, and returns an idempotent release function. The final release
 queues a close; a same-turn reconnect keeps the document open, and the
 `closeDelay` option, in milliseconds, keeps it open for a later remount. The
-final release never closes a document while `snapshot.deliveryFailure` is set,
-because that change exists only in the open handle. That includes an edit made
-with no connected peer, which the default GossipSub configuration reports as a
-`NoDeliveryPeersError`. The store closes the document once a later local frame
-reaches a peer and delivers the change. Explicit `start()` and `stop()` return
-promises for imperative applications: `start()` keeps the document open until
+final release keeps a document open while `snapshot.deliveryFailure` is set,
+because that change may exist only in the open handle, for up to
+`undeliveredCloseDelay` milliseconds (30 minutes by default, `Infinity` for no
+limit). After that the store closes the handle, and the change is lost unless a
+checkpoint holds it. A frame that reaches no peer known to serve a member, with
+no peers at all or only a relay subscribed to the topic, is reported as a
+`NoDeliveryPeersError`. The failure clears, and a released store then closes the
+document, once there is evidence that a member holds the change or was sent it:
+a later frame sent to a peer that recently proved it serves a member, a load
+served to a member, a member's sync request that names the change, or a
+writer's frame that builds on it. That is evidence of delivery, not an
+acknowledgment that a member stored the change. Explicit `start()` and `stop()`
+return promises for imperative applications: `start()` keeps the document open until
 `stop()`, and `stop()` closes it even with consumers or a delivery failure.
 Operations are serialized so a close waits for pending writes. `change` never
 opens the document: it rejects with `Document store is closed` unless the store

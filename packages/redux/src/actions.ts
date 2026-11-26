@@ -22,20 +22,15 @@ function captureTrace(): string | undefined {
   return undefined;
 }
 
-function deliverySubscriptionId(documentId: string): string {
-  return `${documentId}#delivery`;
-}
-
 function releaseDocument(
   documentRef: Pick<
     PeerborneDocument<unknown, unknown, unknown, unknown, unknown, unknown>,
-    'unsubscribe' | 'unsubscribeDeliveryFailures'
+    'unsubscribe' | 'unsubscribeDeliveryState'
   >,
   documentId: string,
 ): void {
   documentRef.unsubscribe(documentId);
-  documentRef.unsubscribe(deliverySubscriptionId(documentId));
-  documentRef.unsubscribeDeliveryFailures(documentId);
+  documentRef.unsubscribeDeliveryState(documentId);
 }
 
 function requirePeerborneState<RootStateType, State>(
@@ -300,28 +295,12 @@ export function openDocumentAsync<
         throw error;
       }
       dispatch(openDocument(documentId, documentRef, captureTrace()));
-      const reportDelivery = () => {
+      documentRef.subscribeDeliveryState(documentId, (failure) => {
         const current =
           selectPeerborneState(getState())?.documents?.[documentId];
-        if (
-          current?.documentRef === documentRef &&
-          current.deliveryFailure !== documentRef.deliveryFailure
-        ) {
-          dispatch(
-            deliveryFailure(
-              documentId,
-              documentRef.deliveryFailure,
-              captureTrace(),
-            ),
-          );
-        }
-      };
-      documentRef.subscribeDeliveryFailures(documentId, reportDelivery);
-      documentRef.subscribe(
-        deliverySubscriptionId(documentId),
-        reportDelivery,
-        'local',
-      );
+        if (current?.documentRef === documentRef)
+          dispatch(deliveryFailure(documentId, failure, captureTrace()));
+      });
       return documentRef;
     } else {
       console.warn('Unable to find document:', documentId);
@@ -517,8 +496,8 @@ export function changeDocument<DocType>(
 
 export const DELIVERY_FAILURE = 'PEERBORNE_DELIVERY_FAILURE';
 /**
- * The document's latest local change that is committed but undelivered, or
- * `undefined` once a later local change's frame reaches a peer and carries it.
+ * The document's `deliveryFailure`: its latest local change not known to have
+ * reached a member, or `undefined` once there is evidence that one holds it.
  */
 export interface DeliveryFailureAction extends Action<typeof DELIVERY_FAILURE> {
   documentId: string;

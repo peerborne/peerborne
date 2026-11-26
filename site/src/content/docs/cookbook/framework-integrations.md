@@ -13,7 +13,8 @@ loads from a connected peer, so a remount after the close needs one, or a
 factory that restores the latest checkpoint; see the
 [store README](https://github.com/peerborne/peerborne/blob/main/packages/store/README.md).
 The `closeDelay` option keeps the document open across a quick remount, and
-the final release never closes a document with an undelivered change. Pass an
+the final release keeps a document with an undelivered change open for up to
+`undeliveredCloseDelay`. Pass an
 existing handle only with `{ manageLifecycle: false }`.
 Every mutation returns a promise; await `store.change(...)` to handle failures.
 A change never opens the document, and a store whose document was retired

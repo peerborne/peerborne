@@ -45,10 +45,10 @@ export function createMockDocument(data: any = { test: 'data' }): any {
       subscriptions.delete(id);
     }),
     deliveryFailure: undefined,
-    subscribeDeliveryFailures: jest.fn((id: string, handler: Function) => {
+    subscribeDeliveryState: jest.fn((id: string, handler: Function) => {
       deliveryHandlers.set(id, handler);
     }),
-    unsubscribeDeliveryFailures: jest.fn((id: string) => {
+    unsubscribeDeliveryState: jest.fn((id: string) => {
       deliveryHandlers.delete(id);
     }),
     _subscriptions: subscriptions,

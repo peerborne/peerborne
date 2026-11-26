@@ -291,6 +291,46 @@ describe('framework-independent document store', () => {
       expect(() =>
         createDocumentStore(() => new TestDocument(), { closeDelay }),
       ).toThrow(RangeError);
+    for (const undeliveredCloseDelay of [-1, Number.NaN, 2 ** 31])
+      expect(() =>
+        createDocumentStore(() => new TestDocument(), {
+          undeliveredCloseDelay,
+        }),
+      ).toThrow(RangeError);
+  });
+
+  test('undeliveredCloseDelay bounds how long an undelivered change keeps the document open', async () => {
+    const source = new TestDocument();
+    const store = createDocumentStore(() => source, {
+      undeliveredCloseDelay: 40,
+    });
+    const release = store.connect();
+    await settle();
+    source.undeliveredError = new Error('NoPeersSubscribedToTopic');
+    await store.change(() => {});
+    release();
+    await settle(10);
+    expect(source.closeCount).toBe(0);
+    await settle(60);
+    expect(source.closeCount).toBe(1);
+    expect(store.getSnapshot().status).toBe('closed');
+  });
+
+  test('an Infinity undeliveredCloseDelay holds the document until the change is delivered', async () => {
+    const source = new TestDocument();
+    const store = createDocumentStore(() => source, {
+      undeliveredCloseDelay: Infinity,
+    });
+    const release = store.connect();
+    await settle();
+    source.undeliveredError = new Error('NoPeersSubscribedToTopic');
+    await store.change(() => {});
+    release();
+    await settle(20);
+    expect(source.closeCount).toBe(0);
+    source.setDeliveryFailure(undefined);
+    await settle();
+    expect(source.closeCount).toBe(1);
   });
 
   test('a change after the final release rejects instead of reopening the document', async () => {
