@@ -1102,6 +1102,76 @@ describe('document load response boundaries', () => {
     expect(document._changesSinceSnapshot).toBe(3);
   });
 
+  test('records a buffered document change only after its dependency integrates', async () => {
+    type BufferedChange = { id: string; deps: string[] };
+    const document = fakeDocument({
+      documentPath: '/buffered-document-change',
+      _bootstrapLoadApplicationState: 'complete',
+      _document: new Set<string>(['known']),
+      _hashes: new Set<string>(['KNOWN']),
+      _referencedAncestors: new Set<string>(),
+      _recentTips: [],
+      _lastSyncMessage: undefined,
+      _crdtProvider: {
+        remoteChange: jest.fn(
+          (state: Set<string>, change: BufferedChange) =>
+            new Set([...state, change.id]),
+        ),
+        hasIntegrated: (state: Set<string>, change: BufferedChange) =>
+          change.deps.every((dependency) => state.has(dependency)),
+      },
+      _documentChangeCount: 0,
+      _changesSinceSnapshot: 0,
+      _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
+      _refreshLastSyncMessageFromSync: jest.fn(),
+      _maybeCompact: jest.fn(async () => undefined),
+    });
+    const buffered = {
+      kind: crdtDocumentChangeNode,
+      change: { id: 'dependent', deps: ['dependency'] },
+      children: { KNOWN: { kind: crdtDocumentChangeNode } },
+    };
+
+    await document._syncDocumentChanges('DEPENDENT', buffered);
+    await document._syncDocumentChanges('DEPENDENT', buffered);
+
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._currentFrontier()).toEqual(['KNOWN']);
+    expect(document._recentTips).toEqual([]);
+    expect(document._documentChangeCount).toBe(0);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    const dependency = {
+      kind: crdtDocumentChangeNode,
+      change: { id: 'dependency', deps: [] },
+      children: { KNOWN: { kind: crdtDocumentChangeNode } },
+    };
+    await document._syncDocumentChanges('DEPENDENCY', dependency);
+
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
+    );
+    expect(document._currentFrontier().sort()).toEqual([
+      'DEPENDENCY',
+      'DEPENDENT',
+    ]);
+    expect(document._recentTips).toEqual([
+      { cid: 'DEPENDENCY', kind: crdtDocumentChangeNode },
+      { cid: 'DEPENDENT', kind: crdtDocumentChangeNode },
+    ]);
+    expect(document._documentChangeCount).toBe(2);
+    expect(document._changesSinceSnapshot).toBe(2);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['DEPENDENCY']],
+      [['DEPENDENT']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENCY', dependency],
+    ]);
+  });
+
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {
     const rejection = new ACLMergeRejectedError(
       new Error('malformed sent reader update'),

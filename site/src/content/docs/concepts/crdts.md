@@ -57,6 +57,7 @@ interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
     changeFn: ChangeFnType,
   ): [DocType, ChangesType];
   remoteChange(document: DocType, changes: ChangesType): DocType;
+  hasIntegrated?(document: DocType, changes: ChangesType): boolean;
   getHistory(document: DocType): ChangesType;
   getSnapshot?(document: DocType): ChangesType;
   applySnapshot?(document: DocType, snapshot: ChangesType): DocType;
@@ -64,7 +65,11 @@ interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
 ```
 
 Four required methods (`newDocument`, `localChange`, `remoteChange`, `getHistory`)
-and two optional snapshot methods.
+and two optional snapshot methods. Automerge and Yjs buffer a remote change
+until its causal dependencies arrive, so their providers implement
+`hasIntegrated`. Peerborne records a received change, notifies handlers and
+serves it only after it integrates. Until then a later message can deliver it
+again.
 
 Two implementations exist:
 

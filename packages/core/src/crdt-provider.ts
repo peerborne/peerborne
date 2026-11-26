@@ -66,6 +66,19 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   remoteChange(document: DocType, changes: ChangesType): DocType;
 
   /**
+   * Report whether `document` has integrated every change in `changes`.
+   *
+   * Implement this when `remoteChange()` can buffer changes until their
+   * causal dependencies arrive. Peerborne records a remote change as applied
+   * only after this returns true, so a buffered change stays eligible for
+   * redelivery. When not implemented, every applied change counts as integrated.
+   *
+   * @param document CRDT document returned by `remoteChange()`.
+   * @param changes Changes previously passed to `remoteChange()`.
+   */
+  hasIntegrated?(document: DocType, changes: ChangesType): boolean;
+
+  /**
    * Gets all changes for the document.
    *
    * @param document CRDT document to inspect.
