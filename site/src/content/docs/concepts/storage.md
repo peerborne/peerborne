@@ -33,7 +33,7 @@ CRDT layer resolves concurrent edits.
 The encrypted wire message may carry history inline or defer it to Helia:
 
 - **Inline**: A `CRDTChangeNode` inside the encrypted `CRDTSyncMessage` carries the serialized CRDT change, allowing immediate application after any configured outer-signature check. A first load has no prior writer set for that check.
-- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it.
+- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it. A received message fetches at most eight payloads within 10 seconds in all, and closing the document aborts the fetches. A GossipSub frame fetches only after its writer signature verifies and before it takes the document's state queue, so local changes continue meanwhile. A payload that cannot be fetched stays a missing dependency: the message applies without it, and its CID is fetched again only after 15 seconds, doubling up to 5 minutes.
 
 ### No graph links in stored payloads
 

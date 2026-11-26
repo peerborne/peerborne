@@ -6,6 +6,10 @@ import {
   readDocumentBlock,
   type DocumentBlockReadOptions,
 } from './document-block-reader.js';
+import {
+  RemoteBlockFetches,
+  type RemoteBlockFetchScope,
+} from './remote-block-fetch.js';
 import { shouldPruneDocumentChildren } from "./policy/graph-reachability.js";
 import { shouldCompact } from './policy/maintenance.js';
 import { canRetainGcCandidate, gcLeaseIsCurrent } from './policy/retention.js';
@@ -794,6 +798,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly maxAggregateBlockBytes?: number;
   readonly aggregateBudget?: DocumentChangeFetchBudget;
   readonly prefetchedBlocks?: ReadonlyMap<string, Uint8Array>;
+  /** Bounds for blocks not prefetched; a sync without one starts its own. */
+  readonly remoteFetches?: RemoteBlockFetchScope;
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
@@ -1466,6 +1472,7 @@ export class PeerborneDocument<
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
+  private _remoteBlockFetches?: RemoteBlockFetches;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
@@ -2034,6 +2041,10 @@ export class PeerborneDocument<
       options?.signal,
       getKey,
     );
+  }
+
+  private _blockFetches(): RemoteBlockFetches {
+    return (this._remoteBlockFetches ??= new RemoteBlockFetches());
   }
 
   private async _putBlock(
@@ -2726,6 +2737,8 @@ export class PeerborneDocument<
     // abandoning an opaque sibling merge would poison the document. Remote
     // update handlers are notified of what those siblings applied before the
     // rejection propagates, because a retry skips their recorded hashes.
+    // A block that was not prefetched is read within the message's
+    // `RemoteBlockFetches` bounds; one they leave unread stays missing.
     if (missingDocumentHashes.length > 0) {
       let nextIndex = 0;
       let fetchLimitExceeded = false;
@@ -2752,6 +2765,10 @@ export class PeerborneDocument<
         assertStillActive();
         throwIfLoadAborted(fetchSignal);
       };
+      let ownRemoteFetches: RemoteBlockFetchScope | undefined;
+      const remoteFetches = (): RemoteBlockFetchScope =>
+        fetchOptions.remoteFetches ??
+        (ownRemoteFetches ??= this._blockFetches().begin());
       let certifiedACLRejection: ACLMergeRejectedError | undefined;
       const worker = async (): Promise<void> => {
         while (!fetchLimitExceeded && !certifiedACLRejection) {
@@ -2771,18 +2788,26 @@ export class PeerborneDocument<
                     fetchSignal,
                     fetchOptions.getKey,
                   )
-                : this._getBlock(
-                    cid,
-                    {
-                      signal: fetchSignal,
-                      maxBlockBytes,
-                      consumeBytes,
-                    },
-                    fetchOptions.getKey,
+                : remoteFetches().fetch(
+                    missingHash,
+                    (readSignal) =>
+                      this._getBlock(
+                        cid,
+                        {
+                          signal: readSignal,
+                          maxBlockBytes,
+                          consumeBytes,
+                        },
+                        fetchOptions.getKey,
+                      ),
+                    fetchSignal,
                   ),
               fetchSignal,
             );
             assertWorkerActive();
+            // A block the message's fetch bounds left unread stays a missing
+            // dependency.
+            if (missingChanges === undefined) continue;
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
               continue;
@@ -2883,6 +2908,7 @@ export class PeerborneDocument<
         workerResults = workerPoolOutcome.results;
       } finally {
         signal?.removeEventListener('abort', forwardAbort);
+        ownRemoteFetches?.end();
       }
       assertStillActive();
       const appliedHashes = appliedMissingDocumentHashes.filter(
@@ -7646,23 +7672,7 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
-      await this._runStateMutation(async () => {
-        if (!receiveAdmission.active) return;
-        await this._syncUnlocked(
-          message,
-          true,
-          'ordinary-sync-v1',
-          undefined,
-          false,
-          undefined,
-          {
-            assertStillActive: () => {
-              if (!receiveAdmission.active)
-                throw new Error('GossipSub receive subscription closed');
-            },
-          },
-        );
-      });
+      await this._syncGossipMessage(message, () => receiveAdmission.active);
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
@@ -7903,6 +7913,7 @@ export class PeerborneDocument<
   private async _closeResources(): Promise<void> {
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
+    this._remoteBlockFetches?.abortAll();
     this._gcClosed = true;
     this._gcLifecycle = {};
     const coordinatedClose = this._coordinated?.close();
@@ -7972,6 +7983,105 @@ export class PeerborneDocument<
     return this._runStateMutation(() =>
       this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
     );
+  }
+
+  /**
+   * Apply an ordinary sync frame received over GossipSub. Blocks the frame
+   * cites without their changes are fetched outside the state queue, only
+   * after its writer signature verifies, so a block that no reachable peer
+   * holds cannot stall local changes, other frames or `close()`.
+   */
+  private async _syncGossipMessage(
+    message: CRDTSyncMessage<ChangesType>,
+    isActive: () => boolean,
+  ): Promise<void> {
+    let remoteFetches: RemoteBlockFetchScope | undefined;
+    let prefetchedBlocks: ReadonlyMap<string, Uint8Array> | undefined;
+    try {
+      if (this._unknownDeferredCids(message, false).length > 0) {
+        const cids = await this._runStateMutation(async () =>
+          isActive() && (await this._verifyOrdinarySyncSignature(message))
+            ? this._unknownDeferredCids(message, true)
+            : undefined,
+        );
+        if (cids === undefined) return;
+        if (cids.length > 0) {
+          remoteFetches = this._blockFetches().begin();
+          prefetchedBlocks = await this._blockFetches().prefetch(
+            remoteFetches,
+            cids,
+            (cid, signal) => this._readBlock(CID.parse(cid), { signal }),
+            LOAD_PREFETCH_MAX_CONCURRENCY,
+          );
+        }
+      }
+      await this._runStateMutation(async () => {
+        if (!isActive()) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!isActive())
+                throw new Error('GossipSub receive subscription closed');
+            },
+            prefetchedBlocks,
+            remoteFetches,
+          },
+        );
+      });
+    } finally {
+      remoteFetches?.end();
+    }
+  }
+
+  private async _verifyOrdinarySyncSignature(
+    message: CRDTSyncMessage<ChangesType>,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    const signature = message.signature;
+    if (!signature) return false;
+    const unsigned = this._serializeUnsignedForVerification(
+      message,
+      'ordinary-sync-v1',
+      MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+    );
+    return (
+      unsigned !== undefined &&
+      (await this._verifyWriterSignature(unsigned.raw, signature)) === true &&
+      unsigned.unchanged()
+    );
+  }
+
+  /**
+   * CIDs a sync tree cites without their changes that this replica lacks.
+   * `validate` checks and canonicalizes the tree first, as `_syncUnlocked()`
+   * will, and ignores history below the message's snapshot.
+   */
+  private _unknownDeferredCids(
+    message: CRDTSyncMessage<ChangesType>,
+    validate: boolean,
+  ): string[] {
+    const { changeId, changes } = message;
+    if (changeId === undefined || changes === undefined) return [];
+    const boundary = validate ? message.snapshot?.lastChangeNodeCID : undefined;
+    const known = boundary ? new Set(this._hashes).add(boundary) : this._hashes;
+    try {
+      return mergeRemoteSyncTree(
+        changeId,
+        validate ? this._collectACLFromTree(changes, changeId).changes : changes,
+        this._lastSyncMessage?.changeId,
+        known,
+      )
+        .filter(([, , change]) => change === undefined)
+        .map(([cid]) => cid);
+    } catch {
+      return [];
+    }
   }
 
   private async _syncValidatedProtocolMessage(
