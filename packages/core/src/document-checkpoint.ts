@@ -5,7 +5,12 @@ import {
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import type { SerializedBeeKEMWelcomeV2 } from './beekem-welcome-wire.js';
-import { MAX_RECENT_TIPS } from './merkle-cross-links.js';
+import { snapshotBoundedChangeTree } from './change-tree-walk.js';
+import type { CRDTSyncMessage } from './crdt-sync-message.js';
+import {
+  MAX_RECENT_TIPS,
+  validateRemoteSyncTreeAliases,
+} from './merkle-cross-links.js';
 
 export const MAX_DOCUMENT_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const MAX_CHECKPOINT_CIDS = 100_000;
@@ -123,13 +128,38 @@ export function checkpointDecode(value: unknown): Uint8Array {
   return bytes;
 }
 
+/** Encode only a state that `decodeCheckpointState` accepts, so a stored checkpoint always restores. */
 export function encodeCheckpointState(
   state: DocumentCheckpointState,
 ): Uint8Array {
   const encoded = new TextEncoder().encode(JSON.stringify(state));
   if (encoded.length > MAX_DOCUMENT_CHECKPOINT_BYTES)
     throw new RangeError('Document checkpoint exceeds its size limit');
+  decodeCheckpointState(encoded);
   return encoded;
+}
+
+/**
+ * Require a checkpoint's retained change tree to be well formed and rooted at
+ * a known CID. Everything beneath a known CID is covered by it, as in a merge,
+ * so an adopted tree may still name ancestors the document has forgotten.
+ */
+export function assertCheckpointChangeHistory<ChangesType>(
+  documentPath: string,
+  message: CRDTSyncMessage<ChangesType>,
+  hashes: ReadonlySet<string>,
+): void {
+  if (
+    message.documentId !== documentPath ||
+    !message.changeId ||
+    !message.changes ||
+    !hashes.has(message.changeId)
+  )
+    throw new Error('Invalid checkpoint change root');
+  const tree = snapshotBoundedChangeTree(message.changeId, message.changes, {
+    canonicalizeNodeId: (value) => CID.parse(value).toString(),
+  });
+  validateRemoteSyncTreeAliases(message.changeId, tree.root);
 }
 
 export function decodeCheckpointState(

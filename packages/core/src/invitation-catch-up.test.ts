@@ -343,6 +343,97 @@ describe('invitation catch-up', () => {
     ).rejects.toThrow(/1 of 2 advertised CIDs were not installed/);
   });
 
+  test('requires nothing at or beneath a CID known before the sync', () => {
+    const tree = {
+      kind: crdtDocumentChangeNode,
+      children: {
+        'known-parent': {
+          kind: crdtDocumentChangeNode,
+          children: {
+            'forgotten-ancestor': { kind: crdtDocumentChangeNode },
+          },
+        },
+        'new-parent': {
+          kind: crdtDocumentChangeNode,
+          children: {
+            'new-ancestor': { kind: crdtDocumentChangeNode },
+          },
+        },
+      },
+    };
+
+    expect(
+      collectInvitationCidsToInstall(
+        'root-cid',
+        tree,
+        new Set(),
+        new Set(['known-parent']),
+      ),
+    ).toEqual(['root-cid', 'new-parent', 'new-ancestor']);
+    expect(
+      collectInvitationCidsToInstall(
+        'root-cid',
+        tree,
+        new Set(),
+        new Set(['root-cid']),
+      ),
+    ).toEqual([]);
+    expect(
+      collectInvitationCidsToInstall(
+        'root-cid',
+        undefined,
+        new Set(),
+        new Set(['root-cid']),
+      ),
+    ).toEqual([]);
+  });
+
+  test('accepts a sync that skips forgotten ancestors of a known CID and still requires new ones', async () => {
+    const message = {
+      documentId: '/known-before-sync',
+      changeId: 'new-head',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        children: {
+          'known-parent': {
+            kind: crdtDocumentChangeNode,
+            children: {
+              'forgotten-ancestor': { kind: crdtDocumentChangeNode },
+            },
+          },
+          'new-parent': { kind: crdtDocumentChangeNode },
+        },
+      },
+      snapshot: {
+        lastChangeNodeCID: 'known-parent',
+        state: {},
+        compactedCount: 1,
+        signature: new Uint8Array([1]),
+        timestamp: 1,
+      },
+    };
+    const knownBeforeSync = new Set(['known-parent']);
+
+    await expect(
+      syncInvitationMessageCompletely(
+        message,
+        new Set(['new-head', 'new-parent']),
+        async () => true,
+        'catch-up',
+        { knownBeforeSync, isSnapshotApplied: () => false },
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      syncInvitationMessageCompletely(
+        message,
+        new Set(['new-head']),
+        async () => true,
+        'catch-up',
+        { knownBeforeSync, isSnapshotApplied: () => false },
+      ),
+    ).rejects.toThrow(/1 of 2 advertised CIDs were not installed/);
+  });
+
   test('uses an explicitly proven pre-existing snapshot boundary', async () => {
     const installed = new Set(['snapshot-boundary']);
     const message = {

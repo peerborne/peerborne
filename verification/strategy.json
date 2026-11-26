@@ -70,6 +70,15 @@
       ]
     },
     {
+      "id": "known-change-trimming",
+      "formalBoundary": "Known-change trimming has no formal proof. Generated finite histories of changes, unknown references, redeliveries and trims check the production trim rule against an exact model: current-generation entries survive, previous-generation hashes survive only when retained, previous-generation referenced ancestors survive when retained or still known, and the frontier is unchanged whenever every head is retained; retention keeps at most one generation of the newest heads. Document tests drive the real change, sync, load and checkpoint paths. Redelivery of a change older than the window, CRDT merge idempotence, CID parsing, cryptographic authentication and checkpoint storage are outside these properties.",
+      "evidence": ["packages/core/src/known-changes-properties.test.ts"],
+      "sources": [
+        "packages/core/src/known-changes.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "journal-storage-transition-boundaries",
       "formalBoundary": "The actual store policies check exact staged revision/count/byte admission, unique bounded publication append/removal with exact byte totals and retained-index projection, and token/checkpoint-bound commit eligibility. Checked finite histories preserve metadata bounds and leave accepted entries unchanged on failed/rejected operations; histories without checkpoint commits retain the initial accepted prefix. Native strict scalar guards, byte equality, owned record/payload projection, pending checkpoint retention, transaction aborts and authenticated encrypted recovery require properties. Storage success and payload-match truth are model inputs; crash durability, cryptographic unforgeability, browser quota behavior and UI latency are not proved.",
       "evidence": ["packages/core/src/journal-transition-properties.test.ts"],

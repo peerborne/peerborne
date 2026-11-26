@@ -198,6 +198,17 @@ When compaction runs:
 4. Older nodes are pruned from the in-memory sync tree when `pruneAfterSnapshot` is enabled, and always for a depth-bound snapshot
 5. Eligible pruned blocks are scheduled for deletion only when both `pruneAfterSnapshot` and `gcAfterPrune` are enabled
 
+Each document also remembers the CIDs of the changes it has seen, so it does
+not apply one twice. Writers and readers bound that memory with or without
+compaction. They keep the CIDs of the retained tree, the snapshot boundary, the
+recent tips and the newest 1,024 heads, plus every CID learned in the current
+generation of 1,024. Older CIDs are forgotten when the next generation fills,
+so the encrypted checkpoint of a long-edited document stays small and
+restorable. `hasChange()` and `loadChangeBlock()` report only remembered CIDs.
+`exportCheckpoint()` rejects any state that `restoreCheckpoint()` would refuse,
+such as more than 100,000 remembered CIDs. An application that saves only after
+a successful export, as Peerborne Note does, keeps its previous checkpoint.
+
 Snapshots can reduce replay work, but:
 
 - With pruning enabled, in-memory pruning does not delete Helia blocks unless `gcAfterPrune` is also enabled
