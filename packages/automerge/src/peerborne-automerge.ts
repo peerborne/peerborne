@@ -104,6 +104,7 @@ function automergeChangeHash(change: BinaryChange): string {
 export type AutomergeDocumentChangeHandler<T = any> =
   PeerborneDocumentChangeHandler<Doc<T>, CryptoKey>;
 
+const AUTOMERGE_MAGIC = [0x85, 0x6f, 0x4a, 0x83];
 const AUTOMERGE_DOCUMENT_CHUNK = 0;
 
 function automergeChangeActor(change: unknown): string {
@@ -112,21 +113,76 @@ function automergeChangeActor(change: unknown): string {
   return decodeChange(change).actor;
 }
 
+function isAutomergeDocumentChunk(chunk: unknown): chunk is Uint8Array {
+  return (
+    chunk instanceof Uint8Array &&
+    chunk.byteLength > 9 &&
+    AUTOMERGE_MAGIC.every((byte, index) => chunk[index] === byte) &&
+    chunk[8] === AUTOMERGE_DOCUMENT_CHUNK
+  );
+}
+
+/**
+ * The actor table that opens a single saved document chunk. Every change in
+ * the chunk names its actor by an index into this table, so it lists the
+ * document's change authors without loading the document.
+ */
+function documentChunkActors(chunk: Uint8Array): string[] | undefined {
+  let offset = 9;
+  const uleb = (): number | undefined => {
+    let value = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const byte = chunk[offset];
+      offset += 1;
+      if (byte === undefined) return undefined;
+      value += (byte & 0x7f) * 2 ** shift;
+      if ((byte & 0x80) === 0) return value;
+    }
+    return undefined;
+  };
+  const length = uleb();
+  if (length === undefined || offset + length !== chunk.byteLength)
+    return undefined;
+  const count = uleb();
+  if (count === undefined) return undefined;
+  const actors: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const size = uleb();
+    if (size === undefined || size === 0 || offset + size > chunk.byteLength)
+      return undefined;
+    actors.push(
+      Array.from(chunk.subarray(offset, offset + size), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    );
+    offset += size;
+  }
+  return actors;
+}
+
+function loadedDocumentActors(document: Doc<unknown>): Set<string> {
+  return new Set(getChangesMetaSince(document, []).map(({ actor }) => actor));
+}
+
 function automergeStateActors(state: BinaryChange[]): ReadonlySet<string> {
   if (!Array.isArray(state))
     throw new CRDTActorBindingError('Automerge state must be a change list');
   const actors = new Set<string>();
   for (const chunk of state) {
-    if (chunk instanceof Uint8Array && chunk[8] === AUTOMERGE_DOCUMENT_CHUNK) {
-      const loaded = load(chunk);
-      try {
-        for (const { actor } of getChangesMetaSince(loaded, []))
-          actors.add(actor);
-      } finally {
-        free(loaded);
-      }
-    } else {
+    if (!isAutomergeDocumentChunk(chunk)) {
       actors.add(automergeChangeActor(chunk));
+      continue;
+    }
+    const table = documentChunkActors(chunk);
+    if (table !== undefined) {
+      for (const actor of table) actors.add(actor);
+      continue;
+    }
+    const loaded = load(chunk);
+    try {
+      for (const actor of loadedDocumentActors(loaded)) actors.add(actor);
+    } finally {
+      free(loaded);
     }
   }
   return actors;
@@ -325,7 +381,20 @@ export class AutomergeProvider<T = any>
     // snapshot is [save(doc)] -- a single-element array containing a save buffer.
     // Load it into a new document and merge with the current one to preserve
     // any concurrent changes not included in the snapshot.
+    // Actor binding reads the snapshot's actors from its chunk header, so
+    // merge only a document whose changes have exactly those actors.
     const loaded = load<T>(snapshot[0] as unknown as Uint8Array);
+    const declared = automergeStateActors(snapshot);
+    const actual = loadedDocumentActors(loaded);
+    if (
+      declared.size !== actual.size ||
+      [...actual].some((actor) => !declared.has(actor))
+    ) {
+      free(loaded);
+      throw new CRDTActorBindingError(
+        'Automerge snapshot changes do not match its actor table',
+      );
+    }
     return merge(document, loaded);
   }
   hasPendingChanges(document: Doc<T>): boolean {

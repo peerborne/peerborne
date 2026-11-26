@@ -105,6 +105,36 @@ interface TestDoc {
 describe('AutomergeProvider', () => {
   const provider = new AutomergeProvider<TestDoc>();
 
+  test('actor binding reads snapshot and history authors without applying them', () => {
+    const first = automergeChange(
+      automergeInit<TestDoc>({ actor: 'aa'.repeat(16) }),
+      (doc) => {
+        doc.title = 'first';
+      },
+    );
+    const second = automergeChange(
+      automergeClone(first, { actor: 'bb'.repeat(16) }),
+      (doc) => {
+        doc.title = 'second';
+      },
+    );
+    const reader = automergeClone(second, { actor: 'cc'.repeat(16) });
+    const authors = new Set(['aa'.repeat(16), 'bb'.repeat(16)]);
+    const binding = provider.actorBinding;
+    expect(binding.stateActors(provider.getSnapshot(reader))).toEqual(authors);
+    expect(binding.stateActors(provider.getHistory(reader))).toEqual(authors);
+    expect(
+      binding.changeActors(getAutomergeChanges(first, second)),
+    ).toEqual(new Set(['bb'.repeat(16)]));
+    expect(
+      provider.applySnapshot(provider.newDocument(), provider.getSnapshot(reader))
+        .title,
+    ).toBe('second');
+    expect(() => binding.detach(provider.getSnapshot(reader))).toThrow(
+      'Missing actor binding prefix',
+    );
+  });
+
   test('newDocument() returns a valid Automerge Doc', () => {
     const doc = provider.newDocument();
     expect(doc).toBeDefined();
