@@ -35,14 +35,17 @@ function authenticated(request: IncomingMessage, config: GatewayConfig): boolean
 /** Time a rejected upgrade may stay open for its response to drain. */
 const REJECTED_UPGRADE_LINGER_MS = 1000
 
-function reject(socket: Socket, status: number): void {
+function reject(socket: Socket, status: number, retryAfterSeconds = 60): void {
   // Upgraded sockets leave the HTTP server's timeouts behind; without this
   // deadline a client that never closes its side holds a connection slot.
   const deadline = setTimeout(() => socket.destroy(), REJECTED_UPGRADE_LINGER_MS)
   deadline.unref()
   socket.once('close', () => clearTimeout(deadline))
   socket.resume()
-  socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 60\r\n\r\n`)
+  socket.end(
+    `HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n` +
+    `Retry-After: ${retryAfterSeconds}\r\n\r\n`,
+  )
 }
 
 export async function startRelayGateway(config: GatewayConfig) {
@@ -51,6 +54,15 @@ export async function startRelayGateway(config: GatewayConfig) {
   }
   const limiter = new GatewayLimiter(config.limits)
   const originWarning = new IntervalGate(60_000)
+  const budgetWarning = new IntervalGate(60_000)
+  const budgetRetryAfterSeconds = () => Math.max(1, Math.ceil(limiter.budgetRetryAfterMs / 1000))
+  const warnBudgetExhausted = () => {
+    if (budgetWarning.open()) {
+      console.warn('Relay gateway traffic window exhausted; rejecting upgrades until it refills', {
+        retryAfterSeconds: budgetRetryAfterSeconds(),
+      })
+    }
+  }
   const tunnels = new Set<() => void>()
   const sockets = new Set<Socket>()
   const server = createServer({ maxHeaderSize: 8192 }, async (request, response) => {
@@ -65,7 +77,15 @@ export async function startRelayGateway(config: GatewayConfig) {
           `http://127.0.0.1:${config.readinessPort}${request.url}`,
           { signal: AbortSignal.timeout(1000) },
         )
-        const body = await upstream.text()
+        let body = await upstream.text()
+        if (request.url === '/readyz' && upstream.ok && limiter.budgetExhausted) {
+          const { peerId } = JSON.parse(body) as { peerId?: unknown }
+          body = JSON.stringify({
+            status: 'budget-exhausted',
+            peerId,
+            retryAfterSeconds: budgetRetryAfterSeconds(),
+          })
+        }
         response.writeHead(upstream.status, { 'content-type': 'application/json' })
         response.end(request.method === 'HEAD' ? undefined : body.slice(0, 1024))
       } catch {
@@ -116,7 +136,11 @@ export async function startRelayGateway(config: GatewayConfig) {
     }
 
     const session = limiter.admit(ip)
-    if (!session) return reject(client, limiter.budgetExhausted ? 503 : 429)
+    if (!session) {
+      if (!limiter.budgetExhausted) return reject(client, 429)
+      warnBudgetExhausted()
+      return reject(client, 503, budgetRetryAfterSeconds())
+    }
     const upstream = connect({ host: '127.0.0.1', port: config.relayPort })
     let closed = false
     const close = () => {
@@ -143,9 +167,7 @@ export async function startRelayGateway(config: GatewayConfig) {
         transform(chunk: Buffer, _encoding, callback) {
           if (limiter.consume(session, chunk.length)) callback(null, chunk)
           else {
-            if (limiter.budgetExhausted) {
-              for (const stop of [...tunnels]) stop()
-            }
+            if (limiter.budgetExhausted) warnBudgetExhausted()
             callback(new Error('Relay traffic limit reached'))
           }
         },
