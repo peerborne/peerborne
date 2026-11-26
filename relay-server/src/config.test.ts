@@ -41,6 +41,7 @@ describe('loadConfig', () => {
         DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
       )
       expect(cfg.maxConnections).toBe(DEFAULT_MAX_CONNECTIONS)
+      expect(cfg.trustedProxyIps).toEqual([])
       expect(cfg.extraTopics).toEqual([])
       expect(cfg.relayLimits).toEqual({
         maxReservations: DEFAULT_RELAY_MAX_RESERVATIONS,
@@ -247,6 +248,38 @@ describe('loadConfig', () => {
         ).toBe(DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER)
       },
     )
+  })
+
+  describe('TRUSTED_PROXY_IPS parsing', () => {
+    it('trusts no proxy when unset or empty', () => {
+      expect(loadConfig({}).trustedProxyIps).toEqual([])
+      expect(loadConfig({ TRUSTED_PROXY_IPS: '' }).trustedProxyIps).toEqual([])
+    })
+
+    it('treats an explicit wildcard as every connection being proxied', () => {
+      expect(loadConfig({ TRUSTED_PROXY_IPS: ' * ' }).trustedProxyIps).toBe('*')
+    })
+
+    it('canonicalizes addresses and CIDR ranges to the form GossipSub compares', () => {
+      expect(
+        loadConfig({
+          TRUSTED_PROXY_IPS: ' 172.16.0.2, FDAA:0:0::3 ,10.0.0.0/8,,2001:DB8::/032,::ffff:10.0.0.1',
+        }).trustedProxyIps,
+      ).toEqual(['172.16.0.2', 'fdaa::3', '10.0.0.0/8', '2001:db8::/32', '::ffff:a00:1'])
+    })
+
+    it.each([
+      'caddy',
+      '172.16.0.2,*',
+      '10.0.0.0/33',
+      '2001:db8::/129',
+      '10.0.0.0/8/1',
+      '10.0.0.0/',
+      'fe80::1%eth0',
+      '010.0.0.1',
+    ])('rejects the unusable entry %j instead of ignoring it', (value) => {
+      expect(() => loadConfig({ TRUSTED_PROXY_IPS: value })).toThrow('TRUSTED_PROXY_IPS entry')
+    })
   })
 
   describe('EXTRA_TOPICS parsing', () => {
