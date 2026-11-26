@@ -409,6 +409,29 @@ describe('public identity serialization', () => {
     await expect(auth.verify(payload, restored, signature)).resolves.toBe(true);
   });
 
+  test('serves an identity whose private key cannot be exported', async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      false,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const payload = new Uint8Array([4, 8, 15, 16, 23, 42]);
+
+    expect(pair.privateKey.extractable).toBe(false);
+    await expect(
+      crypto.subtle.exportKey('jwk', pair.privateKey),
+    ).rejects.toThrow();
+    const restored = await auth.deserializePublicKey(
+      await auth.serializePublicKey(pair.publicKey),
+    );
+    await expect(
+      auth.verify(payload, restored, await auth.sign(payload, pair.privateKey)),
+    ).resolves.toBe(true);
+    expect(
+      auth.supportsInitialInvitationCapacity(pair.privateKey, pair.publicKey),
+    ).toBe(true);
+  });
+
   test.each([
     '',
     'not base64',

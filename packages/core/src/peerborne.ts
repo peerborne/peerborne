@@ -449,9 +449,10 @@ export type PeerbornePeersHandler = (
  * } from '@peerborne/automerge';
  *
  * // Create the necessary providers and pass them to the peerborne constructor.
+ * // The private key is not extractable; the public key always is.
  * const userKeyPair = await crypto.subtle.generateKey(
  *   { name: 'ECDSA', namedCurve: 'P-384' },
- *   true,
+ *   false,
  *   ['sign', 'verify'],
  * ) as CryptoKeyPair;
  * const crdt = new AutomergeProvider();
