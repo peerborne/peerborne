@@ -77,9 +77,11 @@ function expectRejected(
 ): void {
   const before = provider.getSnapshot(doc);
   const json = doc.toJSON();
+  const roots = doc.getShallowValue();
   expect(() => provider.remoteChange(doc, changes)).toThrow(reason);
   expect(provider.getSnapshot(doc)).toEqual(before);
   expect(doc.toJSON()).toEqual(json);
+  expect(doc.getShallowValue()).toEqual(roots);
   expect(doc.exportPendingUpdates()).toBeUndefined();
 }
 
@@ -652,6 +654,58 @@ describe('Loro remote payload validation', () => {
     expect(() => provider.remoteChange(live, update)).toThrow('trapped Loro');
     expect(importBatch).toHaveBeenCalledTimes(1);
     expect(live.getMap('m').get('k')).toBe(1);
+  });
+
+  test('a rejected update registers none of its containers in the document', () => {
+    const provider = new LoroProvider();
+    const base = baseSnapshot();
+    const live = replica(provider, base);
+    expectRejected(
+      provider,
+      live,
+      crafted(
+        base,
+        '8',
+        (doc) => doc.getTree('evil').createNode(),
+        (json) => {
+          Object.assign(json.changes[0]!.ops[0]!.content, {
+            type: 'move',
+            target: '0@1',
+          });
+        },
+      ),
+      'tree node that does not exist',
+    );
+    expect(Object.keys(live.getShallowValue())).not.toContain('evil');
+    expect(Object.keys(live.toJSON())).not.toContain('evil');
+  });
+
+  test('retires a document once updates trapped Loro repeatedly', () => {
+    const provider = new LoroProvider();
+    const live = replica(provider, baseSnapshot());
+    const updates = Array.from({ length: 17 }, (_, index) => {
+      const source = replica(
+        provider,
+        baseSnapshot(),
+        `${20 + index}` as `${number}`,
+      );
+      return provider.localChange(source, 'edit', (doc) => {
+        doc.getMap('m').set(`k${index}`, index);
+      })[1];
+    });
+    const importBatch = jest
+      .spyOn(LoroDoc.prototype, 'importBatch')
+      .mockImplementation(() => {
+        throw new WebAssembly.RuntimeError('unreachable');
+      });
+    for (const update of updates.slice(0, 16)) {
+      expect(() => provider.remoteChange(live, update)).toThrow('unreachable');
+    }
+    importBatch.mockRestore();
+    expect(() => provider.remoteChange(live, updates[16]!)).toThrow('retired');
+    const reopened = replica(provider, provider.getSnapshot(live));
+    provider.remoteChange(reopened, updates[16]!);
+    expect(reopened.getMap('m').get('k16')).toBe(16);
   });
 
   test('honest replicas converge with undo, rich text and nested containers in any delivery order', () => {

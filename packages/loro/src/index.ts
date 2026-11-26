@@ -1,9 +1,9 @@
 import {
   LoroDoc,
-  LoroTree,
   decodeImportBlobMeta,
   isValidContainerId,
   type ContainerID,
+  type JsonOp,
   type OpId,
   type PeerID,
   type VersionVector,
@@ -36,8 +36,11 @@ const CONTAINER_VALUE = '🦜:';
 /** The most updates a document holds while their dependencies are missing. */
 const MAX_WAITING_UPDATES = 4096;
 
-/** The most updates a document remembers as having trapped Loro. */
-const MAX_TRAPPED_UPDATES = 256;
+/**
+ * The most updates that may trap Loro during validation of one document. Each
+ * trap leaks the fork it happened in, so the document is retired after that.
+ */
+const MAX_TRAPPED_UPDATES = 16;
 
 const ranges = new WeakMap<Uint8Array, BlobRange>();
 
@@ -94,6 +97,10 @@ class HeldUpdates {
 
   private static author(blob: Uint8Array): PeerID | undefined {
     return rangeOf(blob).end[0]?.[0];
+  }
+
+  get size(): number {
+    return this.updates.size;
   }
 
   values(): IterableIterator<Uint8Array> {
@@ -261,6 +268,52 @@ function release(document: LoroDoc): void {
 }
 
 /**
+ * Checks the containers and tree nodes the operation at `counter` creates and
+ * adds them to `created`: a container value must have a known type and the
+ * operation's own ID, and a tree node the ID of the operation creating it.
+ */
+function collectCreations(
+  peer: PeerID,
+  { container, content, counter }: JsonOp,
+  created: Set<string>,
+): void {
+  const values =
+    content.type === 'insert' && 'value' in content
+      ? 'key' in content || !Array.isArray(content.value)
+        ? [content.value]
+        : content.value
+      : content.type === 'set'
+        ? [content.value]
+        : [];
+  values.forEach((value, index) => {
+    const id = containerValue(value);
+    if (id === undefined) {
+      if (holdsContainerValue(value)) {
+        throw new Error('Loro update nests a container in a value');
+      }
+      return;
+    }
+    if (
+      !CONTAINER_TYPES.has(containerType(id)) ||
+      id !== `cid:${counter + index}@${peer}:${containerType(id)}`
+    ) {
+      throw new Error('Loro update creates a container with a foreign ID');
+    }
+    created.add(id);
+  });
+  if (content.type === 'mark' && holdsContainerValue(content.style_value)) {
+    throw new Error('Loro update nests a container in a value');
+  }
+  if (containerType(container) === 'Tree' && content.type === 'create') {
+    if (content.target !== `${counter}@${peer}`) {
+      throw new Error('Loro update creates a tree node with a foreign ID');
+    }
+    created.add(`cid:${content.target}:Map`);
+    created.add(`${container} ${content.target}`);
+  }
+}
+
+/**
  * Loro decodes operations without checking that they make sense. Reject the
  * ones an unmodified client cannot produce:
  *
@@ -271,12 +324,11 @@ function release(document: LoroDoc): void {
  * - a deletion of elements outside the change's causal past or container;
  * - a tree node that is not created in the change's causal past.
  *
- * Each rule depends only on the change and its causal past, so every replica
- * reaches the same verdict in any delivery order. Returns the root containers
- * the operations write to.
+ * Each rule depends only on the change and its causal past, read from
+ * `staged`, so every replica reaches the same verdict in any delivery order.
+ * Returns the root containers the operations write to.
  */
 function assertOperations(
-  document: LoroDoc,
   staged: LoroDoc,
   from: VersionVector,
   to: VersionVector,
@@ -289,7 +341,8 @@ function assertOperations(
     const { peer } = opId(change.id);
     let ops = written.get(peer);
     if (ops === undefined) written.set(peer, (ops = []));
-    for (const { container, content, counter } of change.ops) {
+    for (const op of change.ops) {
+      const { container, content, counter } = op;
       if (
         !CONTAINER_TYPES.has(containerType(container)) ||
         content.type === 'unknown'
@@ -298,42 +351,26 @@ function assertOperations(
       }
       ops.push([counter, container]);
       if (container.startsWith('cid:root-')) roots.add(container);
-      const values =
-        content.type === 'insert' && 'value' in content
-          ? 'key' in content || !Array.isArray(content.value)
-            ? [content.value]
-            : content.value
-          : content.type === 'set'
-            ? [content.value]
-            : [];
-      values.forEach((value, index) => {
-        const id = containerValue(value);
-        if (id === undefined) {
-          if (holdsContainerValue(value)) {
-            throw new Error('Loro update nests a container in a value');
-          }
-          return;
-        }
-        if (
-          !CONTAINER_TYPES.has(containerType(id)) ||
-          id !== `cid:${counter + index}@${peer}:${containerType(id)}`
-        ) {
-          throw new Error('Loro update creates a container with a foreign ID');
-        }
-        created.add(id);
-      });
-      if (content.type === 'mark' && holdsContainerValue(content.style_value)) {
-        throw new Error('Loro update nests a container in a value');
-      }
-      if (containerType(container) === 'Tree' && content.type === 'create') {
-        if (content.target !== `${counter}@${peer}`) {
-          throw new Error('Loro update creates a tree node with a foreign ID');
-        }
-        created.add(`cid:${content.target}:Map`);
-        created.add(`${container} ${content.target}`);
-      }
+      collectCreations(peer, op, created);
     }
   }
+  const earlier = new Map<string, Set<string>>();
+  const createdBy = (id: OpId): Set<string> => {
+    const key = `${id.counter}@${id.peer}`;
+    let creations = earlier.get(key);
+    if (creations === undefined) {
+      creations = new Set();
+      for (const change of staged.exportJsonInIdSpan({ ...id, length: 1 })) {
+        for (const op of change.ops) {
+          if (op.counter === id.counter) {
+            collectCreations(id.peer, op, creations);
+          }
+        }
+      }
+      earlier.set(key, creations);
+    }
+    return creations;
+  };
   const imported: Version = from.toJSON();
   const ownersOf = (id: OpId, length: number): ContainerID[] => {
     const ops = written.get(id.peer);
@@ -368,7 +405,7 @@ function assertOperations(
         const creator = opId(container.slice(4, container.lastIndexOf(':')));
         if (
           !precedes(creator, counter) ||
-          (!created.has(container) && !document.hasContainer(container))
+          (!created.has(container) && !createdBy(creator).has(container))
         ) {
           throw new Error('Loro update writes to a container it cannot see');
         }
@@ -384,14 +421,13 @@ function assertOperations(
         }
       }
       if (containerType(container) === 'Tree' && 'target' in content) {
-        const tree = document.getContainerById(container);
         const parent = 'parent' in content ? content.parent : undefined;
         for (const node of [content.target, parent]) {
           if (node == null) continue;
+          const key = `${container} ${node}`;
           if (
             !precedes(opId(node), counter + 1) ||
-            (!created.has(`${container} ${node}`) &&
-              !(tree instanceof LoroTree && tree.has(node)))
+            (!created.has(key) && !createdBy(opId(node)).has(key))
           ) {
             throw new Error(
               'Loro update moves a tree node that does not exist',
@@ -439,7 +475,7 @@ function validateImport(
     ) {
       throw new Error('Loro update does not integrate with its dependencies');
     }
-    const roots = assertOperations(document, staged, from, to);
+    const roots = assertOperations(staged, from, to);
     for (const id of assertKnownRoots(staged)) roots.add(id);
     reloaded.import(staged.export({ mode: 'snapshot' }));
     for (const id of assertKnownRoots(reloaded)) roots.add(id);
@@ -517,6 +553,11 @@ export class LoroProvider implements CRDTProvider<
     const trapped = held(trappedUpdates, document, MAX_TRAPPED_UPDATES);
     if (trapped.find(changes) !== undefined) {
       throw new Error('Loro update trapped Loro when it was validated before');
+    }
+    if (trapped.size >= MAX_TRAPPED_UPDATES) {
+      throw new Error(
+        'Loro document is retired after remote updates trapped Loro; reopen it',
+      );
     }
     const waiting = held(waitingUpdates, document, MAX_WAITING_UPDATES);
     if (waiting.find(changes) !== undefined) return document;

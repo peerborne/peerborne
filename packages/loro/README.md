@@ -49,9 +49,12 @@ that depend on them, are discarded. `hasDiscarded` reports them, so Peerborne
 stops waiting for them and passes a later delivery to `remoteChange` again.
 
 A document holds at most 4,096 waiting updates and evicts the oldest update of
-the Loro peer holding the most. An update that once trapped Loro during
-validation is rejected without validating it again, because Loro cannot free the
-fork it trapped in.
+the Loro peer holding the most. Writers choose their own Loro peer IDs, so a
+writer can still evict other writers' waiting updates; `hasDiscarded` then
+reports them, and Peerborne's catch-up delivers them again. An update that once
+trapped Loro during validation is rejected without validating it again, because
+Loro cannot free the fork it trapped in. After 16 such updates, the document
+rejects every further remote update until it is reopened.
 
 Validation reads the whole document, so every integrated remote update costs
 O(document). Duplicate and waiting deliveries cost microseconds. The rules cover
