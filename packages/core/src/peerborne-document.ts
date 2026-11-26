@@ -114,6 +114,22 @@ import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { CRDTProvider, PartialLocalChangeError } from './crdt-provider.js';
 import {
+  CRDTActorBindingError,
+  CRDTActorBindings,
+  MAX_CRDT_ACTOR_BINDINGS,
+  createCRDTActorNonce,
+  crdtActorRegistrationPayload,
+  crdtChangeAuthorPayload,
+  decodeCRDTActorManifest,
+  decodeCRDTChangeAuthor,
+  deriveCRDTActorDigest,
+  encodeCRDTActorManifest,
+  encodeCRDTChangeAuthor,
+  sameCRDTActorRegistration,
+  type CRDTActorBinding,
+  type CRDTSignedActorRegistration,
+} from './crdt-actor-binding.js';
+import {
   AuthProvider,
   requireDeserializePublicKey,
   requireSerializePublicKey,
@@ -207,7 +223,7 @@ import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
-import { EPOCH_ID_LENGTH } from './epoch.js';
+import { EPOCH_ID_LENGTH, toHex } from './epoch.js';
 import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
@@ -991,6 +1007,27 @@ function documentLoadResponseTimeoutMs(configured: unknown): number {
  */
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
 const LOAD_PROTOCOL_REFRESH_TIMEOUT_MS = 5_000;
+const CRDT_AUTHOR_VERIFICATION_CONCURRENCY = 16;
+const MAX_RESERVED_CRDT_ACTORS = 64;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  map: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await map(items[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
 
 // Bounds the delivered changes a document keeps while they wait for a
 // dependency, comfortably above the nodes one compacted tree carries. An
@@ -1492,6 +1529,24 @@ export class PeerborneDocument<
   // retained tree, snapshot boundary, recent tips, newest 1,024 frontier heads
   // and every CID learned in the current generation, and forgets older CIDs.
   private _hashes = new Set<string>();
+
+  private _actorBindings = new CRDTActorBindings();
+  private _localActor?: {
+    readonly actor: string;
+    readonly registration: CRDTSignedActorRegistration;
+  };
+  private _localSigner?: Promise<string>;
+  private readonly _reservedActors = new Map<
+    string,
+    CRDTSignedActorRegistration
+  >();
+  private readonly _changeAuthorKeys = new Map<string, Promise<PublicKey>>();
+  private readonly _verifiedRegistrations = new Set<string>();
+  private readonly _refusedChanges = new Set<string>();
+  private _writerAuthorities?: {
+    readonly version: number;
+    readonly authorities: Promise<ReadonlySet<string>>;
+  };
 
   // Delivered nodes this replica does not hold yet, oldest first in `order`
   // from `start`: document changes the CRDT keeps while a dependency is
@@ -2692,8 +2747,22 @@ export class PeerborneDocument<
     }
   }
 
+  /**
+   * Hold a document change refused by actor binding as waiting, without its
+   * changes, so nodes that reference it wait too and later trees are walked
+   * down to it again. It is applied if a later delivery is admitted.
+   */
+  private _noteRefusedChange(cid: string): void {
+    this._refusedChanges.delete(cid);
+    this._refusedChanges.add(cid);
+    if (this._refusedChanges.size > MAX_WAITING_REMOTE_CHANGES)
+      this._refusedChanges.delete(this._refusedChanges.values().next().value!);
+    this._noteWaiting(cid, crdtDocumentChangeNode);
+  }
+
   private _recordRemoteChange(cid: string, kind: CRDTChangeNodeKind): void {
     this._hashes.add(cid);
+    this._refusedChanges?.delete(cid);
     this._waiting?.entries.delete(cid);
     if (kind === crdtDocumentChangeNode) {
       this._documentChangeCount++;
@@ -2742,7 +2811,11 @@ export class PeerborneDocument<
     if (rootId !== undefined) carried.add(rootId);
     for (const cid of carried) {
       const entry = entries.get(cid);
-      if (entry !== undefined && entry.changes === undefined) {
+      if (
+        entry !== undefined &&
+        entry.changes === undefined &&
+        this._refusedChanges?.has(cid) !== true
+      ) {
         candidates.set(cid, entry.kind);
       }
     }
@@ -2973,6 +3046,21 @@ export class PeerborneDocument<
       signal,
     );
     assertStillActive();
+    let authoredChanges:
+      | Awaited<ReturnType<typeof this._admitAuthoredChanges>>
+      | undefined;
+    try {
+      authoredChanges = await this._admitAuthoredChanges(
+        changeId,
+        newChangeEntries,
+        signal,
+      );
+    } catch (error) {
+      for (const cid of newlyReferencedAncestors)
+        this._referencedAncestors.delete(cid);
+      throw error;
+    }
+    assertStillActive();
 
     // First apply changes that were sent directly.
     const documentBeforeSync = this._document;
@@ -2985,21 +3073,26 @@ export class PeerborneDocument<
     try {
       for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
         assertStillActive();
+        if (authoredChanges?.rejected.has(sentHash)) continue;
         if (sentChanges) {
           switch (sentChangeKind) {
             case crdtDocumentChangeNode: {
               // Apply the changes that were sent directly. The CRDT already
               // holds a change that is waiting for a dependency, so that
               // change is only checked again unless the CRDT discarded it.
+              // One refused earlier was never applied.
+              const bareChanges =
+                authoredChanges?.admitted.get(sentHash) ?? sentChanges;
               if (
-                !this._holdsWaitingChange(newDocument, sentHash, sentChanges)
+                this._refusedChanges?.delete(sentHash) === true ||
+                !this._holdsWaitingChange(newDocument, sentHash, bareChanges)
               ) {
                 newDocument = this._crdtProvider.remoteChange(
                   newDocument,
-                  sentChanges,
+                  bareChanges,
                 );
               }
-              sentDocumentChanges.set(sentHash, sentChanges);
+              sentDocumentChanges.set(sentHash, bareChanges);
               newDocumentHashes.push(sentHash);
               newDocumentTips.push([sentHash, sentChangeKind]);
               break;
@@ -3051,6 +3144,8 @@ export class PeerborneDocument<
       }
       throw error;
     }
+    for (const hash of authoredChanges?.rejected ?? [])
+      this._noteRefusedChange(hash);
     if (newDocumentHashes.length) {
       this._document = newDocument;
       // A CRDT may buffer a change until its causal dependencies arrive.
@@ -3205,23 +3300,36 @@ export class PeerborneDocument<
             }
             switch (missingHashKind) {
               case crdtDocumentChangeNode: {
+                let bareChanges: ChangesType;
+                try {
+                  bareChanges = await awaitLoadWork(
+                    this._admitAuthoredChange(missingChanges),
+                    fetchSignal,
+                  );
+                } catch (error) {
+                  if (error instanceof CRDTActorBindingError)
+                    this._noteRefusedChange(missingHash);
+                  throw error;
+                }
+                assertWorkerActive();
                 if (
+                  this._refusedChanges?.delete(missingHash) === true ||
                   !this._holdsWaitingChange(
                     this._document,
                     missingHash,
-                    missingChanges,
+                    bareChanges,
                   )
                 ) {
                   this._document = this._crdtProvider.remoteChange(
                     this._document,
-                    missingChanges,
+                    bareChanges,
                   );
                 }
-                if (!this._hasIntegrated(missingChanges)) {
+                if (!this._hasIntegrated(bareChanges)) {
                   this._noteWaiting(
                     missingHash,
                     missingHashKind,
-                    missingChanges,
+                    bareChanges,
                   );
                   continue;
                 }
@@ -3788,7 +3896,9 @@ export class PeerborneDocument<
       changeId: message.changeId,
       changes: message.changes,
       snapshot: message.snapshot === undefined ? undefined : {
-        stateBytes: this._changesSerializer.serializeChanges(message.snapshot.state),
+        stateBytes: this._changesSerializer.serializeChanges(
+          this._bareSnapshotState(message.snapshot.state),
+        ),
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
@@ -4423,6 +4533,11 @@ export class PeerborneDocument<
             new Uint8Array(signature),
           )) === true
         ) {
+          if (this._actorBinding() !== undefined)
+            await awaitLoadWork(
+              this._verifySnapshotActors(snapshot.state),
+              signal,
+            );
           return true;
         }
       }
@@ -8016,7 +8131,7 @@ export class PeerborneDocument<
           ? await this._beekem.exportLocalState(this._kemKeyPair!.publicKey)
           : null;
       const payload = encodeCheckpointState({
-        format: 'peerborne/local-document-checkpoint/2',
+        format: 'peerborne/local-document-checkpoint/3',
         documentPath: this.documentPath,
         owner: await requireSerializePublicKey(
           this._authProvider,
@@ -8035,6 +8150,9 @@ export class PeerborneDocument<
         ),
         keychain: checkpointEncode(
           this._changesSerializer.serializeChanges(this._keychain.history()),
+        ),
+        actors: checkpointEncode(
+          encodeCRDTActorManifest(this._actorBindings.registrations()),
         ),
         message: checkpointEncode(
           this._syncMessageSerializer.serializeSyncMessage(message),
@@ -8177,9 +8295,24 @@ export class PeerborneDocument<
       preparedKeychain.commit();
       if ((await keychain.keys()).length === 0)
         throw new Error('Checkpoint has no document keys');
+      const history = decodeChanges(state.document);
+      const actorBindings = new CRDTActorBindings();
+      const binding = this._actorBinding();
+      const registrations = decodeCRDTActorManifest(
+        checkpointDecode(state.actors),
+      );
+      if (binding !== undefined) {
+        actorBindings.record(
+          await this._deriveActorBindings(binding, registrations),
+        );
+      } else if (registrations.length > 0) {
+        throw new CRDTActorBindingError(
+          'Checkpoint carries actor bindings this provider cannot check',
+        );
+      }
       const document = this._crdtProvider.remoteChange(
         this._crdtProvider.newDocument(),
-        decodeChanges(state.document),
+        history,
       );
       const message = snapshotSyncMessageForContext<ChangesType>(
         this._syncMessageSerializer.deserializeSyncMessage(
@@ -8249,6 +8382,8 @@ export class PeerborneDocument<
             (await readers.users()).length === 0
           : beekem.myLeafIndex === 0);
       this._document = document;
+      this._actorBindings = actorBindings;
+      this._localActor = undefined;
       this._readers = readers;
       this._writers = writers;
       this._keychain = keychain;
@@ -9662,18 +9797,42 @@ export class PeerborneDocument<
             );
           }
         }
+        let snapshotActors:
+          | Awaited<ReturnType<typeof this._verifySnapshotActors>>
+          | undefined;
         if (!snapshotSignatureValid) {
           console.warn(
             `Rejected snapshot for ${this.documentPath}: no authorized writer produced a valid signature`,
           );
-        } else {
+        } else if (this._actorBinding() !== undefined) {
+          try {
+            snapshotActors = await awaitLoadWork(
+              this._verifySnapshotActors(incoming.state),
+              changeFetchOptions.signal,
+            );
+          } catch (error) {
+            throwIfLoadAborted(changeFetchOptions.signal);
+            snapshotSignatureValid = false;
+            console.warn(
+              `Rejected snapshot for ${this.documentPath}: its actor manifest does not bind its state`,
+            );
+          }
+          assertStillActive();
+        }
+        if (snapshotSignatureValid) {
           // Apply the snapshot state. Use applySnapshot when available (e.g.
           // Automerge save format differs from incremental changes), otherwise
           // fall back to remoteChange (works for Yjs where snapshots are valid updates).
           beginStateApplication();
+          const state = snapshotActors?.state ?? incoming.state;
           this._document = this._crdtProvider.applySnapshot
-            ? this._crdtProvider.applySnapshot(this._document, incoming.state)
-            : this._crdtProvider.remoteChange(this._document, incoming.state);
+            ? this._crdtProvider.applySnapshot(this._document, state)
+            : this._crdtProvider.remoteChange(this._document, state);
+          if (snapshotActors !== undefined)
+            this._actorBindings.record(
+              snapshotActors.bindings,
+              await this._currentWriterAuthorities(),
+            );
           this._latestSnapshot = incoming;
           this._latestSnapshotSource = sourceSnapshot;
           appliedSnapshot = true;
@@ -10063,6 +10222,7 @@ export class PeerborneDocument<
    * earlier size are the attempt's own.
    */
   private async _commitLocalChange(changeFn: ChangeFnType, message?: string) {
+    await this._prepareLocalActor();
     const originalDocument = this._document;
     const hashSizeBefore = this._hashes.size;
     const referencedAncestorsSizeBefore = this._referencedAncestors.size;
@@ -10073,7 +10233,7 @@ export class PeerborneDocument<
 
     const { changes, failure } = this._applyLocalChange(changeFn, message);
     try {
-      await this._makeChange(changes);
+      await this._makeChange(await this._authorLocalChange(changes));
     } catch (error) {
       const commitError =
         error instanceof GossipFrameLimitError
@@ -10159,11 +10319,431 @@ export class PeerborneDocument<
     return new GossipFrameLimitError(error.byteLength, error.limit, true);
   }
 
+  private _actorBinding(): CRDTActorBinding<DocType, ChangesType> | undefined {
+    return this._coordinated ? undefined : this._crdtProvider?.actorBinding;
+  }
+
+  private _localSignerAuthority(): Promise<string> {
+    return (this._localSigner ??= requireSerializePublicKey(
+      this._authProvider,
+      'CRDT actor binding',
+    )(this._userPublicKey));
+  }
+
+  /**
+   * Select the derived actor the next local change is made under. A document
+   * that no longer writes under this instance's actor, such as a rollback
+   * copy or a restored checkpoint, gets a fresh nonce, so an actor whose
+   * position may already be published is never reused.
+   */
+  private async _prepareLocalActor(): Promise<void> {
+    const binding = this._actorBinding();
+    if (
+      binding === undefined ||
+      (this._localActor !== undefined &&
+        binding.localActor(this._document) === this._localActor.actor)
+    )
+      return;
+    this._localActor = await this._newLocalActor(binding);
+  }
+
+  private async _newLocalActor(
+    binding: CRDTActorBinding<DocType, ChangesType>,
+  ): Promise<{ actor: string; registration: CRDTSignedActorRegistration }> {
+    const registration = {
+      signer: await this._localSignerAuthority(),
+      nonce: createCRDTActorNonce(),
+    };
+    const registrationSignature = this._isSigningEnabled()
+      ? await this._authProvider.sign(
+          crdtActorRegistrationPayload(this.documentPath, registration),
+          this._userKey,
+        )
+      : new Uint8Array(0);
+    return {
+      actor: binding.actorFromDigest(
+        await deriveCRDTActorDigest(this.documentPath, registration),
+      ),
+      registration: { ...registration, registrationSignature },
+    };
+  }
+
+  /**
+   * Register a fresh actor for a separate editing copy of this document, such
+   * as an editor mirror whose operations later enter through `change()`.
+   * Returns the provider's native actor identifier, or `undefined` when the
+   * provider does not bind actors. Release it with `releaseActor()` when the
+   * copy is discarded. An instance holds at most 64 reservations and refuses
+   * another until one is released.
+   */
+  public async reserveActor(): Promise<string | undefined> {
+    const binding = this._actorBinding();
+    if (binding === undefined) return undefined;
+    if (this._reservedActors.size >= MAX_RESERVED_CRDT_ACTORS)
+      throw new CRDTActorBindingError(
+        `Release one of ${MAX_RESERVED_CRDT_ACTORS} reserved actors before reserving another`,
+      );
+    const { actor, registration } = await this._newLocalActor(binding);
+    this._reservedActors.set(actor, registration);
+    return actor;
+  }
+
+  /** Stop accepting local changes under an actor from `reserveActor()`. */
+  public releaseActor(actor: string): void {
+    this._reservedActors.delete(actor);
+  }
+
+  /** Sign a local change and attach its authorship. */
+  private async _authorLocalChange(changes: ChangesType): Promise<ChangesType> {
+    const binding = this._actorBinding();
+    if (binding === undefined) return changes;
+    const local = this._localActor;
+    if (local === undefined)
+      throw new CRDTActorBindingError('No local actor is prepared');
+    const actors = [...binding.changeActors(changes)];
+    const registrationOf = (actor: string) =>
+      actor === local.actor
+        ? local.registration
+        : this._reservedActors.get(actor);
+    const actor = actors[0] ?? local.actor;
+    const registration = registrationOf(actor);
+    if (
+      registration === undefined ||
+      actors.some((other) => registrationOf(other) !== registration)
+    )
+      throw new CRDTActorBindingError(
+        'A local change may only add operations under one of its own actors',
+      );
+    const signature = this._isSigningEnabled()
+      ? await this._authProvider.sign(
+          crdtChangeAuthorPayload(
+            this.documentPath,
+            registration,
+            this._changesSerializer.serializeChanges(changes),
+          ),
+          this._userKey,
+        )
+      : new Uint8Array(0);
+    if (actors.length > 0) await this._recordBindings([[actor, registration]]);
+    return binding.attach(
+      changes,
+      encodeCRDTChangeAuthor({ ...registration, signature }),
+    );
+  }
+
+  /** The current writers' signer authorities, whose bindings are kept longest. */
+  private _currentWriterAuthorities(): Promise<ReadonlySet<string>> {
+    const version = this._writerKeysVersion;
+    if (
+      this._writerAuthorities === undefined ||
+      this._writerAuthorities.version !== version
+    ) {
+      const authorities = Promise.resolve()
+        .then(() => this._getWriterKeys())
+        .then((keys) =>
+          Promise.all(
+            keys.map(
+              requireSerializePublicKey(
+                this._authProvider,
+                'CRDT actor binding',
+              ),
+            ),
+          ),
+        )
+        .then((serialized) => new Set(serialized) as ReadonlySet<string>)
+        .catch(() => new Set<string>() as ReadonlySet<string>);
+      this._writerAuthorities = { version, authorities };
+    }
+    return this._writerAuthorities.authorities;
+  }
+
+  private async _recordBindings(
+    entries: readonly (readonly [string, CRDTSignedActorRegistration])[],
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    this._actorBindings.record(entries, await this._currentWriterAuthorities());
+  }
+
+  private _changeAuthorKey(signer: string): Promise<PublicKey> {
+    let key = this._changeAuthorKeys.get(signer);
+    if (key === undefined) {
+      key = (async () => {
+        let deserialized: PublicKey;
+        let canonical: string;
+        try {
+          deserialized = await requireDeserializePublicKey(
+            this._authProvider,
+            'CRDT actor binding',
+          )(signer);
+          canonical = await requireSerializePublicKey(
+            this._authProvider,
+            'CRDT actor binding',
+          )(deserialized);
+        } catch {
+          throw new CRDTActorBindingError('Invalid change signer');
+        }
+        if (canonical !== signer)
+          throw new CRDTActorBindingError('Noncanonical change signer');
+        return deserialized;
+      })();
+      if (this._changeAuthorKeys.size >= 256)
+        this._changeAuthorKeys.delete(this._changeAuthorKeys.keys().next().value!);
+      this._changeAuthorKeys.set(signer, key);
+      key.catch(() => {
+        if (this._changeAuthorKeys.get(signer) === key)
+          this._changeAuthorKeys.delete(signer);
+      });
+    }
+    return key;
+  }
+
+  /**
+   * Check a registration this replica does not remember yet: the signature its
+   * signer made over the document path and nonce. A registration that
+   * conflicts with a remembered binding is rejected first.
+   */
+  private async _verifyRegistration(
+    actor: string,
+    registration: CRDTSignedActorRegistration,
+  ): Promise<void> {
+    const known = this._actorBindings.get(actor);
+    if (known !== undefined) {
+      if (sameCRDTActorRegistration(known, registration)) return;
+      this._actorBindings.check([[actor, registration]]);
+    }
+    if (!this._isSigningEnabled()) return;
+    const key = [
+      registration.signer,
+      toHex(registration.nonce),
+      toHex(registration.registrationSignature),
+    ].join('\0');
+    if (this._verifiedRegistrations.has(key)) {
+      this._verifiedRegistrations.delete(key);
+      this._verifiedRegistrations.add(key);
+      return;
+    }
+    if (
+      (await this._authProvider.verify(
+        crdtActorRegistrationPayload(this.documentPath, registration),
+        await this._changeAuthorKey(registration.signer),
+        registration.registrationSignature,
+      )) !== true
+    )
+      throw new CRDTActorBindingError('Invalid actor registration signature');
+    this._verifiedRegistrations.add(key);
+    if (this._verifiedRegistrations.size > MAX_CRDT_ACTOR_BINDINGS)
+      this._verifiedRegistrations.delete(
+        this._verifiedRegistrations.values().next().value!,
+      );
+  }
+
+  /**
+   * Verify a remote document change before it is applied: its author's
+   * signatures, and that every actor it adds operations for is the actor its
+   * author's registration derives and is not bound to another registration.
+   * Nothing is recorded; the returned binding is recorded by the caller.
+   */
+  private async _verifyAuthoredChange(changes: ChangesType): Promise<{
+    readonly changes: ChangesType;
+    readonly binding?: readonly [string, CRDTSignedActorRegistration];
+  }> {
+    const binding = this._actorBinding()!;
+    const [prefix, bare] = binding.detach(changes);
+    const author = decodeCRDTChangeAuthor(prefix);
+    const actors = binding.changeActors(bare);
+    const actor = binding.actorFromDigest(
+      await deriveCRDTActorDigest(this.documentPath, author),
+    );
+    if ([...actors].some((changed) => changed !== actor))
+      throw new CRDTActorBindingError(
+        'A change adds operations under an actor its signer does not own',
+      );
+    if (
+      this._isSigningEnabled() &&
+      (await this._authProvider.verify(
+        crdtChangeAuthorPayload(
+          this.documentPath,
+          author,
+          this._changesSerializer.serializeChanges(bare),
+        ),
+        await this._changeAuthorKey(author.signer),
+        author.signature,
+      )) !== true
+    )
+      throw new CRDTActorBindingError('Invalid change author signature');
+    if (actors.size === 0) return { changes: bare };
+    const registration = {
+      signer: author.signer,
+      nonce: author.nonce,
+      registrationSignature: author.registrationSignature,
+    };
+    await this._verifyRegistration(actor, registration);
+    return { changes: bare, binding: [actor, registration] };
+  }
+
+  /** Verify and record one remote document change, returning its bare change. */
+  private async _admitAuthoredChange(changes: ChangesType): Promise<ChangesType> {
+    if (this._actorBinding() === undefined) return changes;
+    const verified = await this._verifyAuthoredChange(changes);
+    if (verified.binding) await this._recordBindings([verified.binding]);
+    return verified.changes;
+  }
+
+  /**
+   * Verify every inline document change of a sync tree before any is applied
+   * and record the bindings of those that pass. A relayed change that fails
+   * actor binding is left out, so a forgery inside an honest writer's tree
+   * cannot block that writer's own changes; the caller holds it as waiting so
+   * its descendants are walked again later. Any other failure, or a failing
+   * root, rejects the message.
+   */
+  private async _admitAuthoredChanges(
+    rootId: string | undefined,
+    entries: readonly [string, CRDTChangeNodeKind, ChangesType | undefined][],
+    signal?: AbortSignal,
+  ): Promise<
+    | {
+        readonly admitted: ReadonlyMap<string, ChangesType>;
+        readonly rejected: ReadonlySet<string>;
+      }
+    | undefined
+  > {
+    if (this._actorBinding() === undefined) return undefined;
+    const documentEntries = entries.filter(
+      (entry): entry is [string, CRDTChangeNodeKind, ChangesType] =>
+        entry[1] === crdtDocumentChangeNode && entry[2] !== undefined,
+    );
+    const outcomes = await awaitLoadWork(
+      mapWithConcurrency(
+        documentEntries,
+        CRDT_AUTHOR_VERIFICATION_CONCURRENCY,
+        async ([, , changes]) => {
+          try {
+            return {
+              ok: true as const,
+              verified: await this._verifyAuthoredChange(changes),
+            };
+          } catch (error) {
+            return { ok: false as const, error };
+          }
+        },
+      ),
+      signal,
+    );
+    const admitted = new Map<string, ChangesType>();
+    const rejected = new Set<string>();
+    const preferred = await awaitLoadWork(
+      this._currentWriterAuthorities(),
+      signal,
+    );
+    documentEntries.forEach(([hash], index) => {
+      const outcome = outcomes[index]!;
+      try {
+        if (!outcome.ok) throw outcome.error;
+        if (outcome.verified.binding)
+          this._actorBindings.record([outcome.verified.binding], preferred);
+        admitted.set(hash, outcome.verified.changes);
+      } catch (error) {
+        if (hash === rootId || !(error instanceof CRDTActorBindingError))
+          throw error;
+        rejected.add(hash);
+      }
+    });
+    if (rejected.size > 0)
+      console.warn(
+        `Skipped ${rejected.size} relayed change(s) in ${this.documentPath} that failed actor binding`,
+      );
+    return { admitted, rejected };
+  }
+
+  /**
+   * Validate a snapshot state's actor manifest: each signed registration
+   * derives a distinct actor present in the state and does not conflict with
+   * a binding this replica remembers. The manifest may omit actors whose
+   * bindings its signer forgot. Returns the bare state; nothing is recorded.
+   */
+  private async _verifySnapshotActors(state: ChangesType): Promise<{
+    readonly state: ChangesType;
+    readonly bindings: readonly (readonly [string, CRDTSignedActorRegistration])[];
+  }> {
+    const binding = this._actorBinding()!;
+    const [prefix, bare] = binding.detach(state);
+    const bindings = await this._deriveActorBindings(
+      binding,
+      decodeCRDTActorManifest(prefix),
+    );
+    const actors = binding.stateActors(bare);
+    if (bindings.some(([actor]) => !actors.has(actor)))
+      throw new CRDTActorBindingError(
+        'Snapshot actor manifest names an actor outside its state',
+      );
+    await mapWithConcurrency(
+      bindings,
+      CRDT_AUTHOR_VERIFICATION_CONCURRENCY,
+      ([actor, registration]) => this._verifyRegistration(actor, registration),
+    );
+    this._actorBindings.check(bindings);
+    return { state: bare, bindings };
+  }
+
+  private async _deriveActorBindings(
+    binding: CRDTActorBinding<DocType, ChangesType>,
+    registrations: readonly CRDTSignedActorRegistration[],
+  ): Promise<(readonly [string, CRDTSignedActorRegistration])[]> {
+    const actors = await mapWithConcurrency(
+      registrations,
+      CRDT_AUTHOR_VERIFICATION_CONCURRENCY,
+      async (registration) =>
+        binding.actorFromDigest(
+          await deriveCRDTActorDigest(this.documentPath, registration),
+        ),
+    );
+    if (new Set(actors).size !== actors.length)
+      throw new CRDTActorBindingError('Actor manifest repeats an actor');
+    return registrations.map((registration, index) => [
+      actors[index]!,
+      registration,
+    ]);
+  }
+
+  /** Attach the remembered registrations of the actors in a snapshot state. */
+  private _attachSnapshotActors(state: ChangesType): ChangesType {
+    const binding = this._actorBinding();
+    if (binding === undefined) return state;
+    return binding.attach(
+      state,
+      encodeCRDTActorManifest(
+        this._actorBindings.registrations(binding.stateActors(state)),
+      ),
+    );
+  }
+
+  /** The snapshot state without its actor manifest, for state digests. */
+  private _bareSnapshotState(state: ChangesType): ChangesType {
+    const binding = this._actorBinding();
+    if (binding === undefined) return state;
+    try {
+      return binding.detach(state)[1];
+    } catch {
+      return state;
+    }
+  }
+
   /** Publish a partial in-place edit before its change function's error is rethrown. */
   private _applyLocalChange(
     changeFn: ChangeFnType,
     message?: string,
   ): { changes: ChangesType; failure?: { error: unknown } } {
+    const binding = this._actorBinding();
+    if (
+      binding !== undefined &&
+      this._localActor !== undefined &&
+      binding.localActor(this._document) !== this._localActor.actor
+    )
+      this._document = binding.setLocalActor(
+        this._document,
+        this._localActor.actor,
+      );
     try {
       const [document, changes] = this._crdtProvider.localChange(
         this._document,
@@ -10204,7 +10784,9 @@ export class PeerborneDocument<
    * Used to fetch change data on demand for history-visibility consumers (e.g.
    * audit UI, diff viewers) when the change has been pruned from the in-memory
    * sync tree but the block is still present in the Helia blockstore. The
-   * returned `ChangesType` is the deserialized, decrypted payload.
+   * returned `ChangesType` is the deserialized, decrypted payload. With a
+   * provider that has an `actorBinding`, a document change carries its
+   * authored-change envelope, which `actorBinding.detach()` separates.
    *
    * Returns `undefined` when:
    * - The CID is not in `_hashes`: this document never saw the change, or
@@ -10299,7 +10881,9 @@ export class PeerborneDocument<
       return undefined;
     }
 
-    const state = this._crdtProvider.getSnapshot(this._document);
+    const state = this._attachSnapshotActors(
+      this._crdtProvider.getSnapshot(this._document),
+    );
     const lastChangeNodeCID = this._lastSyncMessage?.changeId ?? '';
     const timestamp = Date.now();
 

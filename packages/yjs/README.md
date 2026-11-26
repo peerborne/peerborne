@@ -36,8 +36,9 @@ Use this adapter for Yjs-backed collaborative documents. It works with:
 
 ## Editor mutation boundary
 
-Use `createYjsEditorBridge` from `@peerborne/yjs/editor` with an already-created
-or opened document. Bind upstream editors to the bridge's private mirror,
+Await `createYjsEditorBridge` from `@peerborne/yjs/editor` with an
+already-created or opened document. The mirror writes under an actor the
+document reserves for its signer. Bind upstream editors to the bridge's private mirror,
 await `flush()` to observe write failures, and drain `destroy()` on teardown.
 Directly binding an editor to the authoritative CRDT bypasses change capture.
 See the [editor guide](https://peerborne.io/cookbook/editor-integrations/).

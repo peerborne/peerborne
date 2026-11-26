@@ -5,6 +5,7 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  CRDTActorBinding,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
@@ -39,6 +40,8 @@ import {
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
+  attachCRDTActorPrefix,
+  detachCRDTActorPrefix,
 } from '@peerborne/core';
 import { recordYjsOperationTargets } from './operation-targets.js';
 import {
@@ -55,10 +58,12 @@ import {
   encodeStateVector,
   getState,
   mergeDeleteSets,
+  mergeUpdatesV2,
   tryGc,
   GC,
   ID,
   Item,
+  Skip,
   ContentType,
   ContentFormat,
   type Transaction,
@@ -488,9 +493,37 @@ function assertStagedYjsValues(structs: Iterable<unknown>): void {
   }
 }
 
+function updateClients(update: Uint8Array): ReadonlySet<string> {
+  const clients = new Set<string>();
+  for (const struct of decodeUpdateV2(update).structs)
+    if (!(struct instanceof Skip)) clients.add(String(struct.id.client));
+  return clients;
+}
+
+const yjsActorBinding: CRDTActorBinding<Doc, Uint8Array> = {
+  actorFromDigest(digest) {
+    let clientID = digest[0]! & 0x1f;
+    for (let index = 1; index < 7; index++)
+      clientID = clientID * 256 + digest[index]!;
+    return String(clientID);
+  },
+  localActor: (document) => String(document.clientID),
+  setLocalActor(document, actor) {
+    document.clientID = Number(actor);
+    return document;
+  },
+  changeActors: updateClients,
+  stateActors: updateClients,
+  attach: attachCRDTActorPrefix,
+  detach: detachCRDTActorPrefix,
+};
+
 export class YjsProvider
   implements CRDTProvider<Doc, Uint8Array, (doc: Doc) => void>
 {
+  /** Client IDs are 53-bit values derived from the signer and an instance nonce. */
+  readonly actorBinding: CRDTActorBinding<Doc, Uint8Array> = yjsActorBinding;
+
   /** Staging accepts scalars and shared Map/Array/Text values, not opaque mutable payloads. */
   createDocumentSession(
     document: Doc,
@@ -890,43 +923,36 @@ export class YjsProvider
   newDocument(): Doc {
     return new Doc();
   }
+  /**
+   * The change holds only the transactions `changeFn` ran. Yjs folds pending
+   * remote structs into a state-vector diff, which would make a local change
+   * carry other actors' operations.
+   */
   localChange(
     document: Doc,
     message: string,
     changeFn: (doc: Doc) => void,
   ): [Doc, Uint8Array] {
-    const beforeSV = encodeStateVector(document);
-    let edited = false;
-    const onTransaction = ({
-      beforeState,
-      afterState,
-      deleteSet,
-    }: Transaction) => {
-      edited ||=
-        deleteSet.clients.size > 0 ||
-        [...afterState].some(
-          ([client, clock]) => beforeState.get(client) !== clock,
-        );
+    const updates: Uint8Array[] = [];
+    const onUpdate = (update: Uint8Array) => {
+      updates.push(update);
     };
-    document.on('afterTransaction', onTransaction);
+    const changes = () =>
+      updates.length === 1 ? updates[0]! : mergeUpdatesV2(updates);
+    document.on('updateV2', onUpdate);
     try {
       changeFn(document);
     } catch (error) {
-      if (!edited) throw error;
-      throw new PartialLocalChangeError(
-        error,
-        document,
-        encodeStateAsUpdateV2(document, beforeSV),
-      );
+      if (updates.length === 0) throw error;
+      throw new PartialLocalChangeError(error, document, changes());
     } finally {
-      document.off('afterTransaction', onTransaction);
+      document.off('updateV2', onUpdate);
     }
-    const changes = encodeStateAsUpdateV2(document, beforeSV);
 
     // Y.Doc is always mutated in-place -- returning the same reference is
     // correct Yjs behavior. Callers must not rely on reference equality to
     // detect changes.
-    return [document, changes];
+    return [document, changes()];
   }
   remoteChange(document: Doc, changes: Uint8Array): Doc {
     applyUpdateV2(document, changes);

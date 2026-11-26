@@ -155,6 +155,7 @@ import {
 } from './compaction-config.js';
 
 export * from './beekem/index.js';
+export * from './crdt-actor-binding.js';
 export * from './invitation-capacity.js';
 export * from './invitation-wire.js';
 export * from './invitation-replay-guard.js';

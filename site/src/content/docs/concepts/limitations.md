@@ -156,6 +156,20 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   race a removal with a signed re-grant. Writer removal is not a globally
   causal cutover and does not protect against a malicious writer equivocating
   across partitions.
+- **CRDT actor binding has bounded strength.** Every document change is
+  signed by its author, and its Yjs client ID, Automerge actor or Loro peer
+  ID must derive from that author's key and a per-instance nonce, so a
+  writer cannot write under another writer's actor and cut it off. Yjs and
+  Loro actors are 53 and 64 bits: a writer that searches that many nonces can
+  derive another writer's actor and use it against a replica that has not
+  seen, or has forgotten, the victim's actor. A snapshot's content is attested
+  only by its signer. A change function that applies another document's
+  operations, such as `Y.applyUpdate` of an unrelated `Y.Doc`, is refused,
+  and a Yjs or Loro instance is then retired; seed such content under an
+  actor from `document.reserveActor()`. Coordinator-backed documents, the ACL
+  and keychain CRDTs, `enableSigning: false`, and devices that share one
+  signer are not covered.
+  See [actor binding](../security/#crdt-actors-are-bound-to-change-signers).
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM restore depends on the application.** Checkpoints preserve the accepted generation. Rollback protection requires an independent current pin. Revoked readers retain access to content and keys they already received.
 - **PathUpdate is best-effort and has no automatic catch-up.** There is no
