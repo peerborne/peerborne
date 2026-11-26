@@ -1014,3 +1014,182 @@ export function collectAllCidsInTree<ChangesType>(
   }
   return [...cids];
 }
+
+/**
+ * Pure helper: the CIDs `root` cites only without their changes, which a
+ * recipient fetches as blocks. CIDs the tree also carries inline are left
+ * out, and so is everything beneath `stopBelow`, which a snapshot taken
+ * there covers.
+ */
+export function citedWithoutChanges<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType>,
+  stopBelow?: ReadonlySet<string>,
+): string[] {
+  const inline = new Set<string>();
+  const cited = new Set<string>();
+  for (const { nodeId, change } of collectBoundedChangeTree(rootId, root, {
+    stopBelowNodeIds: stopBelow,
+  })) {
+    if (nodeId === undefined) continue;
+    if (change === undefined) cited.add(nodeId);
+    else inline.add(nodeId);
+  }
+  return [...cited].filter((cid) => !inline.has(cid));
+}
+
+/**
+ * Pure helper: the CIDs `root` describes at least once with a change or
+ * children, which another occurrence in the same tree must match.
+ */
+export function describedCids<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType> | undefined,
+): Set<string> {
+  const described = new Set<string>();
+  if (root === undefined) return described;
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (node.change === undefined && node.children === undefined) continue;
+    if (nodeId !== undefined) {
+      described.add(nodeId);
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    if (node.children !== crdtChangeNodeDeferred && node.children !== undefined)
+      pending.push(...Object.entries(node.children));
+  }
+  return described;
+}
+
+/**
+ * Pure helper: the first occurrence that carries its change of each `wanted`
+ * CID in `root`.
+ */
+export function findInlineNodes<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType>,
+  wanted: ReadonlySet<string>,
+): Map<string, CRDTChangeNode<ChangesType>> {
+  const found = new Map<string, CRDTChangeNode<ChangesType>>();
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0 && found.size < wanted.size) {
+    const [nodeId, node] = pending.pop()!;
+    if (nodeId !== undefined) {
+      if (node.change !== undefined && wanted.has(nodeId) && !found.has(nodeId))
+        found.set(nodeId, node);
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    if (node.children !== undefined && node.children !== crdtChangeNodeDeferred)
+      pending.push(...Object.entries(node.children));
+  }
+  return found;
+}
+
+/**
+ * Pure helper: a copy of the delivered subtree `root` to carry inline beside
+ * a tree that already describes the CIDs in `carried`. Those are cited
+ * without their changes instead, so no CID is described twice, and their
+ * history is not copied. Other CIDs `root` cites without their changes stay
+ * cited only when they are in `keepCited` or the copy carries them inline.
+ * Change payloads are shared with `root`.
+ */
+export function carryRemoteSubtree<ChangesType>(
+  rootId: string,
+  root: CRDTChangeNode<ChangesType>,
+  carried: ReadonlySet<string>,
+  keepCited: ReadonlySet<string>,
+): CRDTChangeNode<ChangesType> {
+  const top: CRDTChangeNode<ChangesType> = {
+    kind: root.kind,
+    change: root.change,
+  };
+  const copies = new Map([[rootId, top]]);
+  const cited: Record<string, CRDTChangeNode<ChangesType>>[] = [];
+  const pending: Array<
+    readonly [CRDTChangeNode<ChangesType>, CRDTChangeNode<ChangesType>]
+  > = [[root, top]];
+  while (pending.length > 0) {
+    const [source, target] = pending.pop()!;
+    if (source.children === crdtChangeNodeDeferred) {
+      target.children = crdtChangeNodeDeferred;
+      continue;
+    }
+    if (source.children === undefined) continue;
+    const children: Record<string, CRDTChangeNode<ChangesType>> = {};
+    target.children = children;
+    let citesOthers = false;
+    for (const [cid, child] of Object.entries(source.children)) {
+      if (carried.has(cid) || child.change === undefined) {
+        children[cid] = { kind: child.kind };
+        citesOthers ||= !carried.has(cid) && !keepCited.has(cid);
+        continue;
+      }
+      let copy = copies.get(cid);
+      if (copy === undefined) {
+        copy = { kind: child.kind, change: child.change };
+        copies.set(cid, copy);
+        pending.push([child, copy]);
+      }
+      children[cid] = copy;
+    }
+    if (citesOthers) cited.push(children);
+  }
+  for (const children of cited)
+    for (const cid of Object.keys(children))
+      if (
+        children[cid]!.change === undefined &&
+        !carried.has(cid) &&
+        !keepCited.has(cid) &&
+        !copies.has(cid)
+      )
+        delete children[cid];
+  for (const node of copies.values())
+    if (
+      node.children !== undefined &&
+      node.children !== crdtChangeNodeDeferred &&
+      Object.keys(node.children).length === 0
+    )
+      delete node.children;
+  return top;
+}
+
+/**
+ * Pure helper: `boundary` and every CID referenced beneath an occurrence of
+ * it in `root`, which a snapshot taken at `boundary` covers.
+ */
+export function collectCoveredBySnapshot<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType> | undefined,
+  boundary: string,
+): Set<string> {
+  const covered = new Set([boundary]);
+  if (root === undefined) return covered;
+  const walked = new Set<string>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (node.children === undefined || node.children === crdtChangeNodeDeferred)
+      continue;
+    if (nodeId !== undefined) {
+      if (walked.has(nodeId)) continue;
+      walked.add(nodeId);
+    }
+    if (nodeId === boundary) {
+      collectReferencedAncestors(nodeId, node, covered);
+      continue;
+    }
+    pending.push(...Object.entries(node.children));
+  }
+  return covered;
+}

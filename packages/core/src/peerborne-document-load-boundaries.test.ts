@@ -1178,6 +1178,9 @@ describe('document load response boundaries', () => {
       _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       _refreshLastSyncMessageFromSync: jest.fn(),
       _maybeCompact: jest.fn(async () => undefined),
+      _syncMessageSerializer: {
+        serializeSyncMessage: () => new Uint8Array(1),
+      },
       ...fields,
     });
     return { document, hasIntegrated };
