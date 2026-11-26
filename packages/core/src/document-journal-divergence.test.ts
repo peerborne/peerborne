@@ -19,9 +19,8 @@ import {
 } from './internal/document-binary.js';
 import { writeDocumentContext } from './document-security-wire.js';
 import {
-  boundDocumentOperationPaths,
   MAX_RECORDED_OPERATION_PATHS,
-  MAX_RECORDED_OPERATION_UNITS,
+  recordDocumentOperationPaths,
 } from './document-field-authorization.js';
 import {
   firstUnauthorizedFieldPath,
@@ -161,7 +160,7 @@ function encodeEntry(f: Fixture, checkpoint: boolean, tail?: Writer) {
 const pathList =
   (paths: readonly (readonly string[])[]): Writer =>
   (writer) => {
-    writer.integer(paths.length, 1);
+    writer.integer(paths.length, 2);
     for (const path of paths) {
       writer.integer(path.length, 1);
       for (const segment of path) writer.text(segment, 4096);
@@ -345,7 +344,7 @@ test('journal entries require operation paths exactly on non-checkpoints', async
     missing,
     s.entry(
       1,
-      Array.from({ length: 65 }, (_, index) => [`${index}`]),
+      Array.from({ length: 4097 }, (_, index) => [`${index}`]),
     ),
     s.entry(1, [[long(1025)]]),
   ]) {
@@ -365,7 +364,11 @@ const long = (units: number) => 'x'.repeat(units);
 
 test.each<[string, boolean, Writer | undefined]>([
   ['a missing path list', false, undefined],
-  ['65 paths', false, pathList(Array.from({ length: 65 }, (_, i) => [`${i}`]))],
+  [
+    '4,097 paths',
+    false,
+    pathList(Array.from({ length: 4097 }, (_, i) => [`${i}`])),
+  ],
   [
     'a 33-segment path',
     false,
@@ -373,18 +376,16 @@ test.each<[string, boolean, Writer | undefined]>([
   ],
   ['a 1,025-unit segment', false, pathList([[long(1025)]])],
   [
-    'more than 65,536 units',
+    'more than 1,048,576 units',
     false,
-    pathList(
-      Array.from({ length: 64 }, (_, i) => [long(1024), `${i}`, long(1024)]),
-    ),
+    pathList(Array.from({ length: 1025 }, (_, i) => [`${i}`, long(1023)])),
   ],
   [
     'an invalid UTF-8 segment',
     false,
     (writer) => {
       writer
-        .integer(1, 1)
+        .integer(1, 2)
         .integer(1, 1)
         .bytes(new Uint8Array([0xff]), 4096);
     },
@@ -430,40 +431,74 @@ test.each<[string, boolean, Writer | undefined]>([
 const segment = fc.constantFrom('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h');
 const fieldPath = fc.array(segment, { maxLength: 5 });
 
-test('bounded operation paths cover every path and stay within their caps', () => {
+test('recorded operation paths are exact: grants cover the record exactly when they cover every path', () => {
   fc.assert(
     fc.property(
       fc.array(fieldPath, { maxLength: 400 }),
       fc.array(fieldPath, { maxLength: 6 }),
       (paths, grants) => {
-        const bound = boundDocumentOperationPaths(paths);
-        expect(bound.length).toBeLessThanOrEqual(MAX_RECORDED_OPERATION_PATHS);
-        expect(
-          bound.flat().reduce((sum, value) => sum + value.length, 0),
-        ).toBeLessThanOrEqual(MAX_RECORDED_OPERATION_UNITS);
+        const record = recordDocumentOperationPaths(paths);
+        const inputs = paths.map((path) => JSON.stringify(path));
+        for (const path of record)
+          expect(inputs).toContain(JSON.stringify(path));
+        for (const [index, path] of record.entries())
+          for (const [other, prefix] of record.entries())
+            if (index !== other)
+              expect(isFieldPathPrefix(prefix, path)).toBe(false);
         for (const path of paths)
-          expect(bound.some((prefix) => isFieldPathPrefix(prefix, path))).toBe(
+          expect(record.some((prefix) => isFieldPathPrefix(prefix, path))).toBe(
             true,
           );
-        if (firstUnauthorizedFieldPath(grants, bound) === -1)
-          expect(firstUnauthorizedFieldPath(grants, paths)).toBe(-1);
-        if (new Set(paths.map((path) => JSON.stringify(path))).size <= 64)
-          for (const path of bound)
-            expect(paths.map((value) => JSON.stringify(value))).toContain(
-              JSON.stringify(path),
-            );
+        expect(firstUnauthorizedFieldPath(grants, record) === -1).toBe(
+          firstUnauthorizedFieldPath(grants, paths) === -1,
+        );
       },
     ),
     { seed: 6920301, numRuns: 300 },
   );
+  const bulk = [
+    ['a'],
+    ...Array.from({ length: 70 }, (_, index) => ['a', `x${index}`]),
+    ['b', 'c'],
+  ];
+  expect(recordDocumentOperationPaths(bulk.slice(1))).toHaveLength(71);
+  expect(recordDocumentOperationPaths(bulk)).toEqual([['a'], ['b', 'c']]);
   expect(
-    boundDocumentOperationPaths(
-      Array.from({ length: 4096 }, (_, index) => ['root', `${index}`]),
+    recordDocumentOperationPaths(
+      Array.from({ length: MAX_RECORDED_OPERATION_PATHS }, (_, index) => [
+        'root',
+        `${index}`,
+      ]),
     ),
-  ).toEqual([['root']]);
-  expect(
-    boundDocumentOperationPaths(
-      Array.from({ length: 65 }, (_, index) => [`${index}`]),
-    ),
-  ).toEqual([[]]);
+  ).toHaveLength(MAX_RECORDED_OPERATION_PATHS);
 });
+
+test.each(['memory', 'indexeddb'] as const)(
+  'a diverged %s journal can be deleted so a rebuild reuses the store with a new anchor',
+  async (kind) => {
+    const s = await setup(kind);
+    try {
+      const journal = s.make();
+      await journal.restore();
+      await append(journal, s.checkpoint());
+      await expect(journal.deleteDiverged()).rejects.toThrow('diverged');
+      await append(journal, s.entry(1, [['a']], new Uint8Array([5])));
+      await journal.markDiverged();
+      const stale = s.make();
+      await stale.restore();
+      await stale.deleteDiverged();
+      expect((await s.store.load(s.storageKey)).entries).toEqual([]);
+      await expect(s.make().restore()).rejects.toThrow('rollback');
+      const rebuilt = s.make(
+        s.store,
+        new InMemoryDocumentJournalRollbackAnchor(),
+      );
+      expect(await rebuilt.restore()).toEqual([]);
+      expect(rebuilt.diverged).toBe(false);
+      expect(await rebuilt.pendingPublications()).toEqual([]);
+      await append(rebuilt, s.checkpoint());
+    } finally {
+      await s.close();
+    }
+  },
+);

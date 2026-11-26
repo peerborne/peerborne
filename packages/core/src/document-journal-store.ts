@@ -421,6 +421,9 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
       publications: plan.retained.map((index) => before[index]),
     });
   }
+  async delete(key: string): Promise<void> {
+    this.documents.delete(key);
+  }
   async discard(key: string, token: Uint8Array): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
     this.documents.set(
@@ -960,6 +963,21 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         key,
       );
     });
+  }
+
+  delete(key: string): Promise<void> {
+    return this.update(
+      key,
+      ['entries', 'pending', 'publications'],
+      (head, transaction) => {
+        for (const revision of head.revisions)
+          transaction.objectStore('entries').delete([key, revision]);
+        for (const publication of head.publications)
+          transaction.objectStore('publications').delete([key, publication.id]);
+        transaction.objectStore('pending').delete(key);
+        transaction.objectStore('heads').delete(key);
+      },
+    );
   }
 
   async close(): Promise<void> {

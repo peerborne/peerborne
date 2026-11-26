@@ -97,18 +97,20 @@ fails the role update itself, which resolves with
 
 Every local edit is inspected when it is written, whether or not its author is
 restricted, and its operation paths are recorded with the frame and sealed in
-its journal entry with the device key. The record keeps at most 64 paths of at
-most 32 segments of 1,024 units each, and 65,536 units in all. Paths under a
-recorded prefix are dropped first. If that is not enough, every path is cut to
-the deepest common depth that fits, down to the whole document. A grant that
-covers the record therefore covers every operation. When an unrestricted
-author's edit cannot be inspected within the inspection bounds, the record is
-the whole document instead of failing the edit. A non-checkpoint journal entry
-without a valid path list fails decoding.
+its journal entry with the device key. The record is exact. Only duplicates and
+paths under a recorded prefix are dropped, so grants cover the record exactly
+when they cover every operation. It has the bounds receivers inspect with: at
+most 4,096 paths of at most 32 segments, 1,024 units per segment and 1,048,576
+units in all. The journal compacts 4 MiB earlier to keep room for a full list.
+When an unrestricted author's edit cannot be inspected within those bounds, the
+record is the whole document instead of failing the edit. A non-checkpoint
+journal entry without a valid path list fails decoding.
 
 When re-signed, a restricted author's frame is checked against its current
 grants using those recorded paths, including after a restart and for edits
-written before the author was restricted.
+written before the author was restricted. A whole-document record means the
+edit was never inspected, so the author does not judge it. It is re-signed,
+and receivers inspect the delta itself.
 
 - A denied frame that was already published is skipped. Peers have it, or the
   author's later frames are held until a catch-up.
@@ -122,13 +124,21 @@ written before the author was restricted.
   rollback. The journal then takes no further entries. The live document
   rejects every operation with `DocumentDivergedError`, and so does every
   later open of that journal.
-- To rebuild, open the document with a new journal, store and rollback anchor,
-  then request a controller checkpoint. The new journal starts without the
-  marker. A replica never adopts its own receipt from a checkpoint, so this
+- Frames re-signed earlier in the same pass precede the denied one and do not
+  depend on it. The diverged document still publishes them through
+  `retrySecurityPublications()` while it stays open. A restart before they are
+  sent leaves them in the diverged journal.
+- To rebuild, open the document with a journal in a new store and a new
+  rollback anchor namespace, then request a controller checkpoint. With
+  `IndexedDBDocumentJournalStore`, a new store means a new database name, or
+  removing the old journal first with `DocumentReplayJournal.deleteDiverged()`
+  after restoring it. The old anchor still holds the diverged head, so it
+  cannot be reused either way. The new journal starts without the marker.
+- A replica never adopts its own receipt from a checkpoint. A rebuild therefore
   works only while the controller holds none of the author's frames in the
-  current context. That is the case when the first re-sign pass found the
-  denial. If an earlier re-signed frame reached the controller first, the
-  rebuilt replica's catch-up conflicts on its own receipt until the next epoch.
+  current context. Once the frames re-signed before the denial reach the
+  controller, the rebuilt replica's catch-up conflicts on its own receipt until
+  the next epoch.
 
 Receivers admit re-signed frames through normal admission, including their
 own field-scope checks. A document opened without a publication outbox does

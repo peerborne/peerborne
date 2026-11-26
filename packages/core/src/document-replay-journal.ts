@@ -21,6 +21,7 @@ import {
 import type { GroupSecurityDocumentContext } from './group-security-coordinator.js';
 import {
   copyRecordedOperationPaths,
+  MAX_RECORDED_OPERATION_PATHS,
   type DocumentWritePaths,
 } from './document-field-authorization.js';
 import { copyUnsharedUint8Array } from './utils.js';
@@ -94,6 +95,8 @@ export interface DocumentJournalStore {
   ): Promise<void>;
   discard(key: string, token: Uint8Array): Promise<void>;
   publicationSent?(key: string, id: Uint8Array): Promise<void>;
+  /** Remove every record stored under `key`. */
+  delete?(key: string): Promise<void>;
 }
 export interface DocumentReplayReceipt {
   readonly memberId: Uint8Array;
@@ -144,6 +147,8 @@ const ZERO = new Uint8Array(32);
 const ENTRY = 0,
   CHECKPOINT = 1,
   DIVERGED = 2;
+/** Encoded bound of a full recorded path list: 4,096 paths of 32 segments and 1 Mi units. */
+const MAX_OPERATION_PATH_BYTES = 4 * 1024 * 1024;
 
 interface PublicationBinding {
   readonly token: Uint8Array;
@@ -227,7 +232,7 @@ function encodeItem(
       throw new Error('Journal checkpoints carry no operation paths');
   } else {
     const paths = copyRecordedOperationPaths(item.operationPaths);
-    writer.integer(paths.length, 1);
+    writer.integer(paths.length, 2);
     for (const path of paths) {
       writer.integer(path.length, 1);
       for (const segment of path) writer.text(segment, 4096);
@@ -281,8 +286,9 @@ function decodeItem(
     });
   let operationPaths: DocumentWritePaths | undefined;
   if (!checkpoint) {
-    const pathCount = reader.number(1);
-    if (pathCount > 64) throw new Error('Invalid journal operation paths');
+    const pathCount = reader.number(2);
+    if (pathCount > MAX_RECORDED_OPERATION_PATHS)
+      throw new Error('Invalid journal operation paths');
     const paths: string[][] = [];
     for (let index = 0; index < pathCount; index++) {
       const depth = reader.number(1);
@@ -433,7 +439,8 @@ export class DocumentReplayJournal {
   get needsCheckpoint(): boolean {
     return (
       this.entryCount >= MAX_DOCUMENT_JOURNAL_ENTRIES - 1 ||
-      this.retainedBytes > MAX_DOCUMENT_JOURNAL_BYTES - 18 * 1024 * 1024
+      this.retainedBytes >
+        MAX_DOCUMENT_JOURNAL_BYTES - 18 * 1024 * 1024 - MAX_OPERATION_PATH_BYTES
     );
   }
   get revision(): number {
@@ -1127,6 +1134,25 @@ export class DocumentReplayJournal {
       .fixed(nonce)
       .bytes(ciphertext, 1024 * 1024 + 16)
       .finish();
+  }
+
+  /**
+   * Delete a restored diverged journal from its store, so a rebuild can reuse
+   * the store. The rollback anchor still holds the diverged head, so the
+   * rebuilt journal needs a new anchor namespace.
+   */
+  async deleteDiverged(): Promise<void> {
+    if (!this.opened || this.active || !this.divergedMarker)
+      throw new Error('Only a restored diverged journal can be deleted');
+    if (typeof this.store.delete !== 'function')
+      throw new Error('Journal store cannot delete a journal');
+    this.active = true;
+    this.failed = true;
+    try {
+      await this.store.delete(this.storageKey);
+    } finally {
+      this.active = false;
+    }
   }
 
   async publicationSent(frame: Uint8Array): Promise<void> {

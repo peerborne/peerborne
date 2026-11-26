@@ -34,7 +34,7 @@ import {
 } from './document-authority-log.js';
 import {
   assertDocumentOperationsAllowed,
-  boundDocumentOperationPaths,
+  recordDocumentOperationPaths,
   type DocumentWritePaths,
 } from './document-field-authorization.js';
 import type { CapturedDocumentMember } from './policy/authority-capture.js';
@@ -133,7 +133,11 @@ interface OwnFrame {
   readonly unsent?: boolean;
 }
 
-/** The author's replica holds edits its current grants deny; rebuild it from a checkpoint. */
+/**
+ * The author's replica holds edits its current grants deny. Rebuild it from a
+ * controller checkpoint into a journal with a new store, or the old one removed
+ * with `deleteDiverged()`, and a new rollback anchor namespace.
+ */
 export class DocumentDivergedError extends Error {
   constructor() {
     super(
@@ -146,6 +150,9 @@ export class DocumentDivergedError extends Error {
 const MAX_OWN_FRAMES = 64;
 const MAX_OWN_BYTES = 32 * 1024 * 1024;
 const WHOLE_DOCUMENT: DocumentWritePaths = Object.freeze([Object.freeze([])]);
+/** A whole-document record comes from an inspection that could not finish. */
+const uninspected = (paths: DocumentWritePaths) =>
+  paths.some((path) => path.length === 0);
 
 const ownFrameBytes = (frame: OwnFrame) =>
   frame.changes.length +
@@ -449,8 +456,9 @@ export class CoordinatedDocument<
     return result;
   }
 
-  private assertUsable(): void {
-    if (this.diverged) throw new DocumentDivergedError();
+  /** A diverged document still drains the frames it committed before diverging. */
+  private assertUsable(draining = false): void {
+    if (this.diverged && !draining) throw new DocumentDivergedError();
     if (this.closed || this.failed)
       throw new Error('Coordinated document must be reopened');
   }
@@ -500,15 +508,16 @@ export class CoordinatedDocument<
   private enqueue<T>(
     bytes: number,
     capture: () => () => Promise<T>,
+    draining = false,
   ): Promise<T> {
     let local: (() => void) | undefined, shared: (() => void) | undefined;
     try {
-      this.assertUsable();
+      this.assertUsable(draining);
       shared = aggregate.reserve(bytes);
       local = this.budget.reserve(bytes);
       const work = capture();
       const result = this.tail.then(() => {
-        this.assertUsable();
+        this.assertUsable(draining);
         return work();
       });
       const settled = result.finally(() => {
@@ -1596,11 +1605,12 @@ export class CoordinatedDocument<
                 });
                 assertDocumentOperationsAllowed(plan, scope);
                 ownPaths = plan.operationPaths
-                  ? boundDocumentOperationPaths(plan.operationPaths())
+                  ? recordDocumentOperationPaths(plan.operationPaths())
                   : WHOLE_DOCUMENT;
               } else {
                 // The delta is already local, so check the paths recorded when it was written.
-                if (scope !== undefined) {
+                // Receivers inspect an uninspected delta themselves, so it is never denied here.
+                if (scope !== undefined && !uninspected(resend.paths)) {
                   try {
                     assertDocumentOperationsAllowed(
                       {
@@ -2281,9 +2291,12 @@ export class CoordinatedDocument<
     });
   }
 
-  assertPublicationDispatchAllowed(binding = this.rosterBinding): void {
+  assertPublicationDispatchAllowed(
+    binding = this.rosterBinding,
+    draining = true,
+  ): void {
     if (!this.options.requireGroupRosterMatch) return;
-    this.assertUsable();
+    this.assertUsable(draining);
     this.assertActivated();
     this.assertCurrentGroupRoster(binding);
   }
@@ -2295,7 +2308,7 @@ export class CoordinatedDocument<
     return () => {
       if (!binding || this.rosterBinding !== binding) return false;
       try {
-        this.assertPublicationDispatchAllowed(binding);
+        this.assertPublicationDispatchAllowed(binding, false);
         return true;
       } catch {
         return false;
@@ -2304,16 +2317,20 @@ export class CoordinatedDocument<
   }
 
   pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
-    return this.enqueue(0, () => async () => {
-      this.assertActivated();
-      const binding = this.rosterBinding;
-      this.assertPublicationDispatchAllowed(binding);
-      if (!this.options.journal)
-        return this.publications.map((frame) => frame.slice());
-      const frames = await this.options.journal.pendingPublications();
-      this.assertPublicationDispatchAllowed(binding);
-      return frames;
-    });
+    return this.enqueue(
+      0,
+      () => async () => {
+        this.assertActivated();
+        const binding = this.rosterBinding;
+        this.assertPublicationDispatchAllowed(binding);
+        if (!this.options.journal)
+          return this.publications.map((frame) => frame.slice());
+        const frames = await this.options.journal.pendingPublications();
+        this.assertPublicationDispatchAllowed(binding);
+        return frames;
+      },
+      true,
+    );
   }
 
   publicationSent(frame: Uint8Array): Promise<void> {
@@ -2340,7 +2357,7 @@ export class CoordinatedDocument<
               (value) => !documentBytesEqual(value, owned),
             );
         };
-      });
+      }, true);
     } catch (error) {
       return Promise.reject(error);
     }

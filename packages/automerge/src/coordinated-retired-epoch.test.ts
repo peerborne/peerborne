@@ -351,6 +351,129 @@ const restart = async (g: any) => {
   await g.open(1);
 };
 
+const bulk = (draft: any) => {
+  for (let index = 0; index < 70; index++) draft.a[`x${index}`] = index;
+  draft.b.c = 1;
+};
+
+async function bulkSetup() {
+  const { g, online } = await setup([]);
+  online();
+  const errors: string[] = [];
+  await applyAt1(g, await restrict(g, [['a'], ['b', 'c']]));
+  await g.doc(0).change((draft: any) => {
+    draft.a = {};
+    draft.b = {};
+  });
+  for (const publication of g.take())
+    errors.push(...(await g.deliver(publication, [1])));
+  return { g, errors };
+}
+
+test.each([false, true])(
+  'T5: an unsent bulk edit covered by unchanged grants is re-signed (restart: %s)',
+  async (restarted) => {
+    const { g, errors } = await bulkSetup();
+    try {
+      const publish = g.pubsubs[1].publish;
+      g.pubsubs[1].publish = async () => {
+        throw new Error('offline');
+      };
+      await expect(g.doc(1).change(bulk)).rejects.toThrow(
+        'Document change committed',
+      );
+      expect(g.doc(1)._coordinated.own.frames.at(-1).paths).toHaveLength(71);
+      const step = await restrict(g, [['a'], ['b', 'c']]);
+      if (restarted) await restart(g);
+      g.pubsubs[1].publish = publish;
+      expect(await applyAt1(g, step)).toEqual({
+        resent: 1,
+        waiting: 0,
+        skipped: 0,
+        dropped: 0,
+        diverged: false,
+      });
+      await g.doc(1).retrySecurityPublications();
+      await flush(g, errors);
+      await restart(g);
+      await g.doc(1).change((draft: any) => {
+        draft.b.c = 2;
+      });
+      await flush(g, errors);
+      expect(errors).toEqual([]);
+      const view = read(g.doc(0).document);
+      expect(Object.keys(view.a)).toHaveLength(70);
+      expect(view.b).toEqual({ c: 2 });
+    } finally {
+      await g.close().catch(() => {});
+    }
+  },
+  60_000,
+);
+
+test('T5ctl: the same bulk edit sent online is accepted by the controller', async () => {
+  const { g, errors } = await bulkSetup();
+  try {
+    await g.doc(1).change(bulk);
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    const view = read(g.doc(0).document);
+    expect(Object.keys(view.a)).toHaveLength(70);
+    expect(view.b).toEqual({ c: 1 });
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 60_000);
+
+test('an unsent edit that could not be inspected is left to receivers and never diverges the writer', async () => {
+  const { g, online } = await setup(['x'.repeat(1025)]);
+  try {
+    expect(g.doc(1)._coordinated.own.frames.at(-1).paths).toEqual([[]]);
+    const step = await restrict(g, [['a']]);
+    online();
+    expect(await applyAt1(g, step)).toEqual({
+      resent: 1,
+      waiting: 0,
+      skipped: 0,
+      dropped: 0,
+      diverged: false,
+    });
+    await g.doc(1).retrySecurityPublications();
+    const errors: string[] = [];
+    await flush(g, errors);
+    expect(errors).toEqual([expect.stringMatching(/exceeds bounds|grants/)]);
+    expect(keys(g)).toEqual([]);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 30_000);
+
+test('edits re-signed before a denied unsent edit are still published by the diverged writer', async () => {
+  const { g, online } = await setup(['a', 'b']);
+  try {
+    const step = await restrict(g, [['a']]);
+    online();
+    expect(await applyAt1(g, step)).toEqual({
+      resent: 1,
+      waiting: 0,
+      skipped: 0,
+      dropped: 1,
+      diverged: true,
+    });
+    await g.doc(1).retrySecurityPublications();
+    const errors: string[] = [];
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(['a']);
+    expect(await g.doc(1)._coordinated.pendingPublications()).toEqual([]);
+    await expect(g.doc(1).change(set('a'))).rejects.toThrow(
+      DocumentDivergedError,
+    );
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 30_000);
+
 test('T3: a diverged writer is refused when it reopens', async () => {
   const { g, online } = await setup(['b']);
   try {

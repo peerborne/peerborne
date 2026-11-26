@@ -147,71 +147,43 @@ export class DocumentOperationTargets {
   }
 }
 
-export const MAX_RECORDED_OPERATION_PATHS = 64;
-export const MAX_RECORDED_OPERATION_UNITS = 65536;
+/** The receivers' inspection limit, so every inspected edit is recorded exactly. */
+export const MAX_RECORDED_OPERATION_PATHS = 4096;
 
 /**
- * At most 64 paths and 65,536 units such that any grants covering them cover
- * every input path. Paths under a recorded prefix are dropped, then all paths
- * are truncated to the deepest common depth that fits; the root always fits.
+ * The minimal exact record of inspected operation paths. Duplicates and paths
+ * under a recorded prefix are dropped, so grants cover the record exactly when
+ * they cover every input path. A record containing the whole document, `[]`,
+ * is what an inspection that could not finish reports.
  */
-export function boundDocumentOperationPaths(
+export function recordDocumentOperationPaths(
   paths: DocumentWritePaths,
 ): DocumentWritePaths {
-  const owned = copyDocumentFieldPaths(paths, 4096);
-  const prefixes = owned.map((path) => {
-    const keys = [''];
-    for (const segment of path)
-      keys.push(`${keys[keys.length - 1]}${JSON.stringify(segment)},`);
-    return keys;
-  });
-  for (
-    let depth = owned.reduce(
-      (deepest, path) => Math.max(deepest, path.length),
-      0,
+  const keyed = copyRecordedOperationPaths(paths)
+    .map((path) => {
+      const keys = [''];
+      for (const segment of path)
+        keys.push(`${keys[keys.length - 1]}${JSON.stringify(segment)},`);
+      return { path, keys, key: keys[keys.length - 1] };
+    })
+    .sort(
+      (a, b) =>
+        a.path.length - b.path.length ||
+        (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
     );
-    ;
-    depth--
-  ) {
-    const order = owned
-      .map((path, index) => {
-        const length = Math.min(depth, path.length);
-        return { index, length, key: prefixes[index][length] };
-      })
-      .sort(
-        (a, b) =>
-          a.length - b.length || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
-      );
-    const kept = new Set<string>(),
-      covering: DocumentFieldPath[] = [];
-    let units = 0;
-    for (const { index, length, key } of order) {
-      const keys = prefixes[index];
-      let covered = false;
-      for (let prefix = 0; prefix <= length && !covered; prefix++)
-        covered = kept.has(keys[prefix]);
-      if (covered) continue;
-      kept.add(key);
-      const path = Object.freeze(owned[index].slice(0, length));
-      covering.push(path);
-      units += path.reduce((sum, segment) => sum + segment.length, 0);
-    }
-    if (
-      covering.length <= MAX_RECORDED_OPERATION_PATHS &&
-      units <= MAX_RECORDED_OPERATION_UNITS
-    )
-      return Object.freeze(covering);
+  const kept = new Set<string>(),
+    record: DocumentFieldPath[] = [];
+  for (const { path, keys, key } of keyed) {
+    if (keys.some((prefix) => kept.has(prefix))) continue;
+    kept.add(key);
+    record.push(path);
   }
+  return Object.freeze(record);
 }
 
-/** Capture a recorded path list within the bounds `boundDocumentOperationPaths` produces. */
+/** Capture a recorded path list within the inspection bounds. */
 export function copyRecordedOperationPaths(value: unknown): DocumentWritePaths {
-  const paths = copyDocumentFieldPaths(value, MAX_RECORDED_OPERATION_PATHS);
-  let units = 0;
-  for (const path of paths) for (const segment of path) units += segment.length;
-  if (units > MAX_RECORDED_OPERATION_UNITS)
-    throw new TypeError('Recorded operation paths exceed bounds');
-  return paths;
+  return copyDocumentFieldPaths(value, MAX_RECORDED_OPERATION_PATHS);
 }
 
 export function assertDocumentOperationsAllowed<Changes>(
