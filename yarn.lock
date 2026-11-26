@@ -4005,7 +4005,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@peculiar/webcrypto@npm:^1.5.0, @peculiar/webcrypto@npm:^1.7.2":
+"@peculiar/utils@npm:^4.1.0":
+  version: 4.1.1
+  resolution: "@peculiar/utils@npm:4.1.1"
+  checksum: 10/25c3f475a1cfb964440b0100ad812d050aea4d4bf6e41c2df4be182ee4ef93cb0ea9cc206b0e1df6a5e633661d469db08573f0fd73a434a789d21fba149a0719
+  languageName: node
+  linkType: hard
+
+"@peculiar/webcrypto@npm:^1.5.0":
   version: 1.7.2
   resolution: "@peculiar/webcrypto@npm:1.7.2"
   dependencies:
@@ -4015,6 +4022,19 @@ __metadata:
     tslib: "npm:^2.8.1"
     webcrypto-core: "npm:^1.9.2"
   checksum: 10/fbd0ac47179f7b0b481267c7ee70b05c05d1575d7482f44f40a2018411a23b74b60fa0eaf9a7da4805a891e78fd76e6afb21cc746fbf69676c8ef3747ce5be7a
+  languageName: node
+  linkType: hard
+
+"@peculiar/webcrypto@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@peculiar/webcrypto@npm:2.0.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.0.0
+    "@peculiar/json-schema": ^3.0.0
+    webcrypto-core: ^2.0.0
+  checksum: 10/2d44aa512b4ed5801c3d622a3458243927de8aaf4881bcfd25fb1e6795bfe92b4f82fa62256fa2c600c5101d325f17034accfbef42885193322bc6275a021f92
   languageName: node
   linkType: hard
 
@@ -4061,7 +4081,7 @@ __metadata:
   resolution: "@peerborne/automerge@workspace:packages/automerge"
   dependencies:
     "@automerge/automerge": "npm:^3.5.0"
-    "@peculiar/webcrypto": "npm:^1.7.2"
+    "@peculiar/webcrypto": "npm:^2.0.0"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.7"
     eslint: "npm:^10.15.0"
@@ -4145,7 +4165,7 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.26"
     "@libp2p/webtransport": "npm:^6.0.45"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@peculiar/webcrypto": "npm:^1.7.2"
+    "@peculiar/webcrypto": "npm:^2.0.0"
     "@types/node": "npm:^26.6.7"
     blockstore-core: "npm:^7.0.1"
     blockstore-idb: "npm:^4.0.1"
@@ -4174,7 +4194,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/index@workspace:packages/index"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
+    "@peculiar/webcrypto": "npm:^2.0.0"
     "@peerborne/core": "workspace:^"
     "@testing-library/dom": "npm:^10.4.2"
     "@testing-library/react": "npm:^16.3.3"
@@ -4337,7 +4357,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/react@workspace:packages/react"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
+    "@peculiar/webcrypto": "npm:^2.0.0"
     "@peerborne/core": "workspace:^"
     "@peerborne/store": "workspace:^"
     "@testing-library/dom": "npm:^10.4.2"
@@ -4516,7 +4536,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/yjs@workspace:packages/yjs"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
+    "@peculiar/webcrypto": "npm:^2.0.0"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.7"
     eslint: "npm:^10.15.0"
