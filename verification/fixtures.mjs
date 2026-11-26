@@ -16,6 +16,7 @@ import {
   YjsKeychainProvider,
   YjsJSONSerializer,
 } from '@peerborne/yjs';
+import { LoroProvider } from '@peerborne/loro';
 
 export { A, Y };
 
@@ -64,9 +65,19 @@ export async function signingIdentity() {
 
 export function providerFor(adapter, index = 1, options = {}) {
   const provider =
-    adapter === 'automerge' ? new AutomergeProvider() : new YjsProvider();
+    adapter === 'automerge'
+      ? new AutomergeProvider()
+      : adapter === 'loro'
+        ? new LoroProvider()
+        : new YjsProvider();
+  const newDocument = provider.newDocument.bind(provider);
   provider.newDocument = () => {
     if (adapter === 'automerge') return A.init({ actor: actor(index) });
+    if (adapter === 'loro') {
+      const document = newDocument();
+      document.setPeerId(String(index));
+      return document;
+    }
     const document = new Y.Doc({ gc: options.gc ?? true });
     document.clientID = index;
     return document;
@@ -88,6 +99,7 @@ export async function documentFixture({
 } = {}) {
   identity ??= await signingIdentity();
   const provider = providerFor(adapter, index);
+  // Loro has no ACL, keychain or serializer of its own and uses Yjs's.
   const serializer =
     adapter === 'automerge'
       ? new AutomergeJSONSerializer()

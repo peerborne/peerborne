@@ -35,6 +35,17 @@ const adapters = {
       fixture.document.document.store.pendingStructs !== null ||
       fixture.document.document.store.pendingDs !== null,
   },
+  loro: {
+    init: (doc) => {
+      doc.getList('log').push('r');
+    },
+    append: (entry) => (doc) => {
+      doc.getList('log').push(entry);
+    },
+    log: (fixture) => fixture.document.document.getList('log').toJSON(),
+    waiting: (fixture) =>
+      fixture.document.document.exportPendingUpdates() !== undefined,
+  },
 };
 
 async function deliver(frame, ...targets) {
@@ -123,7 +134,7 @@ for (const adapter of Object.keys(adapters)) {
   });
 }
 
-test('an Automerge change waiting for a dependency is recorded once a delivery finds it integrated', async (t) => {
+test('an Automerge change waiting for a dependency is recorded when its dependency arrives', async (t) => {
   const { append, log } = adapters.automerge;
   const { a, b, g, b1, a2, notified } = await replicasWithBufferedChange(
     t,
@@ -136,12 +147,12 @@ test('an Automerge change waiting for a dependency is recorded once a delivery f
   const b2 = await change(b, append('b2'));
   await deliver(b2.frame, g, a);
   assert.deepEqual(log(g), log(a));
-  assert.equal(g.document.hasChange(a2.cid), false);
+  assert.equal(g.document.hasChange(a2.cid), true);
+  assert.deepEqual(notified.sort(), [b1.cid, b2.cid, a2.cid].sort());
 
   const a3 = await change(a, append('a3'));
   await deliver(a3.frame, g);
   assert.deepEqual(log(g), log(a));
-  assert.equal(g.document.hasChange(a2.cid), true);
   assert.equal(g.document._lastSyncMessage.changeId, a3.cid);
   assert.deepEqual(notified.sort(), [b1.cid, b2.cid, a2.cid, a3.cid].sort());
 });

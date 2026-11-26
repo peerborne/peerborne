@@ -4,6 +4,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 
 import {
   MAX_DOCUMENT_LOAD_RESPONSE_SIZE,
+  MAX_WAITING_REMOTE_CHANGES,
   PeerborneDocument,
 } from './peerborne-document.js';
 import { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
@@ -1144,7 +1145,7 @@ describe('document load response boundaries', () => {
     return { document, hasIntegrated };
   }
 
-  test('leaves a document change unrecorded until a delivery finds it integrated', async () => {
+  test('records a waiting change when a message that does not carry it supplies the dependency', async () => {
     const { document, hasIntegrated } = bufferingDocument();
     const dependent = bufferedNode('dependent', ['dependency']);
 
@@ -1160,20 +1161,12 @@ describe('document load response boundaries', () => {
 
     const dependency = bufferedNode('dependency');
     await document._syncDocumentChanges('DEPENDENCY', dependency);
-    expect(document._hashes).toEqual(new Set(['KNOWN', 'DEPENDENCY']));
-    expect(hasIntegrated).toHaveBeenCalledTimes(2);
 
-    await document._syncDocumentChanges('DEPENDENT', dependent);
-
-    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
+    expect(hasIntegrated).toHaveBeenCalledTimes(3);
     expect(document._hashes).toEqual(
       new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
     );
-    expect(document._unintegratedCids.size).toBe(0);
-    expect(document._currentFrontier().sort()).toEqual([
-      'DEPENDENCY',
-      'DEPENDENT',
-    ]);
+    expect(document._isWaiting('DEPENDENT')).toBe(false);
     expect(document._recentTips).toEqual([
       { cid: 'DEPENDENCY', kind: crdtDocumentChangeNode },
       { cid: 'DEPENDENT', kind: crdtDocumentChangeNode },
@@ -1186,12 +1179,16 @@ describe('document load response boundaries', () => {
     ]);
     expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
       ['DEPENDENCY', dependency],
-      ['DEPENDENT', dependent],
     ]);
+
+    await document._syncDocumentChanges('DEPENDENT', dependent);
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
   });
 
-  test('checks a waiting change once per delivery without reapplying it', async () => {
-    const { document, hasIntegrated } = bufferingDocument();
+  test('checks a waiting change once per delivery and once after another change integrates', async () => {
+    const { document, hasIntegrated } = bufferingDocument({
+      _mergeWriters: jest.fn(async () => undefined),
+    });
     const waiting = 2047;
     const tree = bufferedNode(
       'root',
@@ -1209,7 +1206,7 @@ describe('document load response boundaries', () => {
     expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
     expect(document._hashes).toEqual(new Set(['KNOWN']));
     expect(document._referencedAncestors).toEqual(new Set());
-    expect(document._unintegratedCids.size).toBe(waiting + 1);
+    expect(document._waiting.entries.size).toBe(waiting + 1);
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
 
     hasIntegrated.mockClear();
@@ -1221,10 +1218,46 @@ describe('document load response boundaries', () => {
     expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
 
     hasIntegrated.mockClear();
+    await document._syncDocumentChanges('WRITER', {
+      kind: crdtWriterChangeNode,
+      change: { id: 'writer', deps: [] },
+      children: KNOWN_CHILD,
+    });
+    expect(hasIntegrated).not.toHaveBeenCalled();
+
     await document._syncDocumentChanges('OTHER', bufferedNode('other'));
 
-    expect(hasIntegrated).toHaveBeenCalledTimes(1);
-    expect(document._hashes).toEqual(new Set(['KNOWN', 'OTHER']));
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 2);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'WRITER', 'OTHER']));
+  });
+
+  test('evicts the oldest waiting change past the cap without rescanning', async () => {
+    const { document } = bufferingDocument();
+    const noted = 4 * MAX_WAITING_REMOTE_CHANGES + 3;
+    for (let index = 0; index < noted; index++) {
+      document._noteWaiting(`WAITING-${index}`, crdtDocumentChangeNode, {
+        id: `waiting-${index}`,
+        deps: ['missing'],
+      });
+      expect(
+        document._waiting.order.length - document._waiting.start,
+      ).toBeLessThanOrEqual(2 * MAX_WAITING_REMOTE_CHANGES);
+    }
+    const oldestKept = noted - MAX_WAITING_REMOTE_CHANGES;
+
+    expect(document._waiting.entries.size).toBe(MAX_WAITING_REMOTE_CHANGES);
+    expect(document._isDelivered('WAITING-0')).toBe(false);
+    expect(document._isDelivered(`WAITING-${oldestKept - 1}`)).toBe(false);
+    expect(document._isDelivered(`WAITING-${oldestKept}`)).toBe(true);
+    expect(document._isDelivered(`WAITING-${noted - 1}`)).toBe(true);
+
+    await document._syncDocumentChanges(
+      'WAITING-0',
+      bufferedNode('waiting-0', ['missing'], undefined),
+    );
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(1);
+    expect(document._isDelivered('WAITING-0')).toBe(true);
+    expect(document._isDelivered(`WAITING-${oldestKept}`)).toBe(false);
   });
 
   test('records a change whose dependency a fetched block in the same tree supplies', async () => {
@@ -1268,17 +1301,74 @@ describe('document load response boundaries', () => {
     ]);
   });
 
-  test('does not serve a recorded tree that carries a change waiting for a dependency', async () => {
+  test('holds back a node that references a waiting change until that change is recorded', async () => {
     const { document } = bufferingDocument();
-    const tree = bufferedNode('root', [], {
-      WAITING: bufferedNode('waiting', ['missing'], undefined),
-      ...KNOWN_CHILD,
-    });
+    const waiting = bufferedNode('waiting', ['dependency'], undefined);
+    const tree = bufferedNode('root', [], { WAITING: waiting, ...KNOWN_CHILD });
 
     await document._syncDocumentChanges('ROOT', tree);
 
-    expect(document._hashes).toEqual(new Set(['KNOWN', 'ROOT']));
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('ROOT')).toBe(true);
+    expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    const dependency = bufferedNode('dependency');
+    await document._syncDocumentChanges('DEPENDENCY', dependency);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING']),
+    );
+
+    await document._syncDocumentChanges('ROOT', tree);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING', 'ROOT']),
+    );
+    expect(document._waiting.entries.size).toBe(0);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENCY', dependency],
+      ['ROOT', tree],
+    ]);
+  });
+
+  test('walks a later tree through an ACL node above a waiting change', async () => {
+    const mergeWriters = jest.fn(async () => undefined);
+    const { document } = bufferingDocument({ _mergeWriters: mergeWriters });
+    const waiting = bufferedNode('waiting', ['dependency']);
+    const membership = {
+      kind: crdtWriterChangeNode,
+      change: { id: 'membership', deps: [] },
+      children: { WAITING: waiting },
+    };
+
+    await document._syncDocumentChanges('MEMBERSHIP', membership);
+
+    expect(mergeWriters).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('MEMBERSHIP')).toBe(true);
+    expect(document._isDelivered('WAITING')).toBe(true);
+
+    const later = bufferedNode('later', ['waiting'], {
+      MEMBERSHIP: membership,
+    });
+    const restarted = bufferingDocument({ _mergeWriters: mergeWriters });
+    await restarted.document._syncDocumentChanges('LATER', later);
+    expect(
+      restarted.document._crdtProvider.remoteChange.mock.calls.map(
+        ([, change]: [unknown, BufferedChange]) => change.id,
+      ),
+    ).toEqual(['later', 'waiting']);
+
+    await document._syncDocumentChanges(
+      'DEPENDENCY',
+      bufferedNode('dependency'),
+    );
+    await document._syncDocumentChanges('LATER', later);
+
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'WAITING', 'MEMBERSHIP', 'LATER']),
+    );
+    expect(mergeWriters).toHaveBeenCalledTimes(3);
+    expect(document._waiting.entries.size).toBe(0);
   });
 
   test('counts a delivered change that waits for a dependency as installed', async () => {

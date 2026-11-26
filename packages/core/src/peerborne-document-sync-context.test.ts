@@ -892,13 +892,9 @@ describe('snapshot-bearing invitation sync', () => {
         remoteChange: (_doc: unknown, state: unknown) => state,
         hasIntegrated: (doc: unknown) => doc instanceof Uint8Array,
       },
-      _syncDocumentChanges: async (
-        _changeId: unknown,
-        _changes: unknown,
-        _options: unknown,
-        unintegrated: unknown[],
-      ) => {
-        unintegrated.push(['head-cid', {}], ['recent-cid', {}]);
+      _syncDocumentChanges: async () => {
+        document._noteWaiting('head-cid', crdtDocumentChangeNode, {});
+        document._noteWaiting('recent-cid', crdtDocumentChangeNode, {});
       },
     });
     const message = snapshotMessage('load-response-v4');
