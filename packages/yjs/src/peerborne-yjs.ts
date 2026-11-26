@@ -57,7 +57,6 @@ import {
   tryGc,
   ID,
   Item,
-  Skip,
   ContentType,
   ContentFormat,
   type Transaction,
@@ -841,29 +840,6 @@ export class YjsProvider
     // correct Yjs behavior. Callers must not rely on reference equality to
     // detect changes.
     return document;
-  }
-  hasIntegrated(document: Doc, changes: Uint8Array): boolean {
-    // Yjs parks structs and deletions whose dependencies are missing in
-    // pendingStructs and pendingDs. An update is integrated once the store
-    // holds every struct it carries and every struct it deletes.
-    if (
-      document.store.pendingStructs === null &&
-      document.store.pendingDs === null
-    )
-      return true;
-    const { structs, ds } = decodeUpdateV2(changes);
-    const held = (client: number, end: number) =>
-      getState(document.store, client) >= end;
-    return (
-      structs.every(
-        (struct) =>
-          struct instanceof Skip ||
-          held(struct.id.client, struct.id.clock + struct.length),
-      ) &&
-      [...ds.clients].every(([client, ranges]) =>
-        ranges.every(({ clock, len }) => held(client, clock + len)),
-      )
-    );
   }
   getHistory(document: Doc): Uint8Array {
     // This intentionally encodes the full document state. getHistory() is

@@ -65,11 +65,13 @@ interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
 ```
 
 Four required methods (`newDocument`, `localChange`, `remoteChange`, `getHistory`)
-and two optional snapshot methods. Automerge and Yjs buffer a remote change
-until its causal dependencies arrive, so their providers implement
-`hasIntegrated`. Peerborne records a received change, notifies handlers and
-serves it only after it integrates. Until then a later message can deliver it
-again.
+and two optional snapshot methods. Automerge buffers a remote change until its
+causal dependencies arrive and leaves buffered changes out of its history, so
+its provider implements `hasIntegrated`. Peerborne records such a change,
+notifies handlers about it and serves it only once a delivery finds it
+integrated, so a checkpoint never claims it and a later message delivers it
+again. Yjs keeps its pending updates in the state it encodes, including
+checkpoints.
 
 Two implementations exist:
 

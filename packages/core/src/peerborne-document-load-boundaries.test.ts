@@ -12,7 +12,10 @@ import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
-import { withIssuerPinnedInvitationStream } from './invitation-catch-up.js';
+import {
+  syncInvitationMessageCompletely,
+  withIssuerPinnedInvitationStream,
+} from './invitation-catch-up.js';
 import { INVITATION_STREAM_TIMEOUT_MS } from './invitation-policy.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { eciesSeal, generateEciesKeyPair } from './ecies.js';
@@ -1102,8 +1105,19 @@ describe('document load response boundaries', () => {
     expect(document._changesSinceSnapshot).toBe(3);
   });
 
-  test('records a buffered document change only after its dependency integrates', async () => {
-    type BufferedChange = { id: string; deps: string[] };
+  type BufferedChange = { id: string; deps: string[] };
+  const KNOWN_CHILD = { KNOWN: { kind: crdtDocumentChangeNode } };
+  const bufferedNode = (
+    id: string,
+    deps: string[] = [],
+    children: Record<string, unknown> | undefined = KNOWN_CHILD,
+  ) => ({ kind: crdtDocumentChangeNode, change: { id, deps }, children });
+
+  function bufferingDocument(fields: Record<string, unknown> = {}) {
+    const hasIntegrated = jest.fn(
+      (state: Set<string>, change: BufferedChange) =>
+        change.deps.every((dependency) => state.has(dependency)),
+    );
     const document = fakeDocument({
       documentPath: '/buffered-document-change',
       _bootstrapLoadApplicationState: 'complete',
@@ -1117,42 +1131,44 @@ describe('document load response boundaries', () => {
           (state: Set<string>, change: BufferedChange) =>
             new Set([...state, change.id]),
         ),
-        hasIntegrated: (state: Set<string>, change: BufferedChange) =>
-          change.deps.every((dependency) => state.has(dependency)),
+        hasIntegrated,
       },
       _documentChangeCount: 0,
       _changesSinceSnapshot: 0,
       _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       _refreshLastSyncMessageFromSync: jest.fn(),
       _maybeCompact: jest.fn(async () => undefined),
+      ...fields,
     });
-    const buffered = {
-      kind: crdtDocumentChangeNode,
-      change: { id: 'dependent', deps: ['dependency'] },
-      children: { KNOWN: { kind: crdtDocumentChangeNode } },
-    };
+    return { document, hasIntegrated };
+  }
 
-    await document._syncDocumentChanges('DEPENDENT', buffered);
-    await document._syncDocumentChanges('DEPENDENT', buffered);
+  test('leaves a document change unrecorded until a delivery finds it integrated', async () => {
+    const { document, hasIntegrated } = bufferingDocument();
+    const dependent = bufferedNode('dependent', ['dependency']);
 
-    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
+    await document._syncDocumentChanges('DEPENDENT', dependent);
+
     expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._isDelivered('DEPENDENT')).toBe(true);
     expect(document._currentFrontier()).toEqual(['KNOWN']);
     expect(document._recentTips).toEqual([]);
     expect(document._documentChangeCount).toBe(0);
     expect(document._fireOrDeferRemoteUpdateHandlers).not.toHaveBeenCalled();
     expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
 
-    const dependency = {
-      kind: crdtDocumentChangeNode,
-      change: { id: 'dependency', deps: [] },
-      children: { KNOWN: { kind: crdtDocumentChangeNode } },
-    };
+    const dependency = bufferedNode('dependency');
     await document._syncDocumentChanges('DEPENDENCY', dependency);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'DEPENDENCY']));
+    expect(hasIntegrated).toHaveBeenCalledTimes(2);
 
+    await document._syncDocumentChanges('DEPENDENT', dependent);
+
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
     expect(document._hashes).toEqual(
       new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
     );
+    expect(document._unintegratedCids.size).toBe(0);
     expect(document._currentFrontier().sort()).toEqual([
       'DEPENDENCY',
       'DEPENDENT',
@@ -1169,7 +1185,122 @@ describe('document load response boundaries', () => {
     ]);
     expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
       ['DEPENDENCY', dependency],
+      ['DEPENDENT', dependent],
     ]);
+  });
+
+  test('checks a waiting change once per delivery without reapplying it', async () => {
+    const { document, hasIntegrated } = bufferingDocument();
+    const waiting = 2047;
+    const tree = bufferedNode(
+      'root',
+      ['missing'],
+      Object.fromEntries(
+        Array.from({ length: waiting }, (_, index) => [
+          `WAITING-${index}`,
+          bufferedNode(`waiting-${index}`, ['missing'], undefined),
+        ]),
+      ),
+    );
+
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
+    expect(document._hashes).toEqual(new Set(['KNOWN']));
+    expect(document._referencedAncestors).toEqual(new Set());
+    expect(document._unintegratedCids.size).toBe(waiting + 1);
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+
+    hasIntegrated.mockClear();
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(
+      waiting + 1,
+    );
+    expect(hasIntegrated).toHaveBeenCalledTimes(waiting + 1);
+
+    hasIntegrated.mockClear();
+    await document._syncDocumentChanges('OTHER', bufferedNode('other'));
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'OTHER']));
+  });
+
+  test('records a change whose dependency a fetched block in the same tree supplies', async () => {
+    const { document, hasIntegrated } = bufferingDocument({
+      _getBlock: jest.fn(async () => ({ id: 'dependency', deps: [] })),
+    });
+    const tree = bufferedNode('dependent', ['dependency'], {
+      DEPENDENCY: { kind: crdtDocumentChangeNode },
+    });
+
+    await document._syncDocumentChanges('DEPENDENT', tree);
+
+    expect(hasIntegrated).toHaveBeenCalledTimes(3);
+    expect(document._hashes).toEqual(
+      new Set(['KNOWN', 'DEPENDENCY', 'DEPENDENT']),
+    );
+    expect(document._currentFrontier().sort()).toEqual(['DEPENDENT', 'KNOWN']);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['DEPENDENCY']],
+      [['DEPENDENT']],
+    ]);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['DEPENDENT', tree],
+    ]);
+  });
+
+  test('serves the part of a delivered tree below a change that waits for a dependency', async () => {
+    const { document } = bufferingDocument();
+    const parent = bufferedNode('parent');
+    const tree = bufferedNode('dependent', ['dependency'], {
+      PARENT: parent,
+      ...KNOWN_CHILD,
+    });
+
+    await document._syncDocumentChanges('DEPENDENT', tree);
+
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'PARENT']));
+    expect(document._currentFrontier()).toEqual(['PARENT']);
+    expect(document._refreshLastSyncMessageFromSync.mock.calls).toEqual([
+      ['PARENT', parent],
+    ]);
+  });
+
+  test('does not serve a recorded tree that carries a change waiting for a dependency', async () => {
+    const { document } = bufferingDocument();
+    const tree = bufferedNode('root', [], {
+      WAITING: bufferedNode('waiting', ['missing'], undefined),
+      ...KNOWN_CHILD,
+    });
+
+    await document._syncDocumentChanges('ROOT', tree);
+
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'ROOT']));
+    expect(document._refreshLastSyncMessageFromSync).not.toHaveBeenCalled();
+  });
+
+  test('counts a delivered change that waits for a dependency as installed', async () => {
+    const { document } = bufferingDocument();
+    const tree = bufferedNode('dependent', ['dependency']);
+
+    await expect(
+      syncInvitationMessageCompletely(
+        {
+          documentId: '/buffered-document-change',
+          signatureContext: 'invitation-bootstrap-v1',
+          changeId: 'DEPENDENT',
+          changes: tree,
+        } as any,
+        { has: (cid) => document._isDelivered(cid) },
+        async () => {
+          await document._syncDocumentChanges('DEPENDENT', tree);
+          return true;
+        },
+        'bootstrap',
+      ),
+    ).resolves.toBe(true);
+    expect(document._hashes.has('DEPENDENT')).toBe(false);
   });
 
   test('withdraws ancestors recorded by a directly rejected ACL change', async () => {

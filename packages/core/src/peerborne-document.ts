@@ -894,9 +894,8 @@ function documentLoadResponseTimeoutMs(configured: unknown): number {
 const LOAD_PREFETCH_MAX_CONCURRENCY = 8;
 const LOAD_PROTOCOL_REFRESH_TIMEOUT_MS = 5_000;
 
-// Bounds the remote changes a document retains while their CRDT dependencies
-// are missing. One delivered tree never evicts its own changes. An evicted
-// change stays unrecorded, so a later message that carries it applies it again.
+// Bounds the delivered CIDs a document remembers while their CRDT changes wait
+// for dependencies. One delivered tree never evicts its own CIDs.
 const MAX_UNINTEGRATED_REMOTE_CHANGES = MAX_CHANGE_TREE_NODES;
 
 /**
@@ -1348,13 +1347,11 @@ export class PeerborneDocument<
   // Set of already-merged change blocks.
   private _hashes = new Set<string>();
 
-  // Remote document changes passed to the CRDT whose causal dependencies are
-  // still missing, oldest first. They stay out of `_hashes`, the frontier,
-  // recent tips and handlers until `hasIntegrated()` reports them integrated.
-  private _unintegratedChanges?: Map<
-    string,
-    { readonly changes: ChangesType; readonly references: readonly string[] }
-  >;
+  // CIDs of remote document changes applied to the CRDT while their causal
+  // dependencies were missing, oldest first. They stay out of `_hashes`, so
+  // checkpoints never claim them and a later message delivers them again.
+  // Load completeness checks count them as delivered.
+  private _unintegratedCids?: Set<string>;
 
   // Fail-closed bootstrap admission state. A bootstrap load can mutate
   // ACL/keychain state before a later CRDT/provider operation throws, without
@@ -2453,61 +2450,90 @@ export class PeerborneDocument<
     );
   }
 
-  private _retainUnintegratedChange(
-    cid: string,
-    changes: ChangesType,
-    rootId: string | undefined,
-    root: CRDTChangeNode<ChangesType>,
-  ): void {
-    const retained = (this._unintegratedChanges ??= new Map());
-    retained.delete(cid);
-    retained.set(cid, {
-      changes,
-      references: [
-        ...collectReferencedAncestors(
-          rootId,
-          root,
-          new Set<string>(),
-          (parentId) => parentId === cid,
-        ),
-      ],
-    });
-    if (retained.size > MAX_UNINTEGRATED_REMOTE_CHANGES) {
-      retained.delete(retained.keys().next().value!);
+  private _isDelivered(cid: string): boolean {
+    return this._hashes.has(cid) || this._unintegratedCids?.has(cid) === true;
+  }
+
+  private _noteUnintegrated(cid: string): void {
+    const cids = (this._unintegratedCids ??= new Set());
+    cids.delete(cid);
+    cids.add(cid);
+    if (cids.size > MAX_UNINTEGRATED_REMOTE_CHANGES) {
+      cids.delete(cids.values().next().value!);
     }
   }
 
   /**
-   * Record retained remote changes that the CRDT has integrated since they
-   * arrived, for example because a missing dependency was applied.
+   * Record the changes of one delivered tree that the CRDT has integrated
+   * since they were applied, and remove them from `pending`.
    */
-  private _recordIntegratedChanges(): string[] {
-    const retained = this._unintegratedChanges;
-    if (!retained?.size) return [];
+  private _recordIntegratedChanges(
+    pending: Array<readonly [string, ChangesType]>,
+  ): string[] {
     const recorded: string[] = [];
-    for (const [cid, { changes, references }] of retained) {
+    let remaining = 0;
+    for (const entry of pending) {
+      const [cid, changes] = entry;
       if (this._hashes.has(cid)) {
-        retained.delete(cid);
-        continue;
+        this._unintegratedCids?.delete(cid);
+      } else if (this._hasIntegrated(changes)) {
+        this._hashes.add(cid);
+        this._unintegratedCids?.delete(cid);
+        this._documentChangeCount++;
+        this._changesSinceSnapshot++;
+        recorded.push(cid);
+      } else {
+        pending[remaining++] = entry;
       }
-      if (!this._hasIntegrated(changes)) continue;
-      retained.delete(cid);
-      this._hashes.add(cid);
-      for (const reference of references) {
-        this._referencedAncestors.add(reference);
-      }
-      this._documentChangeCount++;
-      this._changesSinceSnapshot++;
-      this._trackTip(cid, crdtDocumentChangeNode);
-      recorded.push(cid);
+    }
+    pending.length = remaining;
+    for (let i = recorded.length - 1; i >= 0; i--) {
+      this._trackTip(recorded[i]!, crdtDocumentChangeNode);
     }
     return recorded;
+  }
+
+  /**
+   * Serve the newest node of a delivered tree that this replica holds
+   * completely. Primary parents are followed past changes that are still
+   * waiting for a dependency, and a subtree holding such a change is not
+   * served, so a checkpoint of the served tree stays restorable.
+   */
+  private _refreshServedTree(
+    rootId: string | undefined,
+    root: CRDTChangeNode<ChangesType>,
+  ): void {
+    let nodeId = rootId;
+    let node = root;
+    while (nodeId !== undefined && !this._hashes.has(nodeId)) {
+      const children = node.children;
+      if (children === undefined || children === crdtChangeNodeDeferred) return;
+      const parent = Object.entries(children).find(
+        ([, child]) =>
+          child.change !== undefined || child.children !== undefined,
+      );
+      if (parent === undefined) return;
+      [nodeId, node] = parent;
+    }
+    if (nodeId === undefined) return;
+    const waiting = this._unintegratedCids;
+    if (waiting?.size) {
+      for (const cid of collectReferencedAncestors(
+        nodeId,
+        node,
+        new Set<string>(),
+      )) {
+        if (waiting.has(cid)) return;
+      }
+    }
+    this._refreshLastSyncMessageFromSync(nodeId, node);
   }
 
   private async _syncDocumentChanges(
     changeId: string | undefined,
     changes: CRDTChangeNode<ChangesType>,
     fetchOptions: DocumentChangeFetchOptions<DocumentKey> = {},
+    unintegrated: Array<readonly [string, ChangesType]> = [],
   ) {
     const signal = fetchOptions.signal;
     const assertStillActive = (): void => {
@@ -2642,11 +2668,15 @@ export class PeerborneDocument<
       if (sentChanges) {
         switch (sentChangeKind) {
           case crdtDocumentChangeNode: {
-            // Apply the changes that were sent directly.
-            newDocument = this._crdtProvider.remoteChange(
-              newDocument,
-              sentChanges,
-            );
+            // Apply the changes that were sent directly. The CRDT already
+            // holds a change that is waiting for a dependency, so that change
+            // is only checked again.
+            if (!this._unintegratedCids?.has(sentHash)) {
+              newDocument = this._crdtProvider.remoteChange(
+                newDocument,
+                sentChanges,
+              );
+            }
             sentDocumentChanges.set(sentHash, sentChanges);
             newDocumentHashes.push(sentHash);
             newDocumentTips.push([sentHash, sentChangeKind]);
@@ -2690,25 +2720,28 @@ export class PeerborneDocument<
       this._document = newDocument;
       // A CRDT may buffer a change until its causal dependencies arrive.
       // Recording it now would let checkpoints and later deliveries treat it
-      // as applied, so it stays unrecorded until it integrates.
-      const unintegrated = new Set<string>();
+      // as applied, so it stays unrecorded until a delivery finds it
+      // integrated.
+      const unintegratedHashes = new Set<string>();
       for (const [hash, sentChanges] of sentDocumentChanges) {
         if (this._hasIntegrated(sentChanges)) continue;
-        unintegrated.add(hash);
-        this._retainUnintegratedChange(hash, sentChanges, changeId, changes);
+        unintegratedHashes.add(hash);
+        unintegrated.push([hash, sentChanges]);
+        this._noteUnintegrated(hash);
       }
       const integratedDocumentChanges =
-        sentDocumentChanges.size - unintegrated.size;
+        sentDocumentChanges.size - unintegratedHashes.size;
       this._documentChangeCount += integratedDocumentChanges;
       this._changesSinceSnapshot += integratedDocumentChanges;
       const recordedHashes = newDocumentHashes.filter(
-        (hash) => !unintegrated.has(hash),
+        (hash) => !unintegratedHashes.has(hash),
       );
       const recordedTips = newDocumentTips.filter(
-        ([hash]) => !unintegrated.has(hash),
+        ([hash]) => !unintegratedHashes.has(hash),
       );
       for (const newHash of recordedHashes) {
         this._hashes.add(newHash);
+        this._unintegratedCids?.delete(newHash);
       }
       appliedDirectACLNodes.clear();
       // Track applied tips for Merkle-CRDT cross-linking (paper §VI.B.e)
@@ -2812,20 +2845,19 @@ export class PeerborneDocument<
             }
             switch (missingHashKind) {
               case crdtDocumentChangeNode: {
-                this._document = this._crdtProvider.remoteChange(
-                  this._document,
-                  missingChanges,
-                );
-                if (!this._hasIntegrated(missingChanges)) {
-                  this._retainUnintegratedChange(
-                    missingHash,
+                if (!this._unintegratedCids?.has(missingHash)) {
+                  this._document = this._crdtProvider.remoteChange(
+                    this._document,
                     missingChanges,
-                    changeId,
-                    changes,
                   );
+                }
+                if (!this._hasIntegrated(missingChanges)) {
+                  unintegrated.push([missingHash, missingChanges]);
+                  this._noteUnintegrated(missingHash);
                   continue;
                 }
                 this._hashes.add(missingHash);
+                this._unintegratedCids?.delete(missingHash);
                 this._documentChangeCount++;
                 this._changesSinceSnapshot++;
                 this._trackTip(missingHash, missingHashKind);
@@ -2940,6 +2972,16 @@ export class PeerborneDocument<
     }
     assertStillActive();
 
+    // A fetched block may have supplied what an earlier change in this tree
+    // was waiting for. Only this tree's changes are checked again.
+    if (missingDocumentHashes.length > 0 && unintegrated.length > 0) {
+      const integratedHashes = this._recordIntegratedChanges(unintegrated);
+      if (integratedHashes.length > 0) {
+        await this._fireOrDeferRemoteUpdateHandlers(integratedHashes);
+        assertStillActive();
+      }
+    }
+
     // Only recorded nodes hide the heads they reference. A node left
     // unrecorded, such as a change still waiting for a dependency, references
     // nothing until it is recorded.
@@ -2956,12 +2998,6 @@ export class PeerborneDocument<
         }
       }
     }
-    const integratedHashes = this._recordIntegratedChanges();
-    if (integratedHashes.length > 0) {
-      await this._fireOrDeferRemoteUpdateHandlers(integratedHashes);
-      assertStillActive();
-    }
-
     // Refresh `_lastSyncMessage` so the served frontier reflects what we now
     // hold. Without this, a relay peer that joined via `load()` (or that has
     // only ever applied remote changes via GossipSub) would keep
@@ -2979,11 +3015,9 @@ export class PeerborneDocument<
     // alone (matches the existing single-tree load semantics documented on
     // `_servedFrontier()`). The next local `_makeChange()` cross-links
     // through `_recentTips` regardless, so concurrent heads are recovered
-    // on the next local write. A root that is not recorded is not held yet,
-    // so its tree is not served.
-    if (changeId !== undefined && this._hashes.has(changeId)) {
-      this._refreshLastSyncMessageFromSync(changeId, changes);
-    }
+    // on the next local write. Changes that are not integrated are not held
+    // yet, so only the part of the tree below them is served.
+    this._refreshServedTree(changeId, changes);
 
     assertStillActive();
     if (this._isStateApplicationBlocked()) {
@@ -6078,7 +6112,7 @@ export class PeerborneDocument<
           }
           // Post-sync verification: every
           // CID we expected from the (stripped) served tree must have
-          // landed in `_hashes` via either inline application (for the
+          // been delivered via either inline application (for the
           // non-stripped path this branch never reaches) or via the
           // `_getBlock(cid)` Helia fetch path inside
           // `_syncDocumentChanges`. A missing CID means bitswap could
@@ -6086,7 +6120,7 @@ export class PeerborneDocument<
           // would silently report success with a partial document.
           const missingCids: string[] = [];
           for (const cid of expectedCids) {
-            if (!this._hashes.has(cid)) missingCids.push(cid);
+            if (!this._isDelivered(cid)) missingCids.push(cid);
           }
           if (missingCids.length > 0) {
             console.warn(
@@ -6189,7 +6223,7 @@ export class PeerborneDocument<
         const syncResult = requireCompleteCids || trackedBootstrapLoad
           ? await syncInvitationMessageCompletely(
               message,
-              this._hashes,
+              { has: (cid) => this._isDelivered(cid) },
               syncLoadMessage,
               loadWriterAdmission === 'pinned' ? 'catch-up' : 'bootstrap',
               {
@@ -8043,7 +8077,7 @@ export class PeerborneDocument<
         this._latestSnapshot?.lastChangeNodeCID;
       const synced = await syncInvitationMessageCompletely(
         message,
-        this._hashes,
+        { has: (cid) => this._isDelivered(cid) },
         () =>
           awaitLoadWork(
             this._syncUnlocked(
@@ -8458,12 +8492,14 @@ export class PeerborneDocument<
 
     // Full change sync: process all nodes (document + ACL) from the DAG.
     // ACL nodes applied in the pre-pass above will be re-merged idempotently.
+    const unintegrated: Array<readonly [string, ChangesType]> = [];
     if (changeTreePreflight) {
       beginStateApplication();
       await this._syncDocumentChanges(
         message.changeId,
         changeTreePreflight.changes,
         changeFetchOptions,
+        unintegrated,
       );
       assertStillActive();
     }
@@ -8472,21 +8508,20 @@ export class PeerborneDocument<
       await applyIncomingSnapshot(message.snapshot);
       assertStillActive();
     }
-    // A snapshot can supply the dependencies that buffered changes, including
-    // this message's, were waiting for.
-    const integratedBySnapshot = appliedSnapshot
-      ? this._recordIntegratedChanges()
-      : [];
-    if (
-      integratedBySnapshot.length > 0 &&
-      changeTreePreflight &&
-      message.changeId !== undefined &&
-      this._hashes.has(message.changeId)
-    ) {
-      this._refreshLastSyncMessageFromSync(
+    // Changes applied before the snapshot can depend on its history.
+    const integratedBySnapshot =
+      snapshotAfterChanges && appliedSnapshot && unintegrated.length > 0
+        ? this._recordIntegratedChanges(unintegrated)
+        : [];
+    if (integratedBySnapshot.length > 0 && changeTreePreflight) {
+      const recorded = new Set(integratedBySnapshot);
+      collectReferencedAncestors(
         message.changeId,
         changeTreePreflight.changes,
+        this._referencedAncestors,
+        (parentId) => parentId !== undefined && recorded.has(parentId),
       );
+      this._refreshServedTree(message.changeId, changeTreePreflight.changes);
     }
     if (message.snapshot && snapshotAfterChanges && appliedSnapshot) {
       // Count only changes the snapshot does not cover, as if it had been

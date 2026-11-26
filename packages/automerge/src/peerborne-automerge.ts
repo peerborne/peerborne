@@ -222,15 +222,12 @@ export class AutomergeProvider<T = any>
     return newDoc;
   }
   hasIntegrated(document: Doc<T>, changes: BinaryChange[]): boolean {
-    // applyChanges() queues a change whose dependencies are missing. Queued
-    // changes are absent from getAllChanges() and save(), and they are the
-    // only source of missing dependencies.
-    return (
-      getMissingDeps(document, []).length === 0 ||
-      hasHeads(
-        document,
-        changes.map((change) => decodeChange(change).hash),
-      )
+    // applyChanges() queues a change whose dependencies are missing, and
+    // getAllChanges() and save() leave the queue out. hasHeads() looks up
+    // applied history only, so this costs the same however long the queue is.
+    return hasHeads(
+      document,
+      changes.map((change) => decodeChange(change).hash),
     );
   }
   getHistory(document: Doc<T>): BinaryChange[] {

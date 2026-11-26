@@ -228,47 +228,6 @@ describe('YjsProvider', () => {
     }
     expect(error).toBe(failure);
   });
-
-  test('hasIntegrated is false while structs or deletions wait for dependencies', () => {
-    const provider = new YjsProvider();
-    const [alice, bob, carol] = [1, 2, 3].map((clientID) => {
-      const doc = provider.newDocument();
-      doc.clientID = clientID;
-      return doc;
-    });
-    const [, base] = provider.localChange(alice!, '', (doc) => {
-      doc.getArray('log').push(['base']);
-    });
-    provider.remoteChange(bob!, base);
-    provider.remoteChange(carol!, base);
-    const [, dependency] = provider.localChange(bob!, '', (doc) => {
-      doc.getArray('log').push(['b1']);
-    });
-    provider.remoteChange(alice!, dependency);
-    const [, insertion] = provider.localChange(alice!, '', (doc) => {
-      doc.getArray('log').insert(2, ['a2']);
-    });
-    const [, deletion] = provider.localChange(alice!, '', (doc) => {
-      doc.getArray('log').delete(1, 1);
-    });
-
-    expect(provider.hasIntegrated(carol!, base)).toBe(true);
-    provider.remoteChange(carol!, insertion);
-    provider.remoteChange(carol!, deletion);
-    expect(provider.hasIntegrated(carol!, insertion)).toBe(false);
-    expect(provider.hasIntegrated(carol!, deletion)).toBe(false);
-    expect(provider.hasIntegrated(carol!, base)).toBe(true);
-    expect(carol!.getArray('log').toJSON()).toEqual(['base']);
-
-    provider.remoteChange(carol!, dependency);
-    expect(provider.hasIntegrated(carol!, dependency)).toBe(true);
-    expect(provider.hasIntegrated(carol!, insertion)).toBe(true);
-    expect(provider.hasIntegrated(carol!, deletion)).toBe(true);
-    expect(carol!.getArray('log').toJSON()).toEqual(
-      alice!.getArray('log').toJSON(),
-    );
-    expect(carol!.getArray('log').toJSON()).toEqual(['base', 'a2']);
-  });
 });
 
 describe('YjsProvider delta encoding', () => {

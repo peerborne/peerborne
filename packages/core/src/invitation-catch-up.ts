@@ -16,7 +16,7 @@ interface AbortableInvitationStream {
 /** @internal Reject an invitation sync that did not install every advertised CID. */
 export function assertInvitationCidsInstalled(
   expectedCids: readonly string[],
-  installedCids: ReadonlySet<string>,
+  installedCids: Pick<ReadonlySet<string>, 'has'>,
   phase: 'bootstrap' | 'catch-up',
 ): void {
   const missingCount = countMissingStrings(
@@ -32,7 +32,7 @@ export function assertInvitationCidsInstalled(
 /** @internal Apply one invitation sync and require its full advertised tree. */
 export async function syncInvitationMessageCompletely<ChangesType>(
   message: CRDTSyncMessage<ChangesType>,
-  installedCids: ReadonlySet<string>,
+  installedCids: Pick<ReadonlySet<string>, 'has'>,
   sync: () => Promise<boolean>,
   phase: 'bootstrap' | 'catch-up',
   options: {
