@@ -288,12 +288,12 @@ prefix-sum functions, lemmas and strengthening annotations are proof additions;
 the runtime implementation remains iterative.
 
 Load challenges, trusted load commitments and response manifests use this
-preflight before UTF-8 allocation. Manifest root and snapshot scalar metadata
-are validated before graph capture, payload copying or change serialization.
+preflight before UTF-8 allocation. Manifest root and snapshot boundary
+identifiers are validated before graph capture or payload copying.
 Native properties reproduced late snapshot validation and encoding oversized
 text before rejection. They exercise native encoder agreement, character-read
-counts, rejection copy/serializer costs, signature/hash bytes, ownership and
-mutation during serializer callbacks. TextEncoder and UTF-16 runtime semantics,
+counts, rejection copy and graph-capture costs, signature and digest bytes,
+ownership and input mutation across digest yields. TextEncoder and UTF-16 runtime semantics,
 safe-integer/type guards, complete pipeline ordering and cryptography remain
 native boundaries. These checks do not establish VM heap or UI latency bounds,
 nor end-to-end load security.

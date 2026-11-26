@@ -71,15 +71,22 @@ describe('coordinated document runtime boundaries', () => {
                   doc.push(value);
                 }),
               );
-            if (frames.length > 1)
-              await expect(b.receive(frames[1])).rejects.toThrow('prefix');
+            const early = frames.length > 1;
+            if (early) {
+              expect(await b.receive(frames[1])).toBe(false);
+              expect(b.document).toEqual([]);
+            }
             for (let index = 0; index < frames.length; index++) {
-              expect(await b.receive(frames[index])).toBe(true);
+              expect(await b.receive(frames[index])).toBe(
+                !(early && index === 1),
+              );
               expect(await b.receive(frames[index])).toBe(false);
               const bad = frames[index].slice();
               bad[bad.length - 1] ^= 1;
               await expect(b.receive(bad)).rejects.toThrow();
-              expect(b.document).toEqual(values.slice(0, index + 1));
+              expect(b.document).toEqual(
+                values.slice(0, early && index === 0 ? 2 : index + 1),
+              );
             }
             const other = {
               authority: new TestDocumentAuthority(

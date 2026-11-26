@@ -36,6 +36,13 @@
       "entry": "typingBurst"
     },
     {
+      "id": "relay-fetch",
+      "name": "Bitswap loads between real Peerborne nodes reachable only through a relay",
+      "runtime": "node",
+      "module": "./node/relay-fetch.mjs",
+      "entry": "relayBlockFetch"
+    },
+    {
       "id": "slow-peer",
       "name": "Ordered SCTP loss and healthy-peer progress",
       "runtime": "browser",

@@ -127,10 +127,36 @@ Yjs inspects integrated items and deletion ranges before native GC. Comparing
 only visible JSON would miss hidden concurrent writes. Restricted local Yjs
 changes serialize inspectable items before GC. With GC enabled, the private
 mirror is pruned after serialization. A GC callback that adds unencoded state
-invalidates the preparation. The engine checks every
-reported target before local signing, WAL staging and CRDT commit. Missing,
-unknown or unsupported inspection fails closed for a restricted member.
-Permission changes require the existing fresh-epoch signed role transition.
+invalidates the preparation. The engine checks every reported target before
+local signing, WAL staging and CRDT commit. Missing, unknown or unsupported
+inspection fails closed for a restricted member. Permission changes require the
+existing fresh-epoch signed role transition.
+
+A Yjs operation can arrive after a replica has accepted and collected the
+deletion of its container. Yjs then integrates it as a GC struct with no parent
+or content. It cannot become visible, so it uses inspection work but reports no
+target. An honest writer's concurrent edit inside a deleted granted container
+is admitted at every replica, and its sequence keeps advancing. Replicas that
+receive the edit before the deletion check its real path. Keeping GC off in the
+private mirror would not fix this. The mirror is rebuilt from the collected
+document snapshot after a restart or a discarded preparation, and it would
+retain deleted content.
+
+The mirror always collects with the default policy. The application's document
+can keep deleted items through a custom `gcFilter`, items an undo manager keeps,
+or GC turned off after opening. An operation the mirror collected could then
+integrate as a live item in that document. In that case the update is inspected
+again against an uncollected copy of the document, which reports the real path.
+That copy costs time proportional to the document. A restricted frame cannot
+send GC structs directly.
+
+A dishonest writer can still get an out-of-scope edit into a collected container
+accepted, but only where it has no effect. Replicas that see the edit first
+reject it, so they reject that writer's later frames. Honest members' later
+changes that build on what the writer wrote after that point then fail with
+missing causal dependencies at those replicas, which stalls their sequences too.
+Like equivocation, this can split replicas, but it cannot change protected
+state.
 
 Each member has at most 64 grant paths, each with 32 segments of at most 1,024
 UTF-16 units. A roster has aggregate caps of 4,096 paths, 32,768 segments and
@@ -154,7 +180,7 @@ Automerge stages an isolated clone. Yjs stages a private reusable mirror and
 keeps the visible document unchanged until admission succeeds. The mirror keeps
 one actor over accepted edits; it does not clone the complete document for every
 keystroke. Missing native causal dependencies are rejected before visible
-application. A direct mutation of the visible Yjs document invalidates its
+application with a `DocumentCausalDependencyError`. A direct mutation of the visible Yjs document invalidates its
 session. Staging accepts scalar values and shared `Y.Map`, `Y.Array` and `Y.Text`
 structures. Opaque object/array/binary values, subdocuments and XML child types
 are rejected because they can mutate without a tracked parent update. Application callbacks and the JavaScript environment remain trusted.
@@ -221,8 +247,8 @@ revision substitutions are rejected. An ambiguous post-commit failure poisons
 the live document and requires reconstruction; callers must not blindly rerun
 the change callback.
 
-Exact per-author sequence/hash receipts survive restart and compaction. Gaps
-and conflicting author heads are rejected; duplicate frames do not mutate or
+Exact per-author sequence/hash receipts survive restart and compaction.
+Conflicting author heads are rejected; duplicate frames do not mutate or
 rebroadcast the document. Receipt state resets at a new authenticated group
 context, keeping it bounded by the roster. A signing identity must have one
 document author at a time; independent offline branches using the same member
@@ -238,6 +264,19 @@ waits behind earlier work, every frame it carries must carry the current epoch
 tag and decrypt under the current document key and authority head, so input
 from a non-member is released within one decryption. Replayed genuine frames
 pass this check and are bounded only by the per-sender share.
+
+A frame can arrive before its author's previous frame, or before another
+author's change that it natively depends on. After full decryption, signature,
+role and context checks, such a frame is held instead of rejected, and
+`receive` resolves `false`. Each accepted frame or catch-up merge retries the
+held frames whose author prefix is now complete, or whose dependency may have
+arrived. A retried frame goes through the whole admission path again, including
+field-scope inspection. A document holds at most 64 frames, 32 per author and
+8 MiB, and all documents in a process at most 1,024 frames and 64 MiB. A frame
+beyond those bounds is rejected. A second frame for a held author sequence with
+different content is rejected as equivocation. Held frames are memory-only and
+are dropped at a new group context and on close. A held frame whose
+predecessor never arrives stays held; nothing requests it yet.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
@@ -339,11 +378,12 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery, old-epoch edit rebasing and
-epoch-fork reconciliation remain future work. The controller checkpoint is an
-explicit application-relayed recovery path for current members. An
-unknown/stale epoch or missing native causal context is rejected, not silently
-buffered without a bound. The caller must arrange ordered control/role delivery
+Automatic anti-entropy, missing-prefix redelivery requests, old-epoch edit
+rebasing and epoch-fork reconciliation remain future work. The controller
+checkpoint is an explicit application-relayed recovery path for current
+members. A frame under an unknown or stale epoch is rejected. A frame that is
+missing its author prefix or native causal context is held only within the
+bounds above. The caller must arrange ordered control/role delivery
 and content recovery. Role records contain public identities and the document
 path; applications must protect that separate control transport. The content
 frame header guarantee does not cover application control signaling. This mode does not yet replace default document workflows.

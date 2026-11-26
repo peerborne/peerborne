@@ -7,9 +7,10 @@ import {
 import type { AuthProvider } from './auth-provider.js';
 import type { ChangesSerializer } from './changes-serializer.js';
 import type { CRDTProvider } from './crdt-provider.js';
-import type {
-  CRDTDocumentSession,
-  PreparedDocumentChange,
+import {
+  DocumentCausalDependencyError,
+  type CRDTDocumentSession,
+  type PreparedDocumentChange,
 } from './document-crdt-session.js';
 import type {
   GroupDocumentEncryptionMaterial,
@@ -221,6 +222,39 @@ function concatFrames(head: Uint8Array, frame: Uint8Array): Uint8Array {
   return result;
 }
 
+const MAX_HELD_FRAMES = 64;
+const MAX_HELD_FRAMES_PER_AUTHOR = 32;
+const MAX_HELD_BYTES = 8 * 1024 * 1024;
+const aggregateHeld = new GroupDocumentOperationBudget(
+  1024,
+  64 * 1024 * 1024,
+);
+
+type HeldReason = 'gap' | 'dependency';
+
+/** An authenticated frame whose author prefix or native dependencies are missing. */
+class HeldDocumentFrame extends Error {
+  constructor(
+    readonly reason: HeldReason,
+    readonly context: GroupSecurityDocumentContext,
+    readonly author: string,
+    readonly sequence: number,
+    readonly hash: Uint8Array,
+  ) {
+    super('Document frame waits for its causal predecessors');
+  }
+}
+
+interface HeldFrame {
+  readonly frame: Uint8Array;
+  readonly author: string;
+  readonly sequence: number;
+  readonly hash: Uint8Array;
+  readonly release: () => void;
+  reason: HeldReason;
+  attemptedAt: number;
+}
+
 /** Coordinator-backed mutation path, deliberately separate from the BeeKEM wire protocol. */
 export class CoordinatedDocument<
   Document,
@@ -256,6 +290,12 @@ export class CoordinatedDocument<
   private pendingCatchUp?: PendingCatchUp;
   private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
+  private held?: {
+    readonly context: GroupSecurityDocumentContext;
+    readonly frames: HeldFrame[];
+    bytes: number;
+  };
+  private appliedFrames = 0;
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -562,7 +602,7 @@ export class CoordinatedDocument<
         let applied = false;
         for (const value of frames) {
           try {
-            if ((await this.apply(value)).length !== 0) applied = true;
+            if (await this.receiveOwned(value)) applied = true;
           } catch (error) {
             if (!applied) throw error;
             break;
@@ -666,6 +706,116 @@ export class CoordinatedDocument<
     return frames;
   }
 
+  private async receiveOwned(frame: Uint8Array): Promise<boolean> {
+    try {
+      if ((await this.apply(frame)).length === 0) return false;
+    } catch (error) {
+      if (!(error instanceof HeldDocumentFrame)) throw error;
+      this.hold(frame, error);
+      return false;
+    }
+    this.appliedFrames++;
+    await this.releaseHeld();
+    return true;
+  }
+
+  /** Keep a bounded set of authenticated frames until their predecessors apply. */
+  private hold(frame: Uint8Array, pending: HeldDocumentFrame): void {
+    if (
+      !this.held ||
+      !documentContextsMatch(this.held.context, pending.context)
+    ) {
+      this.clearHeld();
+      this.held = { context: pending.context, frames: [], bytes: 0 };
+    }
+    const held = this.held;
+    const same = held.frames.find(
+      (entry) =>
+        entry.author === pending.author && entry.sequence === pending.sequence,
+    );
+    if (same) {
+      if (!documentBytesEqual(same.hash, pending.hash))
+        throw new Error('Document author equivocated');
+      same.reason = pending.reason;
+      same.attemptedAt = this.appliedFrames;
+      return;
+    }
+    if (
+      held.frames.length >= MAX_HELD_FRAMES ||
+      held.bytes + frame.length > MAX_HELD_BYTES ||
+      held.frames.filter((entry) => entry.author === pending.author).length >=
+        MAX_HELD_FRAMES_PER_AUTHOR
+    )
+      throw new Error('Document frames waiting for predecessors exceed their bound');
+    held.frames.push({
+      frame,
+      author: pending.author,
+      sequence: pending.sequence,
+      hash: pending.hash,
+      release: aggregateHeld.reserve(frame.length),
+      reason: pending.reason,
+      attemptedAt: this.appliedFrames,
+    });
+    held.bytes += frame.length;
+  }
+
+  private clearHeld(): void {
+    for (const entry of this.held?.frames ?? []) entry.release();
+    this.held = undefined;
+  }
+
+  /** Apply held frames that an accepted frame or checkpoint made admissible. */
+  private async releaseHeld(): Promise<void> {
+    for (let progressed = true; progressed; ) {
+      progressed = false;
+      const held = this.held;
+      if (!held || held.frames.length === 0) return;
+      if (
+        !documentContextsMatch(
+          held.context,
+          this.options.coordinator.documentContext,
+        )
+      ) {
+        this.clearHeld();
+        return;
+      }
+      const candidates = [...held.frames].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      for (const entry of candidates) {
+        const accepted =
+          this.receiptsAt(held.context).get(entry.author)?.sequence ?? 0;
+        if (
+          entry.sequence > accepted &&
+          (entry.reason === 'gap'
+            ? entry.sequence !== accepted + 1
+            : entry.attemptedAt === this.appliedFrames)
+        )
+          continue;
+        let applied = false,
+          keep = false;
+        try {
+          applied = (await this.apply(entry.frame)).length !== 0;
+        } catch (error) {
+          if (error instanceof HeldDocumentFrame) {
+            entry.reason = error.reason;
+            entry.attemptedAt = this.appliedFrames;
+            keep = true;
+          }
+        }
+        if (this.held !== held) return;
+        if (keep) continue;
+        held.frames.splice(held.frames.indexOf(entry), 1);
+        held.bytes -= entry.frame.length;
+        entry.release();
+        if (applied) {
+          this.appliedFrames++;
+          progressed = true;
+        }
+      }
+    }
+  }
+
   createCatchUpRequest(): Promise<Uint8Array> {
     return this.enqueueCatchUp(undefined, 0, 0, (input) =>
       this.runCatchUp(input, async (stage) => {
@@ -741,7 +891,11 @@ export class CoordinatedDocument<
       checkpoint,
       MAX_DOCUMENT_SECURITY_FRAME_BYTES,
       MAX_DOCUMENT_CONTENT_BYTES,
-      (input) => this.mergeCatchUpCheckpoint(input),
+      async (input) => {
+        await this.mergeCatchUpCheckpoint(input);
+        this.appliedFrames++;
+        await this.releaseHeld();
+      },
     );
   }
 
@@ -1160,6 +1314,7 @@ export class CoordinatedDocument<
       merged = false;
     let committed = false,
       replay = false;
+    let held: HeldReason | undefined;
     let result: Uint8Array = new Uint8Array();
     try {
       await this.options.coordinator.runDocumentOperation(
@@ -1248,17 +1403,24 @@ export class CoordinatedDocument<
                 documentBytesEqual(parent, accepted?.hash ?? ZERO_HASH),
               );
               if (admission === 'replay') replay = true;
+              else if (admission === 'gap') held = 'gap';
               else if (admission !== 'apply')
                 throw new Error('Document causal prefix is missing or forked');
-              if (!replay) {
+              if (!replay && !held) {
                 this.assertCurrentGroupRoster(roster);
-                plan = this.session.prepareRemote(
-                  this.serializer.deserializeChanges(frame.changes),
-                  {
-                    inspectOperations:
-                      lease.writePaths.get(member.id) !== undefined,
-                  },
-                );
+                try {
+                  plan = this.session.prepareRemote(
+                    this.serializer.deserializeChanges(frame.changes),
+                    {
+                      inspectOperations:
+                        lease.writePaths.get(member.id) !== undefined,
+                    },
+                  );
+                } catch (error) {
+                  if (!(error instanceof DocumentCausalDependencyError))
+                    throw error;
+                  held = 'dependency';
+                }
               }
             } else {
               memberId = this.options.coordinator.localMemberId;
@@ -1375,7 +1537,7 @@ export class CoordinatedDocument<
                 }
               }
             }
-            if (!replay && input !== undefined)
+            if (!replay && !held && input !== undefined)
               assertDocumentOperationsAllowed(
                 plan!,
                 lease.writePaths.get(member.id),
@@ -1388,6 +1550,14 @@ export class CoordinatedDocument<
                 ))(),
             );
             const hash = new Uint8Array(digest);
+            if (held)
+              throw new HeldDocumentFrame(
+                held,
+                captured,
+                documentBytesId(memberId),
+                sequence,
+                hash,
+              );
             const accepted = receipts.get(documentBytesId(memberId));
             if (
               replay &&
@@ -1908,6 +2078,7 @@ export class CoordinatedDocument<
   close(): Promise<void> {
     this.closed = true;
     this.activated = false;
+    this.clearHeld();
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
     this.material = undefined;

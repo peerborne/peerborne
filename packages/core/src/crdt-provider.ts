@@ -40,6 +40,24 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   newDocument(): DocType;
 
   /**
+   * Return a writable copy of `document` as it was when it was produced, even
+   * after a later `localChange()` or `remoteChange()` consumed it, or
+   * `undefined` when no faithful copy exists.
+   *
+   * Implement this when those methods leave their input unusable, as
+   * Automerge marks it outdated. A transaction that fails before publication
+   * rolls back to this copy. The copy must make its next local change under a
+   * new replica identity, so the discarded change's position is never reused.
+   * Return `undefined` when the copy would lose state, such as remote changes
+   * still waiting for their dependencies: the transaction then retires the
+   * document instance instead. When not implemented, a transaction rolls back
+   * to `document` itself.
+   *
+   * @param document A document this provider returned before the failed change.
+   */
+  cloneDocument?(document: DocType): DocType | undefined;
+
+  /**
    * Apply locally made changes to provided CRDT document as defined by `changeFn`.
    *
    * If `changeFn` throws, leave `document` without its edits and rethrow the
@@ -64,6 +82,24 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * @param changes An object describing changes made by a peer. CRDT-specific.
    */
   remoteChange(document: DocType, changes: ChangesType): DocType;
+
+  /**
+   * Report whether `document` has integrated every change in `changes`.
+   *
+   * Implement this when `remoteChange()` can buffer changes until their
+   * causal dependencies arrive and buffered changes are missing from
+   * `getHistory()`. Peerborne records a remote change as applied only after
+   * this returns true, so a buffered change stays eligible for redelivery.
+   * It runs for every delivered change and, after a change integrates, for
+   * each change still waiting, of which Peerborne keeps at most 4,096 per
+   * document. Those checks pass the same
+   * `changes` object, so cache per-change decoding by it. When not
+   * implemented, every applied change counts as integrated.
+   *
+   * @param document CRDT document returned by `remoteChange()`.
+   * @param changes Changes previously passed to `remoteChange()`.
+   */
+  hasIntegrated?(document: DocType, changes: ChangesType): boolean;
 
   /**
    * Gets all changes for the document.

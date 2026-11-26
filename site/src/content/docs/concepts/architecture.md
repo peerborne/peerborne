@@ -61,11 +61,14 @@ independently trusted state. The runtime does not yet verify an MLS genesis or
 replay a newer control suffix from peers.
 
 Quorum probes count each authenticated signing authority once across transport
-PeerIds. The agreed digest binds the document, served frontier, captured tuple,
-and a complete response manifest containing node kinds, edges, inline payloads,
-snapshot content/metadata, and keychain changes. The selected response must echo
-the challenge sent to that responder, match the local tuple, verify under a
-captured writer, and reproduce that digest before mutation. Disabling quorum
+PeerIds; a document with one trusted writer accepts one response from any of
+its devices. The agreed digest binds the document, served frontier, captured
+tuple, and a response manifest containing change CIDs, node kinds, edges,
+snapshot state and boundary, and keychain changes. The selected response must
+echo the challenge sent to that responder, match the local tuple, verify under a
+captured writer, and reproduce that digest before mutation; a first load's
+snapshot must also be signed by a writer that the response's writer blocks
+establish. Disabling quorum
 allows one trusted signed V4 response; challenge, tuple, signature, and
 frontier checks remain.
 

@@ -1,5 +1,6 @@
 import {
   AbstractType,
+  GC,
   Item,
   Map as YMap,
   Array as YArray,
@@ -47,18 +48,29 @@ function target(
   return path;
 }
 
-/** Inspect integrated items before native GC, including losing writes and deletion ranges. */
+/**
+ * Inspect integrated items before native GC, including losing writes and deletion ranges.
+ * A GC struct has no parent or content and consumes work without a target. Deleting one has
+ * no effect. A struct this transaction integrated as GC is inert only in a document that
+ * collects its references too, so the result reports whether one exists.
+ */
 export function recordYjsOperationTargets(
   transaction: Transaction,
   targets: DocumentOperationTargets,
-): void {
+): boolean {
   const roots = new Map<AbstractType<any>, string>();
   for (const [name, root] of transaction.doc.share) {
     if (roots.size >= 4096)
       throw new Error('Yjs operation roots exceed bounds');
     roots.set(root, name);
   }
-  const visit = (client: number, start: number, end: number) => {
+  let collected = false;
+  const visit = (
+    client: number,
+    start: number,
+    end: number,
+    integrated: boolean,
+  ) => {
     if (start === end) return;
     const structs = transaction.doc.store.clients.get(client);
     if (
@@ -76,17 +88,29 @@ export function recordYjsOperationTargets(
     ) {
       const item = structs[index];
       if (item.id.clock >= end) break;
-      if (!(item instanceof Item))
-        throw new Error('Yjs operation ancestry was garbage collected');
       const work =
         Math.min(end, item.id.clock + item.length) -
         Math.max(start, item.id.clock);
-      targets.add(target(item, roots), work);
+      if (item instanceof GC) {
+        targets.addInert(work);
+        collected ||= integrated;
+      } else if (item instanceof Item) targets.add(target(item, roots), work);
+      else throw new Error('Unknown Yjs operation struct');
     }
   };
   for (const [client, end] of transaction.afterState)
-    visit(client, transaction.beforeState.get(client) ?? 0, end);
-  for (const [client, ranges] of transaction.deleteSet.clients)
+    visit(client, transaction.beforeState.get(client) ?? 0, end, true);
+  // Structs integrated by this transaction were charged above, whether or not
+  // GC keeps them for the deletion set.
+  for (const [client, ranges] of transaction.deleteSet.clients) {
+    const integrated = transaction.beforeState.get(client) ?? 0;
     for (const range of ranges)
-      visit(client, range.clock, range.clock + range.len);
+      visit(
+        client,
+        Math.min(range.clock, integrated),
+        Math.min(range.clock + range.len, integrated),
+        false,
+      );
+  }
+  return collected;
 }

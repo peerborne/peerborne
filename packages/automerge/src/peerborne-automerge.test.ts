@@ -201,6 +201,35 @@ describe('AutomergeProvider', () => {
     expect({ ...peer }).toEqual({ title: 'v1' });
     expect({ ...peer }).toEqual({ ...next });
   });
+
+  test('hasIntegrated() is false while a change waits for its dependencies', () => {
+    const [base, baseChanges] = provider.localChange(
+      provider.newDocument(),
+      '',
+      (d) => {
+        d.title = 'base';
+      },
+    );
+    const [withDependency, dependency] = provider.localChange(base, '', (d) => {
+      d.count = 1;
+    });
+    const [, dependent] = provider.localChange(withDependency, '', (d) => {
+      d.count = 2;
+    });
+
+    let replica = provider.remoteChange(provider.newDocument(), baseChanges);
+    expect(provider.hasIntegrated(replica, baseChanges)).toBe(true);
+    replica = provider.remoteChange(replica, dependent);
+    expect(provider.hasIntegrated(replica, dependent)).toBe(false);
+    expect(provider.hasIntegrated(replica, baseChanges)).toBe(true);
+    expect({ ...replica }).toEqual({ title: 'base' });
+    expect(provider.getHistory(replica)).toHaveLength(1);
+
+    replica = provider.remoteChange(replica, dependency);
+    expect(provider.hasIntegrated(replica, dependency)).toBe(true);
+    expect(provider.hasIntegrated(replica, dependent)).toBe(true);
+    expect({ ...replica }).toEqual({ title: 'base', count: 2 });
+  });
 });
 
 // ─── serializeKey / deserializeKey ──────────────────────────────────
@@ -1271,10 +1300,11 @@ describe('AutomergeACL', () => {
     expect(await fresh.check(key2)).toBe(false);
   });
 
-  test('rejects a concurrent membership assignment and deletion atomically', async () => {
-    const acl = new AutomergeACL();
-    await acl.add(key1);
-    const before = acl.current();
+  test('a removal wins over a concurrent membership assignment in every merge order', async () => {
+    const source = new AutomergeACL();
+    await source.add(key1);
+    await source.add(key2);
+    const before = source.current();
     const serialized = await serializeKey(key1);
     const deleteBase = automergeInit<AutomergeACLShape>({
       actor: 'ffffffffffffffffffffffffffffffff',
@@ -1291,13 +1321,223 @@ describe('AutomergeACL', () => {
       delete doc.users![serialized];
       doc.users![serialized] = true;
     });
-    const conflicted = automergeMerge(deletion, assignment);
+    const removed = getAutomergeChanges(deleteDocument, deletion);
+    const assigned = getAutomergeChanges(assignDocument, assignment);
+    expect(automergeMerge(deletion, assignment).users![serialized]).toBe(true);
 
-    expect(() => acl.merge(getAllAutomergeChanges(conflicted))).toThrow(
-      /conflicting membership/,
+    const replicas = [
+      [removed, assigned],
+      [assigned, removed],
+      [[...removed, ...assigned]],
+    ].map((deliveries) => {
+      const acl = new AutomergeACL();
+      acl.merge(before);
+      for (const changes of deliveries) acl.merge(changes);
+      return acl;
+    });
+    for (const acl of replicas) {
+      expect(await acl.check(key1)).toBe(false);
+      expect(await acl.check(key2)).toBe(true);
+      expect(
+        await Promise.all((await acl.users()).map((key) => serializeKey(key))),
+      ).toEqual([await serializeKey(key2)]);
+      expect([...acl.current()].sort()).toEqual(
+        [...replicas[0]!.current()].sort(),
+      );
+    }
+
+    const restored = await replicas[0]!.add(key1);
+    expect(restored.length).toBeGreaterThan(0);
+    for (const acl of replicas.slice(1)) acl.merge(restored);
+    for (const acl of replicas) expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('a retried addition after a rejected publication cannot undo a later removal', async () => {
+    const later = (
+      await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        true,
+        ['sign', 'verify'],
+      )
+    ).publicKey;
+    const founder = new AutomergeACL();
+    await founder.add(key1);
+    const replica = new AutomergeACL();
+    replica.merge(founder.current());
+
+    // A publication rejected after delivery leaves its staged change uncommitted.
+    const delivered = (await founder.prepareAdd(key2)).changes;
+    replica.merge(delivered);
+    const retried = await founder.add(key2);
+    const removal = await founder.remove(key2);
+    const addition = await founder.add(later);
+
+    for (const changes of [retried, removal, addition])
+      expect(() => replica.merge(changes)).not.toThrow();
+    expect(() => founder.merge(delivered)).not.toThrow();
+    for (const acl of [founder, replica]) {
+      expect(await acl.check(key1)).toBe(true);
+      expect(await acl.check(key2)).toBe(false);
+      expect(await acl.check(later)).toBe(true);
+      expect(await acl.users()).toHaveLength(2);
+    }
+    expect([...replica.current()].sort()).toEqual(
+      [...founder.current()].sort(),
     );
-    expect(acl.current()).toEqual(before);
-    expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('writers converge when one removes a member that two others added concurrently', async () => {
+    const [a, b, c] = [0, 1, 2].map(() => new AutomergeACL());
+    await a.add(key1);
+    for (const acl of [b, c]) acl.merge(a.current());
+    const base = a.current();
+    const c1 = await a.add(key2);
+    const c3 = await c.add(key2);
+    b.merge(c1);
+    const c2 = await b.remove(key2);
+    const next = await b.add(key2);
+
+    for (const order of [
+      [c1, c2, c3],
+      [c1, c3, c2],
+      [c2, c1, c3],
+      [c2, c3, c1],
+      [c3, c1, c2],
+      [c3, c2, c1],
+    ]) {
+      const replica = new AutomergeACL();
+      replica.merge(base);
+      for (const changes of order) replica.merge(changes);
+      expect(await replica.check(key2)).toBe(false);
+      expect(await replica.check(key1)).toBe(true);
+      replica.merge(next);
+      expect(await replica.check(key2)).toBe(true);
+    }
+  });
+
+  test('a backdated removal of the founder acts like a current removal', async () => {
+    const founder = new AutomergeACL();
+    await founder.add(key1);
+    await founder.add(key2);
+    const base = founder.current();
+    const serialized = await serializeKey(key1);
+    const removed = await founder.remove(key1);
+    const restored = await founder.add(key1);
+    const history = founder.current();
+    const stale = applyAutomergeChanges(
+      automergeInit<AutomergeACLShape>({
+        actor: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      }),
+      base,
+    )[0];
+    const backdated = getAutomergeChanges(
+      stale,
+      automergeChange(stale, (doc) => {
+        delete doc.users![serialized];
+      }),
+    );
+    const current = new AutomergeACL();
+    current.merge(history);
+    const removal = await current.remove(key1);
+    expect(decodeAutomergeChange(backdated[0]!).deps).not.toEqual(
+      decodeAutomergeChange(removal[0]!).deps,
+    );
+
+    const replicas = [
+      [backdated, history],
+      [history, backdated],
+      [base, backdated, removed, restored],
+      [history, removal],
+    ].map((deliveries) => {
+      const acl = new AutomergeACL();
+      for (const changes of deliveries) acl.merge(changes);
+      return acl;
+    });
+    for (const acl of replicas) {
+      expect(await acl.check(key1)).toBe(false);
+      expect(await acl.check(key2)).toBe(true);
+    }
+    const readded = await replicas[0]!.add(key1);
+    for (const acl of replicas.slice(1, 3))
+      acl.merge([...backdated, ...readded]);
+    for (const acl of replicas.slice(0, 3))
+      expect(await acl.check(key1)).toBe(true);
+  });
+
+  test('a deletion whose predecessors disagree with its dependencies is rejected without changing membership', async () => {
+    const source = new AutomergeACL();
+    await source.add(key1);
+    const base = source.current();
+    const addition = await source.add(key2);
+    const remover = new AutomergeACL();
+    remover.merge([...base, ...addition]);
+    const [honest] = await remover.remove(key2);
+    const decoded = decodeAutomergeChange(honest!);
+    const craft = (edit: Partial<typeof decoded>) => {
+      const change: Partial<typeof decoded> = { ...decoded, ...edit };
+      delete change.hash;
+      return [encodeAutomergeChange(change as typeof decoded)];
+    };
+    const backdated = craft({
+      deps: [decodeAutomergeChange(base.at(-1)!).hash],
+    });
+    const unknown = craft({
+      ops: decoded.ops.map((operation) => ({
+        ...operation,
+        pred: ['99@dddddddddddddddddddddddddddddddd'],
+      })),
+    });
+    const empty = craft({
+      ops: decoded.ops.map((operation) => ({ ...operation, pred: [] })),
+    });
+
+    for (const [crafted, additionFirst] of [
+      [backdated, true],
+      [backdated, false],
+      [unknown, true],
+      [empty, true],
+    ] as const) {
+      const acl = new AutomergeACL();
+      acl.merge(base);
+      if (additionFirst) acl.merge(addition);
+      const before = acl.current();
+      expect(() => acl.merge(crafted)).toThrow(ACLMergeRejectedError);
+      expect(acl.current()).toEqual(before);
+      acl.merge(addition);
+      expect(await acl.check(key2)).toBe(true);
+      acl.merge([honest!]);
+      expect(await acl.check(key2)).toBe(false);
+      expect(await acl.check(key1)).toBe(true);
+    }
+  });
+
+  test('replaying a converged contested history changes nothing', async () => {
+    const founder = new AutomergeACL();
+    await founder.add(key1);
+    const replica = new AutomergeACL();
+    replica.merge(founder.current());
+    const delivered = (await founder.prepareAdd(key2)).changes;
+    replica.merge(delivered);
+    const retried = await founder.add(key2);
+    const removal = await founder.remove(key2);
+    for (const changes of [retried, removal]) replica.merge(changes);
+    founder.merge(delivered);
+    const history = [...founder.current()].sort();
+    expect([...replica.current()].sort()).toEqual(history);
+
+    for (const acl of [founder, replica]) {
+      for (const changes of [delivered, retried, removal, acl.current()])
+        expect(acl.merge(changes)).toBe(false);
+      expect([...acl.current()].sort()).toEqual(history);
+      expect(await acl.check(key2)).toBe(false);
+      expect(await acl.check(key1)).toBe(true);
+    }
+    const reversed = new AutomergeACL();
+    for (const change of [...founder.current()].reverse())
+      reversed.merge([change]);
+    expect([...reversed.current()].sort()).toEqual(history);
+    expect(await reversed.check(key2)).toBe(false);
+    expect(await reversed.check(key1)).toBe(true);
   });
 
   test('accepts concurrent additions of the same member', async () => {
