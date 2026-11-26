@@ -2,6 +2,7 @@ import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import {
   copyUnsharedUint8Array,
+  isPaddedBase64,
   snapshotEnumerableOwnDataObject,
 } from './utils.js';
 import type { SerializedBeeKEMWelcomeV2 } from './beekem-welcome-wire.js';
@@ -11,6 +12,7 @@ import {
   MAX_RECENT_TIPS,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
+import { canRetainGcCandidate } from './policy/retention.js';
 
 export const MAX_DOCUMENT_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const MAX_CHECKPOINT_CIDS = 100_000;
@@ -80,6 +82,7 @@ export interface DocumentCheckpointState {
   hashes: string[];
   ancestors: string[];
   recentTips: [string, string][];
+  gcCandidates: string[];
   documentChangeCount: number;
   changesSinceSnapshot: number;
   historyVisibility: 'full_history' | 'current_only' | 'since_invited';
@@ -112,9 +115,7 @@ export function checkpointDecode(value: unknown): Uint8Array {
   if (
     typeof value !== 'string' ||
     value.length > (MAX_DOCUMENT_CHECKPOINT_BYTES * 4) / 3 + 4 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      value,
-    )
+    !isPaddedBase64(value)
   ) {
     throw new TypeError('Invalid checkpoint byte encoding');
   }
@@ -180,6 +181,7 @@ export function decodeCheckpointState(
     'hashes',
     'ancestors',
     'recentTips',
+    'gcCandidates',
     'documentChangeCount',
     'changesSinceSnapshot',
     'historyVisibility',
@@ -251,6 +253,17 @@ export function decodeCheckpointState(
     }
     cid(entry[0]);
   });
+  array(state.gcCandidates);
+  const gcCandidates = new Set<string>();
+  for (const candidate of state.gcCandidates) {
+    cid(candidate);
+    if (
+      gcCandidates.has(candidate) ||
+      !canRetainGcCandidate(false, gcCandidates.size, candidate.length)
+    )
+      throw new TypeError('Invalid checkpoint garbage collection candidate');
+    gcCandidates.add(candidate);
+  }
   if (
     state.invitationEpoch !== null &&
     checkpointDecode(state.invitationEpoch).length !== 32

@@ -95,7 +95,37 @@ document path, role head, recipient and one-shot request challenge bind the
 response. Only a current controller with whole-document write authority can
 issue it. A replica can import a missing receipt for another current writer.
 Overlapping receipts must agree on their sequence and hash, and the requester
-keeps its own sequence. A conflicting head requires ordered frame redelivery.
+keeps its own sequence.
+
+A requester that holds part of another writer's history and missed its tail
+can still resume. The request lists the requester's accepted heads, at most
+256. For each writer whose head is behind, the controller adds that writer's
+signed frames from the requester's head toward its own. The suffix shares the
+1 MiB sealed checkpoint with the snapshot and holds at most 256 frames, so a
+small snapshot leaves room for at least one maximum-size frame. When a
+writer's frames do not all fit, or are not all retained, the controller offers
+that writer's receipt only at the last frame it included, or at the
+requester's own head, and the requester advances over later rounds. Other
+writers are unaffected. A retained frame at the requester's head with a
+different hash keeps the controller's head, so a fork still conflicts. The
+requester accepts a higher head only after checking each frame: the writer's
+signature, this document, genesis, permission head and group context,
+consecutive sequences, and a parent hash chain from its own head to the
+offered one. An offer below a head the requester accepted after sending the
+request is kept when it matches a frame the requester retains. Anything else
+conflicts as before.
+
+Each document retains its latest 64 accepted frames per author in the current
+context, in memory only, as signed content and ciphertext. A document retains
+at most 16 MiB, and all coordinated documents in a process at most 64 MiB.
+Over either budget, the author holding the most retained bytes gives up its
+oldest frame first, so one writer's large frames do not push out other
+writers' tails. Retained frames are dropped at a new group context, at the
+receipt reset of a role transition and on close. A requester whose head is
+ahead of the controller's, a gap longer than the retained frames, or a
+controller restarted since accepting them still requires ordered frame
+redelivery. The proved receipt policy is unchanged; these extensions run
+beside it at runtime and are outside the formal proof.
 The encoded snapshot payload is limited to 512 KiB. Native snapshot generation
 and merge costs still depend on the document and adapter.
 
@@ -283,14 +313,29 @@ A frame can arrive before its author's previous frame, or before another
 author's change that it natively depends on. After full decryption, signature,
 role and context checks, such a frame is held instead of rejected, and
 `receive` resolves `false`. Each accepted frame or catch-up merge retries the
-held frames whose author prefix is now complete, or whose dependency may have
-arrived. A retried frame goes through the whole admission path again, including
-field-scope inspection. A document holds at most 64 frames, 32 per author and
-8 MiB, and all documents in a process at most 1,024 frames and 64 MiB. A frame
-beyond those bounds is rejected. A second frame for a held author sequence with
-different content is rejected as equivocation. Held frames are memory-only and
-are dropped at a new group context and on close. A held frame whose
-predecessor never arrives stays held; nothing requests it yet.
+held frames whose author prefix is now complete. A frame held for a native
+dependency is retried only once the session holds every struct, deletion or
+change hash the provider named for it, so unrelated accepted frames cost no
+staging; a provider that names nothing is retried after each accepted frame.
+Automerge names missing change hashes before it clones the document, and a Yjs
+update that integrated nothing keeps the private mirror instead of rebuilding
+it from a snapshot. A retried frame goes through the whole admission path
+again, including field-scope inspection. A document holds at most 64 frames
+and 8 MiB; each author holds at most 32 of those frames and 4 MiB. All
+documents in a process hold at most 1,024 frames and 64 MiB, and one author at
+most a quarter of that. A held frame expires two minutes after it was held, by
+a timer even in a document that receives nothing more; frames that an arriving
+predecessor makes admissible are retried before anything expires. When a bound
+is reached, the author occupying the largest fraction of its frame or byte
+share gives up its farthest-ahead frame, in any document for the process-wide
+bound, so one writer's far-ahead frames cannot push out another author's
+out-of-order frame. Evictions are planned first and applied only if the new
+frame is then admitted; a frame farther ahead than everything its author holds,
+or whose author already uses its whole process-wide share, is rejected without
+evicting anything. A second frame for a held author sequence with different
+content is rejected as equivocation. Held frames are memory-only and are
+dropped at a new group context and on close. A held frame whose predecessor
+never arrives expires; nothing requests it yet.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local

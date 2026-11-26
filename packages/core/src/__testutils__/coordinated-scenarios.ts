@@ -64,3 +64,41 @@ export async function crossAuthorReorderScenario<Document, Changes, Change>(
     await g.close();
   }
 }
+
+/**
+ * Member 2 receives the first of member 1's frames, misses the second and
+ * the controller's edit, then resumes through the controller checkpoint.
+ */
+export async function missedTailCatchUpScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    catchUp: true,
+  });
+  const errors: string[] = [];
+  const edit = async (author: number, label: string, recipients: number[]) => {
+    await g.doc(author).change(adapter.edit(label));
+    for (const publication of g.take())
+      errors.push(...(await g.deliver(publication, recipients)));
+  };
+  try {
+    await g.addMember(1);
+    await g.addMember(2);
+    for (let index = 0; index < 3; index++) await g.open(index);
+    await edit(1, 'one', [0, 2]);
+    await edit(1, 'two', [0]);
+    await edit(0, 'ctl', [1]);
+    const request = await g.doc(2).createSecurityCatchUpRequest();
+    const checkpoint = await g.doc(0).createSecurityCatchUpCheckpoint(request);
+    await g.doc(2).applySecurityCatchUpCheckpoint(checkpoint);
+    await edit(1, 'three', [0, 2]);
+    await edit(2, 'four', [0, 1]);
+    return {
+      errors,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}

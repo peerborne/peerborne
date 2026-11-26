@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { mergeCompactionConfig } from './compaction-config.js';
-import { CHANGE_TREE_COMPACTION_DEPTH } from './change-tree-walk.js';
+import {
+  CHANGE_TREE_COMPACTION_DEPTH,
+  changeTreeDepth,
+} from './change-tree-walk.js';
 import {
   crdtDocumentChangeNode,
   crdtWriterChangeNode,
@@ -74,6 +77,7 @@ function writerDocument(name: string, inPlace = false) {
     _signAsWriter: jest.fn(async () => 'AQ=='),
     _localHandlers: {},
     _remoteHandlers: {},
+    _deliveryFailureHandlers: {},
     _keychain: {
       current: jest.fn(async () => [new Uint8Array(32).fill(1), { key: 1 }]),
     },
@@ -261,6 +265,68 @@ test.each([
   },
 );
 
+test.each([
+  ['large changes', 30, 200_000],
+  ['small changes', CHANGE_TREE_COMPACTION_DEPTH + 8, 1],
+])(
+  'a writer whose %s keep failing to publish still bounds its retained tree',
+  async (_name, count, size) => {
+    const { document, published } = writerDocument('a');
+    const undelivered: unknown[] = [];
+    document.subscribeDeliveryFailures('probe', (failure: unknown) =>
+      undelivered.push(failure),
+    );
+    const { publish } = document.swarm.heliaNode.libp2p.services.pubsub;
+    publish.mockRejectedValue(
+      new Error('PublishError.NoPeersSubscribedToTopic'),
+    );
+    for (let index = 0; index < count; index++)
+      await document.change(() => ({ index, text: 'x'.repeat(size) }));
+    expect(undelivered).toHaveLength(count);
+    expect(document._latestSnapshot).toBeDefined();
+    expect(
+      changeTreeDepth(
+        document._lastSyncMessage.changes,
+        CHANGE_TREE_COMPACTION_DEPTH,
+      ),
+    ).toBeLessThan(CHANGE_TREE_COMPACTION_DEPTH);
+    expect(document._closeDocument).not.toHaveBeenCalled();
+
+    publish.mockImplementation(async (_topic: string, bytes: Uint8Array) => {
+      published.push(bytes);
+    });
+    await document.change(() => ({ online: true }));
+    expect(published).toHaveLength(1);
+    expect(published[0].byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
+      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+    );
+  },
+);
+
+test('a writer whose local handler throws on every change still bounds its retained tree', async () => {
+  const { document, published } = writerDocument('a');
+  Object.assign(document, {
+    getReaders: async () => [],
+    getWriters: async () => [],
+    _localHandlers: {
+      broken: () => {
+        throw new Error('handler bug');
+      },
+    },
+  });
+  for (let index = 0; index < 30; index++)
+    await expect(
+      document.change(() => ({ index, text: 'x'.repeat(200_000) })),
+    ).rejects.toThrow('handler bug');
+  expect(published).toHaveLength(30);
+  for (const frame of published)
+    expect(frame.byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
+      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+    );
+  expect(document._latestSnapshot).toBeDefined();
+  expect(document._closeDocument).not.toHaveBeenCalled();
+});
+
 test('a frame that outgrows GossipSub because compaction is unavailable is rolled back, not wedged', async () => {
   const { document, published } = writerDocument('a');
   document._snapshotUnsupported = true;
@@ -338,6 +404,7 @@ test('a sync reply too large for GossipSub is reported instead of published', as
     {
       documentId: '/gossip-frame',
       requester: 'reader',
+      requesterPeer: '12D3KooWReader',
       requestId: '00'.repeat(16),
       issuedAtMs: Date.now(),
       knownSnapshots: [],
@@ -345,6 +412,7 @@ test('a sync reply too large for GossipSub is reported instead of published', as
       signature: 'AQ==',
     },
     () => true,
+    '12D3KooWReader',
   );
   expect(published).toHaveLength(0);
   expect(warn).toHaveBeenCalledWith(

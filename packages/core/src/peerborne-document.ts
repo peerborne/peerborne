@@ -1,6 +1,16 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import {
+  AntiEntropy,
+  antiEntropyBudgetFor,
+  disabledAntiEntropyStatus,
+  resolveAntiEntropyConfig,
+  type AntiEntropyEvent,
+  type AntiEntropyHandler,
+  type AntiEntropyRequestOutcome,
+  type AntiEntropyStatus,
+} from './anti-entropy.js';
+import {
   DocumentBlockReadLimitError,
   MAX_DOCUMENT_BLOCK_BYTES,
   readDocumentBlock,
@@ -794,6 +804,26 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   hashes: string[],
 ) => void;
 
+/**
+ * A local change that was committed locally, stored and recorded in the
+ * retained change tree, but whose frame could not be encrypted or published.
+ * The next change's frame carries it inline, and sync and load responses
+ * serve it.
+ */
+export interface ChangeDeliveryFailure {
+  /** Path of the document that holds the change. */
+  readonly documentPath: string;
+  /** CID of the change that was not delivered. */
+  readonly changeId: string;
+  /** The encryption or publication error. */
+  readonly error: unknown;
+}
+
+/** Handler for {@link PeerborneDocument.subscribeDeliveryFailures}. */
+export type PeerborneDocumentDeliveryFailureHandler = (
+  failure: ChangeDeliveryFailure,
+) => void;
+
 /** Options for {@link PeerborneDocument.removeWriter}. */
 export interface RemoveWriterOptions {
   /**
@@ -1022,6 +1052,15 @@ function partialChangeCommitFailure(
     [changeError, commitError],
     'Change function failed, and committing its partial edit also failed',
   );
+}
+
+/** Delete the entries added to `set` after it held `size` entries. */
+function deleteEntriesAfter(set: Set<string>, size: number): void {
+  if (set.size <= size) return;
+  const added: string[] = [];
+  let index = 0;
+  for (const entry of set) if (index++ >= size) added.push(entry);
+  for (const entry of added) set.delete(entry);
 }
 
 export class PeerborneDocument<
@@ -1573,9 +1612,10 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
-  // CID of the last local change whose frame publication resolved. A failed
-  // transaction compares it to tell a published change from one to roll back.
-  private _lastPublishedChange?: string;
+
+  private _deliveryFailureHandlers: {
+    [id: string]: PeerborneDocumentDeliveryFailureHandler;
+  } = {};
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -2336,31 +2376,40 @@ export class PeerborneDocument<
     ]);
   }
 
+  /** Run every local handler, then throw the first failure or all of them. */
   private async _fireLocalUpdateHandlers(
     hashes: string[],
     postPublishOperation?: string,
   ) {
+    const errors: unknown[] = [];
     for (const handler of Object.values(this._localHandlers)) {
-      const result = (handler as (
-        current: DocType,
-        readers: PublicKey[],
-        writers: PublicKey[],
-        hashes: string[],
-      ) => unknown)(
-        this._document,
-        await this.getReaders(),
-        await this.getWriters(),
-        hashes,
-      );
-      if (result !== undefined) {
-        void Promise.resolve(result).catch(() => {
-          this._reportLocalUpdateHandlerFailure(
-            postPublishOperation,
-            true,
-          );
-        });
+      try {
+        const result = (handler as (
+          current: DocType,
+          readers: PublicKey[],
+          writers: PublicKey[],
+          hashes: string[],
+        ) => unknown)(
+          this._document,
+          await this.getReaders(),
+          await this.getWriters(),
+          hashes,
+        );
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => {
+            this._reportLocalUpdateHandlerFailure(
+              postPublishOperation,
+              true,
+            );
+          });
+        }
+      } catch (error) {
+        errors.push(error);
       }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(errors, 'Local update handlers failed');
   }
 
   private _reportLocalUpdateHandlerFailure(
@@ -2549,6 +2598,25 @@ export class PeerborneDocument<
     return this._waiting?.entries.has(cid) === true;
   }
 
+  private _hasDiscarded(document: DocType, changes: ChangesType): boolean {
+    return this._crdtProvider.hasDiscarded?.(document, changes) === true;
+  }
+
+  /**
+   * Whether the CRDT still holds the waiting document change `cid`. A change
+   * the CRDT discarded stops waiting, so the caller applies it again.
+   */
+  private _holdsWaitingChange(
+    document: DocType,
+    cid: string,
+    changes: ChangesType,
+  ): boolean {
+    if (!this._isWaiting(cid)) return false;
+    if (!this._hasDiscarded(document, changes)) return true;
+    this._waiting!.entries.delete(cid);
+    return false;
+  }
+
   private _isDelivered(cid: string): boolean {
     return this._hashes.has(cid) || this._isWaiting(cid);
   }
@@ -2585,17 +2653,21 @@ export class PeerborneDocument<
 
   /**
    * Record the waiting document changes the CRDT has integrated since they
-   * were applied, whichever message supplied the dependency. Each waiting
-   * change is checked once.
+   * were applied, whichever message supplied the dependency, and stop waiting
+   * for those it discarded. Each waiting change is checked once.
    */
   private _recordIntegratedWaitingChanges(): string[] {
     const entries = this._waiting?.entries;
     if (!entries?.size) return [];
     const recorded: string[] = [];
     for (const [cid, { kind, changes }] of entries) {
-      if (changes === undefined || !this._hasIntegrated(changes)) continue;
-      this._recordRemoteChange(cid, kind);
-      recorded.push(cid);
+      if (changes === undefined) continue;
+      if (this._hasIntegrated(changes)) {
+        this._recordRemoteChange(cid, kind);
+        recorded.push(cid);
+      } else if (this._hasDiscarded(this._document, changes)) {
+        entries.delete(cid);
+      }
     }
     for (let i = recorded.length - 1; i >= 0; i--) {
       this._trackTip(recorded[i]!, crdtDocumentChangeNode);
@@ -2868,8 +2940,10 @@ export class PeerborneDocument<
             case crdtDocumentChangeNode: {
               // Apply the changes that were sent directly. The CRDT already
               // holds a change that is waiting for a dependency, so that
-              // change is only checked again.
-              if (!this._isWaiting(sentHash)) {
+              // change is only checked again unless the CRDT discarded it.
+              if (
+                !this._holdsWaitingChange(newDocument, sentHash, sentChanges)
+              ) {
                 newDocument = this._crdtProvider.remoteChange(
                   newDocument,
                   sentChanges,
@@ -3069,15 +3143,25 @@ export class PeerborneDocument<
             );
             assertWorkerActive();
             // A block the message's fetch bounds left unread stays a missing
-            // dependency.
-            if (missingChanges === undefined) continue;
+            // dependency, which catch-up asks peers for.
+            if (missingChanges === undefined) {
+              this._antiEntropy?.missingChange(missingHash);
+              continue;
+            }
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
+              this._antiEntropy?.missingChange(missingHash);
               continue;
             }
             switch (missingHashKind) {
               case crdtDocumentChangeNode: {
-                if (!this._isWaiting(missingHash)) {
+                if (
+                  !this._holdsWaitingChange(
+                    this._document,
+                    missingHash,
+                    missingChanges,
+                  )
+                ) {
                   this._document = this._crdtProvider.remoteChange(
                     this._document,
                     missingChanges,
@@ -3152,6 +3236,7 @@ export class PeerborneDocument<
               'Failed to fetch missing change from blockstore:',
               missingHash,
             );
+            this._antiEntropy?.missingChange(missingHash);
           }
         }
       };
@@ -4707,7 +4792,6 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
-      this._lastPublishedChange = hash;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -4739,20 +4823,29 @@ export class PeerborneDocument<
         this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
-      throw error;
+      // A document change already in the retained tree is committed locally
+      // when encryption or publication fails: the next frame carries it
+      // inline, and sync and load responses serve it.
+      if (postPublishCommit || this._lastSyncMessage === lastSyncMessageBefore)
+        throw error;
+      this._reportDeliveryFailure(hash, error);
     }
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
     // failures. Report them, but preserve the successful membership result.
+    // A document change is still counted and compacted before its handler
+    // failure is thrown, so a failing handler cannot grow the retained tree.
+    let handlerFailure: { error: unknown } | undefined;
     try {
       await this._fireLocalUpdateHandlers(
         [hash],
         postPublishCommit?.operation,
       );
     } catch (error) {
-      if (!postPublishCommit) throw error;
-      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      if (postPublishCommit)
+        this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      else handlerFailure = { error };
     }
 
     // Track document changes for compaction. Membership nodes deepen the
@@ -4761,7 +4854,35 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact(undefined, publishedBytes);
+    try {
+      await this._maybeCompact(undefined, publishedBytes);
+    } catch (error) {
+      throw handlerFailure
+        ? new AggregateError(
+            [handlerFailure.error, error],
+            'A local update handler and compaction failed after the change was committed',
+          )
+        : error;
+    }
+    if (handlerFailure) throw handlerFailure.error;
+  }
+
+  private _reportDeliveryFailure(changeId: string, error: unknown): void {
+    const failure: ChangeDeliveryFailure = Object.freeze({
+      documentPath: this.documentPath,
+      changeId,
+      error,
+    });
+    const report = () =>
+      console.error(`[${this.documentPath}] a delivery failure handler failed.`);
+    for (const handler of Object.values(this._deliveryFailureHandlers)) {
+      try {
+        const result: unknown = handler(failure);
+        if (result !== undefined) void Promise.resolve(result).catch(report);
+      } catch {
+        report();
+      }
+    }
   }
 
   /**
@@ -7092,6 +7213,8 @@ export class PeerborneDocument<
    * @param preferredPeer Optional peer to try first (typically a PeerId from a
    *   pubsub message sender), matched against the last `/p2p/<id>` segment of
    *   each connection's multiaddr.
+   * @param signal Optional cancellation. Once it aborts, no further peer is
+   *   tried and an in-flight response stops before it applies more state.
    * @returns true after successful loading; false if no usable response is
    * available without a quorum decision. Neither result authorizes creation.
    * @throws {LoadQuorumFailedError} If required agreement or bound delivery fails.
@@ -7101,7 +7224,10 @@ export class PeerborneDocument<
    * @throws {Error} If trust configuration is absent or bootstrap application
    * left incomplete state. Discard an instance with incomplete application.
    */
-  public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+  public async load(
+    preferredPeer?: PeerId | string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
     if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
@@ -7207,6 +7333,7 @@ export class PeerborneDocument<
     const agreeingPeerBindFailures = new Map<string, string>();
     let writerConflict: _LoadWriterVersionConflictError | undefined;
     for (const peer of orderedPeers) {
+      throwIfLoadAborted(signal);
       let peerBindFailed = false;
       if (this._compactionConfig.enabled) {
         try {
@@ -7215,12 +7342,17 @@ export class PeerborneDocument<
           const request = await addressedRequest(peer);
           const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV4,
-          ], { runOnLimitedConnection: true });
+          ], { runOnLimitedConnection: true, signal });
           const loaded = await this._sendLoadRequestAndSync(
             request.session,
             snapshotStream,
             request.serializedRequest,
             boundHashHexes.get(peer) ?? winningHashHex,
+            undefined,
+            false,
+            undefined,
+            undefined,
+            signal,
           );
           if (loaded) {
             this._assertNoIncompleteBootstrapLoad();
@@ -7252,12 +7384,17 @@ export class PeerborneDocument<
         const request = await addressedRequest(peer);
         const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV4,
-        ], { runOnLimitedConnection: true });
+        ], { runOnLimitedConnection: true, signal });
         const loaded = await this._sendLoadRequestAndSync(
           request.session,
           docStream,
           request.serializedRequest,
           boundHashHexes.get(peer) ?? winningHashHex,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          signal,
         );
         if (loaded) {
           this._assertNoIncompleteBootstrapLoad();
@@ -7342,69 +7479,208 @@ export class PeerborneDocument<
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
+  private _antiEntropy?: AntiEntropy;
+  private readonly _antiEntropyHandlers = new Map<string, AntiEntropyHandler>();
   private _syncRequestsSeen = new Map<string, number>();
   private _syncRequestClock = 0;
   private readonly _knownSyncSnapshots = new Set<string>();
 
-  /** Ask current members for missed updates using the existing authenticated local membership. */
+  /** Automatic catch-up state for this document. */
+  public get antiEntropyStatus(): AntiEntropyStatus {
+    return this._antiEntropy?.status() ?? disabledAntiEntropyStatus;
+  }
+
+  /**
+   * Observe automatic catch-up: detected gaps, requests, loads and repairs.
+   * Handlers run in a microtask after the event and cannot interrupt it.
+   *
+   * @param handlerId An identifier used to unsubscribe the handler later.
+   */
+  public subscribeToAntiEntropy(
+    handlerId: string,
+    handler: AntiEntropyHandler,
+  ): void {
+    this._antiEntropyHandlers.set(handlerId, handler);
+  }
+
+  public unsubscribeFromAntiEntropy(handlerId: string): void {
+    this._antiEntropyHandlers.delete(handlerId);
+  }
+
+  private _localPeerId(): string | undefined {
+    return this.swarm.heliaNode.libp2p.peerId?.toString();
+  }
+
+  /**
+   * Whether `cid` is held or covered by held state: recorded, referenced as
+   * a parent by a held change, or the snapshot boundary.
+   */
+  private _holdsChange(cid: string): boolean {
+    return (
+      this._hashes.has(cid) ||
+      this._referencedAncestors.has(cid) ||
+      this._latestSnapshot?.lastChangeNodeCID === cid
+    );
+  }
+
+  /**
+   * Start automatic catch-up once the document is subscribed. Coordinated
+   * documents, unsigned swarms and nodes without a libp2p identity skip it.
+   */
+  private _startAntiEntropy(pubsub: GossipSub): void {
+    const config = resolveAntiEntropyConfig(this.swarm.config?.antiEntropy);
+    const libp2p = this.swarm.heliaNode.libp2p;
+    if (
+      !config.enabled ||
+      this._coordinated ||
+      !this._subscribed ||
+      !this._isSigningEnabled() ||
+      this._localPeerId() === undefined ||
+      typeof pubsub.addEventListener !== 'function' ||
+      typeof pubsub.removeEventListener !== 'function'
+    )
+      return;
+    const topic = this._topic;
+    const antiEntropy = new AntiEntropy(
+      config,
+      {
+        request: () =>
+          this._runStateMutation(() => this._publishSyncRequest(false)),
+        hasPendingChanges: () =>
+          this._crdtProvider.hasPendingChanges?.(this._document) === true,
+        isKnown: (cid) => this._holdsChange(cid),
+        canLoad: () => this.swarm.resolveLoadSecurityCommitments !== undefined,
+        isConnected: (peer) =>
+          libp2p
+            .getConnections()
+            .some(
+              (connection) =>
+                connection.status === 'open' &&
+                connection.remotePeer?.toString() === peer,
+            ),
+        load: (peer, signal) => this.load(peer, signal),
+      },
+      antiEntropyBudgetFor(this.swarm),
+      (event) => this._emitAntiEntropy(antiEntropy, event),
+    );
+    const onSubscriptionChange = (
+      event: CustomEvent<SubscriptionChangeData>,
+    ): void => {
+      const { peerId, subscriptions } = event.detail;
+      if (
+        subscriptions.some(
+          (subscription) =>
+            subscription.topic === topic && subscription.subscribe,
+        )
+      )
+        antiEntropy.peerSubscribed(
+          peerId.toString(),
+          libp2p
+            .getConnections(peerId)
+            .some((connection) => connection.direction === 'outbound'),
+        );
+    };
+    pubsub.addEventListener('subscription-change', onSubscriptionChange);
+    antiEntropy.onClose(() =>
+      pubsub.removeEventListener('subscription-change', onSubscriptionChange),
+    );
+    this._antiEntropy = antiEntropy;
+    antiEntropy.start();
+  }
+
+  private _emitAntiEntropy(
+    antiEntropy: AntiEntropy,
+    event: AntiEntropyEvent,
+  ): void {
+    if (this._antiEntropyHandlers.size === 0) return;
+    const status = antiEntropy.status();
+    queueMicrotask(() => {
+      for (const handler of this._antiEntropyHandlers.values()) {
+        try {
+          handler(event, status);
+        } catch {
+          console.warn('Anti-entropy handler failed');
+        }
+      }
+    });
+  }
+
+  /**
+   * Ask current members for missed updates using the existing authenticated
+   * local membership. Automatic catch-up (`antiEntropy` in the Peerborne
+   * config) sends the same request without an application call.
+   */
   public async requestSync(): Promise<void> {
     if (this._coordinated)
       throw new Error(
         'Legacy document operations are unavailable in coordinated mode',
       );
-    await this._runStateMutation(async () => {
-      if (
-        !this._subscribed ||
-        !this._lastSyncMessage?.changeId ||
-        !this._isSigningEnabled()
-      ) {
-        throw new Error('Sync requests require an open authenticated document');
-      }
-      if (
-        (await this._writers.check(this._userPublicKey)) !== true &&
-        (await this._readers.check(this._userPublicKey)) !== true
-      ) {
-        throw new Error('Sync requests require current document membership');
-      }
-      const now = Date.now();
-      if (now - this._lastSyncRequestAt < 2000) return;
-      const request = {
-        documentId: this.documentPath,
-        requester: await requireSerializePublicKey(
-          this._authProvider,
-          'Sync request',
-        )(this._userPublicKey),
-        requestId: Array.from(
-          crypto.getRandomValues(new Uint8Array(16)),
-          (byte) => byte.toString(16).padStart(2, '0'),
-        ).join(''),
-        issuedAtMs: now,
-        knownSnapshots: [...new Set([
-          ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
-          ...this._knownSyncSnapshots,
-        ])].slice(0, 32),
-        knownTips: [
-          ...new Set([
-            this._lastSyncMessage.changeId,
-            ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
-            ...this._recentTips
-              .slice()
-              .reverse()
-              .map((tip) => tip.cid),
-          ]),
-        ].slice(0, 32),
-      };
-      const signature = this._serializeSignature(
-        await this._authProvider.sign(
-          syncRequestSigningPayload(request),
-          this._userKey,
-        ),
-      );
-      await this._publishSyncBytes(
-        encodeSyncRequest({ ...request, signature }),
-      );
-      this._lastSyncRequestAt = now;
-    });
+    const outcome = await this._runStateMutation(() =>
+      this._publishSyncRequest(true),
+    );
+    if (outcome === 'sent') this._antiEntropy?.manualRequest();
+  }
+
+  private async _publishSyncRequest(
+    strict: boolean,
+  ): Promise<AntiEntropyRequestOutcome> {
+    const requesterPeer = this._localPeerId();
+    if (
+      !this._subscribed ||
+      !this._lastSyncMessage?.changeId ||
+      !this._isSigningEnabled() ||
+      requesterPeer === undefined
+    ) {
+      if (!strict) return 'not-ready';
+      throw new Error('Sync requests require an open authenticated document');
+    }
+    if (
+      (await this._writers.check(this._userPublicKey)) !== true &&
+      (await this._readers.check(this._userPublicKey)) !== true
+    ) {
+      if (!strict) return 'not-ready';
+      throw new Error('Sync requests require current document membership');
+    }
+    const now = Date.now();
+    if (now - this._lastSyncRequestAt < 2000) return 'rate-limited';
+    const request = {
+      documentId: this.documentPath,
+      requester: await requireSerializePublicKey(
+        this._authProvider,
+        'Sync request',
+      )(this._userPublicKey),
+      requesterPeer,
+      requestId: Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+      issuedAtMs: now,
+      knownSnapshots: [...new Set([
+        ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
+        ...this._knownSyncSnapshots,
+      ])].slice(0, 32),
+      knownTips: [
+        ...new Set([
+          this._lastSyncMessage.changeId,
+          ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
+          ...this._recentTips
+            .slice()
+            .reverse()
+            .map((tip) => tip.cid),
+        ]),
+      ].slice(0, 32),
+    };
+    const signature = this._serializeSignature(
+      await this._authProvider.sign(
+        syncRequestSigningPayload(request),
+        this._userKey,
+      ),
+    );
+    await this._publishSyncBytes(
+      encodeSyncRequest({ ...request, signature }),
+    );
+    this._lastSyncRequestAt = now;
+    return 'sent';
   }
 
   private _observeSyncRequestClock(): number | undefined {
@@ -7440,17 +7716,25 @@ export class PeerborneDocument<
     );
   }
 
-  private async _verifySyncRequest(request: SyncRequest): Promise<boolean> {
+  private async _verifySyncRequest(
+    request: SyncRequest,
+    role = this._syncRequestRole(request),
+  ): Promise<boolean> {
+    return (await role) !== undefined;
+  }
+
+  /** The verified requester's current role, or undefined if unauthenticated. */
+  private async _syncRequestRole(
+    request: SyncRequest,
+  ): Promise<'writer' | 'reader' | undefined> {
     if (
       request.documentId !== this.documentPath ||
       !this._isSigningEnabled()
     )
-      return false;
-    const keys = [
-      ...(await this._writers.users()),
-      ...(await this._readers.users()),
-    ];
-    for (const key of keys) {
+      return;
+    const writers = await this._writers.users();
+    const keys = [...writers, ...(await this._readers.users())];
+    for (const [index, key] of keys.entries()) {
       if (
         (await requireSerializePublicKey(
           this._authProvider,
@@ -7458,24 +7742,84 @@ export class PeerborneDocument<
         )(key)) !== request.requester
       )
         continue;
-      return (
-        (await this._authProvider.verify(
-          syncRequestSigningPayload(request),
-          key,
-          this._deserializeSignature(request.signature),
-        )) === true
-      );
+      return (await this._authProvider.verify(
+        syncRequestSigningPayload(request),
+        key,
+        this._deserializeSignature(request.signature),
+      )) === true
+        ? index < writers.length
+          ? 'writer'
+          : 'reader'
+        : undefined;
     }
-    return false;
+    return;
   }
 
+  /**
+   * Feed a member's request to automatic catch-up. Its first known tip is the
+   * requester's head: an equal head postpones this replica's periodic
+   * request; a held head, once verified, retracts the member's earlier
+   * advertisement; and an unknown head, once verified, is recorded as newer
+   * state that the member's PeerId can serve. Advertisements are keyed by the
+   * member's signing key, so one identity counts once.
+   */
+  private async _observeSyncRequest(
+    request: SyncRequest,
+    now: number | undefined,
+    role: () => Promise<'writer' | 'reader' | undefined>,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    const antiEntropy = this._antiEntropy;
+    if (
+      antiEntropy === undefined ||
+      now === undefined ||
+      !isSyncRequestFresh(request, now) ||
+      request.documentId !== this.documentPath ||
+      request.requesterPeer === this._localPeerId()
+    )
+      return;
+    const head = request.knownTips[0]!;
+    const held =
+      head === this._lastSyncMessage?.changeId || this._holdsChange(head);
+    if (head === this._lastSyncMessage?.changeId)
+      antiEntropy.equivalentRequest();
+    if (
+      held
+        ? !antiEntropy.admitRetraction(request.requester)
+        : !antiEntropy.admitAdvertisement(request.requester, head)
+    )
+      return;
+    const verified = await role();
+    if (verified === undefined || !isCurrent()) return;
+    antiEntropy.memberPeer(request.requesterPeer);
+    if (held) antiEntropy.retractAdvertisement(request.requester);
+    else
+      antiEntropy.advertisement(
+        request.requester,
+        request.requesterPeer,
+        head,
+        verified === 'writer',
+      );
+  }
+
+  /**
+   * Answer a member's sync request. `sender` is the GossipSub publisher of
+   * the frame; a request whose signed `requesterPeer` names another peer is
+   * ignored, so one member cannot speak for other PeerIds.
+   */
   private async _handleSyncRequest(
     request: SyncRequest,
     isCurrent: () => boolean = () => this._subscribed,
+    sender?: string,
   ): Promise<void> {
+    if (sender === undefined || sender !== request.requesterPeer) return;
     await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
+      let verification: Promise<'writer' | 'reader' | undefined> | undefined;
+      const role = () => (verification ??= this._syncRequestRole(request));
+      await this._observeSyncRequest(request, now, role, isCurrent);
+      if (!isCurrent()) return;
       const previous = this._lastSyncMessage,
         snapshot = this._latestSnapshot;
       const hasChange = !!previous?.changeId && !!previous.changes;
@@ -7495,11 +7839,9 @@ export class PeerborneDocument<
         !this._syncRequestCanBeAdmitted(request, now)
       )
         return;
-      if (
-        !(await this._verifySyncRequest(request)) ||
-        (await this._writers.check(this._userPublicKey)) !== true
-      )
-        return;
+      if (!(await this._verifySyncRequest(request, verification))) return;
+      this._antiEntropy?.memberPeer(request.requesterPeer);
+      if ((await this._writers.check(this._userPublicKey)) !== true) return;
       const snapshotKnown =
         !snapshot ||
         request.knownSnapshots.includes(
@@ -7643,6 +7985,7 @@ export class PeerborneDocument<
         hashes: [...this._hashes],
         ancestors: [...this._referencedAncestors],
         recentTips: this._recentTips.map(({ cid, kind }) => [cid, kind]),
+        gcCandidates: [...this._gcCandidates],
         documentChangeCount: this._documentChangeCount,
         changesSinceSnapshot: this._changesSinceSnapshot,
         historyVisibility: this._historyVisibility,
@@ -7853,6 +8196,7 @@ export class PeerborneDocument<
       this._hashes = hashes;
       this._referencedAncestors = ancestors;
       this._recentTips = recentTips;
+      this._gcCandidates = new Set(state.gcCandidates);
       this._latestSnapshot = message.snapshot;
       this._documentChangeCount = state.documentChangeCount;
       this._changesSinceSnapshot = state.changesSinceSnapshot;
@@ -8288,7 +8632,10 @@ export class PeerborneDocument<
       if (receiveAdmission.active)
         console.error('Inbound sync message handling failed');
     };
-    const receiveFrame = async (frame: Uint8Array): Promise<void> => {
+    const receiveFrame = async (
+      frame: Uint8Array,
+      sender: string,
+    ): Promise<void> => {
       const rawContent = await this._decryptGossipFrame(frame);
       if (!rawContent || !receiveAdmission.active) return;
 
@@ -8298,6 +8645,7 @@ export class PeerborneDocument<
           await this._handleSyncRequest(
             request,
             () => this._subscribed && receiveAdmission.active,
+            sender,
           );
         }
         return;
@@ -8309,27 +8657,29 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
-      await this._syncGossipMessage(
+      const applied = await this._syncGossipMessage(
         message,
         () => receiveAdmission.active,
         // A reply carrying a snapshot is not a frame the author published,
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
+      if (applied) this._antiEntropy?.memberPeer(sender);
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
-    const retryFrame = (frame: Uint8Array) =>
-      receiveFrame(frame).catch(reportReceiveFailure);
+    const retryFrame = (sender: string) => (frame: Uint8Array) =>
+      receiveFrame(frame, sender).catch(reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
+      const sender = gossipSender(rawMessage.detail);
       void receiveAdmission
         .run(
           rawMessage.detail.data,
-          receiveFrame,
-          retryFrame,
-          gossipSender(rawMessage.detail),
+          (frame) => receiveFrame(frame, sender),
+          retryFrame(sender),
+          sender,
         )
         .catch(reportReceiveFailure);
     };
@@ -8380,7 +8730,11 @@ export class PeerborneDocument<
 
                   if (isSyncRequest(rawContent)) {
                     const request = decodeSyncRequest(rawContent);
-                    if (!request) return TopicValidatorResult.Reject;
+                    if (
+                      !request ||
+                      request.requesterPeer !== gossipSender(message)
+                    )
+                      return TopicValidatorResult.Reject;
                     return await this._runStateMutation(async () => {
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
@@ -8395,6 +8749,7 @@ export class PeerborneDocument<
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
                       if (!signatureValid) return TopicValidatorResult.Reject;
+                      this._antiEntropy?.memberPeer(request.requesterPeer);
                       const verified = this._observeSyncRequestClock();
                       return verified !== undefined &&
                         isSyncRequestFresh(request, verified)
@@ -8449,7 +8804,7 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
-                retryFrame,
+                retryFrame(gossipSender(message)),
                 gossipSender(message),
               );
               return receiveAdmission.active
@@ -8509,6 +8864,7 @@ export class PeerborneDocument<
     }
 
     this._beekemForkGuard?.assertAcceptsWork();
+    this._startAntiEntropy(pubsub);
     return isExisting;
   }
 
@@ -8554,6 +8910,8 @@ export class PeerborneDocument<
   }
 
   private async _closeResources(): Promise<void> {
+    this._antiEntropy?.close();
+    this._antiEntropy = undefined;
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
     this._remoteBlockFetches?.abortAll();
@@ -8640,11 +8998,12 @@ export class PeerborneDocument<
    * after its writer signature verifies, so a block that no reachable peer
    * holds cannot stall local changes, other frames or `close()`.
    */
+  /** Returns whether the authenticated message was applied. */
   private async _syncGossipMessage(
     message: CRDTSyncMessage<ChangesType>,
     isActive: () => boolean,
     frameBytes?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let remoteFetches: RemoteBlockFetchScope | undefined;
     let prefetchedBlocks: ReadonlyMap<string, Uint8Array> | undefined;
     try {
@@ -8654,7 +9013,7 @@ export class PeerborneDocument<
             ? this._unknownDeferredCids(message, true)
             : undefined,
         );
-        if (cids === undefined) return;
+        if (cids === undefined) return false;
         if (cids.length > 0) {
           // The scope starts no fetch after the prefetch, so the frame then
           // applies without the blocks it could not prefetch.
@@ -8667,9 +9026,9 @@ export class PeerborneDocument<
           );
         }
       }
-      await this._runStateMutation(async () => {
-        if (!isActive()) return;
-        await this._syncUnlocked(
+      return await this._runStateMutation(async () => {
+        if (!isActive()) return false;
+        return this._syncUnlocked(
           message,
           true,
           'ordinary-sync-v1',
@@ -9229,6 +9588,7 @@ export class PeerborneDocument<
       }
       assertStillActive();
     }
+    this._antiEntropy?.remoteStateApplied();
 
     if (message.snapshot && snapshotAfterChanges) {
       await applyIncomingSnapshot(message.snapshot);
@@ -9328,6 +9688,41 @@ export class PeerborneDocument<
   }
 
   /**
+   * Subscribe to local changes that were committed but not delivered, because
+   * encrypting or publishing their frame failed, for example when GossipSub
+   * has no topic peers and does not allow publishing to none. `change()` and
+   * `endChange()` still resolve for such a change: it stays in the document,
+   * and it reaches peers with the next change's frame or a sync or load
+   * response. Do not repeat the edit. A coordinated document reports a
+   * delivery failure by rejecting instead, and does not call these handlers.
+   *
+   * Until a later frame is published, the change exists only on this device.
+   * Export a checkpoint after a delivery failure: if the instance is later
+   * retired, it is reopened from the last checkpoint, and an undelivered
+   * change made after that checkpoint is lost.
+   *
+   * @param id An id to remove the handler with `unsubscribeDeliveryFailures(id)`.
+   * @param handler Called synchronously with each delivery failure. A thrown
+   *   error or rejected promise is logged and does not affect the change.
+   */
+  public subscribeDeliveryFailures(
+    id: string,
+    handler: PeerborneDocumentDeliveryFailureHandler,
+  ) {
+    this._assertNoIncompleteBootstrapLoad(true);
+    this._deliveryFailureHandlers[id] = handler;
+  }
+
+  /**
+   * Remove a handler added with `subscribeDeliveryFailures()`.
+   *
+   * @param id The id the handler was subscribed with.
+   */
+  public unsubscribeDeliveryFailures(id: string) {
+    delete this._deliveryFailureHandlers[id];
+  }
+
+  /**
    * Unsubscribes a change handler from the document.
    *
    * @param id The id of the handler to unsubscribe.
@@ -9376,19 +9771,11 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * A failure before the change is published (write check, CRDT apply,
-   * block storage, signing, encryption or the publish call) aborts the
-   * transaction and rolls it back: the document returns to its state when
-   * `endChange()` was called, and the attempt's history bookkeeping is
-   * removed. Automerge outdates the document a change consumes, so the
-   * rollback restores a writable copy from `CRDTProvider.cloneDocument()`,
-   * which makes later changes under a new actor. While Automerge holds remote
-   * changes waiting for missing dependencies, a copy would lose them, so the
-   * call instead retires the instance and rejects with an error whose `cause`
-   * is the failure; reopen it from accepted state. A failure after
-   * publication, from a local update handler or compaction, keeps the
-   * published change and its bookkeeping, ends the transaction and rejects
-   * with that error, as `change()` does.
+   * A failure is handled as in `change()`: once the batch is stored and in
+   * the retained change tree it is kept, and an encryption or publication
+   * failure is reported to `subscribeDeliveryFailures()` handlers instead of
+   * rejecting. A batch that fails before that point is discarded. Either way
+   * the transaction ends, and a new one must be started.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -9396,37 +9783,7 @@ export class PeerborneDocument<
    * in-place provider (Yjs, Loro) publishes the edits made before the throw
    * as this transaction's change and then rethrows the original error, so no
    * later change depends on an unpublished edit. If committing that partial
-   * edit fails too, the call rejects with an `AggregateError` whose `errors`
-   * are the change function's error and the commit error.
-   *
-   * **Known limitation -- in-place mutating providers:** For CRDT providers
-   * that mutate in place (e.g. Yjs), rollback of a publish failure does NOT
-   * undo mutations.
-   * Yjs's `localChange()` mutates the document object directly and returns
-   * the same reference, so restoring the saved reference after failure has
-   * no effect -- the mutations have already been applied to the shared
-   * Y.Doc. Callers using Yjs should treat a failed transaction as leaving
-   * the local document in a potentially inconsistent state and consider
-   * re-syncing from peers.
-   * An oversized encrypted block retires the instance before publication.
-   * Reopen from accepted state before retrying the edit in smaller changes.
-   *
-   * **Known limitation -- ambiguous publication:** A publish call that
-   * rejects after the transport accepted the frame is rolled back like an
-   * unpublished change, so a peer may hold a change this replica discarded.
-   * For Automerge, the copy's new actor keeps later local changes from
-   * colliding with it.
-   *
-   * **Internal metadata rollback:** On a rollback, `_lastSyncMessage`,
-   * `_documentChangeCount`, `_changesSinceSnapshot`, and `_recentTips`
-   * are restored from snapshots captured before `_makeChange()`.
-   * (`_recentTips` is bounded to `MAX_RECENT_TIPS` entries so the snapshot
-   * is a cheap shallow array copy.) For `_hashes` and
-   * `_referencedAncestors`, all entries added to each Set after its
-   * pre-attempt size are removed. The document's state queue keeps remote
-   * syncs out of the transaction, so those entries are the attempt's own.
-   * The approach is O(n) iteration but O(delta) memory. A new transaction
-   * must be started after a failure.
+   * edit fails too, the call rejects as `change()` does.
    *
    * @throws {Error} If any step in the commit pipeline fails.
    */
@@ -9472,21 +9829,6 @@ export class PeerborneDocument<
       return;
     }
 
-    const originalDocument = this._document;
-    const lastPublishedBefore = this._lastPublishedChange;
-    // Snapshot internal metadata so we can restore on failure.
-    // Only track the Set size (O(1)) instead of cloning the entire Set (O(n)):
-    // _makeChange adds at most one CID, and JS Sets iterate in insertion order,
-    // so on rollback we remove only entries appended after this point.
-    const hashSizeBefore = this._hashes.size;
-    const referencedAncestorsSizeBefore = this._referencedAncestors.size;
-    const lastSyncSnapshot = this._lastSyncMessage;
-    const changeCountSnapshot = this._documentChangeCount;
-    const compactionCountSnapshot = this._changesSinceSnapshot;
-    // Bounded copy (max MAX_RECENT_TIPS entries) -- cheap to snapshot.
-    const recentTipsSnapshot = [...this._recentTips];
-
-    let failure: { error: unknown } | undefined;
     this._committing = true;
     try {
       await this._ensureCurrentUserCanWrite();
@@ -9499,103 +9841,48 @@ export class PeerborneDocument<
           (fn as any)(doc);
         }
       }) as ChangeFnType;
-
-      const applied = this._applyLocalChange(composedFn, message);
-      failure = applied.failure;
-      try {
-        await this._makeChange(applied.changes);
-      } catch (error) {
-        throw error instanceof GossipFrameLimitError
-          ? this._retireAfterOversizedLocalChange(error)
-          : error;
-      }
-
-      // The published change, partial or not, ends the transaction.
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-    } catch (err) {
-      // Abort transaction on ANY error (ensureWrite, localChange, or makeChange).
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-      const thrown = failure
-        ? partialChangeCommitFailure(failure.error, err)
-        : err;
-      // A local update handler or compaction failed after publication. Peers
-      // hold the change, so it and its bookkeeping stay, as for `change()`.
-      if (this._lastPublishedChange !== lastPublishedBefore) throw thrown;
-      // Roll back document and internal metadata (best-effort for in-place
-      // mutating providers like Yjs). Automerge outdated `originalDocument`
-      // when it made the change, so restore a writable copy of it instead.
-      // A retired instance is closed and keeps its document.
-      if (this._document !== originalDocument && !this._oversizedEditClose) {
-        const restored = this._crdtProvider.cloneDocument
-          ? this._crdtProvider.cloneDocument(originalDocument)
-          : originalDocument;
-        if (restored === undefined)
-          throw this._retireAfterUnrecoverableRollback(thrown);
-        this._document = restored;
-      }
-      // Remove only the CIDs appended by _makeChange instead of clearing and
-      // re-populating the entire Set. This avoids mutating the Set during
-      // concurrent sync (clear() would disrupt any in-progress iteration)
-      // and is O(delta) instead of O(n).
-      // Iterate the Set (O(n)) but only collect entries past the snapshot
-      // threshold into a small buffer (O(delta) memory) -- avoids cloning
-      // the entire Set into an array via spread.
-      if (this._hashes.size > hashSizeBefore) {
-        const toRemove: string[] = [];
-        let i = 0;
-        for (const hash of this._hashes) {
-          if (i >= hashSizeBefore) {
-            toRemove.push(hash);
-          }
-          i++;
-        }
-        for (const hash of toRemove) {
-          this._hashes.delete(hash);
-        }
-      }
-      // Mirror the `_hashes` rollback for `_referencedAncestors`: remove
-      // only entries appended past the pre-attempt size. Same rationale --
-      // insertion-ordered Set iteration plus O(delta) memory -- and same
-      // best-effort caveat for concurrent sync that may have inserted into
-      // either set in parallel.
-      if (this._referencedAncestors.size > referencedAncestorsSizeBefore) {
-        const toRemoveRefs: string[] = [];
-        let j = 0;
-        for (const cid of this._referencedAncestors) {
-          if (j >= referencedAncestorsSizeBefore) {
-            toRemoveRefs.push(cid);
-          }
-          j++;
-        }
-        for (const cid of toRemoveRefs) {
-          this._referencedAncestors.delete(cid);
-        }
-      }
-      this._lastSyncMessage = lastSyncSnapshot;
-      this._documentChangeCount = changeCountSnapshot;
-      this._changesSinceSnapshot = compactionCountSnapshot;
-      this._recentTips = recentTipsSnapshot;
-      throw thrown;
+      await this._commitLocalChange(composedFn, message);
     } finally {
+      this._inTransaction = false;
+      this._pendingChangeFns = [];
       this._committing = false;
     }
-    if (failure) throw failure.error;
   }
 
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
-   * An oversized encrypted block retires the legacy instance before publication.
    * If `changeFn` throws, the call rejects. A coordinated document
    * (`peerborne.doc(path, { security })`) stages the edit on a private copy,
    * so the document is unchanged and nothing is published. Otherwise
    * Automerge discards the edit, and an in-place provider (Yjs, Loro)
    * publishes the edits made before the throw and then rethrows the original
-   * error. If committing that partial edit fails too (publication, a local
-   * handler or compaction), the call rejects with an `AggregateError` whose
-   * `errors` are the change function's error and the commit error.
+   * error. If committing that partial edit fails too, an `AggregateError`
+   * holds the change function's error and the commit error. The call rejects
+   * with it when the partial edit was kept, as described below, and otherwise
+   * retires the instance with it as the cause.
+   *
+   * The change is committed locally once its block is stored and it is in the
+   * retained change tree. When encrypting or publishing its frame then fails,
+   * for example because GossipSub has no topic peers, the call still
+   * resolves: the change stays in the document, the next change's frame
+   * carries it inline, and sync and load responses serve it. The failure is
+   * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
+   * update handler or compaction rejects the call but also keeps the change.
+   *
+   * A failure before that point (block storage, signing or the frame size
+   * check) discards the change, so no later change depends on an edit peers
+   * never received. The attempt's history bookkeeping is removed. Automerge
+   * outdates the document a change consumes, so the document before the call
+   * is restored as a writable copy from `CRDTProvider.cloneDocument()`, which
+   * makes later changes under a new actor. An in-place provider (Yjs, Loro)
+   * cannot undo its edit, and Automerge cannot copy a document that holds
+   * remote changes waiting for missing dependencies. In those cases the
+   * instance is retired: the call rejects with an error whose `cause` is the
+   * failure, and the instance refuses further work until it is reopened from
+   * accepted state, such as the last checkpoint exported before the failure.
+   * A change too large for one frame retires the instance with a
+   * `GossipFrameLimitError` instead.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -9616,25 +9903,80 @@ export class PeerborneDocument<
       throw new Error('Cannot call change() during an active transaction. Use addChange() instead.');
     }
     await this._ensureCurrentUserCanWrite();
+    await this._commitLocalChange(changeFn, message);
+  }
+
+  /**
+   * Apply and publish a local change, discarding it when it fails before it
+   * reaches the retained tree. The state queue keeps remote syncs out of the
+   * attempt, and Sets iterate in insertion order, so the CIDs past each Set's
+   * earlier size are the attempt's own.
+   */
+  private async _commitLocalChange(changeFn: ChangeFnType, message?: string) {
+    const originalDocument = this._document;
+    const hashSizeBefore = this._hashes.size;
+    const referencedAncestorsSizeBefore = this._referencedAncestors.size;
+    const lastSyncSnapshot = this._lastSyncMessage;
+    const changeCountSnapshot = this._documentChangeCount;
+    const compactionCountSnapshot = this._changesSinceSnapshot;
+    const recentTipsSnapshot = [...this._recentTips];
 
     const { changes, failure } = this._applyLocalChange(changeFn, message);
     try {
       await this._makeChange(changes);
     } catch (error) {
-      const thrown =
+      const commitError =
         error instanceof GossipFrameLimitError
           ? this._retireAfterOversizedLocalChange(error)
           : error;
-      throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
+      const thrown = failure
+        ? partialChangeCommitFailure(failure.error, commitError)
+        : commitError;
+      if (this._lastSyncMessage !== lastSyncSnapshot) throw thrown;
+      deleteEntriesAfter(this._hashes, hashSizeBefore);
+      deleteEntriesAfter(
+        this._referencedAncestors,
+        referencedAncestorsSizeBefore,
+      );
+      this._lastSyncMessage = lastSyncSnapshot;
+      this._documentChangeCount = changeCountSnapshot;
+      this._changesSinceSnapshot = compactionCountSnapshot;
+      this._recentTips = recentTipsSnapshot;
+      throw this._restoreDocumentBeforeChange(originalDocument, thrown);
     }
     if (failure) throw failure.error;
   }
 
   /**
-   * A failed local change that the provider cannot roll back without losing
-   * state, such as Automerge changes waiting for missing dependencies, stays
-   * in the document unpublished. A later change would depend on it, so the
-   * instance is retired and must be reopened from accepted state.
+   * Return to `original` after a discarded local change, or retire the
+   * instance when no faithful copy exists. Returns the error to throw.
+   */
+  private _restoreDocumentBeforeChange(
+    original: DocType,
+    thrown: unknown,
+  ): unknown {
+    // A retired instance is closed and keeps its document.
+    if (this._oversizedEditClose) return thrown;
+    const copies = this._crdtProvider.cloneDocument !== undefined;
+    // A provider that copies returns its input only for an empty change. One
+    // that does not copy returned the document it edited in place.
+    if (this._document === original)
+      return copies ? thrown : this._retireAfterUnrecoverableRollback(thrown);
+    const restored = this._crdtProvider.cloneDocument
+      ? this._crdtProvider.cloneDocument(original)
+      : original;
+    if (restored === undefined)
+      return this._retireAfterUnrecoverableRollback(thrown);
+    this._document = restored;
+    return thrown;
+  }
+
+  /**
+   * A failed local change that the provider cannot roll back, because it
+   * edits in place (Yjs, Loro) or a copy would lose Automerge changes waiting
+   * for missing dependencies, stays in the document unpublished. A later
+   * change would depend on it, so the instance is retired and must be
+   * reopened from accepted state.
    */
   private _retireAfterUnrecoverableRollback(cause: unknown): Error {
     this._retirementReason =

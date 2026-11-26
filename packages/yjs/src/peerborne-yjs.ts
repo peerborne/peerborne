@@ -536,9 +536,31 @@ export class YjsProvider
       shadow = undefined;
       if (previous && !previous.isDestroyed) previous.destroy();
     };
+    // Name the structs and deletions `value` is waiting for, so a held update
+    // is retried only once the document holds all of them.
+    const missingDependencies = (value: Doc) => {
+      const structs = [...(value.store.pendingStructs?.missing ?? [])];
+      const deletions: Array<[number, number]> = [];
+      if (value.store.pendingDs)
+        for (const [client, ranges] of decodeUpdateV2(value.store.pendingDs).ds
+          .clients)
+          for (const { clock, len } of ranges)
+            deletions.push([client, clock + len]);
+      return new DocumentCausalDependencyError(
+        () =>
+          !closed &&
+          !document.isDestroyed &&
+          structs.every(
+            ([client, clock]) => getState(document.store, client) > clock,
+          ) &&
+          deletions.every(
+            ([client, end]) => getState(document.store, client) >= end,
+          ),
+      );
+    };
     const complete = (value: Doc) => {
       if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
-        throw new DocumentCausalDependencyError();
+        throw missingDependencies(value);
     };
     const idle = (value: Doc) =>
       value._transaction === null && value._transactionCleanups.length === 0;
@@ -612,8 +634,8 @@ export class YjsProvider
         } finally {
           exact.off('beforeObserverCalls', inspect);
         }
-        if (failed || hasPending(exact))
-          throw new Error('Yjs document operation inspection failed');
+        if (failed) throw new Error('Yjs document operation inspection failed');
+        complete(exact);
         return targets;
       } finally {
         exact.destroy();
@@ -659,6 +681,7 @@ export class YjsProvider
             ? new DocumentOperationTargets()
             : undefined;
         const preparingDocument = shadow;
+        const preparedVersion = shadowVersion;
         const collectGarbage = preparingDocument.gc;
         const deletions: Transaction['deleteSet'][] = [];
         let inspectionFailed = false;
@@ -716,7 +739,19 @@ export class YjsProvider
           assertStagedYjsValues(structs);
           complete(shadow);
         } catch (error) {
-          discardShadow();
+          // An update that integrated nothing left the mirror unchanged apart
+          // from its pending queue, so a dependency miss keeps the mirror
+          // instead of rebuilding it from a full snapshot.
+          if (
+            error instanceof DocumentCausalDependencyError &&
+            shadow === preparingDocument &&
+            !preparingDocument.isDestroyed &&
+            shadowVersion === preparedVersion &&
+            idle(preparingDocument)
+          ) {
+            preparingDocument.store.pendingStructs = null;
+            preparingDocument.store.pendingDs = null;
+          } else discardShadow();
           throw error;
         }
         const operationTargets = targets;
@@ -900,6 +935,12 @@ export class YjsProvider
   }
   getSnapshot(document: Doc): Uint8Array {
     return encodeStateAsUpdateV2(document);
+  }
+  hasPendingChanges(document: Doc): boolean {
+    return (
+      document.store.pendingStructs !== null ||
+      document.store.pendingDs !== null
+    );
   }
 }
 

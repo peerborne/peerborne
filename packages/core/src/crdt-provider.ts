@@ -45,13 +45,16 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * `undefined` when no faithful copy exists.
    *
    * Implement this when those methods leave their input unusable, as
-   * Automerge marks it outdated. A transaction that fails before publication
-   * rolls back to this copy. The copy must make its next local change under a
-   * new replica identity, so the discarded change's position is never reused.
+   * Automerge marks it outdated. A local change that fails before it is stored
+   * and recorded in the change tree rolls back to this copy. The copy must
+   * make its next local change under a new replica identity, so the discarded
+   * change's position is never reused.
    * Return `undefined` when the copy would lose state, such as remote changes
-   * still waiting for their dependencies: the transaction then retires the
-   * document instance instead. When not implemented, a transaction rolls back
-   * to `document` itself.
+   * still waiting for their dependencies: the document instance is then
+   * retired instead. When not implemented, a failed change rolls back to
+   * `document` itself if `localChange()` returned a new document. A provider
+   * whose `localChange()` returns the document it was given edits in place
+   * and cannot roll back, so the instance is retired.
    *
    * @param document A document this provider returned before the failed change.
    */
@@ -102,6 +105,22 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   hasIntegrated?(document: DocType, changes: ChangesType): boolean;
 
   /**
+   * Report whether `document` no longer holds `changes`, which
+   * `remoteChange()` buffered while a dependency was missing, and will never
+   * integrate them. A provider that validates buffered changes once their
+   * dependencies arrive, or evicts them, implements this. Peerborne then stops
+   * waiting for the change, as when it evicts a waiting change itself, so a
+   * later delivery passes it to `remoteChange()` again. It runs for a waiting
+   * change when it is delivered again and, after a change integrates, for each
+   * change still waiting. When not implemented, a buffered change waits until
+   * it integrates or Peerborne evicts it.
+   *
+   * @param document CRDT document returned by `remoteChange()`.
+   * @param changes Changes previously passed to `remoteChange()`.
+   */
+  hasDiscarded?(document: DocType, changes: ChangesType): boolean;
+
+  /**
    * Gets all changes for the document.
    *
    * @param document CRDT document to inspect.
@@ -134,4 +153,15 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * @returns The updated document with the snapshot state merged in.
    */
   applySnapshot?(document: DocType, snapshot: ChangesType): DocType;
+
+  /**
+   * Report whether `document` holds remote changes that wait for missing
+   * causal dependencies, such as Automerge's queued changes or Yjs pending
+   * structs and deletions. Automatic catch-up asks peers for missed updates
+   * while this is true. When not implemented, only failed block fetches and
+   * advertised heads reveal a gap.
+   *
+   * @param document CRDT document to inspect.
+   */
+  hasPendingChanges?(document: DocType): boolean;
 }

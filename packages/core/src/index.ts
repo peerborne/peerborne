@@ -13,8 +13,10 @@ import {
   getDefaultConfig,
 } from './peerborne-config.js';
 import {
+  ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
+  PeerborneDocumentDeliveryFailureHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -187,8 +189,10 @@ export {
   PeerbornePeersHandler,
   DEFAULT_INVITATION_TTL_MS,
   PeerborneConfig,
+  ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
+  PeerborneDocumentDeliveryFailureHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -339,6 +343,19 @@ export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
 export type { CRDTSnapshotNode } from './snapshot-node.js';
 export type { CompactionConfig } from './compaction-config.js';
+export {
+  defaultAntiEntropyConfig,
+  resolveAntiEntropyConfig,
+} from './anti-entropy.js';
+export type {
+  AntiEntropyConfig,
+  AntiEntropyEvent,
+  AntiEntropyHandler,
+  AntiEntropyLoadOutcome,
+  AntiEntropyRequestOutcome,
+  AntiEntropyStatus,
+  AntiEntropyTrigger,
+} from './anti-entropy.js';
 export {
   LOAD_SECURITY_STATE_VERSION,
   LOAD_SECURITY_HASH_LENGTH,

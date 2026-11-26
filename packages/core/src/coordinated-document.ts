@@ -56,7 +56,10 @@ import {
   encodeDocumentCatchUpCheckpoint,
   encodeDocumentCatchUpRequest,
   MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
+  MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES,
+  MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES,
   type DocumentCatchUpBinding,
+  type DocumentCatchUpCheckpoint,
   type DocumentCatchUpKind,
 } from './document-catch-up-wire.js';
 import {
@@ -291,10 +294,16 @@ function concatFrames(head: Uint8Array, frame: Uint8Array): Uint8Array {
 const MAX_HELD_FRAMES = 64;
 const MAX_HELD_FRAMES_PER_AUTHOR = 32;
 const MAX_HELD_BYTES = 8 * 1024 * 1024;
+// An author's share of held frames matches its share of the frame count.
+const MAX_HELD_BYTES_PER_AUTHOR =
+  (MAX_HELD_BYTES * MAX_HELD_FRAMES_PER_AUTHOR) / MAX_HELD_FRAMES;
+const HELD_FRAME_TTL_MS = 120_000;
 const aggregateHeld = new GroupDocumentOperationBudget(
   1024,
   64 * 1024 * 1024,
 );
+// One author may hold a quarter of the process-wide held frames.
+const aggregateHeldAuthors = new Map<string, GroupDocumentOperationBudget>();
 
 type HeldReason = 'gap' | 'dependency';
 
@@ -306,9 +315,38 @@ class HeldDocumentFrame extends Error {
     readonly author: string,
     readonly sequence: number,
     readonly hash: Uint8Array,
+    readonly ready?: () => boolean,
   ) {
     super('Document frame waits for its causal predecessors');
   }
+}
+
+/** An accepted frame kept for catch-up proofs and redelivery. */
+interface RetainedFrame {
+  readonly sequence: number;
+  readonly hash: Uint8Array;
+  /** Exact signed content: the unsigned frame and its author's signature. */
+  readonly signed: Uint8Array;
+  /** Exact encrypted wire frame. */
+  readonly frame: Uint8Array;
+  readonly order: number;
+}
+
+const MAX_RETAINED_FRAMES_PER_AUTHOR = 64;
+const MAX_RETAINED_BYTES = 16 * 1024 * 1024;
+const MAX_RETAINED_PROCESS_BYTES = 64 * 1024 * 1024;
+/** Retained bytes across every coordinated document in this module instance. */
+let retainedProcessBytes = 0;
+/** Room kept for the signature, AEAD tag and outer framing of a checkpoint. */
+const CHECKPOINT_SEAL_BYTES = 4096;
+
+/** True when a verified suffix may replace a conflicting receipt, beside the proved policy. */
+function catchUpReceiptExtends(
+  current: number,
+  offered: number,
+  suffixVerified: boolean,
+): boolean {
+  return current > 0 && offered > current && suffixVerified;
 }
 
 interface HeldFrame {
@@ -316,9 +354,103 @@ interface HeldFrame {
   readonly author: string;
   readonly sequence: number;
   readonly hash: Uint8Array;
+  readonly heldAt: number;
+  readonly holder: HeldFrames;
   readonly release: () => void;
   reason: HeldReason;
   attemptedAt: number;
+  ready?: () => boolean;
+}
+
+interface HeldFrames {
+  readonly context: GroupSecurityDocumentContext;
+  readonly frames: HeldFrame[];
+  bytes: number;
+  remove(entry: HeldFrame): void;
+}
+
+// Every document's held frames, so the process-wide bound can evict anywhere.
+const heldDocuments = new Set<HeldFrames>();
+
+/**
+ * Whether `usage` occupies a larger fraction of an author's frame or byte
+ * share than `than`; equal shares are ranked by bytes.
+ */
+function heavier(
+  usage: { frames: number; bytes: number },
+  than: { frames: number; bytes: number },
+  frames: number,
+  bytes: number,
+): boolean {
+  const share = Math.max(usage.frames / frames, usage.bytes / bytes),
+    other = Math.max(than.frames / frames, than.bytes / bytes);
+  return share > other || (share === other && usage.bytes > than.bytes);
+}
+
+function farthestHeld(
+  frames: readonly HeldFrame[],
+  author: string,
+  skip: ReadonlySet<HeldFrame>,
+): HeldFrame | undefined {
+  let farthest: HeldFrame | undefined;
+  for (const entry of frames)
+    if (
+      entry.author === author &&
+      !skip.has(entry) &&
+      (!farthest || entry.sequence > farthest.sequence)
+    )
+      farthest = entry;
+  return farthest;
+}
+
+/** Reserve process-wide credit, or name the exhausted bound. */
+function reserveHeld(
+  author: string,
+  bytes: number,
+): (() => void) | 'author' | 'shared' {
+  const budget =
+    aggregateHeldAuthors.get(author) ??
+    new GroupDocumentOperationBudget(
+      aggregateHeld.maxOperations / 4,
+      aggregateHeld.maxBytes / 4,
+    );
+  aggregateHeldAuthors.set(author, budget);
+  const forget = () => {
+    if (
+      budget.usage.operations === 0 &&
+      aggregateHeldAuthors.get(author) === budget
+    )
+      aggregateHeldAuthors.delete(author);
+  };
+  let releaseAuthor: () => void;
+  try {
+    releaseAuthor = budget.reserve(bytes);
+  } catch {
+    forget();
+    return 'author';
+  }
+  let releaseShared: () => void;
+  try {
+    releaseShared = aggregateHeld.reserve(bytes);
+  } catch {
+    releaseAuthor();
+    forget();
+    return 'shared';
+  }
+  return () => {
+    releaseShared();
+    releaseAuthor();
+    forget();
+  };
+}
+
+/** Whether a held frame's named dependencies may have arrived; a failing guard means not yet. */
+function dependencyReady(ready: () => boolean): boolean {
+  try {
+    return ready() === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Coordinator-backed mutation path, deliberately separate from the BeeKEM wire protocol. */
@@ -359,12 +491,15 @@ export class CoordinatedDocument<
   private pendingCatchUp?: PendingCatchUp;
   private persistedAuthorityLease?: () => boolean;
   private publications: Uint8Array[] = [];
-  private held?: {
-    readonly context: GroupSecurityDocumentContext;
-    readonly frames: HeldFrame[];
-    bytes: number;
-  };
+  private held?: HeldFrames;
+  private heldTimer?: ReturnType<typeof setTimeout>;
   private appliedFrames = 0;
+  private retained?: {
+    readonly context: GroupSecurityDocumentContext;
+    readonly authors: Map<string, RetainedFrame[]>;
+    bytes: number;
+    order: number;
+  };
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -1032,17 +1167,34 @@ export class CoordinatedDocument<
     return true;
   }
 
-  /** Keep a bounded set of authenticated frames until their predecessors apply. */
+  /**
+   * Keep a bounded set of authenticated frames until their predecessors
+   * apply. Each author may hold half of a document's held frames and bytes
+   * and a quarter of the process-wide bound. A frame expires two minutes after
+   * it was held. When a bound is reached, the author occupying the largest
+   * share of it gives up its farthest-ahead frame, in any document for the
+   * process-wide bound, so no author can starve the others. Evictions are
+   * planned first and applied only if the frame is then admitted; a frame
+   * farther ahead than everything its author holds is refused instead.
+   */
   private hold(frame: Uint8Array, pending: HeldDocumentFrame): void {
+    this.assertUsable();
     if (
       !this.held ||
       !documentContextsMatch(this.held.context, pending.context)
     ) {
       this.clearHeld();
-      this.held = { context: pending.context, frames: [], bytes: 0 };
+      const held: HeldFrames = {
+        context: pending.context,
+        frames: [],
+        bytes: 0,
+        remove: (entry) => this.removeHeld(held, entry),
+      };
+      this.held = held;
       this.heldVersion++;
     }
     const held = this.held;
+    this.expireHeld(held);
     const same = held.frames.find(
       (entry) =>
         entry.author === pending.author && entry.sequence === pending.sequence,
@@ -1051,33 +1203,215 @@ export class CoordinatedDocument<
       if (!documentBytesEqual(same.hash, pending.hash))
         throw new Error('Document author equivocated');
       same.reason = pending.reason;
+      same.ready = pending.ready;
       same.attemptedAt = this.appliedFrames;
       return;
     }
-    if (
-      held.frames.length >= MAX_HELD_FRAMES ||
-      held.bytes + frame.length > MAX_HELD_BYTES ||
-      held.frames.filter((entry) => entry.author === pending.author).length >=
-        MAX_HELD_FRAMES_PER_AUTHOR
+    const length = frame.length;
+    const victims = new Set<HeldFrame>();
+    const refuse = () =>
+      new Error('Document frames waiting for predecessors exceed their bound');
+    const local = (author: string) => {
+      let frames = author === pending.author ? 1 : 0,
+        bytes = author === pending.author ? length : 0;
+      for (const entry of held.frames)
+        if (entry.author === author && !victims.has(entry)) {
+          frames++;
+          bytes += entry.frame.length;
+        }
+      return { frames, bytes };
+    };
+    const ownFarther = () => {
+      const farthest = farthestHeld(held.frames, pending.author, victims);
+      return farthest && farthest.sequence > pending.sequence
+        ? farthest
+        : undefined;
+    };
+    const take = (entry: HeldFrame | undefined) => {
+      if (!entry) throw refuse();
+      victims.add(entry);
+    };
+    const freed = (author?: string) => {
+      let frames = 0,
+        bytes = 0;
+      for (const entry of victims)
+        if (author === undefined || entry.author === author) {
+          frames++;
+          bytes += entry.frame.length;
+        }
+      return { frames, bytes };
+    };
+    // The author's own share of this document: only its farther frames go.
+    for (
+      let own = local(pending.author);
+      own.frames > MAX_HELD_FRAMES_PER_AUTHOR ||
+      own.bytes > MAX_HELD_BYTES_PER_AUTHOR;
+      own = local(pending.author)
     )
-      throw new Error('Document frames waiting for predecessors exceed their bound');
+      take(ownFarther());
+    // The document bound: the author with the largest share gives way.
+    for (;;) {
+      const removed = freed();
+      if (
+        held.frames.length - removed.frames < MAX_HELD_FRAMES &&
+        held.bytes - removed.bytes + length <= MAX_HELD_BYTES
+      )
+        break;
+      let author = pending.author,
+        most = local(pending.author);
+      for (const entry of held.frames) {
+        if (victims.has(entry)) continue;
+        const usage = local(entry.author);
+        if (
+          heavier(
+            usage,
+            most,
+            MAX_HELD_FRAMES_PER_AUTHOR,
+            MAX_HELD_BYTES_PER_AUTHOR,
+          )
+        ) {
+          most = usage;
+          author = entry.author;
+        }
+      }
+      take(
+        author === pending.author
+          ? ownFarther()
+          : farthestHeld(held.frames, author, victims),
+      );
+    }
+    // The author's process-wide share: only its farther frames here go.
+    const authorFrames = aggregateHeld.maxOperations / 4,
+      authorBytes = aggregateHeld.maxBytes / 4;
+    const processUsage = (author: string) => {
+      const usage = aggregateHeldAuthors.get(author)?.usage;
+      const removed = freed(author);
+      return {
+        frames:
+          (usage?.operations ?? 0) -
+          removed.frames +
+          (author === pending.author ? 1 : 0),
+        bytes:
+          (usage?.bytes ?? 0) -
+          removed.bytes +
+          (author === pending.author ? length : 0),
+      };
+    };
+    for (
+      let own = processUsage(pending.author);
+      own.frames > authorFrames || own.bytes > authorBytes;
+      own = processUsage(pending.author)
+    )
+      take(ownFarther());
+    // The shared bound: the author with the largest process-wide share gives
+    // up its farthest frame in the document where it holds the most.
+    for (;;) {
+      const usage = aggregateHeld.usage,
+        removed = freed();
+      if (
+        usage.operations - removed.frames < aggregateHeld.maxOperations &&
+        usage.bytes - removed.bytes + length <= aggregateHeld.maxBytes
+      )
+        break;
+      let author = pending.author,
+        most = processUsage(pending.author);
+      for (const candidate of aggregateHeldAuthors.keys()) {
+        const usage = processUsage(candidate);
+        if (heavier(usage, most, authorFrames, authorBytes)) {
+          most = usage;
+          author = candidate;
+        }
+      }
+      if (author === pending.author) {
+        take(ownFarther());
+        continue;
+      }
+      let victim: HeldFrame | undefined,
+        heaviest = 0;
+      for (const document of heldDocuments) {
+        let bytes = 0;
+        for (const entry of document.frames)
+          if (entry.author === author && !victims.has(entry))
+            bytes += entry.frame.length;
+        if (bytes > heaviest) {
+          heaviest = bytes;
+          victim = farthestHeld(document.frames, author, victims);
+        }
+      }
+      take(victim);
+    }
+    for (const entry of victims) entry.holder.remove(entry);
+    const release = reserveHeld(pending.author, length);
+    if (typeof release !== 'function') throw refuse();
     this.heldVersion++;
     held.frames.push({
       frame,
       author: pending.author,
       sequence: pending.sequence,
       hash: pending.hash,
-      release: aggregateHeld.reserve(frame.length),
+      heldAt: performance.now(),
+      holder: held,
+      release,
       reason: pending.reason,
       attemptedAt: this.appliedFrames,
+      ready: pending.ready,
     });
-    held.bytes += frame.length;
+    held.bytes += length;
+    heldDocuments.add(held);
+    this.scheduleExpiry();
+  }
+
+  private removeHeld(held: HeldFrames, entry: HeldFrame): void {
+    const index = held.frames.indexOf(entry);
+    if (index === -1) return;
+    held.frames.splice(index, 1);
+    this.heldVersion++;
+    held.bytes -= entry.frame.length;
+    entry.release();
+    if (held.frames.length === 0) heldDocuments.delete(held);
+    if (this.held === held) this.scheduleExpiry();
+  }
+
+  private expireHeld(held: HeldFrames): void {
+    const now = performance.now();
+    for (const entry of [...held.frames])
+      if (!(now - entry.heldAt < HELD_FRAME_TTL_MS))
+        this.removeHeld(held, entry);
+  }
+
+  /** Expire held frames on time even in a document that receives nothing. */
+  private scheduleExpiry(): void {
+    if (this.heldTimer !== undefined) clearTimeout(this.heldTimer);
+    this.heldTimer = undefined;
+    const held = this.held;
+    if (!held || held.frames.length === 0) return;
+    let earliest = Infinity;
+    for (const entry of held.frames)
+      earliest = Math.min(earliest, entry.heldAt);
+    const timer = setTimeout(
+      () => {
+        if (this.heldTimer !== timer) return;
+        this.heldTimer = undefined;
+        if (this.held === held) this.expireHeld(held);
+        this.scheduleExpiry();
+      },
+      Math.max(0, earliest + HELD_FRAME_TTL_MS - performance.now()),
+    );
+    this.heldTimer = timer;
+    (timer as { unref?: () => void }).unref?.();
   }
 
   private clearHeld(): void {
-    for (const entry of this.held?.frames ?? []) entry.release();
+    const held = this.held;
     this.held = undefined;
     this.heldVersion++;
+    if (held) {
+      heldDocuments.delete(held);
+      for (const entry of held.frames.splice(0)) entry.release();
+      held.bytes = 0;
+    }
+    if (this.heldTimer !== undefined) clearTimeout(this.heldTimer);
+    this.heldTimer = undefined;
   }
 
   /** Apply held frames that an accepted frame or checkpoint made admissible. */
@@ -1099,13 +1433,17 @@ export class CoordinatedDocument<
         (a, b) => a.sequence - b.sequence,
       );
       for (const entry of candidates) {
+        if (!held.frames.includes(entry)) continue;
         const accepted =
           this.receiptsAt(held.context).get(entry.author)?.sequence ?? 0;
+        // Retry only when the author's prefix or a named dependency arrived.
         if (
           entry.sequence > accepted &&
           (entry.reason === 'gap'
             ? entry.sequence !== accepted + 1
-            : entry.attemptedAt === this.appliedFrames)
+            : entry.ready
+              ? !dependencyReady(entry.ready)
+              : entry.attemptedAt === this.appliedFrames)
         )
           continue;
         let applied = false,
@@ -1115,22 +1453,100 @@ export class CoordinatedDocument<
         } catch (error) {
           if (error instanceof HeldDocumentFrame) {
             entry.reason = error.reason;
+            entry.ready = error.ready;
             entry.attemptedAt = this.appliedFrames;
             keep = true;
           }
         }
         if (this.held !== held) return;
         if (keep) continue;
-        held.frames.splice(held.frames.indexOf(entry), 1);
-        this.heldVersion++;
-        held.bytes -= entry.frame.length;
-        entry.release();
+        this.removeHeld(held, entry);
         if (applied) {
           this.appliedFrames++;
           progressed = true;
         }
       }
     }
+    // Expire only what the retries above left held.
+    if (this.held) this.expireHeld(this.held);
+  }
+
+  /** Keep each author's latest accepted frames in the current context, bounded. */
+  private retain(
+    context: GroupSecurityDocumentContext,
+    author: string,
+    value: Omit<RetainedFrame, 'order'>,
+  ): void {
+    if (
+      !this.retained ||
+      !documentContextsMatch(this.retained.context, context)
+    ) {
+      this.dropRetained();
+      this.retained = { context, authors: new Map(), bytes: 0, order: 0 };
+    }
+    const retained = this.retained;
+    const size = (frame: Omit<RetainedFrame, 'order'>) =>
+      frame.signed.length + frame.frame.length;
+    const frames = retained.authors.get(author) ?? [];
+    frames.push({ ...value, order: retained.order++ });
+    retained.authors.set(author, frames);
+    retained.bytes += size(value);
+    retainedProcessBytes += size(value);
+    const evict = (owner: string) => {
+      const list = retained.authors.get(owner)!;
+      const [oldest] = list.splice(0, 1);
+      retained.bytes -= size(oldest);
+      retainedProcessBytes -= size(oldest);
+      if (list.length === 0) retained.authors.delete(owner);
+    };
+    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(author);
+    // Over budget, the author holding the most bytes gives up its oldest frame.
+    while (
+      retained.bytes > 0 &&
+      (retained.bytes > MAX_RETAINED_BYTES ||
+        retainedProcessBytes > MAX_RETAINED_PROCESS_BYTES)
+    ) {
+      let owner: string | undefined,
+        most = -1;
+      for (const [id, list] of retained.authors) {
+        const bytes = list.reduce((total, frame) => total + size(frame), 0);
+        if (bytes > most) [owner, most] = [id, bytes];
+      }
+      evict(owner!);
+    }
+  }
+
+  private dropRetained(): void {
+    retainedProcessBytes -= this.retained?.bytes ?? 0;
+    this.retained = undefined;
+  }
+
+  /** Retained frames of `author` after `sequence`, if they form its complete suffix. */
+  private retainedSuffix(
+    context: GroupSecurityDocumentContext,
+    author: string,
+    sequence: number,
+    hash: Uint8Array,
+    head: number,
+  ): RetainedFrame[] | undefined {
+    const retained = this.retained;
+    if (!retained) return undefined;
+    if (!documentContextsMatch(retained.context, context)) {
+      if (!documentContextsMatch(context, this.options.coordinator.documentContext))
+        return undefined;
+      this.dropRetained();
+      return undefined;
+    }
+    const frames = retained.authors.get(author) ?? [];
+    const base = frames.find((frame) => frame.sequence === sequence);
+    if (base && !documentBytesEqual(base.hash, hash)) return undefined;
+    const suffix = frames.filter((frame) => frame.sequence > sequence);
+    if (
+      suffix.length !== head - sequence ||
+      suffix.some((frame, index) => frame.sequence !== sequence + index + 1)
+    )
+      return undefined;
+    return suffix;
   }
 
   createCatchUpRequest(): Promise<Uint8Array> {
@@ -1147,6 +1563,7 @@ export class CoordinatedDocument<
             ...stage.binding,
             requesterId,
             challenge,
+            receipts: receiptEntries(this.sortedReceipts(stage.binding.context)),
           }),
           member,
         );
@@ -1164,7 +1581,7 @@ export class CoordinatedDocument<
     return this.enqueueCatchUp(
       request,
       MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
-      MAX_DOCUMENT_CONTENT_BYTES,
+      MAX_DOCUMENT_CONTENT_BYTES + MAX_DOCUMENT_SECURITY_FRAME_BYTES,
       (input) =>
         this.runCatchUp(input, async (stage) => {
           const controllerId = this.options.coordinator.localMemberId;
@@ -1179,22 +1596,34 @@ export class CoordinatedDocument<
             throw new Error('Document catch-up requester is unauthorized');
           await this.verifyCatchUp(stage, signed, requester);
           stage.assertCurrent();
-          const receipts = new Map(
-            [...this.receiptsAt(stage.binding.context)].sort(([a], [b]) =>
-              a < b ? -1 : a === b ? 0 : 1,
-            ),
-          );
+          const receipts = this.sortedReceipts(stage.binding.context);
           const snapshot = this.serializer.serializeChanges(
             this.crdt.getSnapshot!(this.session.document),
+          );
+          const { receipts: requested, ...request } = body;
+          const base = {
+            ...request,
+            controllerId,
+            receipts: receiptEntries(receipts),
+            suffixes: [],
+            snapshot,
+          };
+          const { offered, suffixes } = this.catchUpSuffixes(
+            stage.binding.context,
+            receipts,
+            requested,
+            body.requesterId,
+            MAX_DOCUMENT_SECURITY_FRAME_BYTES -
+              CHECKPOINT_SEAL_BYTES -
+              encodeDocumentCatchUpCheckpoint(base).length,
           );
           const value = await this.sealCatchUp(
             stage,
             'checkpoint',
             encodeDocumentCatchUpCheckpoint({
-              ...body,
-              controllerId,
-              receipts: receiptEntries(receipts),
-              snapshot,
+              ...base,
+              receipts: receiptEntries(offered),
+              suffixes,
             }),
             controller,
           );
@@ -1481,11 +1910,14 @@ export class CoordinatedDocument<
           await this.verifyCatchUp(stage, signed, controller);
           stage.assertCurrent();
           const context = stage.binding.context;
+          const extended = await this.verifiedCatchUpExtensions(stage, body);
+          stage.assertCurrent();
           const receipts = this.mergeCatchUpReceipts(
             stage.lease,
             context,
             localId,
             body.receipts,
+            extended,
           );
           plan = this.session.prepareMergeSnapshot!(
             this.serializer.deserializeChanges(body.snapshot),
@@ -1549,6 +1981,7 @@ export class CoordinatedDocument<
     context: GroupSecurityDocumentContext,
     localId: Uint8Array,
     offered: readonly DocumentReplayReceipt[],
+    extended: ReadonlySet<string>,
   ): Map<string, Receipt> {
     const receipts = new Map(this.receiptsAt(context));
     const local = documentBytesId(localId);
@@ -1566,13 +1999,169 @@ export class CoordinatedDocument<
         current !== undefined && documentBytesEqual(current.hash, hash),
         id !== local,
       );
-      if (admission === 'conflict')
+      const extends_ =
+        admission === 'conflict' &&
+        id !== local &&
+        catchUpReceiptExtends(
+          current?.sequence ?? 0,
+          sequence,
+          extended.has(id),
+        );
+      // An offer below a head accepted since the request is kept when it is
+      // one of the frames this replica retains for that author.
+      const behind =
+        admission === 'conflict' &&
+        current !== undefined &&
+        sequence < current.sequence &&
+        this.retained !== undefined &&
+        documentContextsMatch(this.retained.context, context) &&
+        this.retained.authors
+          .get(id)
+          ?.some(
+            (frame) =>
+              frame.sequence === sequence && documentBytesEqual(frame.hash, hash),
+          ) === true;
+      if (admission === 'conflict' && !extends_ && !behind)
         throw new Error(
           'Document catch-up receipt conflicts with the accepted head',
         );
-      if (admission === 'adopt') receipts.set(id, { sequence, hash });
+      if (admission === 'adopt' || extends_)
+        receipts.set(id, { sequence, hash });
     }
     return receipts;
+  }
+
+  private sortedReceipts(
+    context: GroupSecurityDocumentContext,
+  ): Map<string, Receipt> {
+    return new Map(
+      [...this.receiptsAt(context)].sort(([a], [b]) =>
+        a < b ? -1 : a === b ? 0 : 1,
+      ),
+    );
+  }
+
+  /**
+   * Retained signed frames that extend each of the requester's shorter heads,
+   * within `room` bytes. A suffix that does not fit, or is not retained, is
+   * offered only up to its last included frame, or at the requester's own head,
+   * so the requester advances over later rounds instead of conflicting. A
+   * retained fork keeps the controller's head and still conflicts.
+   */
+  private catchUpSuffixes(
+    context: GroupSecurityDocumentContext,
+    receipts: ReadonlyMap<string, Receipt>,
+    requested: readonly DocumentReplayReceipt[],
+    requesterId: Uint8Array,
+    room: number,
+  ): { offered: Map<string, Receipt>; suffixes: Uint8Array[] } {
+    const requester = documentBytesId(requesterId);
+    const offered = new Map(receipts);
+    const suffixes: Uint8Array[] = [];
+    let bytes = 0;
+    for (const { memberId, sequence, hash } of requested) {
+      const author = documentBytesId(memberId);
+      const head = receipts.get(author)?.sequence ?? 0;
+      if (author === requester || sequence >= head) continue;
+      const base = this.retained?.authors
+        .get(author)
+        ?.find((frame) => frame.sequence === sequence);
+      if (base && !documentBytesEqual(base.hash, hash)) continue;
+      const suffix =
+        this.retainedSuffix(context, author, sequence, hash, head) ?? [];
+      let included = 0;
+      for (const frame of suffix) {
+        const cost = frame.signed.length + 4;
+        if (
+          suffixes.length >= MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
+          bytes + cost > room
+        )
+          break;
+        suffixes.push(frame.signed.slice());
+        bytes += cost;
+        included++;
+      }
+      if (included < suffix.length || suffix.length === 0)
+        offered.set(
+          author,
+          included === 0
+            ? { sequence, hash }
+            : {
+                sequence: suffix[included - 1].sequence,
+                hash: suffix[included - 1].hash,
+              },
+        );
+    }
+    return { offered, suffixes };
+  }
+
+  /**
+   * Authors whose offered head is proven to extend the local head: each suffix
+   * frame is signed by that author for this exact binding and links by parent
+   * hash from the local receipt to the offered one.
+   */
+  private async verifiedCatchUpExtensions(
+    stage: CatchUpWork,
+    body: DocumentCatchUpCheckpoint,
+  ): Promise<Set<string>> {
+    const current = this.receiptsAt(stage.binding.context);
+    const offered = new Map(
+      body.receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
+    );
+    const chains = new Map<
+      string,
+      { unsigned: Uint8Array; signature: Uint8Array; sequence: number; parent: Uint8Array }[]
+    >();
+    for (const encoded of body.suffixes) {
+      const signed = decodeSignedDocumentContent(encoded);
+      const frame = decodeDocumentContent(signed.unsigned);
+      if (
+        frame.documentId !== this.documentId ||
+        !documentBytesEqual(frame.genesisId, this.genesisId) ||
+        !documentBytesEqual(frame.authorityHead, stage.binding.authorityHead) ||
+        !documentContextsMatch(frame.context, stage.binding.context) ||
+        frame.kind !== 'change'
+      )
+        throw new Error('Document catch-up suffix context mismatch');
+      const author = documentBytesId(frame.memberId);
+      const chain = chains.get(author) ?? [];
+      chain.push({ ...signed, sequence: frame.sequence, parent: frame.parent });
+      chains.set(author, chain);
+    }
+    const extended = new Set<string>();
+    for (const [author, chain] of chains) {
+      const local = current.get(author);
+      const head = offered.get(author);
+      const writer = stage.lease.members.get(author);
+      if (!local || !head || !writer || !contentRolePermits(writer.role, false))
+        continue;
+      const links = chain.filter((link) => link.sequence > local.sequence);
+      if (links.length !== head.sequence - local.sequence) continue;
+      let parent = local.hash;
+      for (const [index, link] of links.entries()) {
+        if (
+          link.sequence !== local.sequence + index + 1 ||
+          !documentBytesEqual(link.parent, parent)
+        )
+          break;
+        try {
+          await this.verifyCatchUp(stage, link, writer);
+        } catch {
+          break;
+        }
+        const { value: digest } = await stage.work.observe<ArrayBuffer>(
+          (async () =>
+            crypto.subtle.digest(
+              'SHA-256',
+              link.unsigned as Uint8Array<ArrayBuffer>,
+            ))(),
+        );
+        parent = new Uint8Array(digest);
+        if (index === links.length - 1 && documentBytesEqual(parent, head.hash))
+          extended.add(author);
+      }
+    }
+    return extended;
   }
 
   private receiptsAt(
@@ -1639,6 +2228,7 @@ export class CoordinatedDocument<
     let committed = false,
       replay = false;
     let held: HeldReason | undefined;
+    let dependenciesReady: (() => boolean) | undefined;
     let result: Uint8Array = new Uint8Array();
     try {
       await this.options.coordinator.runDocumentOperation(
@@ -1657,6 +2247,7 @@ export class CoordinatedDocument<
               lease.headId,
             );
             let unsigned: Uint8Array,
+              signedContent: Uint8Array,
               memberId: Uint8Array,
               sequence: number,
               parent: Uint8Array;
@@ -1687,7 +2278,8 @@ export class CoordinatedDocument<
                         )
                       ).value,
                     );
-              const signed = decodeSignedDocumentContent(plaintext);
+              signedContent = plaintext;
+              const signed = decodeSignedDocumentContent(signedContent);
               unsigned = signed.unsigned;
               const frame = decodeDocumentContent(unsigned);
               if (
@@ -1752,6 +2344,7 @@ export class CoordinatedDocument<
                   if (!(error instanceof DocumentCausalDependencyError))
                     throw error;
                   held = 'dependency';
+                  dependenciesReady = error.ready;
                 }
               }
             } else {
@@ -1818,6 +2411,7 @@ export class CoordinatedDocument<
                 );
               const signed = encodeSignedDocumentContent(unsigned, signature),
                 nonce = crypto.getRandomValues(new Uint8Array(12));
+              signedContent = signed;
               const { value: ciphertext } = await work.observe<ArrayBuffer>(
                 (async () =>
                   crypto.subtle.encrypt(
@@ -1892,6 +2486,7 @@ export class CoordinatedDocument<
                 documentBytesId(memberId),
                 sequence,
                 hash,
+                dependenciesReady,
               );
             const accepted = receipts.get(documentBytesId(memberId));
             if (
@@ -1948,6 +2543,12 @@ export class CoordinatedDocument<
                 this.receipts.set(documentBytesId(memberId), {
                   sequence,
                   hash,
+                });
+                this.retain(captured, documentBytesId(memberId), {
+                  sequence,
+                  hash,
+                  signed: signedContent,
+                  frame: input === undefined ? result.slice() : owned,
                 });
                 committed = true;
                 if (outbound) {
@@ -2211,6 +2812,7 @@ export class CoordinatedDocument<
               commit: () => {
                 this.receipts = new Map();
                 this.receiptsContext = captured;
+                this.dropRetained();
               },
             };
           })();
@@ -2413,9 +3015,13 @@ export class CoordinatedDocument<
     this.closed = true;
     this.activated = false;
     this.clearHeld();
+    this.dropRetained();
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
     this.material = undefined;
-    return this.tail.then(() => this.session.close());
+    return this.tail.then(() => {
+      this.clearHeld();
+      this.session.close();
+    });
   }
 }
