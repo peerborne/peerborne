@@ -1,5 +1,6 @@
 import {
   AbstractType,
+  GC,
   Item,
   Map as YMap,
   Array as YArray,
@@ -47,7 +48,12 @@ function target(
   return path;
 }
 
-/** Inspect integrated items before native GC, including losing writes and deletion ranges. */
+/**
+ * Inspect integrated items before native GC, including losing writes and deletion ranges.
+ * A GC struct has no parent or content: it was sent collected or lies under a deletion this
+ * replica already accepted. It cannot become visible here, so it consumes work without a
+ * target; a replica that integrates the same operation as an item still checks its path.
+ */
 export function recordYjsOperationTargets(
   transaction: Transaction,
   targets: DocumentOperationTargets,
@@ -76,12 +82,12 @@ export function recordYjsOperationTargets(
     ) {
       const item = structs[index];
       if (item.id.clock >= end) break;
-      if (!(item instanceof Item))
-        throw new Error('Yjs operation ancestry was garbage collected');
       const work =
         Math.min(end, item.id.clock + item.length) -
         Math.max(start, item.id.clock);
-      targets.add(target(item, roots), work);
+      if (item instanceof GC) targets.addInert(work);
+      else if (item instanceof Item) targets.add(target(item, roots), work);
+      else throw new Error('Unknown Yjs operation struct');
     }
   };
   for (const [client, end] of transaction.afterState)
