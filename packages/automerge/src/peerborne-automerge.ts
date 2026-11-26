@@ -206,6 +206,14 @@ export class AutomergeProvider<T = any>
   newDocument(): Doc<T> {
     return init();
   }
+  cloneDocument(document: Doc<T>): Doc<T> | undefined {
+    // A clone forks at the heads `document` had, outdated or not, under a
+    // new actor. It is rebuilt from history, which leaves out changes queued
+    // for missing dependencies, so no copy is faithful while any are queued.
+    return getMissingDeps(document, []).length === 0
+      ? clone(document)
+      : undefined;
+  }
   localChange(
     document: Doc<T>,
     message: string,
