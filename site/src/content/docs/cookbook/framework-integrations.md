@@ -5,6 +5,11 @@ description: Framework bindings and state projections over a common document sto
 
 Start with the [framework-free store](../../getting-started/vanilla/).
 Create one store per node/document path and share it between consumers.
+A store that opens and closes the document takes a handle factory, such as
+`createDocumentStore(() => peerborne.doc(path))`, and opens a fresh handle
+after a remount closed the previous one. A closed handle does not reopen when
+`beekemForkStore` is configured or the document is coordinated. Pass an
+existing handle only with `{ manageLifecycle: false }`.
 Every mutation returns a promise; await `store.change(...)` to handle failures.
 
 ## React

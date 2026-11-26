@@ -17,6 +17,7 @@ export class TestDocument
   writeGate?: Promise<unknown>;
   openError?: Error;
   writeError?: Error;
+  reopenable = true;
   handlers = new Map<
     string,
     (
@@ -29,6 +30,8 @@ export class TestDocument
 
   async open() {
     this.openCount++;
+    if (!this.reopenable && this.closeCount > 0)
+      throw new Error('Durable BeeKEM fork guard blocks document access');
     await this.openGate;
     if (this.openError) throw this.openError;
   }

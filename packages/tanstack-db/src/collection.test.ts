@@ -44,7 +44,7 @@ function fixture(duplicate = false) {
       handlers.delete(id);
     },
   };
-  const store = createDocumentStore(source);
+  const store = createDocumentStore(() => source);
   const collection = createCollection(
     peerborneCollectionOptions({
       id: `fixture-${Math.random()}`,

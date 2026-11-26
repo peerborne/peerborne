@@ -44,9 +44,19 @@ data reference. The underlying document and its owner may still retain data.
 
 Construction, subscription, and `getServerSnapshot()` perform no I/O. Do not
 call `connect` or `start` while rendering on the server. If another owner has
-already opened the handle and will close it, use `{ manageLifecycle: false }`.
-Otherwise one store must own each node/path: Peerborne does not support multiple
-independent document handles for the same path.
+already opened the handle and will close it, pass that handle with
+`{ manageLifecycle: false }`. Otherwise one store must own each node/path:
+Peerborne does not support multiple independent document handles for the same
+path. A store that owns the lifecycle takes a function that creates the handle:
+
+```js
+const store = createDocumentStore(() => peerborne.doc('/workspace'));
+```
+
+It calls the function for every open, including a reconnect after the final
+release closed the document or a retry after a failed open. A closed Peerborne
+handle is not reopened: a configured `beekemForkStore` keeps its guard closed,
+and a closed coordinated document stays closed.
 
 - [Framework-free web guide](https://peerborne.io/getting-started/vanilla/)
 - [Runnable examples](../../examples/integrations/README.md)

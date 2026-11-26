@@ -7,7 +7,7 @@ import { usePeerborneStore } from './index.js';
 
 test('Vue composables update shallow snapshots and release shared documents on unmount', async () => {
   const source = new TestDocument();
-  const store = createDocumentStore(source);
+  const store = createDocumentStore(() => source);
   const app = createApp({
     setup() {
       const snapshot = usePeerborneStore(store);

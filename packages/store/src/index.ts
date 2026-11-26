@@ -54,13 +54,38 @@ let nextSubscription = 0;
  * Create one store per node/document path and share it between consumers.
  * Construction and subscription are safe during server rendering. Call start()
  * or connect() in the browser to open the document. Changes retain their promise.
+ *
+ * A managed store calls `createHandle`, such as `() => peerborne.doc(path)`,
+ * for every open and closes that handle when it stops. It never reopens a
+ * closed handle: a durable BeeKEM fork guard or coordinated document refuses.
  */
 export function createDocumentStore<Doc, Change, PublicKey>(
+  createHandle: () => DocumentHandle<Doc, Change, PublicKey>,
+  options?: DocumentStoreOptions & { manageLifecycle?: true },
+): DocumentStore<Doc, Change, PublicKey>;
+/** An unmanaged store subscribes to a handle that the caller opens and closes. */
+export function createDocumentStore<Doc, Change, PublicKey>(
   document: DocumentHandle<Doc, Change, PublicKey>,
+  options: DocumentStoreOptions & { manageLifecycle: false },
+): DocumentStore<Doc, Change, PublicKey>;
+export function createDocumentStore<Doc, Change, PublicKey>(
+  source:
+    | DocumentHandle<Doc, Change, PublicKey>
+    | (() => DocumentHandle<Doc, Change, PublicKey>),
   options: DocumentStoreOptions = {},
 ): DocumentStore<Doc, Change, PublicKey> {
   const id = `peerborne-store-${nextSubscription++}`;
   const manageLifecycle = options.manageLifecycle !== false;
+  if (manageLifecycle !== (typeof source === 'function')) {
+    throw new TypeError(
+      manageLifecycle
+        ? 'A managed document store needs a function that creates a handle'
+        : 'An unmanaged document store needs the handle its caller opens',
+    );
+  }
+  const createHandle = typeof source === 'function' ? source : () => source;
+  let document: DocumentHandle<Doc, Change, PublicKey> | undefined =
+    manageLifecycle ? undefined : createHandle();
   const initial: DocumentSnapshot<Doc, PublicKey> = Object.freeze({
     status: 'idle',
     data: undefined,
@@ -96,16 +121,20 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     errors: unknown[],
     message: string,
   ): Promise<void> {
-    try {
-      document.unsubscribe(id);
-    } catch (error) {
-      errors.push(error);
-    }
-    if (shouldClose) {
+    const current = document;
+    if (manageLifecycle) document = undefined;
+    if (current) {
       try {
-        await document.close();
+        current.unsubscribe(id);
       } catch (error) {
         errors.push(error);
+      }
+      if (shouldClose) {
+        try {
+          await current.close();
+        } catch (error) {
+          errors.push(error);
+        }
       }
     }
     if (errors.length > 0) {
@@ -123,9 +152,10 @@ export function createDocumentStore<Doc, Change, PublicKey>(
       publish({ ...initial, status: 'opening' });
       let latest: { readers: PublicKey[]; writers: PublicKey[] } | undefined;
       try {
-        document.subscribe(id, (data, readers, writers) => {
+        const current = (document ??= createHandle());
+        current.subscribe(id, (data, readers, writers) => {
           latest = { readers, writers };
-          if (opened) {
+          if (opened && document === current) {
             publish({
               status: 'ready',
               data,
@@ -135,15 +165,15 @@ export function createDocumentStore<Doc, Change, PublicKey>(
             });
           }
         });
-        if (manageLifecycle) await document.open();
+        if (manageLifecycle) await current.open();
         const [readers, writers] = await Promise.all([
-          document.getReaders(),
-          document.getWriters(),
+          current.getReaders(),
+          current.getWriters(),
         ]);
         opened = true;
         publish({
           status: 'ready',
-          data: document.document,
+          data: current.document,
           readers: latest?.readers ?? readers,
           writers: latest?.writers ?? writers,
           error: undefined,
@@ -195,9 +225,10 @@ export function createDocumentStore<Doc, Change, PublicKey>(
       const opening = start();
       return enqueue(async () => {
         await opening;
-        if (!opened) throw new Error('Document store is closed');
+        const current = document;
+        if (!opened || !current) throw new Error('Document store is closed');
         try {
-          await document.change(change, message);
+          await current.change(change, message);
           if (snapshot.error !== undefined) {
             publish({ ...snapshot, error: undefined });
           }

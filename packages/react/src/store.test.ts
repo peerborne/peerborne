@@ -7,7 +7,7 @@ import { usePeerborneStore } from './store.js';
 
 test('shared store hooks survive StrictMode and render in-place changes without context', async () => {
   const source = new TestDocument();
-  const store = createDocumentStore(source);
+  const store = createDocumentStore(() => source);
   function View() {
     const snapshot = usePeerborneStore(store);
     return createElement(
