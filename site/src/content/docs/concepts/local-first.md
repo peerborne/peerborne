@@ -86,6 +86,8 @@ A `change()` call or `endChange()` batch is committed locally once its block is 
 
 A change that fails before that point, because the blockstore exceeds its storage quota or signing fails, is discarded, so no later change depends on an edit that peers never received. An Automerge document returns to a writable copy of its state before the change, which makes later changes under a new actor. Yjs and Loro edit in place and cannot undo the edit, so the instance is retired instead, as is an Automerge document that holds remote changes waiting for missing dependencies. The call rejects with an error whose `cause` is the failure. A retired instance refuses further changes and checkpoints until it is reopened from accepted state, such as the last checkpoint exported before the failure.
 
+Storage and signing failures are not always permanent. A transient IndexedDB write error, or a remote or WebAuthn signer whose prompt the user cancels, also retires a Yjs or Loro instance. Reopening from the last checkpoint then loses every change made after that checkpoint that peers have not received, including changes reported to `subscribeDeliveryFailures()` handlers, because those exist only on this device. Export a checkpoint after each committed change, and always after a delivery failure, so that reopening keeps them.
+
 ## The infrastructure boundary
 
 "Local-first" does not mean "infrastructure-free." Browser nodes do not bind
