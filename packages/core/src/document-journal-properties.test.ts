@@ -734,6 +734,7 @@ test('IndexedDB delta commits and outbox draining never read or rewrite a two-me
       await (
         await journal.prepare({
           checkpoint: false,
+          operationPaths: [],
           context: f.coordinator.documentContext,
           changes: new Uint8Array(17),
           receipts: [
@@ -790,6 +791,7 @@ test('captures a journal item before waiting on its independent anchor', async (
   };
   const preparing = journal.prepare({
     checkpoint: false,
+    operationPaths: [],
     context: f.coordinator.documentContext,
     changes,
     receipts: [receipt],
@@ -832,6 +834,7 @@ test('storage cannot promote a prepared ciphertext into an accepted journal entr
         await journal.restore();
         const pending = await journal.prepare({
           checkpoint: false,
+          operationPaths: [],
           context: f.coordinator.documentContext,
           changes: testChanges.serializeChanges([99]),
           authorityHead: f.authority.headId,

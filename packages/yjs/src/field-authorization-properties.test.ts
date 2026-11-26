@@ -877,3 +877,32 @@ test('a restricted writer stays live at replicas that collected a concurrently d
     },
   );
 });
+
+test('record inspection reports the whole document where strict inspection fails', () => {
+  const session = new YjsProvider().createDocumentSession(initial());
+  const long = 'x'.repeat(1025);
+  expect(() =>
+    session.prepareLocal(
+      '',
+      (document) => {
+        document.getMap('root').set(long, 1);
+      },
+      { inspectOperations: true },
+    ),
+  ).toThrow('inspection failed');
+  for (const [edit, expected] of [
+    [(document: Y.Doc) => document.getMap('root').set(long, 2), [[]]],
+    [
+      (document: Y.Doc) => document.getMap('root').set('allowed', 2),
+      [['root', 'allowed']],
+    ],
+  ] as const) {
+    const plan = session.prepareLocal('', edit, {
+      inspectOperations: 'record',
+    });
+    expect(plan.operationPaths!()).toEqual(expected);
+    plan.commit();
+  }
+  expect(session.document.getMap('root').get('allowed')).toBe(2);
+  session.close();
+});

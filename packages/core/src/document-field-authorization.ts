@@ -147,6 +147,45 @@ export class DocumentOperationTargets {
   }
 }
 
+/** The receivers' inspection limit, so every inspected edit is recorded exactly. */
+export const MAX_RECORDED_OPERATION_PATHS = 4096;
+
+/**
+ * The minimal exact record of inspected operation paths. Duplicates and paths
+ * under a recorded prefix are dropped, so grants cover the record exactly when
+ * they cover every input path. A record containing the whole document, `[]`,
+ * is what an inspection that could not finish reports.
+ */
+export function recordDocumentOperationPaths(
+  paths: DocumentWritePaths,
+): DocumentWritePaths {
+  const keyed = copyRecordedOperationPaths(paths)
+    .map((path) => {
+      const keys = [''];
+      for (const segment of path)
+        keys.push(`${keys[keys.length - 1]}${JSON.stringify(segment)},`);
+      return { path, keys, key: keys[keys.length - 1] };
+    })
+    .sort(
+      (a, b) =>
+        a.path.length - b.path.length ||
+        (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    );
+  const kept = new Set<string>(),
+    record: DocumentFieldPath[] = [];
+  for (const { path, keys, key } of keyed) {
+    if (keys.some((prefix) => kept.has(prefix))) continue;
+    kept.add(key);
+    record.push(path);
+  }
+  return Object.freeze(record);
+}
+
+/** Capture a recorded path list within the inspection bounds. */
+export function copyRecordedOperationPaths(value: unknown): DocumentWritePaths {
+  return copyDocumentFieldPaths(value, MAX_RECORDED_OPERATION_PATHS);
+}
+
 export function assertDocumentOperationsAllowed<Changes>(
   plan: PreparedDocumentChange<Changes>,
   grants: DocumentWritePaths | undefined,

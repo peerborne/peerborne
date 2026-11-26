@@ -1,4 +1,8 @@
-import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
+import {
+  CoordinatedDocument,
+  type CoordinatedAuthorityUpdateResult,
+  type CoordinatedDocumentOptions,
+} from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import { isDocumentRedeliveryFrame } from './document-redelivery-wire.js';
 import {
@@ -8430,13 +8434,21 @@ export class PeerborneDocument<
     }
   }
 
+  /**
+   * Apply a controller-signed role update. At a new group context, this
+   * author's unsent frames from the retired context are re-signed and sent
+   * when it can still write them, and removed otherwise.
+   */
   public async applySecurityAuthorityUpdate(
     encoded: Uint8Array,
-  ): Promise<void> {
+  ): Promise<CoordinatedAuthorityUpdateResult> {
     if (!this._coordinated)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    await this._coordinated.applyAuthorityUpdate(encoded);
+    const result = await this._coordinated.applyAuthorityUpdate(encoded);
+    if (result.resent > 0 || result.waiting > 0)
+      void this.retrySecurityPublications().catch(() => {});
+    return result;
   }
 
   /**
@@ -8587,14 +8599,17 @@ export class PeerborneDocument<
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
-        for (const frame of await engine.pendingPublications()) {
-          engine.assertPublicationDispatchAllowed();
-          await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-            this._topic,
-            frame,
-          );
-          await engine.publicationSent(frame);
-        }
+        do {
+          for (const frame of await engine.pendingPublications()) {
+            engine.assertPublicationDispatchAllowed();
+            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+              this._topic,
+              frame,
+            );
+            await engine.publicationSent(frame);
+          }
+          // Re-signed retired frames that waited for outbox space follow.
+        } while (await engine.continueResend());
       })
       .finally(() => {
         if (this._securityPublicationTask === task)
