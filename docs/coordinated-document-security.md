@@ -48,11 +48,15 @@ application data. These write scopes do not restrict what a decrypting group
 member can read.
 
 Removing a reader uses both a cryptographic group removal and a signed role
-update. With `requireGroupRosterMatch: true` in the coordinated document’s
-security options, the provider reports member IDs from its authenticated group
-state. The SDK requires those IDs to match the built-in signed role log before
+update. When the coordinated document uses the built-in signed role log and
+its provider implements `getAuthenticatedMemberIds`, strict roster matching is
+on by default: the provider reports member IDs from its authenticated group
+state, and the SDK requires those IDs to match the signed role log before
 exposing content or accepting changes. A survivor pauses protected document use
-until both authenticated updates arrive.
+until both authenticated updates arrive. Pass `requireGroupRosterMatch: false`
+in the security options to opt out. Other authorities and providers that cannot
+report their members default to off; `requireGroupRosterMatch: true` makes them
+fail instead.
 
 If a survivor restarts between the two updates, create a fresh document
 instance. When the signed role record arrives, call

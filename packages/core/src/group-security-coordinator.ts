@@ -537,6 +537,11 @@ export class GroupSecurityCoordinator {
     return this.authorizeControl === authorizer;
   }
 
+  /** Whether the provider reports its authenticated decrypting members. */
+  get reportsAuthenticatedMembers(): boolean {
+    return typeof this.provider.getAuthenticatedMemberIds === 'function';
+  }
+
   get localMemberId(): Uint8Array {
     this.assertUsable();
     return new Uint8Array(this.actorId);
