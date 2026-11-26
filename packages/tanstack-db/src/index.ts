@@ -33,7 +33,8 @@ export interface PeerborneCollectionOptions<
  * This does not implement query-driven network synchronization or persistence.
  * Construct during SSR, but start/preload the collection only in its owner runtime.
  * The collection fails when the store reports an error or a retired document,
- * so it never projects an edit that a retired document discarded.
+ * so it never projects an edit that a retired document discarded. A mutation
+ * made before any query starts the collection's sync starts it first.
  */
 export function peerborneCollectionOptions<
   Row extends object,
@@ -54,6 +55,8 @@ export function peerborneCollectionOptions<
     const mutations = transaction.mutations.filter(
       (mutation) => mutation.collection === collection,
     );
+    if (options.store.getSnapshot().status !== 'ready')
+      await (collection as { preload(): Promise<void> }).preload();
     await options.store.change(
       options.mutate(
         mutations.map((mutation) => ({

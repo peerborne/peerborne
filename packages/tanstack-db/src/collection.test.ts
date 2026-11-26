@@ -149,6 +149,17 @@ describe('experimental TanStack DB collection', () => {
     await f.cleanup();
   });
 
+  test('an insert before any query starts sync opens the document first', async () => {
+    const f = fixture();
+    expect(f.opens).toBe(0);
+    await f.collection.insert({ id: 'b', title: 'Added' }).when('settled');
+    expect(f.opens).toBe(1);
+    expect(f.data.items.b.title).toBe('Added');
+    expect(f.collection.get('a')?.title).toBe('Initial');
+    expect(f.collection.get('b')?.title).toBe('Added');
+    await f.cleanup();
+  });
+
   test('failed writes reject and roll back optimistic UI state', async () => {
     const f = fixture();
     await f.collection.preload();
