@@ -11,6 +11,7 @@
  *   import { PeerborneNode, defaultNodeConfig } from '@peerborne/core/node';
  */
 import {
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   PeerborneConfig,
   IceServer,
   cloneIceServer,
@@ -117,6 +118,9 @@ export const defaultNodeConfig = (
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
+        connectionManager: {
+          inboundConnectionThreshold: DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+        },
         peerDiscovery: [
           ...(hasBootstrapPeers(bootstrapConfig) ? [bootstrap(bootstrapConfig)] : []),
           pubsubPeerDiscovery({

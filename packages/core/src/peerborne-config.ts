@@ -88,6 +88,19 @@ export const DEFAULT_WEBRTC_ICE_SERVERS: ReadonlyArray<Readonly<IceServer>> =
   ]);
 
 /**
+ * Inbound connections per second that the default configs accept from one
+ * host, in place of libp2p's default of 5.
+ *
+ * libp2p attributes a relayed connection to the relay's host, so every peer
+ * that arrives through one relay shares this budget. With the libp2p default,
+ * a sixth peer joining or reconnecting through a relay in the same second is
+ * refused, and its Noise handshake times out. libp2p still refuses inbound
+ * connections while `maxIncomingPendingConnections` (10) upgrades are pending,
+ * and beyond `maxConnections`.
+ */
+export const DEFAULT_INBOUND_CONNECTION_THRESHOLD = 128;
+
+/**
  * Returns a deep-enough copy of an {@link IceServer} so callers can hand the
  * result to libp2p (which expects a mutable `RTCIceServer`) without sharing
  * any inner references with the source object.
@@ -217,6 +230,9 @@ export const defaultConfig = (
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
+        connectionManager: {
+          inboundConnectionThreshold: DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+        },
         // @libp2p/bootstrap rejects an empty list during construction. A
         // brand-new/offline swarm is valid, so omit that discovery service
         // until at least one bootstrap address is configured.

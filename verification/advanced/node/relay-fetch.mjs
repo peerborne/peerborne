@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
@@ -15,6 +16,7 @@ import { MemoryBlockstore } from 'blockstore-core/memory';
 import { MemoryDatastore } from 'datastore-core/memory';
 import {
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   Peerborne,
   SubtleCrypto,
   documentTopic,
@@ -54,19 +56,25 @@ async function until(description, predicate) {
   }
 }
 
+const connectionManager = {
+  inboundConnectionThreshold: DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+};
+
 // The relay server's default circuit limits make every relayed connection a
-// limited one.
+// limited one. Every peer reaches the relay from the loopback host.
 async function relayNode(path) {
   const relay = await createLibp2p({
     addresses: { listen: ['/ip4/127.0.0.1/tcp/0/ws'] },
     transports: [webSockets()],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
+    connectionManager,
     connectionGater: { denyDialMultiaddr: async () => false },
     services: {
       identify: identify(),
       relay: circuitRelayServer({
         reservations: {
+          maxReservations: 128,
           applyDefaultLimit: true,
           defaultDataLimit: 16n * 1024n * 1024n,
           defaultDurationLimit: 30 * 60 * 1000,
@@ -86,7 +94,23 @@ async function relayNode(path) {
   return relay;
 }
 
-async function device(path, relayAddress, writers, founder) {
+// A direct address that accepts TCP and then resets, so an upgrade dial to it
+// fails at once. It counts how many upgrade dials reach it.
+async function unreachableDirectAddress(stops) {
+  const dials = { count: 0 };
+  const server = createServer((socket) => {
+    dials.count++;
+    socket.destroy();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  stops.push(() => new Promise((resolve) => server.close(resolve)));
+  return {
+    address: `/ip4/127.0.0.1/tcp/${server.address().port}/ws`,
+    dials,
+  };
+}
+
+async function device(path, relayAddress, writers, founder, announce = []) {
   const identity =
     founder?.identity ??
     (await crypto.subtle.generateKey(
@@ -111,13 +135,14 @@ async function device(path, relayAddress, writers, founder) {
       blockstore: new MemoryBlockstore(),
       datastore: new MemoryDatastore(),
       libp2p: {
-        addresses: { listen: ['/p2p-circuit'] },
+        addresses: { listen: ['/p2p-circuit'], appendAnnounce: announce },
         transports: [
           circuitRelayTransport({ reservationConcurrency: 1 }),
           webSockets(),
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
+        connectionManager,
         services: {
           identify: identify(),
           ping: ping(),
@@ -166,7 +191,9 @@ async function device(path, relayAddress, writers, founder) {
     document._keychain.merge(founder.document._keychain.history());
     await document._keychain.keys();
   }
-  return { swarm, identity, document, circuit, circuits };
+  const circuitsTo = (peer) =>
+    circuits.get(peer.swarm.libp2p.peerId.toString()) ?? 0;
+  return { swarm, identity, document, circuit, circuitsTo };
 }
 
 const entries = (peer) => peer.document.document.getMap('root').size;
@@ -178,36 +205,59 @@ async function write(peer, from, count) {
     );
 }
 
-async function load(loader, source) {
+// Only circuits opened while the document loads are counted, so a retried
+// connect cannot change the result. One upgrade dial to a direct address that
+// fails may add one circuit.
+async function load(loader, source, upgradeCircuits = 0) {
   const started = performance.now();
   await loader.swarm.connect([source.circuit]);
+  const connected = loader.circuitsTo(source);
+  assert.ok(connected >= 1);
   assert.equal(await bounded('load', loader.document.open()), true);
   assert.equal(entries(loader), 135);
-  const circuits = loader.circuits.get(source.swarm.libp2p.peerId.toString());
-  assert.equal(circuits, 1, 'one relayed connection per peer pair');
+  assert.ok(
+    loader.circuitsTo(source) - connected <= upgradeCircuits,
+    'loads reuse the relayed connection',
+  );
   return performance.now() - started;
+}
+
+async function founderWithHistory(path, stops, announce) {
+  const relay = await relayNode(path);
+  stops.push(() => relay.stop());
+  const relayAddress = String(relay.getMultiaddrs()[0]);
+  const writers = [];
+  const founder = await device(
+    path,
+    relayAddress,
+    writers,
+    undefined,
+    announce,
+  );
+  stops.push(() => founder.swarm.heliaNode.stop());
+  writers.push(founder.identity.publicKey);
+  await founder.document.create();
+  await write(founder, 0, 120);
+  assert.notEqual(await founder.document.snapshot(), undefined);
+  await write(founder, 120, 15);
+  const join = async () => {
+    const joiner = await device(path, relayAddress, writers, founder);
+    stops.push(() => joiner.swarm.heliaNode.stop());
+    return joiner;
+  };
+  return { founder, join };
 }
 
 async function fetchRound(path) {
   const stops = [];
   try {
-    const relay = await relayNode(path);
-    stops.push(() => relay.stop());
-    const relayAddress = String(relay.getMultiaddrs()[0]);
-    const writers = [];
-    const founder = await device(path, relayAddress, writers);
-    stops.push(() => founder.swarm.heliaNode.stop());
-    writers.push(founder.identity.publicKey);
-    await founder.document.create();
-    await write(founder, 0, 120);
-    assert.notEqual(await founder.document.snapshot(), undefined);
-    await write(founder, 120, 15);
-
-    const holder = await device(path, relayAddress, writers, founder);
-    stops.push(() => holder.swarm.heliaNode.stop());
-    const fromFounderMs = await load(holder, founder);
-    const replica = await device(path, relayAddress, writers, founder);
-    stops.push(() => replica.swarm.heliaNode.stop());
+    const direct = await unreachableDirectAddress(stops);
+    const { founder, join } = await founderWithHistory(path, stops, [
+      direct.address,
+    ]);
+    const holder = await join();
+    const fromFounderMs = await load(holder, founder, 1);
+    const replica = await join();
     const fromHolderMs = await load(replica, holder);
 
     await write(founder, 135, 1);
@@ -215,7 +265,29 @@ async function fetchRound(path) {
       'live sync',
       () => entries(holder) === 136 && entries(replica) === 136,
     );
+    assert.equal(
+      direct.dials.count,
+      1,
+      'one upgrade dial per relayed connection',
+    );
     return { fromFounderMs, fromHolderMs };
+  } finally {
+    for (const stop of stops.reverse()) await stop().catch(() => {});
+  }
+}
+
+// More peers than libp2p's default of five inbound connections per second
+// per host reach the founder through one relay at once. libp2p still refuses
+// handshakes beyond its ten pending inbound upgrades.
+async function burstJoin(path, peers) {
+  const stops = [];
+  try {
+    const { founder, join } = await founderWithHistory(path, stops);
+    const joiners = [];
+    for (let index = 0; index < peers; index++) joiners.push(await join());
+    const started = performance.now();
+    await Promise.all(joiners.map((joiner) => load(joiner, founder)));
+    return performance.now() - started;
   } finally {
     for (const stop of stops.reverse()) await stop().catch(() => {});
   }
@@ -232,17 +304,24 @@ export async function relayBlockFetch({ full, progress }) {
     progress?.(`round ${round}/${rounds} loaded`);
   }
   loads.sort((a, b) => a - b);
+  const burstPeers = full ? 10 : 8;
+  const burstMs = await burstJoin(
+    `/advanced/relay-fetch-${crypto.randomUUID()}`,
+    burstPeers,
+  );
+  progress?.(`${burstPeers} peers loaded at once`);
   return {
     scope:
-      'A WebSocket Circuit Relay with the relay server default 16 MiB and 30 minute circuit limits, and real Peerborne nodes that listen only on /p2p-circuit. In each round a fresh device of the only writer loads a snapshot and the change blocks after it over Bitswap from the founder, a second fresh device loads from that holder, and a new edit reaches both.',
+      'A WebSocket Circuit Relay with the relay server default 16 MiB and 30 minute circuit limits, and real Peerborne nodes that listen only on /p2p-circuit. In each round a fresh device of the only writer loads a snapshot and the change blocks after it over Bitswap from the founder, which also advertises a direct address that fails, a second fresh device loads from that holder, and a new edit reaches both. Then a burst of fresh devices connects to the founder through the relay at once and loads.',
     metrics: {
       rounds,
       loads: loads.length,
       loadMs: { p50: loads[Math.floor(loads.length / 2)], max: loads.at(-1) },
-      relayedConnectionsPerPair: 1,
+      upgradeDialsPerRelayedConnection: 1,
+      burst: { peers: burstPeers, ms: burstMs },
     },
     gaps: [
-      'Loopback only. Browser transports, WebRTC upgrades, relay failover and circuit limit exhaustion are not exercised.',
+      'Loopback only. The failing upgrade address is a WebSocket one; browser transports, real WebRTC upgrades, relay failover and circuit limit exhaustion are not exercised.',
     ],
   };
 }

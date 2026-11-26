@@ -42,11 +42,20 @@ dependency/ingress evidence, not default discovery or WebRTC routing evidence.
 16 MiB and 30 minute circuit limits, and real Peerborne Yjs nodes that listen
 only on `/p2p-circuit`. In each round a fresh device of the only writer loads a
 snapshot and the later change blocks over Bitswap from the founder, a second
-fresh device loads from that holder, and a new edit must reach both. Each load
-has a 30 second deadline and must use one relayed connection per peer pair.
-Smoke runs three rounds and full runs ten. It is loopback-only and does not
-exercise browser transports, WebRTC upgrades, relay failover or exhausted
-circuit limits.
+fresh device loads from that holder, and a new edit must reach both. The
+founder also advertises a direct WebSocket address that resets every
+connection, so the holder's background upgrade dial runs and fails; it must
+reach that address exactly once. Each load has a 30 second deadline and must
+not open further circuits, apart from the one that the failed upgrade dial
+falls back to. Smoke runs three rounds and full runs ten. A final burst connects 8 (smoke) or
+10 (full) fresh devices to the founder through the relay at once, more than
+libp2p's default of five inbound connections per second per host, and all must
+load. libp2p refuses an eleventh handshake in flight
+(`maxIncomingPendingConnections`), so larger simultaneous bursts are not
+covered. Peers use `DEFAULT_INBOUND_CONNECTION_THRESHOLD`, and so does the relay,
+because every test peer reaches it from the loopback host. It is loopback-only
+and does not exercise browser transports, WebRTC upgrades, relay failover or
+exhausted circuit limits.
 
 `slow-peer` places one replica in a separate CDP target and makes the other
 three mutate concurrently over ordered SCTP channels. A no-loss baseline and
