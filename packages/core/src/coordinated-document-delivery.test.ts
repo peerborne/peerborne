@@ -60,13 +60,41 @@ async function settled(condition: () => boolean) {
   return condition();
 }
 
-/** Publications waiting in a member's received queue. */
+interface Engine {
+  inbound: { usage: { frames: number } };
+  receive(frame: Uint8Array, sender?: string): Promise<boolean>;
+  options: {
+    journal: { pendingPublications(): Promise<readonly Uint8Array[]> };
+  };
+}
+const engine = (document: unknown) =>
+  (document as { _coordinated: Engine })._coordinated;
+
+/** Frames waiting in a member's received queue. */
 function queued(document: unknown): number {
-  return (
-    document as {
-      _coordinated: { inbound: { usage: { operations: number } } };
-    }
-  )._coordinated.inbound.usage.operations;
+  return engine(document).inbound.usage.frames;
+}
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+  const bytes = new Uint8Array(
+    parts.reduce((sum, part) => sum + part.length, 0),
+  );
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}
+
+function countVerifications(auth: { verify: (...args: never[]) => unknown }) {
+  const verify = auth.verify;
+  const counter = { calls: 0, restore: () => (auth.verify = verify) };
+  auth.verify = ((...args: never[]) => {
+    counter.calls++;
+    return verify(...args);
+  }) as typeof verify;
+  return counter;
 }
 
 function blockVerification(auth: { verify: (...args: never[]) => unknown }) {
@@ -143,7 +171,7 @@ describe('coordinated document delivery', () => {
     } finally {
       await g.close();
     }
-  });
+  }, 60_000);
 
   test('refuses a change with a clear error once unsent frames fill the outbox, and resumes after delivery', async () => {
     const g = await group(2, { subscribers: true });
@@ -168,7 +196,12 @@ describe('coordinated document delivery', () => {
       }
       expect(failure).toBeInstanceOf(DocumentPublicationBacklogError);
       expect((failure as Error).message).toMatch(/16 MiB/);
-      expect(accepted).toBeGreaterThan(16);
+      // Two changes share each publication, and the journal keeps one of
+      // its 16 rows free to stage a replacement.
+      expect(accepted).toBe(30);
+      expect(
+        await engine(g.doc(1)).options.journal.pendingPublications(),
+      ).toHaveLength(15);
       expect(g.doc(1).document).toHaveLength(accepted * 28_000);
       g.offline.delete(1);
       await expect(g.doc(1).retrySecurityPublications()).resolves.toMatchObject(
@@ -202,8 +235,10 @@ describe('coordinated document delivery', () => {
   });
 
   test('drops and reports unsent frames sealed for an earlier group epoch', async () => {
-    const g = await group(2);
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const dropped: number[] = [];
+    const g = await group(2, {
+      security: { onPublicationsDropped: (frames) => dropped.push(frames) },
+    });
     try {
       g.offline.add(1);
       await g.doc(1).change(push(1));
@@ -213,17 +248,39 @@ describe('coordinated document delivery', () => {
       await g.applyRenewal(0, renewal);
       await g.applyRenewal(1, renewal);
       g.offline.delete(1);
-      await expect(g.doc(1).retrySecurityPublications()).resolves.toEqual({
-        sent: 0,
-        pending: false,
-        dropped: 2,
-      });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 2'));
-      expect(g.take()).toEqual([]);
+      // The change's own background retry reports the drop.
       await g.doc(1).change(push(3));
+      expect(dropped).toEqual([2]);
       for (const publication of g.take())
         expect(await g.deliver(publication, [0])).toEqual([]);
       expect(g.doc(0).document).toEqual([3]);
+      await expect(g.doc(1).retrySecurityPublications()).resolves.toEqual({
+        sent: 0,
+        pending: false,
+        dropped: 0,
+      });
+    } finally {
+      await g.close();
+    }
+  });
+
+  test('logs dropped frames when the application sets no handler', async () => {
+    const g = await group(2);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      g.offline.add(1);
+      await g.doc(1).change(push(1));
+      g.take();
+      const renewal = await g.renew();
+      await g.applyRenewal(0, renewal);
+      await g.applyRenewal(1, renewal);
+      g.offline.delete(1);
+      await expect(g.doc(1).retrySecurityPublications()).resolves.toEqual({
+        sent: 0,
+        pending: false,
+        dropped: 1,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 1'));
     } finally {
       warn.mockRestore();
       await g.close();
@@ -267,33 +324,135 @@ describe('coordinated document delivery', () => {
     }
   });
 
-  test('limits one sender to half of the received queue', async () => {
+  test('charges every frame and keeps one sender within a share that holds a full outbox', async () => {
     const g = await group(2);
     try {
       await g.doc(1).change(push(0));
-      const [accepted] = g.take();
-      expect(await g.deliver(accepted, [0])).toEqual([]);
-      const values = Array.from({ length: 41 }, (_, value) => value + 1);
-      for (const value of values) await g.doc(1).change(push(value));
-      const honest = g.take();
-      const resume = blockVerification(g.auth);
-      try {
-        g.dispatch(honest[0], 0, 'writer');
-        for (let index = 0; index < 255; index++)
-          g.dispatch(accepted, 0, 'replayer');
-        expect(await settled(() => queued(g.doc(0)) === 129)).toBe(true);
-        for (const publication of honest.slice(1))
-          g.dispatch(publication, 0, 'writer');
-        expect(queued(g.doc(0))).toBe(129 + honest.length - 1);
-      } finally {
-        resume();
-      }
-      expect(await settled(() => g.doc(0).document.length === 42)).toBe(true);
-      expect(g.doc(0).document).toEqual([0, ...values]);
+      const [genuine] = g.take();
+      const junk = encodeEncryptedDocumentContent(
+        genuine.data.slice(4, 20),
+        new Uint8Array(12),
+        new Uint8Array(16),
+      );
+      const publication = concat(Array(1024).fill(junk));
+      const receiver = engine(g.doc(0));
+      const outcomes: Promise<unknown>[] = [];
+      for (let index = 0; index < 20; index++)
+        outcomes.push(receiver.receive(publication, 'flood').catch((e) => e));
+      expect(queued(g.doc(0))).toBe(20 * 1024);
+      await expect(
+        receiver.receive(publication, 'flood'),
+      ).rejects.toMatchObject({ code: 'capacity-exceeded' });
+      outcomes.push(receiver.receive(publication, 'writer').catch((e) => e));
+      expect(queued(g.doc(0))).toBe(21 * 1024);
+      for (const outcome of await Promise.all(outcomes))
+        expect((outcome as Error).message).toMatch(/does not decrypt/);
+      expect(queued(g.doc(0))).toBe(0);
     } finally {
       await g.close();
     }
   });
+
+  test('skips frames the author already delivered and refuses copies or mixed authors before any signature check', async () => {
+    const g = await group(3);
+    try {
+      await g.doc(1).change(push(0));
+      const [accepted] = g.take();
+      expect(await g.deliver(accepted, [0])).toEqual([]);
+      const copies = concat(
+        Array(
+          Math.min(1024, Math.floor((1024 * 1024) / accepted.data.length)),
+        ).fill(accepted.data),
+      );
+      const verifications = countVerifications(g.auth);
+      try {
+        await expect(g.doc(0).receiveSecurityFrame(copies)).rejects.toThrow(
+          /consecutive/,
+        );
+        await expect(
+          g.doc(0).receiveSecurityFrame(accepted.data),
+        ).resolves.toBe(false);
+        expect(verifications.calls).toBe(0);
+        await g.doc(1).change(push(1));
+        const [next] = g.take();
+        await g.doc(2).change(push(2));
+        const [other] = g.take();
+        // The authors' own changes verify their signatures locally.
+        verifications.calls = 0;
+        await expect(
+          g.doc(0).receiveSecurityFrame(concat([next.data, other.data])),
+        ).rejects.toThrow(/one author/);
+        expect(verifications.calls).toBe(0);
+        await expect(
+          g.doc(0).receiveSecurityFrame(concat([accepted.data, next.data])),
+        ).resolves.toBe(true);
+        expect(verifications.calls).toBe(1);
+      } finally {
+        verifications.restore();
+      }
+      expect(g.doc(0).document).toEqual([0, 1]);
+    } finally {
+      await g.close();
+    }
+  });
+
+  test('applies live edits sent while a reconnect backlog drains and keeps the author live', async () => {
+    const g = await group(2, { subscribers: true });
+    try {
+      g.offline.add(1);
+      const backlog = 300,
+        live = 130;
+      for (let value = 0; value < backlog; value++)
+        await g.doc(1).change(push(value));
+      g.offline.delete(1);
+      await g.doc(1).retrySecurityPublications();
+      const reconnect = g.take();
+      const edits: typeof reconnect = [];
+      for (let value = backlog; value < backlog + live; value++) {
+        await g.doc(1).change(push(value));
+        edits.push(...g.take());
+      }
+      for (const publication of [...reconnect, ...edits])
+        g.dispatch(publication, 0, 'writer');
+      const values = Array.from(
+        { length: backlog + live },
+        (_, value) => value,
+      );
+      for (
+        let turn = 0;
+        g.doc(0).document.length < values.length && turn < 6000;
+        turn++
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(g.doc(0).document).toEqual(values);
+      await g.doc(1).change(push(-1));
+      expect(await g.deliver(g.take()[0], [0])).toEqual([]);
+      expect(g.doc(0).document).toEqual([...values, -1]);
+    } finally {
+      await g.close();
+    }
+  }, 120_000);
+
+  test('joins concurrent offline changes into one publication and keeps editing far past 16 changes', async () => {
+    const g = await group(2, { subscribers: true });
+    try {
+      g.offline.add(1);
+      await Promise.all(
+        Array.from({ length: 15 }, (_, value) => g.doc(1).change(push(value))),
+      );
+      const outbox = engine(g.doc(1)).options.journal;
+      expect(await outbox.pendingPublications()).toHaveLength(1);
+      for (let value = 15; value < 1100; value++)
+        await g.doc(1).change(push(value));
+      const rows = await outbox.pendingPublications();
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => splitDocumentPublication(row).length)).toEqual([
+        1024, 76,
+      ]);
+    } finally {
+      await g.close();
+    }
+  }, 120_000);
 
   test('retries kept publications when a peer subscribes to the document topic', async () => {
     const g = await group(2);

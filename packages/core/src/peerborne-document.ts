@@ -1698,7 +1698,11 @@ export class PeerborneDocument<
       this._coordinated = new CoordinatedDocument(
         documentPath, this._document, _crdtProvider, _changesSerializer,
         _authProvider, _userKey, _userPublicKey,
-        { ...options.security, persistPublications: true },
+        {
+          ...options.security,
+          persistPublications: true,
+          joinPublications: true,
+        },
       );
       this._topic = `peerborne/coordinated/v1/${this._coordinated.routingId}`;
     } else if (this.swarm.beekemForkStore) {
@@ -8094,7 +8098,9 @@ export class PeerborneDocument<
    * callbacks again. Publications that reach no topic peer stay queued, and
    * later local changes join the last of them. A publication sealed for an
    * earlier group context or authority head is dropped and counted, since no
-   * current member can accept it.
+   * current member can accept it; the security option
+   * `onPublicationsDropped` hears about every drop, including those of
+   * background retries.
    */
   public async retrySecurityPublications(): Promise<SecurityPublicationReport> {
     const engine = this._coordinated;
@@ -8113,33 +8119,18 @@ export class PeerborneDocument<
           typeof pubsub.getSubscribers === 'function' &&
           pubsub.getSubscribers(this._topic).length === 0;
         if (unreachable) {
-          const pending = await engine.outboxUndelivered();
+          const pending = await engine.hasQueuedPublications();
           if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
         }
         const { frames, dropped } = await engine.dispatchablePublications();
-        if (dropped !== 0)
-          console.warn(
-            `[${this.documentPath}] dropped ${dropped} unsent change frame(s) sealed for an earlier group epoch or authority; current members did not receive them.`,
-          );
-        if (unreachable && frames.length !== 0) {
-          await engine.publicationUndelivered(frames.at(-1)!);
-          return { sent: 0, pending: true, dropped };
-        }
+        if (unreachable)
+          return { sent: 0, pending: frames.length !== 0, dropped };
         let sent = 0;
         for (const frame of frames) {
           engine.assertPublicationDispatchAllowed();
-          let result: unknown;
-          try {
-            result = await pubsub.publish(this._topic, frame);
-          } catch (error) {
-            await engine.publicationUndelivered(frames.at(-1)!).catch(() => {});
-            throw error;
-          }
+          const result: unknown = await pubsub.publish(this._topic, frame);
           // Keep this frame and its successors until a topic peer receives them.
-          if (!securityPublicationReachedPeers(result)) {
-            await engine.publicationUndelivered(frames.at(-1)!);
-            break;
-          }
+          if (!securityPublicationReachedPeers(result)) break;
           await engine.publicationSent(frame);
           sent++;
         }

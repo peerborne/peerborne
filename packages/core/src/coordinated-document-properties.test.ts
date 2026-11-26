@@ -165,7 +165,7 @@ describe('coordinated document runtime boundaries', () => {
     }
   });
 
-  test('queues received frames beyond the local operation budget up to their own bound', async () => {
+  test('queues received frames beyond the local operation budget', async () => {
     const f = await documentFixture(),
       a = create(f),
       b = create(f);
@@ -187,10 +187,7 @@ describe('coordinated document runtime boundaries', () => {
       await waiting;
       return nativeVerify(...args);
     };
-    const received = frames.slice(0, 256).map((frame) => b.receive(frame));
-    await expect(b.receive(frames[256])).rejects.toMatchObject({
-      code: 'capacity-exceeded',
-    });
+    const received = frames.map((frame) => b.receive(frame));
     const changing = Array.from({ length: 16 }, (_, value) =>
       b.change((doc) => {
         doc.push(-value - 1);
@@ -203,10 +200,10 @@ describe('coordinated document runtime boundaries', () => {
     ).rejects.toMatchObject({ code: 'capacity-exceeded' });
     release();
     f.auth.verify = nativeVerify;
-    expect(await Promise.all(received)).toEqual(Array(256).fill(true));
+    expect(await Promise.all(received)).toEqual(Array(257).fill(true));
     await Promise.all(changing);
     expect(b.document).toEqual([
-      ...Array.from({ length: 256 }, (_, value) => value),
+      ...Array.from({ length: 257 }, (_, value) => value),
       ...Array.from({ length: 16 }, (_, value) => -value - 1),
     ]);
     await a.close();

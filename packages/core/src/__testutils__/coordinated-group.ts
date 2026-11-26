@@ -1,7 +1,10 @@
 import type { AuthProvider } from '../auth-provider.js';
 import type { ChangesSerializer } from '../changes-serializer.js';
 import type { CRDTProvider } from '../crdt-provider.js';
-import type { DocumentMemberAuthority } from '../coordinated-document.js';
+import type {
+  CoordinatedDocumentOptions,
+  DocumentMemberAuthority,
+} from '../coordinated-document.js';
 import {
   DocumentAuthorityLog,
   DocumentGroupControlAuthority,
@@ -197,6 +200,8 @@ export interface CoordinatedGroupOptions {
   readonly catchUp?: boolean;
   /** Report topic subscribers, none while a member is offline. */
   readonly subscribers?: boolean;
+  /** Extra security options for every member's document. */
+  readonly security?: Pick<CoordinatedDocumentOptions, 'onPublicationsDropped'>;
 }
 
 /**
@@ -211,6 +216,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     journal = true,
     catchUp = false,
     subscribers = false,
+    security,
   }: CoordinatedGroupOptions,
 ) {
   const path = '/coordinated-group';
@@ -351,6 +357,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
         authority: logs[index],
         requireGroupRosterMatch: true,
         enableAuthenticatedCatchUp: catchUp,
+        ...security,
         ...(journal
           ? {
               journal: new DocumentReplayJournal(

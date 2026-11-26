@@ -255,15 +255,22 @@ document author at a time; independent offline branches using the same member
 ID are detected as conflicting prefixes rather than merged.
 
 Received publications wait in their own queue, separate from the 16 local
-operations and 16 MiB a document admits. A document queues at most 256
-publications and 32 MiB of ciphertext, and all coordinated documents in a
-process at most 1,024 publications and 128 MiB. One GossipSub sender may hold
-half of a document's queue and a quarter of the process queue. A publication
-that arrives beyond those bounds is rejected before it is copied. Before it
-waits behind earlier work, every frame it carries must carry the current epoch
-tag and decrypt under the current document key and authority head, so input
-from a non-member is released within one decryption. Replayed genuine frames
-pass this check and are bounded only by the per-sender share.
+operations and 16 MiB a document admits, and every frame they carry is charged.
+A document queues at most 32,768 frames and 64 MiB of ciphertext, and all
+coordinated documents in a process at most 131,072 frames and 128 MiB. One
+GossipSub sender may hold 20,480 frames and 24 MiB of a document's queue, which
+covers one full outbox backlog plus live edits sent while it drains, and a
+quarter of the process queue. Each frame's charge is released once it is
+processed. A publication that arrives beyond those bounds is rejected before it
+is copied. Before it waits behind earlier work, every frame it carries must
+carry the current epoch tag and decrypt under the current document key and
+authority head, and all of them must come from one author with consecutive
+sequences, so input from a non-member is released within one decryption per
+frame and repeated copies are refused. Frames at or below the author's accepted
+sequence are dropped then, without a signature check, and the decrypted
+plaintext of the rest is reused. A refused publication is not retained: the
+author's later frames wait as held frames until the missing ones are delivered
+again.
 
 A frame can arrive before its author's previous frame, or before another
 author's change that it natively depends on. After full decryption, signature,
@@ -312,20 +319,26 @@ change callback. A pubsub publication that reaches at least one topic peer
 removes it from the outbox; this is transport handoff, **not** a durable peer
 receipt. A publication that reports no topic recipients, as GossipSub does
 while no peer has joined the topic, stays in the outbox with every later one.
-While the last publication is undelivered, each new local frame is appended to
-it in a replacement publication, and the superseded one is removed after the
-replacement commits; a copy left by a crash only repeats accepted frames.
-Offline editing therefore continues until about 16 MiB of unsent ciphertext is
-queued. Beyond that, a change fails before visible commit with
-`DocumentPublicationBacklogError`, a `DocumentJournalCapacityError`. The
+Each new local frame is appended to the last queued publication while it fits
+in a replacement publication, and the superseded one is removed after the
+replacement commits; a copy left by a crash only repeats accepted frames, which
+receivers drop before any signature check. The journal stages a replacement
+beside the row it replaces, so one of its 16 rows stays free for that staging.
+Offline editing therefore continues until 15 publications, about 15 MiB of
+unsent ciphertext, are queued. Beyond that, a change fails before its callback
+runs with `DocumentPublicationBacklogError`, a `DocumentJournalCapacityError`.
+The
 document retries publications in order when it opens, when a peer subscribes
 to the topic, after the next change, or on `retrySecurityPublications()`, which
 reports how many publications it sent, whether any stay queued and how many
 frames it dropped. While GossipSub reports no topic subscriber, a retry does
 not read or send the outbox. A publication sealed for an earlier group context
 or authority head would be rejected by every current member, so a retry
-removes it, counts its frames as dropped and logs a warning instead of sending
-it; those changes stay local until a later delivery mechanism re-seals them.
+removes it and counts its frames as dropped instead of sending it; those
+changes stay local until a later delivery mechanism re-seals them. Every drop,
+including one in a background retry after a change, at open or on a
+subscription, is passed to the `onPublicationsDropped` security option, or
+logged as a warning when the application sets none.
 Outbox availability is not protected by the replay rollback anchor. Without a journal, receipts and the bounded outbox are process-local.
 Outbox reads and acknowledgments run through the document queue; publication
 cannot observe an accepted store record before its anchor decision completes.
