@@ -12,6 +12,7 @@ import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
   documentBytesEqual,
+  documentBytesId,
 } from './internal/document-binary.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
@@ -24,6 +25,13 @@ export const DOCUMENT_REDELIVERY_MARKER = Uint8Array.of(0x50, 0x42, 0x44, 2);
 export const MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES = 32 * 1024;
 const MAX_PEER_LENGTH = 128;
 const PEER = /^[1-9A-HJ-NP-Za-km-z]+$/;
+/** Held frames a request names so responders do not resend them. */
+export const MAX_DOCUMENT_REDELIVERY_HELD = 64;
+
+export interface DocumentRedeliveryHeldFrame {
+  readonly memberId: Uint8Array;
+  readonly sequence: number;
+}
 
 /** A member's accepted heads, bound to the libp2p peer that publishes them. */
 export interface DocumentRedeliveryRequest extends DocumentCatchUpBinding {
@@ -31,7 +39,11 @@ export interface DocumentRedeliveryRequest extends DocumentCatchUpBinding {
   /** The base58btc libp2p PeerId that GossipSub signs as the message sender. */
   readonly requesterPeer: string;
   readonly nonce: Uint8Array;
+  /** Milliseconds since the Unix epoch; responders accept only newer, fresh requests. */
+  readonly issuedAt: number;
   readonly receipts: readonly DocumentReplayReceipt[];
+  /** Frames the requester already holds, in member then sequence order. */
+  readonly held: readonly DocumentRedeliveryHeldFrame[];
 }
 
 function bindingWriter(value: DocumentCatchUpBinding): DocumentBinaryWriter {
@@ -73,7 +85,22 @@ export function encodeDocumentRedeliveryRequest(
     .fixed(copyUnsharedUint8Array(value.requesterId, 32, 32, 'redelivery member'))
     .text(value.requesterPeer, MAX_PEER_LENGTH)
     .fixed(copyUnsharedUint8Array(value.nonce, 16, 16, 'redelivery nonce'));
+  if (!Number.isSafeInteger(value.issuedAt) || value.issuedAt < 0)
+    throw new TypeError('Invalid document redelivery time');
+  writer.integer(value.issuedAt, 8);
   writeDocumentReceipts(writer, value.receipts);
+  if (value.held.length > MAX_DOCUMENT_REDELIVERY_HELD)
+    throw new RangeError('Too many held document frames');
+  writer.integer(value.held.length, 1);
+  let previous = '';
+  for (const { memberId, sequence } of value.held) {
+    const member = copyUnsharedUint8Array(memberId, 32, 32, 'held member');
+    const key = `${documentBytesId(member)}:${String(sequence).padStart(16, '0')}`;
+    if (key <= previous || !Number.isSafeInteger(sequence) || sequence < 1)
+      throw new TypeError('Noncanonical held document frame');
+    writer.fixed(member).integer(sequence, 8);
+    previous = key;
+  }
   return writer.finish();
 }
 
@@ -94,7 +121,22 @@ export function decodeDocumentRedeliveryRequest(
     requesterPeer = reader.text(MAX_PEER_LENGTH);
   assertPeer(requesterPeer);
   const nonce = reader.fixed(16);
+  const issuedAt = reader.number(8);
   const receipts = readDocumentReceipts(reader);
+  const count = reader.number(1);
+  if (count > MAX_DOCUMENT_REDELIVERY_HELD)
+    throw new RangeError('Too many held document frames');
+  const held: DocumentRedeliveryHeldFrame[] = [];
+  let previous = '';
+  for (let index = 0; index < count; index++) {
+    const memberId = reader.fixed(32),
+      sequence = reader.number(8);
+    const key = `${documentBytesId(memberId)}:${String(sequence).padStart(16, '0')}`;
+    if (key <= previous || sequence < 1)
+      throw new TypeError('Noncanonical held document frame');
+    held.push({ memberId, sequence });
+    previous = key;
+  }
   reader.end();
   return {
     documentId,
@@ -104,7 +146,9 @@ export function decodeDocumentRedeliveryRequest(
     requesterId,
     requesterPeer,
     nonce,
+    issuedAt,
     receipts,
+    held,
   };
 }
 

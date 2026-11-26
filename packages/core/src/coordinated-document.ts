@@ -64,6 +64,8 @@ import {
   decodeDocumentRedeliveryRequest,
   decodeEncryptedDocumentRedelivery,
   documentRedeliveryAAD,
+  MAX_DOCUMENT_REDELIVERY_HELD,
+  type DocumentRedeliveryRequest,
   encodeDocumentRedeliveryRequest,
   encodeEncryptedDocumentRedelivery,
   MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES,
@@ -204,7 +206,8 @@ interface RetainedFrame {
 const REDELIVERY_RESPONSE_FRAMES = 64;
 const REDELIVERY_RESPONSE_BYTES = 4 * 1024 * 1024;
 const REDELIVERY_REQUESTER_INTERVAL_MS = 2_000;
-const REDELIVERY_SEEN_REQUESTS = 256;
+/** A request older than this, or not newer than its member's last, is not answered. */
+const REDELIVERY_FRESHNESS_MS = 60_000;
 /** Frames one replica resends per second across all requesters, with a burst of 64. */
 const REDELIVERY_FRAMES_PER_SECOND = 32;
 
@@ -213,6 +216,8 @@ export interface CoordinatedRedeliveryAnswer {
   readonly own: readonly Uint8Array[];
   readonly others: readonly { readonly author: string; readonly sequence: number }[];
   readonly since: number;
+  /** This replica's position among the other current members, for staggering answers. */
+  readonly rank: number;
 }
 
 interface SealedStage {
@@ -286,10 +291,11 @@ export class CoordinatedDocument<
   };
   private readonly redelivery = {
     answered: new Map<string, number>(),
-    seen: new Set<string>(),
+    issued: new Map<string, number>(),
     tokens: REDELIVERY_RESPONSE_FRAMES,
     refilledAt: 0,
   };
+  private heldAdded = 0;
   private material?: {
     context: GroupSecurityDocumentContext;
     value: GroupDocumentEncryptionMaterial;
@@ -609,6 +615,12 @@ export class CoordinatedDocument<
       attemptedAt: this.appliedFrames,
     });
     held.bytes += frame.length;
+    this.heldAdded++;
+  }
+
+  /** Increases each time a frame starts waiting for its predecessors. */
+  get heldGeneration(): number {
+    return this.heldAdded;
   }
 
   private clearHeld(): void {
@@ -834,7 +846,23 @@ export class CoordinatedDocument<
             requesterId,
             requesterPeer,
             nonce: crypto.getRandomValues(new Uint8Array(16)),
+            issuedAt: Date.now(),
             receipts: receiptEntries(this.sortedReceipts(stage.binding.context)),
+            held: (this.held &&
+            documentContextsMatch(this.held.context, stage.binding.context)
+              ? [...this.held.frames]
+              : []
+            )
+              .sort((a, b) =>
+                a.author < b.author ? -1 : a.author > b.author ? 1 : a.sequence - b.sequence,
+              )
+              .slice(0, MAX_DOCUMENT_REDELIVERY_HELD)
+              .map(({ author, sequence }) => ({
+                memberId: Uint8Array.from(author.match(/../g)!, (byte) =>
+                  parseInt(byte, 16),
+                ),
+                sequence,
+              })),
           }),
           member,
           encodeEncryptedDocumentRedelivery,
@@ -892,7 +920,7 @@ export class CoordinatedDocument<
               )
                 throw new Error('Document redelivery requester is unauthorized');
               await this.verifyCatchUp(stage, signed, requester);
-              return this.chooseRedelivery(stage.binding.context, requesterId, body.nonce, body.receipts);
+              return this.chooseRedelivery(stage, requesterId, body);
             });
           };
         },
@@ -903,35 +931,50 @@ export class CoordinatedDocument<
   }
 
   private chooseRedelivery(
-    context: GroupSecurityDocumentContext,
+    stage: SealedStage,
     requester: string,
-    nonce: Uint8Array,
-    receipts: readonly DocumentReplayReceipt[],
+    body: DocumentRedeliveryRequest,
   ): CoordinatedRedeliveryAnswer {
+    const context = stage.binding.context;
     const now = Date.now();
-    const none = { own: [], others: [], since: now };
+    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const peers = [...stage.lease.members.keys()]
+      .filter((id) => id !== requester)
+      .sort();
+    const rank = Math.max(0, peers.indexOf(local));
+    const none = { own: [], others: [], since: now, rank };
     const state = this.redelivery;
-    const request = `${requester}:${documentBytesId(nonce)}`;
-    if (state.seen.has(request)) return none;
-    state.seen.add(request);
-    if (state.seen.size > REDELIVERY_SEEN_REQUESTS)
-      state.seen.delete(state.seen.values().next().value!);
+    // A signed, strictly newer and fresh issue time makes a captured request useless later.
+    if (
+      body.issuedAt <= (state.issued.get(requester) ?? -1) ||
+      Math.abs(now - body.issuedAt) > REDELIVERY_FRESHNESS_MS
+    )
+      return none;
+    state.issued.set(requester, body.issuedAt);
+    const bound = (map: Map<string, number>) => {
+      if (map.size > 256) map.delete(map.keys().next().value!);
+    };
+    bound(state.issued);
     if (now - (state.answered.get(requester) ?? -Infinity) < REDELIVERY_REQUESTER_INTERVAL_MS)
       return none;
     state.answered.set(requester, now);
-    if (state.answered.size > 256)
-      state.answered.delete(state.answered.keys().next().value!);
+    bound(state.answered);
     state.tokens = Math.min(
       REDELIVERY_RESPONSE_FRAMES,
       state.tokens +
-        Math.floor(((now - state.refilledAt) * REDELIVERY_FRAMES_PER_SECOND) / 1000),
+        (Math.max(0, now - state.refilledAt) * REDELIVERY_FRAMES_PER_SECOND) / 1000,
     );
     state.refilledAt = now;
+    const receipts = body.receipts;
+    const skip = new Set(
+      body.held.map(
+        ({ memberId, sequence }) => `${documentBytesId(memberId)}:${sequence}`,
+      ),
+    );
     const heads = new Map(
       receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
     );
     const accepted = this.sortedReceipts(context);
-    const local = documentBytesId(this.options.coordinator.localMemberId);
     const own: Uint8Array[] = [];
     const others: { author: string; sequence: number }[] = [];
     let bytes = 0;
@@ -946,19 +989,20 @@ export class CoordinatedDocument<
         head,
       );
       for (const entry of suffix ?? []) {
+        if (skip.has(`${author}:${entry.sequence}`)) continue;
         if (
-          state.tokens === 0 ||
+          state.tokens < 1 ||
           own.length + others.length >= REDELIVERY_RESPONSE_FRAMES ||
           bytes + entry.frame.length > REDELIVERY_RESPONSE_BYTES
         )
-          return { own, others, since: now };
+          return { own, others, since: now, rank };
         state.tokens--;
         bytes += entry.frame.length;
         if (author === local) own.push(entry.frame.slice());
         else others.push({ author, sequence: entry.sequence });
       }
     }
-    return { own, others, since: now };
+    return { own, others, since: now, rank };
   }
 
   /** Frames from an answer that no other replica has resent since `since`. */

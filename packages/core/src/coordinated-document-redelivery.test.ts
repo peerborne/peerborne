@@ -96,11 +96,16 @@ const request = (peer: string, receipts = 0): DocumentRedeliveryRequest => ({
   requesterId: id(4),
   requesterPeer: peer,
   nonce: new Uint8Array(16).fill(5),
+  issuedAt: 1_700_000_000_000,
   receipts: Array.from({ length: receipts }, (_, index) => {
     const memberId = new Uint8Array(32);
     memberId[0] = index;
     return { memberId, sequence: index + 1, hash: id(6) };
   }),
+  held: Array.from({ length: Math.min(receipts, 64) }, (_, index) => ({
+    memberId: id(9),
+    sequence: index + 2,
+  })),
 });
 
 describe('coordinated redelivery', () => {
@@ -166,7 +171,8 @@ describe('coordinated redelivery', () => {
       try {
         g.dispatch(value, 0);
         g.dispatch(value, 2);
-        expect(await settled(() => g.publications.length === 3)).toBe(true);
+        // Frame 4 is held, so the request names it and only 2 and 3 are resent.
+        expect(await settled(() => g.publications.length === 2)).toBe(true);
         const own = content();
         expect(own.every((publication) => publication.sender === 2)).toBe(true);
         for (const publication of own) await g.deliver(publication, [0, 1]);
@@ -247,4 +253,64 @@ describe('coordinated redelivery', () => {
       await g.close();
     }
   });
+});
+
+describe('coordinated redelivery freshness and held frames', () => {
+  test('rejects noncanonical or oversized held lists and unusable issue times', () => {
+    const base = request('Peer', 2);
+    expect(() =>
+      encodeDocumentRedeliveryRequest({ ...base, held: [...base.held].reverse() }),
+    ).toThrow('Noncanonical');
+    expect(() =>
+      encodeDocumentRedeliveryRequest({
+        ...base,
+        held: Array.from({ length: 65 }, (_, index) => ({
+          memberId: id(9),
+          sequence: index + 1,
+        })),
+      }),
+    ).toThrow('held');
+    for (const issuedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 2])
+      expect(() =>
+        encodeDocumentRedeliveryRequest({ ...base, issuedAt }),
+      ).toThrow();
+  });
+
+  test('answers a captured request once and never after newer ones or once stale', async () => {
+    const { g, content, write } = await group();
+    try {
+      await write(2, (index) => index === 0);
+      const capture = async () => {
+        await g.doc(1).requestSecurityRedelivery();
+        return g.take().filter(isRequest)[0];
+      };
+      const captured = await capture();
+      g.dispatch(captured, 2);
+      expect(await settled(() => g.publications.length === 1)).toBe(true);
+      expect(content()).toHaveLength(1);
+      await pause(2_600);
+      g.dispatch(captured, 2);
+      await pause(300);
+      expect(content()).toEqual([]);
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now - 61_000);
+      let stale: GroupPublication;
+      try {
+        stale = await capture();
+      } finally {
+        clock.mockRestore();
+      }
+      g.dispatch(stale, 2);
+      await pause(300);
+      expect(content()).toEqual([]);
+      const fresh = await capture();
+      g.dispatch(fresh, 2);
+      expect(await settled(() => g.publications.length === 1)).toBe(true);
+      g.dispatch(captured, 2);
+      await pause(300);
+      expect(content()).toHaveLength(1);
+    } finally {
+      await g.close();
+    }
+  }, 30_000);
 });

@@ -283,10 +283,15 @@ const loadCandidateResponders = new WeakMap<object, string>();
 const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
 const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
 
-const REDELIVERY_MIN_SPACING_MS = 2_000;
+/** Above the 2 s a responder waits between answers to one member. */
+const REDELIVERY_MIN_SPACING_MS = 2_500;
+/** One subscribing peer triggers at most one request in this interval. */
+const REDELIVERY_PEER_DEBOUNCE_MS = 30_000;
 const REDELIVERY_SETTLE_MS = [200, 800] as const;
 const REDELIVERY_PERIOD_MS = [30_000, 60_000] as const;
-const REDELIVERY_RESPONSE_DELAY_MS = [100, 500] as const;
+/** Non-authors answer in roster order, one step apart, so the first answer suppresses the rest. */
+const REDELIVERY_RESPONSE_STEP_MS = 200;
+const REDELIVERY_RESPONSE_JITTER_MS = [100, 200] as const;
 
 function jitter([low, high]: readonly [number, number]): number {
   return low + Math.random() * (high - low);
@@ -1500,6 +1505,8 @@ export class PeerborneDocument<
   private _redeliveryDue = 0;
   private _redeliverySentAt = -Infinity;
   private _redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
+  private _redeliveryHeldSeen = 0;
+  private readonly _redeliveryPeers = new Map<string, number>();
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
@@ -7459,12 +7466,21 @@ export class PeerborneDocument<
       };
       this._redeliverySubscriptionHandler = (event) => {
         if (
-          event.detail?.subscriptions?.some(
+          !event.detail?.subscriptions?.some(
             (subscription) =>
               subscription.subscribe && subscription.topic === this._topic,
           )
         )
-          this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+          return;
+        const peer = String(event.detail.peerId);
+        const now = Date.now();
+        if (now - (this._redeliveryPeers.get(peer) ?? -Infinity) < REDELIVERY_PEER_DEBOUNCE_MS)
+          return;
+        this._redeliveryPeers.delete(peer);
+        this._redeliveryPeers.set(peer, now);
+        if (this._redeliveryPeers.size > 256)
+          this._redeliveryPeers.delete(this._redeliveryPeers.keys().next().value!);
+        this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.addEventListener(
@@ -7489,8 +7505,12 @@ export class PeerborneDocument<
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
     const applied = await engine.receive(frame);
-    if (!applied && engine.hasHeldFrames())
+    // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
+    if (engine.heldGeneration !== this._redeliveryHeldSeen) {
+      this._redeliveryHeldSeen = engine.heldGeneration;
+      this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
       this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+    }
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
       if (rosterIsCurrent) {
@@ -7691,7 +7711,13 @@ export class PeerborneDocument<
     await publish(answer.own);
     if (answer.others.length === 0) return;
     await new Promise<void>((resolve) =>
-      unrefTimer(setTimeout(resolve, jitter(REDELIVERY_RESPONSE_DELAY_MS))),
+      unrefTimer(
+        setTimeout(
+          resolve,
+          answer.rank * REDELIVERY_RESPONSE_STEP_MS +
+            jitter(REDELIVERY_RESPONSE_JITTER_MS),
+        ),
+      ),
     );
     if (this._subscribed && !this._gcClosed)
       await publish(engine.unansweredRedeliveries(answer));
