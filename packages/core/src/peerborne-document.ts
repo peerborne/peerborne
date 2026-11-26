@@ -69,7 +69,10 @@ import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
-import { verifyMemberSignature } from './internal/signature-verification.js';
+import {
+  findMemberSignatureKey,
+  verifyMemberSignature,
+} from './internal/signature-verification.js';
 import {
   GossipReceiveAdmission,
   type SkippedFrameKind,
@@ -159,7 +162,9 @@ import {
   MAX_CROSS_LINKS,
   MAX_RECENT_TIPS,
   mergeRemoteSyncTree,
+  rankAncestorsFirst,
   RecentTip,
+  reorderByRank,
   selectAncestryClosedNodes,
   selectCrossLinks,
   trackTipInList,
@@ -245,10 +250,13 @@ import {
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
 import {
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
+  mergeACLChanges,
   retryACLConflict,
 } from './acl.js';
+import { HeldACLChanges, type HeldACLKind } from './held-acl-changes.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
   MAX_KEYCHAIN_EPOCHS,
@@ -914,6 +922,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly applySnapshotAfterChanges?: boolean;
   /** Serialized size of the received frame, for size-bound compaction. */
   readonly frameBytes?: number;
+  /** Serialized verified signer of the received frame, which ACL changes it holds count against. */
+  readonly signer?: string;
 }
 
 /**
@@ -1570,18 +1580,29 @@ export class PeerborneDocument<
 
   // Delivered nodes this replica does not hold yet, oldest first in `order`
   // from `start`: document changes the CRDT keeps while a dependency is
-  // missing (with their `changes`), and nodes that reference such a change in
-  // a delivered tree. They stay out of `_hashes`, so checkpoints never claim
-  // them and later messages are walked through them. Load completeness checks
-  // count them as delivered.
+  // missing (with their `changes`), ACL changes the live ACL could not merge
+  // (`unmerged`), and nodes that reference such a change in a delivered tree.
+  // They stay out of `_hashes`, so checkpoints never claim them and later
+  // messages are walked through them. Load completeness checks count them as
+  // delivered.
   private _waiting?: {
     readonly entries: Map<
       string,
-      { readonly kind: CRDTChangeNodeKind; readonly changes?: ChangesType }
+      {
+        readonly kind: CRDTChangeNodeKind;
+        readonly changes?: ChangesType;
+        readonly unmerged?: true;
+      }
     >;
     order: string[];
     start: number;
   };
+  // ACL changes delivered before the ACL history they depend on. They wait
+  // outside the live ACL, which therefore never depends on missing history,
+  // and merge once a later ACL merge supplies that history.
+  private _heldACL?: HeldACLChanges<ChangesType>;
+  // Held ACL nodes merged and recorded since remote update handlers last ran.
+  private _mergedHeldACL?: string[];
 
   // Fail-closed bootstrap admission state. A bootstrap load can mutate
   // ACL/keychain state before a later CRDT/provider operation throws, without
@@ -2754,11 +2775,12 @@ export class PeerborneDocument<
     cid: string,
     kind: CRDTChangeNodeKind,
     changes?: ChangesType,
+    unmerged?: true,
   ): void {
     this._waiting ??= { entries: new Map(), order: [], start: 0 };
     const waiting = this._waiting;
     if (!waiting.entries.has(cid)) waiting.order.push(cid);
-    waiting.entries.set(cid, { kind, changes });
+    waiting.entries.set(cid, { kind, changes, unmerged });
     while (waiting.entries.size > MAX_WAITING_REMOTE_CHANGES) {
       waiting.entries.delete(waiting.order[waiting.start++]!);
     }
@@ -2838,6 +2860,7 @@ export class PeerborneDocument<
       if (
         entry !== undefined &&
         entry.changes === undefined &&
+        entry.unmerged === undefined &&
         this._refusedChanges?.has(cid) !== true
       ) {
         candidates.set(cid, entry.kind);
@@ -3094,6 +3117,7 @@ export class PeerborneDocument<
     const newDocumentHashes: string[] = [];
     const newDocumentTips: Array<[string, CRDTChangeNodeKind]> = [];
     const missingDocumentHashes: [string, CRDTChangeNodeKind][] = [];
+    const heldACLHashes = new Set<string>();
     try {
       for (const [sentHash, sentChangeKind, sentChanges] of newChangeEntries) {
         assertStillActive();
@@ -3121,29 +3145,24 @@ export class PeerborneDocument<
               newDocumentTips.push([sentHash, sentChangeKind]);
               break;
             }
-            case crdtReaderChangeNode: {
-              // Apply the changes that were sent directly. Use the
-              // `_mergeReaders` wrapper so pending BeeKEM Welcomes are
-              // drained immediately after the ACL update lands.
-              await this._mergeReaders(
-                sentChanges,
-                assertStillActive,
-                signal,
-              ).catch(rejectCertifiedACLMerge);
-              appliedDirectACLNodes.set(sentHash, sentChangeKind);
-              assertStillActive();
-              newDocumentHashes.push(sentHash);
-              newDocumentTips.push([sentHash, sentChangeKind]);
-              break;
-            }
+            case crdtReaderChangeNode:
             case crdtWriterChangeNode: {
-              // Apply the changes that were sent directly.
-              await this._mergeWriters(
+              // The ACL pre-pass merged these causal ancestors first, so this
+              // root-first pass records them. A change still waiting for
+              // missing ACL history stays held and waits.
+              const merged = await this._mergeRemoteACL(
+                sentChangeKind,
+                sentHash,
                 sentChanges,
+                fetchOptions.signer,
                 assertStillActive,
                 signal,
               ).catch(rejectCertifiedACLMerge);
-              appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              if (merged) {
+                appliedDirectACLNodes.set(sentHash, sentChangeKind);
+              } else {
+                heldACLHashes.add(sentHash);
+              }
               assertStillActive();
               newDocumentHashes.push(sentHash);
               newDocumentTips.push([sentHash, sentChangeKind]);
@@ -3178,7 +3197,7 @@ export class PeerborneDocument<
       // waiting change in this tree waits with it, so later trees are still
       // walked down to that change.
       const kinds = new Map(newDocumentTips);
-      const waitingHashes = new Set<string>();
+      const waitingHashes = new Set<string>(heldACLHashes);
       for (const [hash, sentChanges] of sentDocumentChanges) {
         if (this._hasIntegrated(sentChanges)) continue;
         waitingHashes.add(hash);
@@ -3362,24 +3381,20 @@ export class PeerborneDocument<
                 this._trackTip(missingHash, missingHashKind);
                 break;
               }
-              case crdtReaderChangeNode: {
-                // Go through `_mergeReaders` to drain any pending BeeKEM
-                // Welcomes parked while waiting for this ACL update.
-                await this._mergeReaders(
-                  missingChanges,
-                  assertWorkerActive,
-                  fetchSignal,
-                );
-                this._recordRemoteChange(missingHash, missingHashKind);
-                this._trackTip(missingHash, missingHashKind);
-                break;
-              }
+              case crdtReaderChangeNode:
               case crdtWriterChangeNode: {
-                await this._mergeWriters(
-                  missingChanges,
-                  assertWorkerActive,
-                  fetchSignal,
-                );
+                if (
+                  !(await this._mergeRemoteACL(
+                    missingHashKind,
+                    missingHash,
+                    missingChanges,
+                    fetchOptions.signer,
+                    assertWorkerActive,
+                    fetchSignal,
+                  ))
+                ) {
+                  continue;
+                }
                 this._recordRemoteChange(missingHash, missingHashKind);
                 this._trackTip(missingHash, missingHashKind);
                 break;
@@ -3476,6 +3491,7 @@ export class PeerborneDocument<
     // waiting change needed, whichever message delivered that change. A node
     // of this tree is held only once nothing it references here waits.
     const integratedLater = [
+      ...(this._mergedHeldACL?.splice(0) ?? []),
       ...(integratedDocumentChanges > 0
         ? this._recordIntegratedWaitingChanges()
         : []),
@@ -3643,6 +3659,7 @@ export class PeerborneDocument<
     rootId?: string,
   ): {
     readonly aclEntries: BoundedChangeTreeEntry<ChangesType>[];
+    readonly hasACLNodes: boolean;
     readonly changes: CRDTChangeNode<ChangesType>;
   } {
     const { entries, root: changes } = snapshotBoundedChangeTree(rootId, node, {
@@ -3652,29 +3669,169 @@ export class PeerborneDocument<
     // the ACL pre-pass can apply any of them.
     validateRemoteSyncTreeAliases(rootId, changes);
     return {
-      aclEntries: entries.filter(
-        ({ kind, change }) =>
-          change !== undefined &&
-          (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode),
+      aclEntries: this._orderACLAncestorsFirst(
+        entries.filter(
+          ({ kind, change }) =>
+            change !== undefined &&
+            (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode),
+        ),
+        ({ nodeId }) => nodeId,
+        rootId,
+        changes,
+      ),
+      hasACLNodes: entries.some(
+        ({ kind }) =>
+          kind === crdtWriterChangeNode || kind === crdtReaderChangeNode,
       ),
       changes,
     };
+  }
+
+  /** Reorder the ACL entries `select` names into causal-ancestors-first order. */
+  private _orderACLAncestorsFirst<Entry>(
+    entries: Entry[],
+    select: (entry: Entry) => string | undefined,
+    rootId: string | undefined,
+    root: CRDTChangeNode<ChangesType>,
+  ): Entry[] {
+    let selected = 0;
+    for (const entry of entries) {
+      if (select(entry) !== undefined && ++selected > 1) {
+        return reorderByRank(entries, select, rankAncestorsFirst(rootId, root));
+      }
+    }
+    return entries;
   }
 
   private async _applyCollectedACL(
     entries: readonly BoundedChangeTreeEntry<ChangesType>[],
     assertStillActive?: () => void,
     signal?: AbortSignal,
+    signer?: string,
   ): Promise<void> {
-    for (const { kind, change } of entries) {
+    for (const { nodeId, kind, change } of entries) {
       assertStillActive?.();
       if (change === undefined) continue;
-      if (kind === crdtWriterChangeNode) {
-        await this._mergeWriters(change, assertStillActive, signal);
-      } else if (kind === crdtReaderChangeNode) {
-        await this._mergeReaders(change, assertStillActive, signal);
+      if (kind === crdtWriterChangeNode || kind === crdtReaderChangeNode) {
+        await this._mergeRemoteACL(
+          kind,
+          nodeId,
+          change,
+          signer,
+          assertStillActive,
+          signal,
+        );
       }
       assertStillActive?.();
+    }
+  }
+
+  /**
+   * Merge a delivered ACL node. A node whose changes depend on ACL history
+   * this replica lacks is held outside the live ACL and noted as waiting, so
+   * it is not recorded and later deliveries still carry it. A merge that
+   * changes the same ACL then merges the held changes whose dependencies it
+   * may have supplied and records their nodes. Returns whether `changes` are
+   * in the live ACL.
+   */
+  private async _mergeRemoteACL(
+    kind: HeldACLKind,
+    cid: string | undefined,
+    changes: ChangesType,
+    signer: string | undefined,
+    assertStillActive?: () => void,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    let changed: boolean | void;
+    try {
+      changed = await this._mergeACL(kind, changes, assertStillActive, signal);
+    } catch (error) {
+      if (!(error instanceof ACLMergeDependencyError)) throw error;
+      if (cid === undefined) return false;
+      // Hold without yielding: a concurrent merge that supplies the
+      // dependency then finds this change held. One that already ran before
+      // the hold is caught by `ready()`.
+      this._holdACLChange(kind, cid, changes, signer, error.ready);
+      if (error.ready?.() !== false) {
+        await this._mergeReadyHeldACL(kind, assertStillActive, signal);
+      }
+      return false;
+    }
+    if (cid !== undefined) this._heldACL?.release(cid);
+    if (changed !== false) {
+      await this._mergeReadyHeldACL(kind, assertStillActive, signal);
+    }
+    return true;
+  }
+
+  private _mergeACL(
+    kind: HeldACLKind,
+    changes: ChangesType,
+    assertStillActive?: () => void,
+    signal?: AbortSignal,
+  ): Promise<boolean | void> {
+    return kind === crdtWriterChangeNode
+      ? this._mergeWriters(changes, assertStillActive, signal)
+      : this._mergeReaders(changes, assertStillActive, signal);
+  }
+
+  private _holdACLChange(
+    kind: HeldACLKind,
+    cid: string,
+    changes: ChangesType,
+    signer: string | undefined,
+    ready: (() => boolean) | undefined,
+  ): void {
+    this._noteWaiting(cid, kind, undefined, true);
+    this._heldACL ??= new HeldACLChanges();
+    const held = this._heldACL.get(cid);
+    if (held !== undefined) {
+      held.ready = ready;
+      return;
+    }
+    let byteLength = Number.POSITIVE_INFINITY;
+    try {
+      byteLength = this._changesSerializer.serializeChanges(changes).byteLength;
+    } catch {}
+    this._heldACL.hold({
+      cid,
+      kind,
+      changes,
+      signer: signer ?? '',
+      byteLength,
+      ready,
+    });
+  }
+
+  /** Merge held changes of `kind` whose dependencies may have arrived. */
+  private async _mergeReadyHeldACL(
+    kind: HeldACLKind,
+    assertStillActive?: () => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const held = this._heldACL;
+    if (held === undefined) return;
+    for (let progressed = true; progressed;) {
+      progressed = false;
+      for (const entry of held.ready(kind)) {
+        if (!held.has(entry.cid)) continue;
+        try {
+          await this._mergeACL(kind, entry.changes, assertStillActive, signal);
+        } catch (error) {
+          if (error instanceof ACLMergeDependencyError) {
+            entry.ready = error.ready;
+            continue;
+          }
+          if (!(error instanceof ACLMergeRejectedError)) throw error;
+          held.release(entry.cid);
+          continue;
+        }
+        held.release(entry.cid);
+        this._recordRemoteChange(entry.cid, kind);
+        this._trackTip(entry.cid, kind);
+        (this._mergedHeldACL ??= []).push(entry.cid);
+        progressed = true;
+      }
     }
   }
 
@@ -3713,10 +3870,11 @@ export class PeerborneDocument<
     changes: ChangesType,
     assertStillActive?: () => void,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean | void> {
     let applied = false;
+    let changed: boolean | void;
     try {
-      await retryLoadACLConflict(async () => {
+      changed = await retryLoadACLConflict(async () => {
         if (this._readerPublicationsInFlight > 0) {
           throw new Error(
             `Cannot merge a remote reader ACL change for ${this.documentPath} ` +
@@ -3725,7 +3883,7 @@ export class PeerborneDocument<
           );
         }
         assertStillActive?.();
-        await this._awaitACLMerge(
+        return await this._awaitACLMerge(
           () => this._readers.merge(changes),
           signal,
           () => {
@@ -3741,6 +3899,7 @@ export class PeerborneDocument<
     if (!this._isStateApplicationBlocked()) {
       this._schedulePendingWelcomeDrain();
     }
+    return changed;
   }
 
   /**
@@ -3770,7 +3929,8 @@ export class PeerborneDocument<
         this._markDocumentStatePoisoned();
       } else if (
         !(error instanceof ACLOperationInProgressError) &&
-        !(error instanceof ACLMergeRejectedError)
+        !(error instanceof ACLMergeRejectedError) &&
+        !(error instanceof ACLMergeDependencyError)
       ) {
         this._markDocumentStatePoisoned();
       }
@@ -4142,7 +4302,7 @@ export class PeerborneDocument<
     changes: ChangesType,
     assertStillActive?: () => void,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean | void> {
     // Keep the mutation marker set while a transient ACL conflict settles and
     // the synchronous `merge()` is retried. A fetch that started before the
     // merge captured the old version and retries if the post-merge
@@ -4176,6 +4336,7 @@ export class PeerborneDocument<
       this._writerMutationsInFlight--;
       if (changed !== false) this._invalidateWriterKeyCache();
     }
+    return changed;
   }
 
   /** Stage a writer addition without changing live authorization. */
@@ -4442,16 +4603,43 @@ export class PeerborneDocument<
     return snapshot;
   }
 
-  private async _verifyWriterSignature(raw: Uint8Array, signature: string) {
+  /** Verify against current writers, reporting the signer to `verified`. */
+  private async _verifyWriterSignature(
+    raw: Uint8Array,
+    signature: string,
+    verified?: { signer?: PublicKey },
+  ) {
     if (!this._isSigningEnabled()) {
       return true;
     }
+    const signer = await this._writerSigner(raw, signature);
+    if (verified !== undefined) verified.signer = signer;
+    return signer !== undefined;
+  }
 
+  private async _serializeFrameSigner(
+    signer: PublicKey,
+  ): Promise<string | undefined> {
+    try {
+      return await requireSerializePublicKey(
+        this._authProvider,
+        'Held ACL changes',
+      )(signer);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The current writer whose key verifies `signature` over `raw`. */
+  private async _writerSigner(
+    raw: Uint8Array,
+    signature: string,
+  ): Promise<PublicKey | undefined> {
     const writerKeys = await this._getWriterKeys();
     // Short-circuit: with no writers, no signature can verify. Avoids the
     // base64 decode for an unverifiable input.
     if (writerKeys.length === 0) {
-      return false;
+      return undefined;
     }
     // Malformed base64 throws inside js-base64. A bad signature must surface
     // as a verification failure, not an exception -- the topic validator path
@@ -4462,9 +4650,9 @@ export class PeerborneDocument<
     try {
       signatureBytes = this._deserializeSignature(signature);
     } catch {
-      return false;
+      return undefined;
     }
-    return verifyMemberSignature(writerKeys, (writerKey) =>
+    return findMemberSignatureKey(writerKeys, (writerKey) =>
       this._authProvider.verify(
         new Uint8Array(raw),
         writerKey,
@@ -4573,7 +4761,8 @@ export class PeerborneDocument<
 
   /**
    * The writer set that applying a load response's writer blocks to an empty
-   * ACL would produce, computed in an isolated ACL instance.
+   * ACL would produce, computed in an isolated ACL instance. It is empty when
+   * a writer block depends on history the response does not carry.
    */
   private async _writersEstablishedByLoadResponse(
     message: CRDTSyncMessage<ChangesType>,
@@ -4591,17 +4780,30 @@ export class PeerborneDocument<
       staged?.getKey(keyID) ?? this._keychain.getKey(keyID);
     const writers = this._aclProvider.initialize();
     if (message.changes !== undefined) {
-      for (const { nodeId, kind } of collectBoundedChangeTree(
+      const entries = collectBoundedChangeTree(
+        message.changeId,
+        message.changes,
+      );
+      const decoded = new Set<string>();
+      const changes: ChangesType[] = [];
+      for (const { nodeId, kind } of this._orderACLAncestorsFirst(
+        entries,
+        ({ nodeId, kind }) =>
+          kind === crdtWriterChangeNode ? nodeId : undefined,
         message.changeId,
         message.changes,
       )) {
         if (kind !== crdtWriterChangeNode || nodeId === undefined) continue;
         const block = prefetchedBlocks.get(nodeId);
-        if (block === undefined) continue;
-        writers.merge(
+        if (block === undefined || decoded.has(nodeId)) continue;
+        decoded.add(nodeId);
+        changes.push(
           await this._decodeBlock(CID.parse(nodeId), block, signal, getKey),
         );
       }
+      // A writer change still waiting for history would leave the set
+      // partial, so no writer is established.
+      if (mergeACLChanges(writers, changes).length > 0) return [];
     }
     return writers.users();
   }
@@ -8410,6 +8612,10 @@ export class PeerborneDocument<
       this._localActor = undefined;
       this._readers = readers;
       this._writers = writers;
+      // Held ACL changes and waiting nodes belong to the replaced state.
+      this._heldACL = undefined;
+      this._mergedHeldACL = undefined;
+      this._waiting = undefined;
       this._keychain = keychain;
       this._lastSyncMessage = message;
       this._hashes = hashes;
@@ -9697,6 +9903,7 @@ export class PeerborneDocument<
 
     // Only serialize for signature verification -- skip when signing is disabled
     // to avoid expensive serialization of large messages.
+    const verified: { signer?: PublicKey } = {};
     if (signingEnabled && verifySignature) {
       const unsigned = this._serializeUnsignedForVerification(
         message,
@@ -9708,7 +9915,7 @@ export class PeerborneDocument<
       }
       if (
         (await awaitLoadWork(
-          this._verifyWriterSignature(unsigned.raw, signature!),
+          this._verifyWriterSignature(unsigned.raw, signature!, verified),
           changeFetchOptions.signal,
         )) !== true
       ) {
@@ -9741,6 +9948,16 @@ export class PeerborneDocument<
       );
     }
     assertStillActive();
+    // Serialize the frame signer once, before any ACL merge, so holding an
+    // ACL change never waits for it.
+    const signer =
+      verified.signer === undefined || changeTreePreflight?.hasACLNodes !== true
+        ? undefined
+        : await awaitLoadWork(
+            this._serializeFrameSigner(verified.signer),
+            changeFetchOptions.signal,
+          );
+    assertStillActive();
 
     let stateApplicationStarted = false;
     const beginStateApplication = (): void => {
@@ -9762,6 +9979,7 @@ export class PeerborneDocument<
         changeTreePreflight.aclEntries,
         assertStillActive,
         changeFetchOptions.signal,
+        signer,
       );
       assertStillActive();
     }
@@ -9963,9 +10181,11 @@ export class PeerborneDocument<
         await this._syncDocumentChanges(
           message.changeId,
           changeTreePreflight.changes,
-          remoteFetches === undefined
-            ? changeFetchOptions
-            : { ...changeFetchOptions, remoteFetches },
+          {
+            ...changeFetchOptions,
+            signer,
+            ...(remoteFetches === undefined ? {} : { remoteFetches }),
+          },
         );
       } finally {
         remoteFetches?.end();

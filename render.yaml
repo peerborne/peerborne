@@ -23,6 +23,10 @@ services:
         generateValue: true
       - key: RELAY_GATEWAY_SECRET
         sync: false
+      - key: RELAY_GATEWAY_WINDOW_BYTES
+        value: '134217728'
+      - key: RELAY_GATEWAY_CLIENT_WINDOW_BYTES
+        value: '33554432'
       - key: MAX_CONNECTIONS
         value: '16'
       - key: MAX_AUTO_TOPICS

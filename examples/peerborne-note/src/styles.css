@@ -605,6 +605,41 @@ main {
   line-height: 1.45;
 }
 
+.collaborator {
+  display: grid;
+  gap: 6px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+}
+
+.collaborator span {
+  font-weight: 750;
+}
+
+.collaborator code {
+  overflow: hidden;
+  color: #4b5565;
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+}
+
+.collaborator-help {
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.secondary.full {
+  width: 100%;
+}
+
+.share-panel .button-row {
+  margin-top: 0;
+}
+
 .privacy-note {
   display: grid;
   gap: 5px;

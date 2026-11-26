@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises'
-import { demoGatewayLimits } from './gateway-limits.js'
+import { gatewayLimitsFromEnv } from './gateway-limits.js'
 import { prepareRenderIdentity } from './render-identity.js'
 import { startRelayGateway } from './relay-gateway.js'
 
@@ -12,6 +12,7 @@ async function main() {
   if (!/^[A-Za-z0-9+/=_-]{32,128}$/.test(secret)) {
     throw new Error('RELAY_GATEWAY_SECRET must contain at least 32 random ASCII characters')
   }
+  const limits = gatewayLimitsFromEnv(process.env)
   await mkdir('/shared', { recursive: true, mode: 0o700 })
   await prepareRenderIdentity(process.env.RELAY_IDENTITY_SEED, '/shared/relay-identity.key')
   process.env.RELAY_IDENTITY_KEY_PATH = '/shared/relay-identity.key'
@@ -26,14 +27,20 @@ async function main() {
     publicHost: 'relay.peerborne.io',
     relayPort: 9001,
     readinessPort: 9000,
-    limits: demoGatewayLimits,
+    limits,
   })
   process.once('SIGTERM', () => void gateway.close())
   process.once('SIGINT', () => void gateway.close())
-  console.log('Render gateway listening with bounded demo traffic', { port })
+  console.log('Render gateway listening with bounded demo traffic', {
+    port,
+    windowBytes: limits.windowBytes,
+    clientWindowBytes: limits.clientWindowBytes,
+  })
 }
 
 main().catch(() => {
-  console.error('Render relay startup failed; check seed, gateway secret, and port configuration')
+  console.error(
+    'Render relay startup failed; check seed, gateway secret, port, and traffic window configuration',
+  )
   process.exit(1)
 })

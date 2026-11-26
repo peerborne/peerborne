@@ -112,7 +112,7 @@ test('preserves note text and the signing identity across reloads', async ({
 
   await page.reload();
   await expect(
-    page.getByRole('button', { name: 'Open saved note 1', exact: true }),
+    page.getByRole('button', { name: /^Open note added /u }),
   ).toBeEnabled({
     timeout: 30_000,
   });
@@ -120,9 +120,7 @@ test('preserves note text and the signing identity across reloads', async ({
   expect(restoredIdentity.fingerprint).toBe(firstIdentity.fingerprint);
   expect(restoredIdentity.privateExtractable).toBe(false);
   expect(restoredIdentity.privateExportRejected).toBe(true);
-  await page
-    .getByRole('button', { name: 'Open saved note 1', exact: true })
-    .click();
+  await page.getByRole('button', { name: /^Open note added /u }).click();
   await expect(editor).toHaveValue(
     'Created locally without waiting for a relay.',
   );
@@ -131,9 +129,7 @@ test('preserves note text and the signing identity across reloads', async ({
     page.getByText('Saved in this browser', { exact: true }),
   ).toBeVisible();
   await page.reload();
-  await page
-    .getByRole('button', { name: 'Open saved note 1', exact: true })
-    .click();
+  await page.getByRole('button', { name: /^Open note added /u }).click();
   await expect(editor).toHaveValue('Edited after reopening.');
   expect(errors, 'application runtime errors').toEqual([]);
 });
@@ -165,9 +161,7 @@ test('restores note text after the browser closes and relaunches with the same p
       .launchPersistentContext(profile, { baseURL });
     page = await context.newPage();
     await page.goto('/');
-    await page
-      .getByRole('button', { name: 'Open saved note 1', exact: true })
-      .click();
+    await page.getByRole('button', { name: /^Open note added /u }).click();
     await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveValue(
       'Browser restart fixture',
     );
@@ -218,15 +212,13 @@ test('retains a damaged saved note and reports that it cannot be opened', async 
     }
   });
   await page.reload();
-  await page
-    .getByRole('button', { name: 'Open saved note 1', exact: true })
-    .click();
+  await page.getByRole('button', { name: /^Open note added /u }).click();
   await expect(page.getByRole('alert')).toHaveText(
     'This saved note could not be opened. Its stored data was left unchanged.',
   );
   await expect(page.getByRole('textbox', { name: 'Note text' })).toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: 'Open saved note 1', exact: true }),
+    page.getByRole('button', { name: /^Open note added /u }),
   ).toBeVisible();
 });
 
@@ -283,10 +275,43 @@ test('reports a failed note write and saves it after retry', async ({
     page.getByText('Saved in this browser', { exact: true }),
   ).toBeVisible();
   await page.reload();
-  await page
-    .getByRole('button', { name: 'Open saved note 1', exact: true })
-    .click();
+  await page.getByRole('button', { name: /^Open note added /u }).click();
   await expect(editor).toHaveValue('Retry storage fixture');
+});
+
+test('saves a pending edit and warns before the page unloads', async ({
+  page,
+}) => {
+  const errors = failOnRuntimeErrors(page);
+  const dispatchBeforeUnload = () =>
+    page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Create a note', exact: true })
+    .click();
+  const editor = page.getByRole('textbox', { name: 'Note text' });
+  await expect(
+    page.getByText('Saved in this browser', { exact: true }),
+  ).toBeVisible();
+  expect(await dispatchBeforeUnload()).toBe(false);
+  await expect(
+    page.getByText('Only in this browser', { exact: true }),
+  ).toBeVisible();
+
+  await editor.pressSequentially('Typed just before closing');
+  expect(await dispatchBeforeUnload()).toBe(true);
+  await expect(
+    page.getByText('Saved in this browser', { exact: true }),
+  ).toBeVisible();
+  expect(await dispatchBeforeUnload()).toBe(false);
+  await page.reload();
+  await page.getByRole('button', { name: /^Open note added /u }).click();
+  await expect(editor).toHaveValue('Typed just before closing');
+  expect(errors, 'application runtime errors').toEqual([]);
 });
 
 test('scrubs an invalid invitation fragment without opening a WebSocket', async ({

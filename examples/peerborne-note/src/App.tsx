@@ -5,19 +5,37 @@ import {
   type InvitationOfferV1,
   type InvitationRole,
 } from '@peerborne/core';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { getOrCreateIdentity, identityFingerprint } from './identity-store.js';
 import {
   assertRelayMultiaddrForOrigin,
   assertTrustedRendezvous,
   type ConsumedInvitationFragment,
 } from './invitation-link.js';
-import { MAX_NOTE_CHARACTERS, PeerborneNoteSession } from './peerborne-note.js';
+import {
+  MAX_NOTE_CHARACTERS,
+  PeerborneNoteSession,
+  type NoteMembership,
+  type NoteSyncStatus,
+  type NoteVersion,
+  type TextSelection,
+} from './peerborne-note.js';
+import type { SavedDocument } from './note-store.js';
 import { acquireSingleTabLease, type SingleTabLease } from './single-tab.js';
 import { NoteSharingError } from './sharing-error.js';
 
 type Screen = 'booting' | 'blocked' | 'ready' | 'review' | 'note' | 'fatal';
-type SaveState = 'idle' | 'pending' | 'saved' | 'error';
+type StorageState = 'saving' | 'saved' | 'error';
+
+interface EditorSelection extends TextSelection {
+  readonly direction: 'forward' | 'backward' | 'none';
+}
 
 interface PendingInvitation {
   readonly bytes: Uint8Array;
@@ -30,6 +48,40 @@ interface AppProps {
 }
 
 const relayMultiaddr = import.meta.env.VITE_PEERBORNE_RELAY_MULTIADDR?.trim();
+const INTERRUPTED_ACCEPTANCE_KEY = 'peerborne-note-interrupted-acceptance';
+const INTERRUPTED_ACCEPTANCE_NOTICE =
+  'An invitation accepted in this browser was interrupted before its note was saved here. Ask the person who shared it to remove the collaborator from their note, then send you a new link.';
+const INTERRUPTED_ACCEPTANCE_ERROR =
+  'This browser already accepted this invitation, but the note was not saved here before the tab closed. Ask the person who shared it to remove the collaborator from their note, then send you a new link.';
+
+function interruptedAcceptance(): string | undefined {
+  try {
+    return localStorage.getItem(INTERRUPTED_ACCEPTANCE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberAcceptance(documentId: string): void {
+  try {
+    localStorage.setItem(INTERRUPTED_ACCEPTANCE_KEY, documentId);
+  } catch {}
+}
+
+function forgetAcceptance(): void {
+  try {
+    localStorage.removeItem(INTERRUPTED_ACCEPTANCE_KEY);
+  } catch {}
+}
+
+function syncLabel(status: NoteSyncStatus): string {
+  if (!status.sharing) return 'Only in this browser';
+  if (status.undelivered) return 'Some edits have not reached a peer yet';
+  if (!status.relayConnected) return 'Offline · reconnecting';
+  return status.peers > 0
+    ? `Connected · ${status.peers} ${status.peers === 1 ? 'peer' : 'peers'} online`
+    : 'Connected · no peers online';
+}
 
 function secondsRemaining(expiresAtMs: number, nowMs: number): number {
   return Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
@@ -93,7 +145,7 @@ export default function App({ initialFragment }: AppProps) {
   const [notice, setNotice] = useState<string>();
   const [identityId, setIdentityId] = useState<string>();
   const [session, setSession] = useState<PeerborneNoteSession>();
-  const [savedNotes, setSavedNotes] = useState<string[]>([]);
+  const [savedNotes, setSavedNotes] = useState<SavedDocument[]>([]);
   const [storageError, setStorageError] = useState(false);
   const [pendingInvitation, setPendingInvitation] =
     useState<PendingInvitation>();
@@ -102,10 +154,28 @@ export default function App({ initialFragment }: AppProps) {
 
   const [body, setBody] = useState('');
   const bodyRef = useRef('');
-  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const baseRef = useRef<NoteVersion | undefined>(undefined);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingSelectionRef = useRef<EditorSelection | undefined>(undefined);
+  const [localPending, setLocalPending] = useState(false);
+  const [editFailed, setEditFailed] = useState(false);
+  const [storageState, setStorageState] = useState<StorageState>('saved');
   const saveTimerRef = useRef<number | undefined>(undefined);
-  const editVersionRef = useRef(0);
-  const editingRef = useRef(false);
+  const committingRef = useRef(false);
+  const commitAgainRef = useRef(false);
+  const staleRetriesRef = useRef(0);
+  const commitRef = useRef<() => Promise<void>>(async () => undefined);
+  const [membership, setMembership] = useState<NoteMembership>({
+    founder: false,
+    canShare: false,
+  });
+  const [syncStatus, setSyncStatus] = useState<NoteSyncStatus>({
+    sharing: false,
+    relayConnected: false,
+    peers: 0,
+    undelivered: false,
+  });
+  const [confirmRemoval, setConfirmRemoval] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [shareRole, setShareRole] = useState<InvitationRole>('editor');
@@ -167,7 +237,16 @@ export default function App({ initialFragment }: AppProps) {
           return;
         }
         setSession(createdSession);
-        setSavedNotes(await createdSession.listSavedNotes());
+        const saved = await createdSession.listSavedNotes();
+        setSavedNotes(saved);
+        const interrupted = interruptedAcceptance();
+        if (
+          interrupted !== undefined &&
+          saved.some((note) => note.path === interrupted)
+        )
+          forgetAcceptance();
+        else if (interrupted !== undefined && initialFragment.kind === 'none')
+          setNotice(INTERRUPTED_ACCEPTANCE_NOTICE);
 
         if (initialFragment.kind === 'invalid') {
           setErrorMessage(
@@ -233,24 +312,179 @@ export default function App({ initialFragment }: AppProps) {
     };
   }, [initialFragment]);
 
+  const updatePending = useCallback(() => {
+    setLocalPending(
+      committingRef.current ||
+        (baseRef.current !== undefined &&
+          bodyRef.current !== baseRef.current.body),
+    );
+  }, []);
+
+  const showNote = (note: NoteVersion) => {
+    baseRef.current = note;
+    bodyRef.current = note.body;
+    setBody(note.body);
+    setEditFailed(false);
+    setConfirmRemoval(false);
+    updatePending();
+  };
+
+  const reconcile = useCallback(() => {
+    const base = baseRef.current;
+    if (!session || !base || committingRef.current) return;
+    const element = textareaRef.current;
+    const selection: EditorSelection | undefined =
+      element && element === document.activeElement
+        ? {
+            start: element.selectionStart,
+            end: element.selectionEnd,
+            direction: element.selectionDirection,
+          }
+        : undefined;
+    let rebased;
+    try {
+      rebased = session.rebase(base, bodyRef.current, selection);
+    } catch {
+      return;
+    }
+    baseRef.current = rebased.note;
+    if (rebased.body !== bodyRef.current) {
+      bodyRef.current = rebased.body;
+      pendingSelectionRef.current =
+        selection && rebased.selection
+          ? { ...rebased.selection, direction: selection.direction }
+          : undefined;
+      setBody(rebased.body);
+    }
+    updatePending();
+  }, [session, updatePending]);
+
+  const scheduleCommit = useCallback(() => {
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined;
+      void commitRef.current();
+    }, 350);
+  }, []);
+
+  const commit = useCallback(async () => {
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    const base = baseRef.current;
+    if (!session || !base) return;
+    if (committingRef.current) {
+      commitAgainRef.current = true;
+      return;
+    }
+    const target = bodyRef.current;
+    if (target === base.body) return;
+    committingRef.current = true;
+    commitAgainRef.current = false;
+    updatePending();
+    let retry: 'now' | 'later' | undefined;
+    try {
+      const update = await session.updateBody(base, target);
+      if (update.kind === 'stale') {
+        staleRetriesRef.current++;
+        retry = staleRetriesRef.current <= 3 ? 'now' : 'later';
+      } else {
+        staleRetriesRef.current = 0;
+        if (update.version) baseRef.current = update.version;
+        setEditFailed(update.kind === 'failed');
+        if (update.kind === 'failed')
+          setErrorMessage(
+            'The latest edit could not be saved. Keep this tab open and try again.',
+          );
+      }
+    } catch {
+      setEditFailed(true);
+      setErrorMessage(
+        'The latest edit could not be saved. Keep this tab open and try again.',
+      );
+    } finally {
+      committingRef.current = false;
+      reconcile();
+      updatePending();
+      if (retry === 'later') scheduleCommit();
+      else if (retry === 'now' || commitAgainRef.current)
+        void commitRef.current();
+    }
+  }, [reconcile, scheduleCommit, session, updatePending]);
+  commitRef.current = commit;
+
   useEffect(() => {
     if (!session) return;
     return session.onStorage((state) => {
+      setStorageState(state);
       setStorageError(state === 'error');
-      if (state === 'error') setSaveState('error');
-      else if (!editingRef.current)
-        setSaveState(state === 'saving' ? 'pending' : 'saved');
     });
   }, [session]);
 
   useEffect(() => {
+    if (!session) return;
+    return session.onMembership(setMembership);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    return session.onNetwork(setSyncStatus);
+  }, [session]);
+
+  useEffect(() => {
     if (!session || screen !== 'note') return;
-    return session.onNote((note) => {
-      if (editingRef.current) return;
-      bodyRef.current = note.body;
-      setBody(note.body);
-    });
+    return session.onNote(() => reconcile());
+  }, [reconcile, screen, session]);
+
+  useLayoutEffect(() => {
+    const selection = pendingSelectionRef.current;
+    pendingSelectionRef.current = undefined;
+    const element = textareaRef.current;
+    if (selection && element && element === document.activeElement)
+      element.setSelectionRange(
+        selection.start,
+        selection.end,
+        selection.direction,
+      );
+  }, [body]);
+
+  useEffect(() => {
+    if (screen !== 'note') return;
+    const unsaved = () =>
+      committingRef.current ||
+      bodyRef.current !== baseRef.current?.body ||
+      session?.storageStatus !== 'saved';
+    const flush = () => {
+      if (bodyRef.current !== baseRef.current?.body) void commitRef.current();
+    };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      flush();
+      if (!unsaved()) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const visibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('visibilitychange', visibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', beforeUnload);
+      document.removeEventListener('visibilitychange', visibilityChange);
+    };
   }, [screen, session]);
+
+  useEffect(() => {
+    if (membership.collaborator && shareHref) {
+      setShareHref(undefined);
+      setShareExpiresAtMs(undefined);
+      setSharedRole(undefined);
+      setNotice('Your collaborator accepted the invitation.');
+    }
+  }, [membership, shareHref]);
 
   useEffect(() => {
     if (!shareExpiresAtMs && !pendingInvitation) return;
@@ -280,8 +514,9 @@ export default function App({ initialFragment }: AppProps) {
       setNotice(
         'The invitation expired. Create a new link if you still want to share.',
       );
+      void session?.refreshMembership().catch(() => undefined);
     }
-  }, [nowMs, pendingInvitation, shareExpiresAtMs, shareHref]);
+  }, [nowMs, pendingInvitation, session, shareExpiresAtMs, shareHref]);
 
   useEffect(
     () => () => {
@@ -292,53 +527,20 @@ export default function App({ initialFragment }: AppProps) {
     [],
   );
 
-  const persistBody = useCallback(
-    async (nextBody: string, version: number) => {
-      if (!session) return;
-      try {
-        await session.updateBody(nextBody);
-        if (editVersionRef.current === version) {
-          editingRef.current = false;
-          const current = session.currentNote?.body ?? nextBody;
-          bodyRef.current = current;
-          setBody(current);
-          setSaveState('saved');
-        }
-      } catch {
-        if (editVersionRef.current === version) {
-          editingRef.current = false;
-          setSaveState('error');
-          if (session.storageStatus !== 'error')
-            setErrorMessage(
-              'The latest edit could not be saved. Keep this tab open and try again.',
-            );
-        }
-      }
-    },
-    [session],
-  );
-
-  const scheduleBodyUpdate = (nextBody: string) => {
+  const changeBody = (nextBody: string) => {
     bodyRef.current = nextBody;
     setBody(nextBody);
     setErrorMessage(undefined);
-    setSaveState('pending');
-    editingRef.current = true;
-    const version = ++editVersionRef.current;
-    if (saveTimerRef.current !== undefined) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = undefined;
-      void persistBody(nextBody, version);
-    }, 350);
+    updatePending();
+    scheduleCommit();
   };
 
   const flushBodyUpdate = () => {
-    if (saveTimerRef.current === undefined) return;
-    window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = undefined;
-    void persistBody(bodyRef.current, editVersionRef.current);
+    if (
+      saveTimerRef.current !== undefined ||
+      bodyRef.current !== baseRef.current?.body
+    )
+      void commit();
   };
 
   const createNote = async () => {
@@ -346,16 +548,11 @@ export default function App({ initialFragment }: AppProps) {
     setBusy(true);
     setErrorMessage(undefined);
     try {
-      const note = await session.createNote();
-      bodyRef.current = note.body;
-      setBody(note.body);
-      setSaveState('saved');
+      showNote(await session.createNote());
       setScreen('note');
     } catch {
       if (session.currentNote) {
-        bodyRef.current = session.currentNote.body;
-        setBody(session.currentNote.body);
-        setSaveState('error');
+        showNote(session.currentNote);
         setScreen('note');
       } else setErrorMessage('A new local note could not be created.');
     } finally {
@@ -368,10 +565,7 @@ export default function App({ initialFragment }: AppProps) {
     setBusy(true);
     setErrorMessage(undefined);
     try {
-      const note = await session.openSavedNote(path);
-      bodyRef.current = note.body;
-      setBody(note.body);
-      setSaveState('saved');
+      showNote(await session.openSavedNote(path));
       setScreen('note');
     } catch {
       setErrorMessage(
@@ -386,28 +580,33 @@ export default function App({ initialFragment }: AppProps) {
     if (!session || !pendingInvitation) return;
     setBusy(true);
     setErrorMessage(undefined);
+    const documentId = pendingInvitation.offer.documentId;
+    const interrupted = interruptedAcceptance() === documentId;
+    rememberAcceptance(documentId);
     try {
       const note = await session.acceptInvitation(pendingInvitation.bytes);
+      forgetAcceptance();
       pendingInvitation.bytes.fill(0);
       pendingBytesRef.current = undefined;
       setPendingInvitation(undefined);
-      bodyRef.current = note.body;
-      setBody(note.body);
-      setSaveState('saved');
+      setNotice(undefined);
+      showNote(note);
       setScreen('note');
     } catch {
       if (session.currentNote) {
         pendingInvitation.bytes.fill(0);
         pendingBytesRef.current = undefined;
         setPendingInvitation(undefined);
-        bodyRef.current = session.currentNote.body;
-        setBody(session.currentNote.body);
-        setSaveState('error');
+        showNote(session.currentNote);
         setScreen('note');
-      } else
+      } else {
+        if (!interrupted) forgetAcceptance();
         setErrorMessage(
-          'The invitation could not be accepted. It may be expired or claimed, or the founding browser may be offline.',
+          interrupted
+            ? INTERRUPTED_ACCEPTANCE_ERROR
+            : 'The invitation could not be accepted. It may be expired or claimed, or the founding browser may be offline.',
         );
+      }
     } finally {
       setBusy(false);
     }
@@ -469,6 +668,25 @@ export default function App({ initialFragment }: AppProps) {
     }
   };
 
+  const removeCollaborator = async () => {
+    if (!session) return;
+    setBusy(true);
+    setErrorMessage(undefined);
+    try {
+      await session.removeCollaborator();
+      setNotice(
+        'The collaborator was removed. Create a new link to share this note again.',
+      );
+    } catch {
+      setErrorMessage(
+        'The collaborator could not be removed. Check the connection and try again.',
+      );
+    } finally {
+      setConfirmRemoval(false);
+      setBusy(false);
+    }
+  };
+
   const copyShareLink = async () => {
     if (!shareHref) return;
     let copied = false;
@@ -493,6 +711,12 @@ export default function App({ initialFragment }: AppProps) {
     ? secondsRemaining(shareExpiresAtMs, nowMs)
     : 0;
   const role = session?.role;
+  const saveLabel =
+    editFailed || storageState === 'error'
+      ? 'Unsaved changes'
+      : localPending || storageState === 'saving'
+        ? 'Saving…'
+        : 'Saved in this browser';
 
   return (
     <div className="page-shell">
@@ -508,7 +732,7 @@ export default function App({ initialFragment }: AppProps) {
             This note could not be saved. Keep this tab open.{' '}
             <button
               onClick={() => {
-                if (editingRef.current) flushBodyUpdate();
+                if (bodyRef.current !== baseRef.current?.body) void commit();
                 else void session?.retrySave().catch(() => undefined);
               }}
             >
@@ -575,13 +799,20 @@ export default function App({ initialFragment }: AppProps) {
               <h2>Your notes</h2>
               {savedNotes.length > 0 ? (
                 <ul>
-                  {savedNotes.map((path, index) => (
-                    <li key={path}>
+                  {savedNotes.map((note) => (
+                    <li key={note.path}>
                       <button
                         disabled={busy}
-                        onClick={() => void openSavedNote(path)}
+                        onClick={() => void openSavedNote(note.path)}
                       >
-                        Open saved note {index + 1}
+                        {note.createdAtMs === undefined
+                          ? 'Open saved note'
+                          : `Open note added ${new Date(
+                              note.createdAtMs,
+                            ).toLocaleString(undefined, {
+                              dateStyle: 'medium',
+                              timeStyle: 'medium',
+                            })}`}
                       </button>
                     </li>
                   ))}
@@ -657,21 +888,15 @@ export default function App({ initialFragment }: AppProps) {
                 </div>
                 <div className="editor-status" aria-live="polite">
                   <span>{role === 'reader' ? 'Read only' : 'Editor'}</span>
-                  <span>
-                    {saveState === 'pending'
-                      ? 'Saving…'
-                      : saveState === 'saved'
-                        ? 'Saved in this browser'
-                        : saveState === 'error'
-                          ? 'Unsaved changes'
-                          : 'Ready'}
-                  </span>
+                  <span>{syncLabel(syncStatus)}</span>
+                  <span>{saveLabel}</span>
                 </div>
               </div>
               <label htmlFor="note-body" className="visually-hidden">
                 Note text
               </label>
               <textarea
+                ref={textareaRef}
                 id="note-body"
                 value={body}
                 maxLength={MAX_NOTE_CHARACTERS}
@@ -684,9 +909,7 @@ export default function App({ initialFragment }: AppProps) {
                     ? 'Waiting for note content…'
                     : 'Start with what matters…'
                 }
-                onChange={(event) =>
-                  scheduleBodyUpdate(event.currentTarget.value)
-                }
+                onChange={(event) => changeBody(event.currentTarget.value)}
                 onBlur={flushBodyUpdate}
               />
               <div className="editor-meta">
@@ -697,7 +920,52 @@ export default function App({ initialFragment }: AppProps) {
               </div>
             </div>
 
-            {session.isFounder ? (
+            {membership.founder && membership.collaborator ? (
+              <aside className="share-panel">
+                <p className="eyebrow">Shared note</p>
+                <h2>One collaborator has access.</h2>
+                <div className="collaborator">
+                  <span>
+                    {membership.collaborator.role === 'editor'
+                      ? 'Can edit'
+                      : 'Read only'}
+                  </span>
+                  <code>{membership.collaborator.fingerprint}</code>
+                </div>
+                <p className="collaborator-help">
+                  If they never finished joining, for example because their tab
+                  closed while accepting, remove them and send a new link.
+                  Removal changes the note key: they keep what they already
+                  received but cannot read later edits.
+                </p>
+                {confirmRemoval ? (
+                  <div className="button-row">
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() => void removeCollaborator()}
+                    >
+                      {busy ? 'Removing…' : 'Confirm removal'}
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => setConfirmRemoval(false)}
+                    >
+                      Keep collaborator
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="secondary full"
+                    disabled={busy}
+                    onClick={() => setConfirmRemoval(true)}
+                  >
+                    Remove collaborator
+                  </button>
+                )}
+              </aside>
+            ) : membership.canShare || shareHref ? (
               <aside className="share-panel">
                 <p className="eyebrow">Share this note</p>
                 <h2>Share while this tab stays open.</h2>
