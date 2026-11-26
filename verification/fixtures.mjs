@@ -116,9 +116,11 @@ export async function documentFixture({
   blockstore = new MemoryBlockstore(),
   datastore = new MemoryDatastore(),
   open = true,
+  actorBinding = true,
 } = {}) {
   identity ??= await signingIdentity();
   const provider = providerFor(adapter, index);
+  if (!actorBinding) provider.actorBinding = undefined;
   // Loro has no ACL, keychain or serializer of its own and uses Yjs's.
   const serializer =
     adapter === 'automerge'
