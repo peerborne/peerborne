@@ -8,8 +8,8 @@ software and is not production-ready.** The section name describes the work a
 deployment would require; these procedures do not establish production safety.
 
 1. [Offline persistence and size limits](./offline-persistence/) — choose
-   document budgets, inspect browser quota, and verify recovery independently
-   of a successful write.
+   document budgets, inspect browser quota, save and restore encrypted
+   checkpoints, and verify recovery independently of a successful write.
 2. [Run your own relay](../cookbook/running-a-relay/) — configure a reachable
    relay, TLS, and clients; understand identity and failover limitations.
 3. [Pinning and recovery](../cookbook/pinning/) — inspect the incomplete

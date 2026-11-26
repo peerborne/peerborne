@@ -235,8 +235,8 @@ export function aclActorBindingScenarios({ adapter, squat, write }) {
       path: v.document.documentPath,
       open: false,
     });
-    await restored.document.restoreCheckpoint(
-      await v.document.exportCheckpoint(),
+    await restored.document.restorePlaintextCheckpoint(
+      await v.document.exportPlaintextCheckpoint(),
     );
     assert.equal(
       restored.document._aclActorBindings.writer.get(actor).signer,

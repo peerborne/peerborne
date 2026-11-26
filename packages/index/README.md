@@ -21,7 +21,8 @@ Distributed APIs currently provide the protocol, authorization, transport-adapte
 ## V2 local query
 
 ```ts
-const manager = new IndexManager(new MemoryIndexStorage(), (document) => document);
+type Article = { author: string; createdOn: string };
+const manager = new IndexManager<Article>(new MemoryIndexStorage(), (article) => article);
 await manager.defineIndex({
   version: 2,
   name: 'articles',

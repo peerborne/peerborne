@@ -185,7 +185,7 @@ A relay node bridges traffic between two peers behind NAT:
 
 ![Two NAT-isolated Chromium peers loading encrypted document history through Circuit Relay after the test gives peer B peer A's relayed circuit address; an optional direct path is shown as unverified.](../../../assets/diagrams/browser-relay-path.svg "The cross-NAT path is verified through Circuit Relay; a direct path remains unverified.")
 
-**Evidence boundary:** The solid relay path represents the narrow CI-backed result: one user identity runs in two NAT-isolated Chromium processes, the document key is restored to the second device out of band, and that device loads existing encrypted document history through Circuit Relay. The test reads peer A's `/p2p-circuit/` address and has peer B dial it explicitly; it does not establish a separate bootstrap-discovery proof edge. The topology has app servers and a relay but no application database service. It does not demonstrate live post-load synchronization, invitation delivery, direct WebRTC/DCUtR, relay failover, or production deployment behavior.
+**Evidence boundary:** The solid relay path represents the narrow CI-backed result: two NAT-isolated Chromium processes with separate signing identities connect only through Circuit Relay. Peer A creates an Automerge document and a signed editor invitation; peer B accepts it by dialing the circuit rendezvous address the offer carries, loads the encrypted bootstrap, and then both peers make fresh edits that converge in each direction. A second document checks that a reader invitation grants read access and that the reader's edit is refused. The test does not establish a separate bootstrap-discovery proof edge. The topology has app servers and a relay but no application database service. It does not demonstrate Yjs or Loro documents, which cannot be shared, direct WebRTC/DCUtR, relay failover, or production deployment behavior.
 
 The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data volume) but cannot decrypt document content.
 
@@ -368,8 +368,9 @@ restarts the periodic delay.
 
 ## Resume a saved document
 
-An application restoring an authenticated checkpoint reconnects its transport
-and opens the restored document; catch-up then requests missed updates.
+An application restoring an [encrypted checkpoint](../storage/#local-checkpoints)
+reconnects its transport and opens the restored document; catch-up then
+requests missed updates.
 Fresh nonces, timestamp bounds, recent-request deduplication and response
 throttling bound replay and amplification, and known roots avoid repeatedly
 sending an already received update. Catch-up requires an online member that

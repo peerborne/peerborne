@@ -108,17 +108,20 @@ or separately verify the issuer fingerprint.
 
 Each document has an access control list with two roles, reader and writer.
 Grant a role to another identity with a
-[signed invitation](../../cookbook/invitations/). The founder installs its KEM
-key pair and creates the offer; the recipient accepts it with its own signing
-identity and KEM key pair:
+[signed invitation](../../cookbook/invitations/), which requires an Automerge
+document; a Yjs or Loro document cannot be shared. The founder opts into
+sharing the retained history, installs its KEM key pair and creates the offer;
+the recipient accepts it with its own signing identity and KEM key pair:
 
 ```ts
+document.historyVisibility = 'full_history';
 await document.setKemKeyPair(kemKeyPair);
 const offer = await document.createInvitation({
   role: 'reader',
   rendezvous: [founderCircuitAddress],
   // Store a checkpoint that records the new member before the key is released.
-  beforeAcceptance: async () => saveCheckpoint(await document.exportCheckpoint()),
+  beforeAcceptance: async () =>
+    saveCheckpoint(await document.exportEncryptedCheckpoint(storageKey)),
 });
 
 // Promote an existing explicit reader to write access
@@ -449,7 +452,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
 - **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation. A receiver applies one only when its signer is the current writer that owns the sender leaf, and only when it keeps the leaf count and every leaf public key, including the sender's. Members join only through the founder's own `addMember` and leave only through its own `removeReader()`, so an update that adds, blanks, or re-keys a leaf is refused: otherwise a collaborator could plant a leaf it controls and read every later rotation, or hide its leaf from the identity-bound lookup that revokes it. A replica knows the owners of its own leaf and of reader leaves it registered, so it rejects updates from any other leaf. A joiner therefore cannot apply the inviter's rotations; membership beyond founder plus one needs a replicated leaf-owner record first
-- A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage.
+- A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage. A checkpoint also holds the document keys and plaintext state, so keep it encrypted at rest, as `exportEncryptedCheckpoint()` returns it, and never transmit it; see [Local checkpoints](../storage/#local-checkpoints).
 - PathUpdate delivery is best effort.
 
 ```ts

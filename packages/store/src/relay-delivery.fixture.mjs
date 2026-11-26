@@ -186,13 +186,13 @@ test('a relay subscribed to the topic is not a delivery, so a managed store keep
   );
   await founding.change(set('x', 1));
   assert.ok(undelivered(founding));
-  const checkpoint = await founding.exportCheckpoint();
+  const checkpoint = await founding.exportPlaintextCheckpoint();
   await founding.close();
 
   const handles = [];
   const store = createDocumentStore(async () => {
     const handle = a.swarm.doc(path);
-    await handle.restoreCheckpoint(checkpoint);
+    await handle.restorePlaintextCheckpoint(checkpoint);
     handles.push(handle);
     return handle;
   });

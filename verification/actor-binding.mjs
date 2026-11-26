@@ -417,8 +417,8 @@ export function actorBindingScenarios(adapter) {
     assert.deepEqual(json(carol), json(alice));
 
     const restored = replica(alice.identity);
-    await restored.document.restoreCheckpoint(
-      await alice.document.exportCheckpoint(),
+    await restored.document.restorePlaintextCheckpoint(
+      await alice.document.exportPlaintextCheckpoint(),
     );
     await restored.document.open();
 

@@ -16,8 +16,25 @@ import { canRetainGcCandidate } from './policy/retention.js';
 
 export const MAX_DOCUMENT_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const MAX_CHECKPOINT_CIDS = 100_000;
+const MAX_CHECKPOINT_SIGNATURE_BYTES = 8192;
+const ENCRYPTED_CHECKPOINT_FORMAT = 'peerborne/encrypted-document-checkpoint/1';
+const ENCRYPTED_CHECKPOINT_NONCE_BYTES = 12;
+const ENCRYPTED_CHECKPOINT_TAG_BYTES = 16;
+const MIN_ENCRYPTED_CHECKPOINT_BYTES =
+  ENCRYPTED_CHECKPOINT_NONCE_BYTES + 4 + 2 + ENCRYPTED_CHECKPOINT_TAG_BYTES;
+const MAX_ENCRYPTED_CHECKPOINT_BYTES =
+  ENCRYPTED_CHECKPOINT_NONCE_BYTES +
+  4 +
+  MAX_DOCUMENT_CHECKPOINT_BYTES +
+  MAX_CHECKPOINT_SIGNATURE_BYTES +
+  ENCRYPTED_CHECKPOINT_TAG_BYTES;
 
-/** Contains document keys. Encrypt before persisting; never send over a network. */
+/**
+ * A plaintext checkpoint from `exportPlaintextCheckpoint()`. The payload is
+ * unencrypted JSON holding the document's state and its raw document keys.
+ * Never store it unencrypted and never send it over a network. Prefer
+ * `exportEncryptedCheckpoint()`.
+ */
 export interface DocumentCheckpoint {
   payload: Uint8Array;
   signature: Uint8Array;
@@ -43,10 +60,128 @@ export function captureDocumentCheckpoint(
     signature: copyUnsharedUint8Array(
       record.signature,
       1,
-      8192,
+      MAX_CHECKPOINT_SIGNATURE_BYTES,
       'Checkpoint signature',
     ),
   };
+}
+
+/** @internal Copy sealed checkpoint bytes once before any asynchronous work. */
+export function captureEncryptedDocumentCheckpoint(
+  sealed: unknown,
+): Uint8Array<ArrayBuffer> {
+  return copyUnsharedUint8Array(
+    sealed,
+    MIN_ENCRYPTED_CHECKPOINT_BYTES,
+    MAX_ENCRYPTED_CHECKPOINT_BYTES,
+    'Encrypted checkpoint',
+  ) as Uint8Array<ArrayBuffer>;
+}
+
+/** @internal */
+export function assertCheckpointStorageKey(
+  key: unknown,
+  usage: 'encrypt' | 'decrypt',
+): asserts key is CryptoKey {
+  const candidate = key as CryptoKey;
+  if (
+    Object.prototype.toString.call(key) !== '[object CryptoKey]' ||
+    candidate.type !== 'secret' ||
+    candidate.algorithm.name !== 'AES-GCM' ||
+    (candidate.algorithm as AesKeyAlgorithm).length !== 256 ||
+    !candidate.usages.includes(usage)
+  )
+    throw new TypeError(
+      `Checkpoint storage key must be a 256-bit AES-GCM key that can ${usage}`,
+    );
+}
+
+function encryptedCheckpointAssociatedData(
+  documentPath: string,
+): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(
+    JSON.stringify([ENCRYPTED_CHECKPOINT_FORMAT, documentPath]),
+  );
+}
+
+/** @internal Seal a captured checkpoint to one document path under an AES-GCM storage key. */
+export async function sealDocumentCheckpoint(
+  checkpoint: DocumentCheckpoint,
+  documentPath: string,
+  storageKey: CryptoKey,
+): Promise<Uint8Array> {
+  assertCheckpointStorageKey(storageKey, 'encrypt');
+  const { payload, signature } = captureDocumentCheckpoint(checkpoint);
+  const cleartext = new Uint8Array(4 + payload.length + signature.length);
+  try {
+    new DataView(cleartext.buffer).setUint32(0, payload.length);
+    cleartext.set(payload, 4);
+    cleartext.set(signature, 4 + payload.length);
+    const nonce = crypto.getRandomValues(
+      new Uint8Array(ENCRYPTED_CHECKPOINT_NONCE_BYTES),
+    );
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce,
+          additionalData: encryptedCheckpointAssociatedData(documentPath),
+        },
+        storageKey,
+        cleartext,
+      ),
+    );
+    const sealed = new Uint8Array(nonce.length + ciphertext.length);
+    sealed.set(nonce);
+    sealed.set(ciphertext, nonce.length);
+    return sealed;
+  } finally {
+    cleartext.fill(0);
+    payload.fill(0);
+  }
+}
+
+/** @internal Authenticate and decrypt a sealed checkpoint for one document path. */
+export async function openSealedDocumentCheckpoint(
+  sealed: unknown,
+  documentPath: string,
+  storageKey: CryptoKey,
+): Promise<DocumentCheckpoint> {
+  assertCheckpointStorageKey(storageKey, 'decrypt');
+  const bytes = captureEncryptedDocumentCheckpoint(sealed);
+  let cleartext: Uint8Array<ArrayBuffer>;
+  try {
+    cleartext = new Uint8Array(
+      await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: bytes.subarray(0, ENCRYPTED_CHECKPOINT_NONCE_BYTES),
+          additionalData: encryptedCheckpointAssociatedData(documentPath),
+        },
+        storageKey,
+        bytes.subarray(ENCRYPTED_CHECKPOINT_NONCE_BYTES),
+      ),
+    );
+  } catch {
+    throw new Error('Encrypted checkpoint could not be authenticated');
+  }
+  try {
+    const payloadLength = new DataView(cleartext.buffer).getUint32(0);
+    const signatureLength = cleartext.length - 4 - payloadLength;
+    if (
+      payloadLength < 1 ||
+      payloadLength > MAX_DOCUMENT_CHECKPOINT_BYTES ||
+      signatureLength < 1 ||
+      signatureLength > MAX_CHECKPOINT_SIGNATURE_BYTES
+    )
+      throw new TypeError('Invalid encrypted checkpoint');
+    return {
+      payload: cleartext.slice(4, 4 + payloadLength),
+      signature: cleartext.slice(4 + payloadLength),
+    };
+  } finally {
+    cleartext.fill(0);
+  }
 }
 
 /** @internal Hash only owned, validated checkpoint payload bytes. */
@@ -59,12 +194,18 @@ export async function digestDocumentCheckpointPayload(
 }
 
 /**
- * Compute the SHA-256 commitment of a locally exported checkpoint payload.
- * Store this digest independently of rollbackable checkpoint storage.
+ * Compute the SHA-256 commitment of a locally exported checkpoint: of the
+ * bytes `exportEncryptedCheckpoint()` returned, or of the payload of a
+ * `exportPlaintextCheckpoint()` result. Pass it to the matching restore
+ * method. Store this digest independently of rollbackable checkpoint storage.
  */
 export async function documentCheckpointCommitment(
-  checkpoint: DocumentCheckpoint,
+  checkpoint: Uint8Array | DocumentCheckpoint,
 ): Promise<Uint8Array> {
+  if (ArrayBuffer.isView(checkpoint))
+    return digestDocumentCheckpointPayload(
+      captureEncryptedDocumentCheckpoint(checkpoint),
+    );
   const { payload } = captureDocumentCheckpoint(checkpoint);
   return digestDocumentCheckpointPayload(payload);
 }

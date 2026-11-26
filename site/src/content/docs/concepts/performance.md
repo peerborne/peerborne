@@ -73,8 +73,9 @@ Focused BeeKEM tests show that a removed reader's leaf (blanked in the tree) can
 produced by the corresponding PathUpdate. This avoids the primitive-level flaw
 of encrypting a successor key under a predecessor key already known to the
 removed reader. It is not an end-to-end revocation guarantee: PathUpdate
-delivery is best-effort, BeeKEM state is memory-only, and multi-peer
-partition/rejoin revocation is not verified. Source:
+delivery is best-effort, BeeKEM state survives a restart only through an
+application-saved checkpoint, and multi-peer partition/rejoin revocation is not
+verified. Source:
 [`peerborne-document.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/peerborne-document.ts)
 and [`wire-protocols.ts`](https://github.com/Peerborne/peerborne/blob/main/packages/core/src/wire-protocols.ts).
 The removed-member cases in

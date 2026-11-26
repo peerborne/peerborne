@@ -125,7 +125,8 @@ const DEFAULT_UNDELIVERED_CLOSE_DELAY_MS = 30 * 60 * 1000;
  * exists only in that handle.
  * A fresh handle loads the document from a peer, so a remount after a close
  * needs a connected peer that holds it, or a factory that restores the
- * document's latest checkpoint before returning the handle.
+ * document's latest checkpoint with `restoreEncryptedCheckpoint()` before
+ * returning the handle.
  */
 export function createDocumentStore<Doc, Change, PublicKey>(
   createHandle: DocumentHandleFactory<Doc, Change, PublicKey>,
