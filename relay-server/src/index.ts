@@ -21,6 +21,7 @@ import {
 import { loadOrCreateRelayIdentity } from './identity.js'
 import { IntervalGate } from './interval-gate.js'
 import { startReadinessServer } from './readiness.js'
+import { releaseReservationsOnDisconnect } from './reservations.js'
 
 async function main() {
   const config = loadConfig()
@@ -64,6 +65,7 @@ async function main() {
         }),
       },
     })
+    releaseReservationsOnDisconnect(libp2p)
 
     // Seed and operator-configured topics are permanent subscriptions.
     // The relay must be subscribed to these topics to forward messages between

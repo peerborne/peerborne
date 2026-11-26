@@ -355,6 +355,17 @@ describe('GroupSecurityCoordinator invitations', () => {
       ),
     ).rejects.toMatchObject({ code: 'stale-replay' });
     expect(replayProvider.importKeyPackageCalls).toBe(0);
+
+    const restored = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(recipient)),
+    );
+    expect(restored.publicState.epoch).toBe(1n);
+    expect((await rollbackAnchor.load(storeKey))?.revision).toBe(
+      snapshot.revision,
+    );
+    expect(
+      (await recipient.store.load(storeKey))!.consumedKeyPackageRefs,
+    ).toEqual([keyPackage.reference]);
   });
 
   test('snapshots a mutable invitation before asynchronous verification', async () => {

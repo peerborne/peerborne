@@ -32,7 +32,16 @@ function authenticated(request: IncomingMessage, config: GatewayConfig): boolean
   return candidate.length === expected.length && timingSafeEqual(candidate, expected)
 }
 
+/** Time a rejected upgrade may stay open for its response to drain. */
+const REJECTED_UPGRADE_LINGER_MS = 1000
+
 function reject(socket: Socket, status: number): void {
+  // Upgraded sockets leave the HTTP server's timeouts behind; without this
+  // deadline a client that never closes its side holds a connection slot.
+  const deadline = setTimeout(() => socket.destroy(), REJECTED_UPGRADE_LINGER_MS)
+  deadline.unref()
+  socket.once('close', () => clearTimeout(deadline))
+  socket.resume()
   socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 60\r\n\r\n`)
 }
 

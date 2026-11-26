@@ -65,6 +65,31 @@ describe('shouldAutoSubscribe', () => {
       expect(decision).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
     })
 
+    it.each([
+      '/peerborne/document/v3/notes/example',
+      `peerborne/coordinated/v1/${'ab'.repeat(32)}`,
+    ])('admits the core topic %s under the default allowlist', (topic) => {
+      expect(
+        shouldAutoSubscribe(topic, {
+          allowlist: DEFAULT_TOPIC_ALLOWLIST,
+          maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+          autoTopicCount: 0,
+          isTracked: neverTracked,
+        }),
+      ).toEqual({ action: 'subscribe' })
+    })
+
+    it('rejects the coordinated namespace under a different version', () => {
+      expect(
+        shouldAutoSubscribe('peerborne/coordinated/v2/abcd', {
+          allowlist: DEFAULT_TOPIC_ALLOWLIST,
+          maxAutoTopics: DEFAULT_MAX_AUTO_TOPICS,
+          autoTopicCount: 0,
+          isTracked: neverTracked,
+        }),
+      ).toEqual({ action: 'skip', reason: 'NotInAllowlist' })
+    })
+
     it('requires an explicit allowlist entry for a custom document prefix', () => {
       const topic = '/acme/document/v3/example'
       const input = {

@@ -8,6 +8,7 @@ RUN npm install --global corepack@0.36.0 \
     done
 WORKDIR /app
 COPY package.json yarn.lock .yarnrc.yml tsconfig.json ./
+COPY .yarn/patches ./.yarn/patches
 RUN yarn install --immutable
 COPY src ./src
 RUN yarn exec tsc

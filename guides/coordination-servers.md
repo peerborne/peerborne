@@ -234,10 +234,11 @@ The relay server reads the following environment variables:
 | `WS_LISTEN` | Full WebSocket listen multiaddr | `/ip4/0.0.0.0/tcp/${WS_PORT}/ws` |
 | `TCP_LISTEN` | Full TCP listen multiaddr | `/ip4/0.0.0.0/tcp/${TCP_PORT}` |
 | `EXTRA_TOPICS` | Additional pubsub topics to subscribe to (comma-separated) | *(none)* |
-| `TOPIC_ALLOWLIST` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/` |
+| `TOPIC_ALLOWLIST` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe filtering. Set exactly `*` for explicit open mode. | `/peerborne/document/v3/,peerborne/coordinated/v1/` |
 | `MAX_AUTO_TOPICS` | Hard cap on auto-subscribed topics to prevent unbounded memory growth | `1000` |
 | `MAX_AUTO_TOPICS_PER_PEER` | Hard cap on dynamic topics tracked for one remote peer | `32` |
-| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer | `65536` |
+| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | Ingestion-layer topic-name byte budget for one remote peer; each subscription costs its name length plus 1024 bytes | `65536` |
+| `TRUSTED_PROXY_IPS` | Comma-separated reverse-proxy IPs or CIDR ranges exempt from GossipSub IP-colocation scoring, or `*` when every connection arrives through a proxy. Invalid entries stop startup | *(none)* |
 | `MAX_CONNECTIONS` | Global ceiling for established libp2p transport connections | `256` |
 | `RELAY_IDENTITY_KEY_PATH` | Persistent app-managed libp2p private-key file | `./relay-identity.key` |
 | `READINESS_PORT` | Internal HTTP `/livez` and `/readyz` port | `9000` |
@@ -250,12 +251,18 @@ The relay server reads the following environment variables:
 auto-subscribes to. It cannot inspect or restrict opaque, Noise-encrypted
 Circuit Relay streams and is not an authorization control. HOP/STOP stream
 limits are per connection; `MAX_CONNECTIONS` is the separate global transport
-connection ceiling. The pinned dependency may retain a disconnected reservation
-until its 10-minute TTL expires. The 128-reservation cap bounds capacity while
-those stale entries remain. `MAX_AUTO_TOPICS` bounds total dynamic subscriptions;
+connection ceiling. The relay frees a peer's reservation when its last
+connection closes, and each renewal by a connected client extends it by one TTL.
+`MAX_AUTO_TOPICS` bounds total dynamic subscriptions;
 `MAX_AUTO_TOPICS_PER_PEER` prevents one peer from consuming that global allowance.
 `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` also bounds remote topic metadata before
-the relay's application-level registry receives subscription events.
+the relay's application-level registry receives subscription events; a
+subscription over budget is silently ignored and not forwarded.
+Behind a reverse proxy, every browser shares the proxy's IP and GossipSub's
+IP-colocation penalty starts ignoring new browsers' subscriptions from about
+the 15th identity in an hour. Set `TRUSTED_PROXY_IPS` to the proxy's addresses
+or ranges, or to `*` only when every connection is proxied, and enforce
+per-client limits at the proxy.
 Allowlist entries ending in `/` match a namespace prefix. Entries without a
 trailing slash match one exact topic, so `/announcements` does not also admit
 `/announcements-extra`. All peers on a custom prefix must use the current
@@ -619,7 +626,8 @@ Override relay defaults by adding entries to `[env]` in `fly.toml`:
 
 ```toml
 [env]
-  TOPIC_ALLOWLIST  = "/peerborne/document/v3/"
+  TOPIC_ALLOWLIST  = "/peerborne/document/v3/,peerborne/coordinated/v1/"
+  TRUSTED_PROXY_IPS = "*"
   MAX_AUTO_TOPICS  = "500"
   MAX_AUTO_TOPICS_PER_PEER = "32"
   GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER = "65536"

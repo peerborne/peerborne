@@ -96,6 +96,40 @@ retired epoch key, is never kept. At most eight senders and 16 MiB are kept
 per document; sync requests are dropped first, then the oldest frame. A frame
 skipped while the shared credits are exhausted is not retained.
 
+### Frame size
+
+`@libp2p/gossipsub` sends and accepts RPCs of at most 4 MiB, and the outbound
+limit is not configurable. A longer RPC is never sent: `publish()` resolves
+with no recipients and no error. Peerborne caps one serialized sync message at
+3.5 MiB (`MAX_GOSSIP_SYNC_MESSAGE_BYTES`), leaving room for encryption, the
+GossipSub envelope and piggybacked control messages.
+
+Every frame carries the retained change tree inline, so the cap is split in
+half:
+
+- **One change** may need at most 1.75 MiB on its own
+  (`MAX_CHANGE_FRAME_BYTES`). A larger one is refused before a block is
+  stored: `change()` or `endChange()` rejects with `GossipFrameLimitError`
+  and nothing reaches history. The edit is already in the local document,
+  because Yjs edits in place and Automerge marks the previous document
+  outdated, so the instance is retired as for an oversized block; reopen it
+  from accepted state and split the edit.
+- **The retained tree** is compacted once the change frame that carried it
+  passes 1.75 MiB: the writer snapshots and keeps only its newest changes, up
+  to 512 KiB of payload, and a depth-bound compaction keeps no more than that
+  either. A writer that adopts a published change frame prunes the same tree
+  the same way. A `requestSync()` reply does not trigger this, since it can
+  carry a snapshot the author never published. Retained trees then match, but
+  load digests can still differ, because each writer signs its own snapshot.
+  A reader keeps the larger tree, as with depth-bound compaction. A peer that
+  missed the pruned changes recovers them with `requestSync()` or a load.
+- **A membership change** is never refused for retained size: if its frame
+  would not fit, the tree is compacted first and the change published again.
+
+A `requestSync()` reply that does not fit GossipSub, usually because of its
+snapshot, is not sent and does not use up the request or the response rate
+limit. The responder logs a warning, and the requester must load the document.
+
 ## Peer discovery
 
 Peerborne peers find each other through several mechanisms:

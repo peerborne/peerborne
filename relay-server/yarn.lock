@@ -3670,10 +3670,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"retimeable-signal@npm:^1.0.1":
+"retimeable-signal@npm:1.0.1":
   version: 1.0.1
   resolution: "retimeable-signal@npm:1.0.1"
   checksum: 10/903c5dd9dae7459a8e096e5a8f522c9d90493f0417dbbc06ecdd3a949959c76b47c266ea20d577ae603e89f53a77a37c3dfad4dfff809de2fcf30d58ec4ac1a4
+  languageName: node
+  linkType: hard
+
+"retimeable-signal@patch:retimeable-signal@npm%3A1.0.1#~/.yarn/patches/retimeable-signal-npm-1.0.1-050ba40432.patch":
+  version: 1.0.1
+  resolution: "retimeable-signal@patch:retimeable-signal@npm%3A1.0.1#~/.yarn/patches/retimeable-signal-npm-1.0.1-050ba40432.patch::version=1.0.1&hash=2ad31c"
+  checksum: 10/288a9f0501152a476bd7f305e3f20da54c82289012e56ad631e90642568d8c51e484f86ea34d1b9861b1ee2fba06ca428a4617758dbf075e774738f19ba9ff86
   languageName: node
   linkType: hard
 
