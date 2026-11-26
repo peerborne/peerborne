@@ -75,8 +75,12 @@ const WRAP_MAGIC = [0x50, 0x42, 0x57, 0x31];
 const ENVELOPE_MAGIC = [0x50, 0x42, 0x41, 0x31];
 const MANIFEST_MAGIC = [0x50, 0x42, 0x4d, 0x31];
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder('utf-8', { fatal: true });
+let textEncoder: TextEncoder | undefined;
+let textDecoder: TextDecoder | undefined;
+const encode = (value: string): Uint8Array =>
+  (textEncoder ??= new TextEncoder()).encode(value);
+const decode = (bytes: Uint8Array): string =>
+  (textDecoder ??= new TextDecoder('utf-8', { fatal: true })).decode(bytes);
 
 class Writer {
   private readonly parts: Uint8Array[] = [];
@@ -142,7 +146,7 @@ class Reader {
 }
 
 function signerBytes(signer: string): Uint8Array {
-  const bytes = encoder.encode(signer);
+  const bytes = encode(signer);
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_SIGNER_BYTES)
     throw new CRDTActorBindingError('Invalid change signer');
   return bytes;
@@ -153,7 +157,7 @@ function readSigner(reader: Reader): string {
   if (length === 0 || length > MAX_SIGNER_BYTES)
     throw new CRDTActorBindingError('Invalid change signer');
   try {
-    return decoder.decode(reader.take(length));
+    return decode(reader.take(length));
   } catch {
     throw new CRDTActorBindingError('Invalid change signer');
   }
@@ -221,8 +225,8 @@ export async function deriveCRDTActorDigest(
 ): Promise<Uint8Array> {
   assertNonce(registration.nonce);
   const input = new Writer()
-    .bytes(encoder.encode(ACTOR_DOMAIN))
-    .lengthPrefixed(encoder.encode(documentPath))
+    .bytes(encode(ACTOR_DOMAIN))
+    .lengthPrefixed(encode(documentPath))
     .lengthPrefixed(signerBytes(registration.signer))
     .bytes(registration.nonce)
     .finish();
@@ -238,8 +242,8 @@ export function crdtActorRegistrationPayload(
 ): Uint8Array {
   assertNonce(registration.nonce);
   return new Writer()
-    .bytes(encoder.encode(REGISTRATION_DOMAIN))
-    .lengthPrefixed(encoder.encode(documentPath))
+    .bytes(encode(REGISTRATION_DOMAIN))
+    .lengthPrefixed(encode(documentPath))
     .lengthPrefixed(signerBytes(registration.signer))
     .bytes(registration.nonce)
     .finish();
@@ -253,8 +257,8 @@ export function crdtChangeAuthorPayload(
 ): Uint8Array {
   assertNonce(registration.nonce);
   return new Writer()
-    .bytes(encoder.encode(SIGNATURE_DOMAIN))
-    .lengthPrefixed(encoder.encode(documentPath))
+    .bytes(encode(SIGNATURE_DOMAIN))
+    .lengthPrefixed(encode(documentPath))
     .lengthPrefixed(signerBytes(registration.signer))
     .bytes(registration.nonce)
     .lengthPrefixed(changeBytes)
@@ -305,7 +309,7 @@ export function encodeCRDTActorManifest(
     if (!nonces.has(key)) nonces.set(key, registration);
   }
   const signers = [...bySigner.keys()]
-    .map((signer) => [signer, encoder.encode(signer)] as const)
+    .map((signer) => [signer, encode(signer)] as const)
     .sort(([, left], [, right]) => compareBytes(left, right));
   const writer = new Writer().bytes(MANIFEST_MAGIC).u32(signers.length);
   for (const [, bytes] of signers) writer.u16(bytes.byteLength).bytes(bytes);
@@ -336,7 +340,7 @@ export function decodeCRDTActorManifest(
   let previous: Uint8Array | undefined;
   for (let index = 0; index < signerCount; index++) {
     const signer = readSigner(reader);
-    const encoded = encoder.encode(signer);
+    const encoded = encode(signer);
     if (previous !== undefined && compareBytes(previous, encoded) >= 0)
       throw new CRDTActorBindingError('Noncanonical actor manifest');
     previous = encoded;
