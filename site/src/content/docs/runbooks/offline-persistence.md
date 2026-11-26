@@ -55,7 +55,7 @@ membership or CRDT state an instance needs to open. After `close()`, a new
 `peerborne.doc(path).open()` loads from a connected peer that holds the
 document; offline, or with no such peer, it rejects with
 `No document state is available`. An application that relies on IndexedDB
-alone loses its documents on reload.
+alone cannot reopen its documents after a reload.
 
 1. Keep a non-extractable 256-bit AES-GCM storage key with the application's
    signing identity, for example as a `CryptoKey` in IndexedDB.
@@ -72,9 +72,10 @@ alone loses its documents on reload.
    await document.open();
    ```
 
-4. To reject a replayed older checkpoint, keep its
-   `documentCheckpointCommitment(saved)` outside the checkpoint store and pass
-   it to `restoreEncryptedCheckpoint()` as the third argument.
+4. To reject a replayed older checkpoint, also keep
+   `await documentCheckpointCommitment(bytes)` of each saved checkpoint
+   outside the checkpoint store, and pass the latest one to
+   `restoreEncryptedCheckpoint()` as the third argument.
 
 A checkpoint holds the document's plaintext state and its document keys. Keep
 it encrypted at rest and never send it to another party. If the application

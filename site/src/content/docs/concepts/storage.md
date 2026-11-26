@@ -78,10 +78,10 @@ remains unverified.
 A checkpoint is a bounded, self-signed capture of one document instance's
 local state. It holds the CRDT state, the reader and writer ACLs, BeeKEM
 membership state, and the raw document keys. Without one, a new
-`peerborne.doc(path).open()` after `close()` loads from a connected peer that
-holds the document, and with none it rejects with `No document state is
-available`. Export a checkpoint after each committed change and restore it
-on a fresh instance before `open()`:
+`peerborne.doc(path).open()` after `close()` must load from a connected peer
+that holds the document; when no peer can serve it, `open()` rejects with
+`No document state is available`. Export a checkpoint after each committed
+change and restore it on a fresh instance before `open()`:
 
 ```ts
 // A non-extractable 256-bit AES-GCM key that the application keeps, for
@@ -106,8 +106,8 @@ await restored.open();
 `exportEncryptedCheckpoint()` seals the checkpoint with AES-GCM under the
 application's key, with associated data that binds it to the document path
 and checkpoint format, so it restores only under that key, into that path, for
-the identity that signed it. A restored instance rejects the bytes of another
-key, path or identity, or any altered byte. Protect the storage key as well
+the identity that signed it. Restoration rejects bytes sealed under another
+key or for another path, signed by another identity, or altered in any byte. Protect the storage key as well
 as the checkpoint, and never send either to another party. A checkpoint is
 local recovery for the identity that exported it, not a backup or sharing
 format.
