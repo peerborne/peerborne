@@ -145,7 +145,10 @@ function publishingDocument(crdtProvider: object = inPlaceProvider): any {
       getReaders: async () => [],
       getWriters: async () => [],
       _closeDocument: jest.fn(async () => undefined),
+      _deliveryFailureHandlers: {},
+      _remoteHandlers: {},
       handled: [] as string[][],
+      undelivered: [] as { changeId: string; error: unknown }[],
       frames: [] as Uint8Array[],
     },
   );
@@ -154,6 +157,9 @@ function publishingDocument(crdtProvider: object = inPlaceProvider): any {
       document.handled.push([...current]);
     },
   };
+  document.subscribeDeliveryFailures('probe', (failure: any) => {
+    document.undelivered.push(failure);
+  });
   return document;
 }
 
@@ -259,7 +265,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document._documentChangeCount).toBe(2);
   });
 
-  test('change() rejects with both errors when publishing the partial edit fails, and the next change carries it', async () => {
+  test('change() rethrows the change function error, keeps the partial edit and reports it undelivered when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -267,24 +273,24 @@ describe('committing the partial edit of a throwing change function', () => {
       offline,
     );
 
-    const error = await rejection(
+    await expect(
       document.change((doc: string[]) => {
         doc.push('partial');
         throw failure;
       }),
-    );
-    expect(error).toBeInstanceOf(AggregateError);
-    expect([...error.errors]).toEqual([failure, offline]);
-    expect(document.handled).toEqual([]);
+    ).rejects.toBe(failure);
     const partialId = document._lastSyncMessage.changeId;
     expect(document._hashes.has(partialId)).toBe(true);
+    expect(document.undelivered).toEqual([
+      { documentPath: '/local-change', changeId: partialId, error: offline },
+    ]);
+    expect(document.handled).toEqual([['partial']]);
 
     await document.change((doc: string[]) => doc.push('next'));
     expect(document.frames).toHaveLength(1);
     expect(
       document._lastSyncMessage.changes.children[partialId].change,
     ).toEqual(['partial']);
-    expect(document.handled).toEqual([['partial', 'next']]);
   });
 
   test('change() rejects with both errors when a local handler fails after publication', async () => {
@@ -306,7 +312,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document.frames).toHaveLength(1);
   });
 
-  test('endChange() rejects with both errors, keeps the partial batch and ends the transaction when publishing fails', async () => {
+  test('endChange() rethrows the change function error, keeps the partial batch and ends the transaction when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -319,11 +325,11 @@ describe('committing the partial edit of a throwing change function', () => {
       throw failure;
     });
 
-    const error = await rejection(document.endChange());
-    expect(error).toBeInstanceOf(AggregateError);
-    expect([...error.errors]).toEqual([failure, offline]);
+    await expect(document.endChange()).rejects.toBe(failure);
     expect(document._hashes.size).toBe(1);
     expect(document._lastSyncMessage.changes.change).toEqual(['partial']);
+    expect(document.undelivered).toHaveLength(1);
+    expect(document.undelivered[0].error).toBe(offline);
     expect(document._inTransaction).toBe(false);
     expect(document._committing).toBe(false);
   });
@@ -438,22 +444,24 @@ describe('a local change that fails before publication', () => {
       ] as const,
     ]),
   )(
-    'in %s while %s, %s keeps the stored change for the next frame',
+    'in %s while %s, %s resolves, keeps the change and reports it undelivered',
     async (_entry, _step, commit, failingStep, _name, provider) => {
       const { document, tree } = await committedOnce(provider);
       const failure = new Error('PublishError.NoPeersSubscribedToTopic');
       failingStep(document).mockRejectedValueOnce(failure);
 
-      await expect(
-        commit(document, (doc: string[]) => doc.push('kept')),
-      ).rejects.toBe(failure);
+      await commit(document, (doc: string[]) => doc.push('kept'));
       const keptId = document._lastSyncMessage.changeId;
       expect(keptId).not.toBe(tree.changeId);
       expect(document._hashes.has(keptId)).toBe(true);
       expect(document._document).toEqual(['accepted', 'kept']);
       expect(document._documentChangeCount).toBe(2);
       expect(document._inTransaction).toBe(false);
-      expect(document.handled).toEqual([['accepted']]);
+      expect(document.undelivered).toEqual([
+        { documentPath: '/local-change', changeId: keptId, error: failure },
+      ]);
+      expect(Object.isFrozen(document.undelivered[0])).toBe(true);
+      expect(document.handled).toEqual([['accepted'], ['accepted', 'kept']]);
       expect(document._closeDocument).not.toHaveBeenCalled();
 
       await commit(document, (doc: string[]) => doc.push('next'));
@@ -466,10 +474,33 @@ describe('a local change that fails before publication', () => {
       expect(
         Object.keys(delivered.changes.children[keptId].children),
       ).toContain(tree.changeId);
-      expect(document.handled).toEqual([
-        ['accepted'],
-        ['accepted', 'kept', 'next'],
-      ]);
+      expect(document.undelivered).toHaveLength(1);
     },
   );
+
+  test('a throwing delivery failure handler does not fail the change, and unsubscribe removes handlers', async () => {
+    const { document } = await committedOnce(inPlaceProvider);
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      document.subscribeDeliveryFailures('broken', () => {
+        throw new Error('handler');
+      });
+      const { publish } = document.swarm.heliaNode.libp2p.services.pubsub;
+      publish.mockRejectedValueOnce(new Error('offline'));
+      await document.change((doc: string[]) => doc.push('kept'));
+      expect(document.undelivered).toHaveLength(1);
+      expect(error).toHaveBeenCalledWith(
+        '[/local-change] a delivery failure handler failed.',
+      );
+
+      document.unsubscribe('broken');
+      document.unsubscribe('probe');
+      publish.mockRejectedValueOnce(new Error('offline'));
+      await document.change((doc: string[]) => doc.push('again'));
+      expect(document.undelivered).toHaveLength(1);
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
 });

@@ -776,6 +776,26 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   hashes: string[],
 ) => void;
 
+/**
+ * A local change that was committed locally, stored and recorded in the
+ * retained change tree, but whose frame could not be encrypted or published.
+ * The next change's frame carries it inline, and sync and load responses
+ * serve it.
+ */
+export interface ChangeDeliveryFailure {
+  /** Path of the document that holds the change. */
+  readonly documentPath: string;
+  /** CID of the change that was not delivered. */
+  readonly changeId: string;
+  /** The encryption or publication error. */
+  readonly error: unknown;
+}
+
+/** Handler for {@link PeerborneDocument.subscribeDeliveryFailures}. */
+export type PeerborneDocumentDeliveryFailureHandler = (
+  failure: ChangeDeliveryFailure,
+) => void;
+
 /** Options for {@link PeerborneDocument.removeWriter}. */
 export interface RemoveWriterOptions {
   /**
@@ -1561,6 +1581,10 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
+
+  private _deliveryFailureHandlers: {
+    [id: string]: PeerborneDocumentDeliveryFailureHandler;
+  } = {};
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -4584,7 +4608,6 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
-    let deliveryFailure: { error: unknown } | undefined;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
     if (kind === crdtDocumentChangeNode) {
@@ -4720,28 +4743,25 @@ export class PeerborneDocument<
         this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
-      // A document change already in the retained tree stays there when
-      // encryption or publication fails: the next frame carries it inline, and
-      // sync and load responses serve it.
+      // A document change already in the retained tree is committed locally
+      // when encryption or publication fails: the next frame carries it
+      // inline, and sync and load responses serve it.
       if (postPublishCommit || this._lastSyncMessage === lastSyncMessageBefore)
         throw error;
-      deliveryFailure = { error };
+      this._reportDeliveryFailure(hash, error);
     }
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
     // failures. Report them, but preserve the successful membership result.
-    // An unpublished change is announced with the next one.
-    if (!deliveryFailure) {
-      try {
-        await this._fireLocalUpdateHandlers(
-          [hash],
-          postPublishCommit?.operation,
-        );
-      } catch (error) {
-        if (!postPublishCommit) throw error;
-        this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
-      }
+    try {
+      await this._fireLocalUpdateHandlers(
+        [hash],
+        postPublishCommit?.operation,
+      );
+    } catch (error) {
+      if (!postPublishCommit) throw error;
+      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
     }
 
     // Track document changes for compaction. Membership nodes deepen the
@@ -4750,13 +4770,24 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    if (deliveryFailure) {
-      // Keep the retained tree bounded while publication keeps failing. The
-      // next change retries a failed compaction.
-      await this._maybeCompact(undefined, publishedBytes).catch(() => {});
-      throw deliveryFailure.error;
-    }
     await this._maybeCompact(undefined, publishedBytes);
+  }
+
+  private _reportDeliveryFailure(changeId: string, error: unknown): void {
+    const failure: ChangeDeliveryFailure = Object.freeze({
+      documentPath: this.documentPath,
+      changeId,
+      error,
+    });
+    for (const handler of Object.values(this._deliveryFailureHandlers)) {
+      try {
+        handler(failure);
+      } catch {
+        console.error(
+          `[${this.documentPath}] a delivery failure handler failed.`,
+        );
+      }
+    }
   }
 
   /**
@@ -9270,7 +9301,27 @@ export class PeerborneDocument<
   }
 
   /**
-   * Unsubscribes a change handler from the document.
+   * Subscribe to local changes that were committed but not delivered, because
+   * encrypting or publishing their frame failed, for example when GossipSub
+   * has no topic peers and does not allow publishing to none. `change()` and
+   * `endChange()` still resolve for such a change: it stays in the document,
+   * and it reaches peers with the next change's frame or a sync or load
+   * response. Do not repeat the edit. A coordinated document reports a
+   * delivery failure by rejecting instead, and does not call these handlers.
+   *
+   * @param id An id to unsubscribe the handler with `unsubscribe(id)`.
+   * @param handler Called synchronously with each delivery failure.
+   */
+  public subscribeDeliveryFailures(
+    id: string,
+    handler: PeerborneDocumentDeliveryFailureHandler,
+  ) {
+    this._assertNoIncompleteBootstrapLoad(true);
+    this._deliveryFailureHandlers[id] = handler;
+  }
+
+  /**
+   * Unsubscribes a change or delivery failure handler from the document.
    *
    * @param id The id of the handler to unsubscribe.
    */
@@ -9281,6 +9332,7 @@ export class PeerborneDocument<
     if (this._localHandlers[id]) {
       delete this._localHandlers[id];
     }
+    delete this._deliveryFailureHandlers[id];
   }
 
   // TODO: Unit tests for PeerborneDocument require mocking libp2p, Helia,
@@ -9318,9 +9370,11 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * A failure is handled as in `change()`: the batch is kept once it is
-   * stored and in the retained change tree, and discarded when it fails
-   * before. Either way the transaction ends, and a new one must be started.
+   * A failure is handled as in `change()`: once the batch is stored and in
+   * the retained change tree it is kept, and an encryption or publication
+   * failure is reported to `subscribeDeliveryFailures()` handlers instead of
+   * rejecting. A batch that fails before that point is discarded. Either way
+   * the transaction ends, and a new one must be started.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -9408,13 +9462,12 @@ export class PeerborneDocument<
    * retires the instance with it as the cause.
    *
    * The change is committed locally once its block is stored and it is in the
-   * retained change tree. A later failure keeps it: when encrypting or
-   * publishing the frame fails, for example because GossipSub has no topic
-   * peers, the call rejects with that error, but the change stays in the
-   * document, the next change's frame carries it inline, and sync and load
-   * responses serve it. Local update handlers then run with the next change.
-   * Do not repeat the edit. A failure from a local update handler or
-   * compaction after publication also keeps the change.
+   * retained change tree. When encrypting or publishing its frame then fails,
+   * for example because GossipSub has no topic peers, the call still
+   * resolves: the change stays in the document, the next change's frame
+   * carries it inline, and sync and load responses serve it. The failure is
+   * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
+   * update handler or compaction rejects the call but also keeps the change.
    *
    * A failure before that point (block storage, signing or the frame size
    * check) discards the change, so no later change depends on an edit peers

@@ -82,6 +82,7 @@ function automergeDocument(): any {
         },
       },
       _localHandlers: {},
+      _deliveryFailureHandlers: {},
       _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       getReaders: jest.fn(async () => []),
       getWriters: async () => [],
@@ -206,14 +207,24 @@ describe('an Automerge change that fails', () => {
     'in %s after the change is in the tree, a failure while %s keeps it for the next frame',
     async (_entry, _step, commit, failingStep) => {
       const document = automergeDocument();
+      const undelivered: unknown[] = [];
+      document._deliveryFailureHandlers.probe = (failure: unknown) =>
+        undelivered.push(failure);
       const failure = new Error('PublishError.NoPeersSubscribedToTopic');
       failingStep(document).mockRejectedValueOnce(failure);
 
-      await expect(commit(document, 'kept')).rejects.toBe(failure);
+      await commit(document, 'kept');
       expect(document._document.log).toEqual(['kept']);
       const keptId = document._lastSyncMessage.changeId;
       expect(document._hashes.has(keptId)).toBe(true);
       expect(document.frames).toHaveLength(0);
+      expect(undelivered).toEqual([
+        {
+          documentPath: '/automerge-rollback',
+          changeId: keptId,
+          error: failure,
+        },
+      ]);
 
       await document.change(push('next'));
       await batch(document, 'batched');

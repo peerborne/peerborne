@@ -98,7 +98,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
       steps,
     )) {
       const outcome = kept
-        ? 'the writer keeps the change and the next frame delivers it'
+        ? 'the call resolves, the change is kept and the next frame delivers it'
         : 'the change is discarded';
       test(`${adapter}: after ${entry}() fails while ${step}, ${outcome}, and the writer and a replica converge`, async () => {
         const writer = await fixture(adapter, { index: 1 });
@@ -107,27 +107,42 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         const accepted = await writer.document.exportCheckpoint();
         const failure = failureFor();
         inject(writer, failure);
-
-        const error = await edit(writer, adapter, 'b', 2, entry).then(
-          () => assert.fail('the failed change resolved'),
-          (reason) => reason,
+        const undelivered = [];
+        writer.document.subscribeDeliveryFailures('test', (report) =>
+          undelivered.push(report),
         );
+
         let author = writer;
-        if (kept || adapter === 'automerge') {
-          assert.equal(error, failure);
-          assert.deepEqual(
-            rootOf(writer, adapter),
-            kept ? { a: 1, b: 2 } : { a: 1 },
+        if (kept) {
+          // The change is committed locally, so the call resolves and the
+          // failed publication is reported instead.
+          await edit(writer, adapter, 'b', 2, entry);
+          assert.deepEqual(rootOf(writer, adapter), { a: 1, b: 2 });
+          assert.equal(undelivered.length, 1);
+          assert.equal(undelivered[0].error, failure);
+          assert.equal(
+            undelivered[0].changeId,
+            writer.document._lastSyncMessage.changeId,
           );
         } else {
-          // An in-place edit cannot be undone, so the instance retires.
-          assert.match(error.message, /could not be rolled back/);
-          assert.equal(error.cause, failure);
-          await assert.rejects(edit(writer, adapter, 'c', 3), /retired/);
-          await assert.rejects(writer.document.exportCheckpoint(), /retired/);
-          await writer.close();
-          author = await reopen(writer, adapter, accepted, 3);
-          assert.deepEqual(rootOf(author, adapter), { a: 1 });
+          const error = await edit(writer, adapter, 'b', 2, entry).then(
+            () => assert.fail('the failed change resolved'),
+            (reason) => reason,
+          );
+          assert.deepEqual(undelivered, []);
+          if (adapter === 'automerge') {
+            assert.equal(error, failure);
+            assert.deepEqual(rootOf(writer, adapter), { a: 1 });
+          } else {
+            // An in-place edit cannot be undone, so the instance retires.
+            assert.match(error.message, /could not be rolled back/);
+            assert.equal(error.cause, failure);
+            await assert.rejects(edit(writer, adapter, 'c', 3), /retired/);
+            await assert.rejects(writer.document.exportCheckpoint(), /retired/);
+            await writer.close();
+            author = await reopen(writer, adapter, accepted, 3);
+            assert.deepEqual(rootOf(author, adapter), { a: 1 });
+          }
         }
 
         for (const [key, value] of [

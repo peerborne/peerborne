@@ -77,6 +77,7 @@ function writerDocument(name: string, inPlace = false) {
     _signAsWriter: jest.fn(async () => 'AQ=='),
     _localHandlers: {},
     _remoteHandlers: {},
+    _deliveryFailureHandlers: {},
     _keychain: {
       current: jest.fn(async () => [new Uint8Array(32).fill(1), { key: 1 }]),
     },
@@ -271,14 +272,17 @@ test.each([
   'a writer whose %s keep failing to publish still bounds its retained tree',
   async (_name, count, size) => {
     const { document, published } = writerDocument('a');
+    const undelivered: unknown[] = [];
+    document.subscribeDeliveryFailures('probe', (failure: unknown) =>
+      undelivered.push(failure),
+    );
     const { publish } = document.swarm.heliaNode.libp2p.services.pubsub;
     publish.mockRejectedValue(
       new Error('PublishError.NoPeersSubscribedToTopic'),
     );
     for (let index = 0; index < count; index++)
-      await expect(
-        document.change(() => ({ index, text: 'x'.repeat(size) })),
-      ).rejects.toThrow('NoPeersSubscribedToTopic');
+      await document.change(() => ({ index, text: 'x'.repeat(size) }));
+    expect(undelivered).toHaveLength(count);
     expect(document._latestSnapshot).toBeDefined();
     expect(
       changeTreeDepth(
