@@ -335,6 +335,19 @@ export type { UCANACLEntry } from './ucan-acl.js';
 export type { CRDTSnapshotNode } from './snapshot-node.js';
 export type { CompactionConfig } from './compaction-config.js';
 export {
+  defaultAntiEntropyConfig,
+  resolveAntiEntropyConfig,
+} from './anti-entropy.js';
+export type {
+  AntiEntropyConfig,
+  AntiEntropyEvent,
+  AntiEntropyHandler,
+  AntiEntropyLoadOutcome,
+  AntiEntropyRequestOutcome,
+  AntiEntropyStatus,
+  AntiEntropyTrigger,
+} from './anti-entropy.js';
+export {
   LOAD_SECURITY_STATE_VERSION,
   LOAD_SECURITY_HASH_LENGTH,
   MAX_LOAD_SECURITY_GROUP_ID_BYTES,

@@ -98,4 +98,15 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * @returns The updated document with the snapshot state merged in.
    */
   applySnapshot?(document: DocType, snapshot: ChangesType): DocType;
+
+  /**
+   * Report whether `document` holds remote changes that wait for missing
+   * causal dependencies, such as Automerge's queued changes or Yjs pending
+   * structs and deletions. Automatic catch-up asks peers for missed updates
+   * while this is true. When not implemented, only failed block fetches and
+   * advertised heads reveal a gap.
+   *
+   * @param document CRDT document to inspect.
+   */
+  hasPendingChanges?(document: DocType): boolean;
 }

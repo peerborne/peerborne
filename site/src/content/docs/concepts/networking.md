@@ -122,13 +122,15 @@ half:
   carry a snapshot the author never published. Retained trees then match, but
   load digests can still differ, because each writer signs its own snapshot.
   A reader keeps the larger tree, as with depth-bound compaction. A peer that
-  missed the pruned changes recovers them with `requestSync()` or a load.
+  missed the pruned changes recovers them through
+  [automatic catch-up](#automatic-catch-up).
 - **A membership change** is never refused for retained size: if its frame
   would not fit, the tree is compacted first and the change published again.
 
 A `requestSync()` reply that does not fit GossipSub, usually because of its
 snapshot, is not sent and does not use up the request or the response rate
-limit. The responder logs a warning, and the requester must load the document.
+limit. The responder logs a warning, and the requester loads the document
+instead; see [large catch-up](#large-catch-up).
 
 ## Peer discovery
 
@@ -239,18 +241,98 @@ An established transport does not establish a relay reservation or verify an
 invitation. Applications should report those later phases separately.
 The optional `NetworkStats` container still requires explicit `record*()` calls.
 
+## Automatic catch-up
+
+GossipSub can drop frames, a writer can edit while disconnected, and a writer
+that has pruned its retained tree cannot resend older changes inline. Every
+open default (non-coordinated) document therefore asks members for missed
+updates without an application call. It sends the signed sync request that
+`document.requestSync()` sends:
+
+- shortly after `open()`, `create()`, invitation acceptance or a restored
+  checkpoint;
+- when a peer subscribed to the document's topic connects or reconnects;
+- when the CRDT holds remote changes that wait for missing dependencies
+  (Automerge's queued changes, Yjs pending structs or deletions);
+- when a frame names a change that cannot be fetched;
+- when a verified member's request names a head this replica does not hold;
+- otherwise every 30 to 60 s, drawn uniformly around 45 s.
+
+A request names the requester's head, up to 32 recent tips, its known
+snapshots and its libp2p PeerId. It is signed by a current reader or writer
+and encrypted with the document key. Members learn the requester's PeerId,
+which GossipSub's signed `from` field already shows them. A writer answers only
+when the requester lacks its head or its snapshot, with an ordinary signed
+update, so every reply passes the normal signature, ACL and admission checks.
+Replies go to the whole topic, so one request repairs every replica that is
+behind in the same way.
+
+### Bounds
+
+- Signals that arrive within 0.5 to 1.5 s are coalesced into one request. A
+  document sends at most one request per 5 s (`minRequestIntervalMs`), and
+  while a detected gap stays open that spacing doubles up to the periodic
+  interval.
+- One peer triggers at most one request per kind of signal per 30 s
+  (`peerCooldownMs`), so a flapping connection cannot cause a storm. A
+  document verifies at most four advertised heads at once, refilled at one per
+  2 s.
+- A periodic request is postponed once when another member asks with the same
+  head, since writers' replies reach every subscriber.
+- All documents of one Peerborne instance share a request bucket of 16,
+  refilled at four per second. At most one catch-up load runs at a time, and
+  at most one per peer every 10 s.
+- Responders keep the existing limits: one reply per document every 2 s, a
+  60 s freshness window and a 128-entry replay ledger, however many members
+  ask.
+- Ordinary sync waits at most 10 s for the change blocks a frame names but
+  does not carry, so a block no connected peer serves cannot hold the
+  document's state queue. Changes still missing are reported to catch-up. A
+  cross-linked change whose inline copy sits below a change the replica
+  already holds, such as a snapshot boundary, is taken from the frame instead
+  of being fetched.
+
+### Large catch-up
+
+A reply carries the responder's retained tree and, when the requester lacks
+it, the snapshot. If that does not fit a GossipSub frame, no reply arrives
+and a detected gap stays open; a writer's own request still names its head.
+Once the gap outlives the first request by 15 s (`loadAfterMs`), the document
+runs the authenticated V4 `load()`, preferring the newest connected writer
+that named a head it lacks. Every load rule applies. It needs
+`resolveLoadSecurityCommitments`, and with the quorum enabled the agreeing
+peers decide what is served, so a single peer that is ahead of the others is
+not loaded from unless `loadQuorumAllowSinglePeer` or a disabled quorum allows
+it. A gap that only readers advertised is repaired over gossip, because
+readers cannot sign load responses. Each load that leaves the gap open doubles
+the delay before the next, from 60 s (`loadIntervalMs`) up to 16 minutes.
+
+### Configuration and status
+
+```ts
+await peerborne.initialize({ ...config, antiEntropy: { enabled: false } });
+
+document.antiEntropyStatus; // enabled, running, phase, gap, requests, loads, ...
+document.subscribeToAntiEntropy('status', (event, status) => {
+  if (event.type === 'repaired') console.info('caught up', event.afterMs);
+});
+```
+
+Events are `gap`, `request`, `load` and `repaired`. Catch-up runs only for
+signed documents on a node with a libp2p identity; coordinated documents use
+their [controller catch-up](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#resume-with-a-controller-checkpoint).
+`requestSync()` still sends a request at once, within its 2 s rate limit, and
+restarts the periodic delay.
+
 ## Resume a saved document
 
-An application restoring an authenticated checkpoint should reconnect its
-transport, open the restored document and call `document.requestSync()`.
-The request is signed by a current reader or writer and encrypted with the
-document key. Writers respond with normal signed updates, so the existing
-membership and change validation remains in force. Fresh nonces, timestamp
-bounds, recent-request deduplication and response throttling bound replay and
-amplification. Known roots avoid repeatedly sending an already received update.
-Peerborne Note runs this recovery automatically after opening a saved shared
-note. Catch-up requires an online member with the current key; it does not
-restore a lost identity or recover an unknown group-key epoch.
+An application restoring an authenticated checkpoint reconnects its transport
+and opens the restored document; catch-up then requests missed updates.
+Fresh nonces, timestamp bounds, recent-request deduplication and response
+throttling bound replay and amplification, and known roots avoid repeatedly
+sending an already received update. Catch-up requires an online member that
+holds the missing state and the current key; it does not restore a lost
+identity or recover an unknown group-key epoch.
 
 ## Operational limits
 

@@ -238,6 +238,9 @@ export class AutomergeProvider<T = any>
     const loaded = load<T>(snapshot[0] as unknown as Uint8Array);
     return merge(document, loaded);
   }
+  hasPendingChanges(document: Doc<T>): boolean {
+    return getMissingDeps(document, []).length > 0;
+  }
 }
 
 export async function serializeKey(publicKey: CryptoKey): Promise<string> {

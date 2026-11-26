@@ -4562,3 +4562,26 @@ describe('bounded initial invitation profile', () => {
     );
   });
 });
+
+describe('AutomergeProvider pending changes', () => {
+  test('reports changes queued for a missing dependency until it arrives', () => {
+    const provider = new AutomergeProvider<{ count?: number }>();
+    const [first, base] = provider.localChange(
+      provider.newDocument(),
+      '',
+      (d) => {
+        d.count = 1;
+      },
+    );
+    const [, dependent] = provider.localChange(first, '', (d) => {
+      d.count = 2;
+    });
+    let replica = provider.newDocument();
+    expect(provider.hasPendingChanges(replica)).toBe(false);
+    replica = provider.remoteChange(replica, dependent);
+    expect(provider.hasPendingChanges(replica)).toBe(true);
+    replica = provider.remoteChange(replica, base);
+    expect(provider.hasPendingChanges(replica)).toBe(false);
+    expect(replica.count).toBe(2);
+  });
+});

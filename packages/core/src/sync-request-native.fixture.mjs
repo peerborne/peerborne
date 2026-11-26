@@ -15,6 +15,11 @@ import {
   syncSnapshotHint,
   MAX_SYNC_REQUEST_BYTES,
 } from './sync-request.ts';
+import {
+  AntiEntropy,
+  AntiEntropyBudget,
+  resolveAntiEntropyConfig,
+} from './anti-entropy.ts';
 
 const auth = new SubtleCrypto();
 const serializer = new JSONSerializer();
@@ -34,6 +39,10 @@ const encryptionKey = await crypto.subtle.generateKey(
 const keyId = new Uint8Array(16).fill(1);
 const root = 'bafkreigh2akiscaildc5uxiaeu4we7ubxqnv6tyc3bv7heor3weuztdf5y';
 const otherRoot = 'bafkqaaa';
+const localPeer = '12D3KooWThisNode';
+const readerPeer = '12D3KooWReaderNode';
+const writerPeer = '12D3KooWWriterNode';
+const base58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 function harness(identity = writer) {
   const published = [];
@@ -86,6 +95,7 @@ function harness(identity = writer) {
       config: { enableSigning: true },
       heliaNode: {
         libp2p: {
+          peerId: { toString: () => localPeer },
           services: {
             pubsub: {
               publish: async (_topic, bytes) => {
@@ -112,6 +122,7 @@ async function request(identity = reader, overrides = {}) {
   const unsigned = {
     documentId: '/resume',
     requester: await auth.serializePublicKey(identity.publicKey),
+    requesterPeer: identity === writer ? writerPeer : readerPeer,
     requestId: '12'.repeat(16),
     issuedAtMs: Date.now(),
     knownTips: [otherRoot],
@@ -148,6 +159,7 @@ async function registeredValidator(document) {
       : undefined;
   document.swarm.registerDocument = () => {};
   document.swarm.config.enableTopicValidators = true;
+  document.swarm.config.antiEntropy = { enabled: false };
   await document.open();
   const validate = validators.get('fixture');
   assert.equal(typeof validate, 'function');
@@ -181,6 +193,7 @@ test('a current reader requests updates using a signed, encrypted, detached fram
     await auth.serializePublicKey(reader.publicKey),
   );
   assert.deepEqual(decoded.knownTips, [root]);
+  assert.equal(decoded.requesterPeer, localPeer);
   assert.equal(Object.isFrozen(decoded), true);
   assert.equal(Object.isFrozen(decoded.knownTips), true);
   assert.equal(
@@ -329,11 +342,24 @@ test('the codec rejects malformed framing and binds every request field to its o
     { signature: 'not base64!' },
     { knownSnapshots: ['invalid'] },
     { knownSnapshots: ['ab'.repeat(32), 'ab'.repeat(32)] },
+    { requesterPeer: '' },
+    { requesterPeer: '12D3KooW Peer' },
+    { requesterPeer: '12D3KooW0OIl' },
+    { requesterPeer: 'a'.repeat(129) },
+    { requesterPeer: 12 },
+    { requesterPeer: undefined },
   ])
     assert.throws(() => encodeSyncRequest({ ...valid, ...change }));
+  assert.deepEqual(
+    decodeSyncRequest(
+      encodeSyncRequest({ ...valid, requesterPeer: 'a'.repeat(128) }),
+    )?.requesterPeer,
+    'a'.repeat(128),
+  );
   for (const change of [
     { documentId: '/other' },
     { requester: 'other' },
+    { requesterPeer: writerPeer },
     { requestId: 'ab'.repeat(16) },
     { issuedAtMs: valid.issuedAtMs + 1 },
     { knownTips: [root] },
@@ -748,4 +774,190 @@ test('registered GossipSub validation accepts authenticated re-encryptions indep
       ],
     },
   );
+});
+
+test('the codec rejects other domains, missing or extra fields and a non-string requester peer', async () => {
+  const valid = await request();
+  const fields = (domain, values) =>
+    new TextEncoder().encode(`\u0000${domain}\u0000${JSON.stringify(values)}`);
+  const encoded = [
+    valid.documentId,
+    valid.requester,
+    valid.requesterPeer,
+    valid.requestId,
+    valid.issuedAtMs,
+    valid.knownTips,
+    valid.knownSnapshots,
+    valid.signature,
+  ];
+  assert.deepEqual(
+    decodeSyncRequest(fields('peerborne/sync-request/3', encoded)),
+    valid,
+  );
+  const foreign = fields('peerborne/sync-response/3', encoded);
+  assert.equal(isSyncRequest(foreign), false);
+  assert.equal(decodeSyncRequest(foreign), undefined);
+  for (const values of [
+    encoded.filter((_, index) => index !== 2),
+    [...encoded, 'extra'],
+    encoded.map((value, index) => (index === 2 ? [value] : value)),
+    encoded.map((value, index) => (index === 2 ? null : value)),
+  ])
+    assert.equal(
+      decodeSyncRequest(fields('peerborne/sync-request/3', values)),
+      undefined,
+    );
+});
+
+function observedHarness(identity = writer) {
+  const fixture = harness(identity);
+  const calls = { admitted: 0, advertisements: [], equivalent: 0 };
+  const antiEntropy = new AntiEntropy(
+    resolveAntiEntropyConfig(),
+    {
+      request: async () => 'sent',
+      hasPendingChanges: () => false,
+      isKnown: (cid) => cid === root,
+      canLoad: () => false,
+      isConnected: () => true,
+      load: async () => false,
+    },
+    new AntiEntropyBudget(),
+    () => {},
+    {
+      now: () => Date.now(),
+      setTimeout: () => undefined,
+      clearTimeout: () => {},
+      random: () => 0.5,
+    },
+  );
+  const admit = antiEntropy.admitAdvertisement.bind(antiEntropy);
+  antiEntropy.admitAdvertisement = (peer, head) => {
+    const admitted = admit(peer, head);
+    if (admitted) calls.admitted++;
+    return admitted;
+  };
+  const advertise = antiEntropy.advertisement.bind(antiEntropy);
+  antiEntropy.advertisement = (...args) => {
+    calls.advertisements.push(args);
+    advertise(...args);
+  };
+  const equivalent = antiEntropy.equivalentRequest.bind(antiEntropy);
+  antiEntropy.equivalentRequest = () => {
+    calls.equivalent++;
+    equivalent();
+  };
+  fixture.document._antiEntropy = antiEntropy;
+  return { ...fixture, calls, antiEntropy };
+}
+
+test('a verified member request with an unknown head records which peer can serve newer state', async () => {
+  const { document, published, work, calls, antiEntropy } = observedHarness();
+  await document._handleSyncRequest(
+    await request(writer, { knownTips: [otherRoot, root] }),
+  );
+  assert.deepEqual(calls.advertisements, [[writerPeer, otherRoot, true]]);
+  assert.equal(antiEntropy.status().gap, true);
+  assert.equal(published.length, 0);
+  assert.equal(work.verifications, 1);
+  // A requester that lacks the responder's head is still answered, and the
+  // observation and the response share one verification.
+  const responder = observedHarness();
+  await responder.document._handleSyncRequest(await request(reader));
+  assert.deepEqual(responder.calls.advertisements, [
+    [readerPeer, otherRoot, false],
+  ]);
+  assert.equal(responder.published.length, 1);
+  assert.equal(responder.work.verifications, 1);
+});
+
+test('requests matching the local head postpone the periodic request without verification', async () => {
+  const { document, published, work, calls } = observedHarness();
+  await document._handleSyncRequest(
+    await request(reader, { knownTips: [root] }),
+  );
+  assert.equal(calls.equivalent, 1);
+  assert.equal(calls.admitted, 0);
+  assert.equal(work.verifications, 0);
+  assert.equal(published.length, 0);
+});
+
+test('forged, relabelled, foreign, stale, cross-document and self requests never record an advertisement', async () => {
+  const { document, published, calls, antiEntropy } = observedHarness(reader);
+  const valid = await request(writer);
+  for (const candidate of [
+    { ...valid, signature: Base64.fromUint8Array(new Uint8Array(96)) },
+    { ...valid, requesterPeer: '12D3KooWRenamed' },
+    await request(stranger, { requesterPeer: '12D3KooWStranger' }),
+    await request(writer, {
+      requesterPeer: '12D3KooWExpired',
+      issuedAtMs: Date.now() - 61_000,
+    }),
+    await request(writer, {
+      requesterPeer: '12D3KooWFuture',
+      issuedAtMs: Date.now() + 31_000,
+    }),
+    await request(writer, {
+      requesterPeer: '12D3KooWAnother',
+      documentId: '/other',
+    }),
+    await request(writer, { requesterPeer: localPeer }),
+  ])
+    await document._handleSyncRequest(candidate);
+  assert.deepEqual(calls.advertisements, []);
+  assert.equal(calls.admitted, 3);
+  assert.equal(antiEntropy.status().gap, false);
+  assert.equal(published.length, 0);
+});
+
+test('replayed advertisements are verified once and floods of relabelled peers are bounded', async () => {
+  await withClock(async (clock) => {
+    const { document, published, work, calls, antiEntropy } = observedHarness();
+    const signed = await request(writer);
+    await document._handleSyncRequest(signed);
+    await document._handleSyncRequest(signed);
+    await document._handleSyncRequest({ ...signed });
+    assert.equal(calls.advertisements.length, 1);
+    assert.equal(work.verifications, 1);
+    assert.equal(published.length, 1);
+    const before = work.verifications;
+    for (let index = 0; index < 64; index++)
+      await document._handleSyncRequest(
+        await request(writer, {
+          requesterPeer: `12D3KooWFake${base58[index % 58]}${base58[Math.floor(index / 58)]}`,
+          requestId: index.toString(16).padStart(32, '0'),
+        }),
+      );
+    assert.equal(work.verifications - before, 3);
+    clock.advance(2_000);
+    await document._handleSyncRequest(
+      await request(writer, {
+        requesterPeer: '12D3KooWAfterWait',
+        requestId: 'ee'.repeat(16),
+      }),
+    );
+    assert.equal(work.verifications - before, 4);
+    assert.equal(published.length, 2);
+    assert.ok(antiEntropy.status().suppressed >= 61);
+    antiEntropy.close();
+  });
+});
+
+test('a manual request restarts the automatic cycle and readiness failures do not publish', async () => {
+  const { document, published, antiEntropy } = observedHarness(reader);
+  let manual = 0;
+  antiEntropy.manualRequest = () => manual++;
+  await document.requestSync();
+  await document.requestSync();
+  assert.equal(published.length, 1);
+  assert.equal(manual, 1);
+  assert.equal(await document._publishSyncRequest(false), 'rate-limited');
+  document._lastSyncRequestAt = 0;
+  document._subscribed = false;
+  assert.equal(await document._publishSyncRequest(false), 'not-ready');
+  document._subscribed = true;
+  document.swarm.heliaNode.libp2p.peerId = undefined;
+  assert.equal(await document._publishSyncRequest(false), 'not-ready');
+  await assert.rejects(document.requestSync(), /open authenticated document/);
+  assert.equal(published.length, 1);
 });
