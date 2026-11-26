@@ -2,108 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MemoryBlockstore } from 'blockstore-core/memory';
 import { MemoryDatastore } from 'datastore-core/memory';
-import { createHeliaLight } from 'helia';
-import { Peerborne, SubtleCrypto } from '@peerborne/core';
-import { LoroProvider } from '@peerborne/loro';
-import {
-  YjsACLProvider,
-  YjsJSONSerializer,
-  YjsKeychainProvider,
-} from '@peerborne/yjs';
 import {
   documentFixture,
   project,
-  publishedMessage,
   receiveEncrypted,
-  signingIdentity,
+  replicaOf,
 } from '../../../verification/fixtures.mjs';
 
-// Loro has no ACL, keychain or serializer of its own and uses Yjs's.
-async function loroFixture({ identity, path, blockstore, datastore, open }) {
-  const serializer = new YjsJSONSerializer();
-  const stats = { lastFrame: undefined };
-  let publish = async () => {};
-  const pubsub = Object.assign(new EventTarget(), {
-    topicValidators: new Map(),
-    subscribe() {},
-    unsubscribe() {},
-    async publish(topic, bytes) {
-      stats.lastFrame = bytes.slice();
-      await publish(topic, bytes);
-    },
-  });
-  const helia = createHeliaLight({ blockstore, datastore, start: false });
-  Object.assign(helia, {
-    libp2p: { getConnections: () => [], services: { pubsub } },
-  });
-  const swarm = new Peerborne(
-    identity.privateKey,
-    identity.publicKey,
-    new LoroProvider(),
-    serializer,
-    serializer,
-    serializer,
-    new SubtleCrypto(),
-    new YjsACLProvider(),
-    new YjsKeychainProvider(),
-  );
-  swarm._heliaNode = helia;
-  swarm._config = { compaction: {}, loadQuorumEnabled: false };
-  const document = swarm.doc(path);
-  if (open) await document.create();
-  return {
-    document,
-    serializer,
-    identity,
-    helia,
-    blockstore,
-    stats,
-    setPublish(callback) {
-      publish = callback;
-    },
-    async close() {
-      await document.close();
-      await helia.stop();
-    },
-  };
-}
+const path = '/local-change-failure';
 
-async function fixture(
-  adapter,
-  {
-    index,
-    identity,
-    path = '/local-change-failure',
-    blockstore = new MemoryBlockstore(),
-    datastore = new MemoryDatastore(),
-    open = true,
-  },
-) {
-  identity ??= await signingIdentity();
-  const options = { index, identity, path, blockstore, datastore, open };
-  const created =
-    adapter === 'loro'
-      ? await loroFixture(options)
-      : await documentFixture({ ...options, adapter });
+async function fixture(adapter, options) {
+  const datastore = options.datastore ?? new MemoryDatastore();
+  const created = await documentFixture({
+    adapter,
+    path,
+    blockstore: new MemoryBlockstore(),
+    ...options,
+    datastore,
+  });
   return { ...created, datastore };
-}
-
-async function replicaOf(source, adapter, index) {
-  const target = await fixture(adapter, {
-    index,
-    identity: source.identity,
-    path: source.document.documentPath,
-    open: false,
-  });
-  target.document._writers.merge(source.document._writers.current());
-  target.document._keychain.merge(source.document._keychain.history());
-  await target.document._keychain.keys();
-  assert.equal(
-    await target.document.sync(await publishedMessage(source)),
-    true,
-  );
-  await target.document.open();
-  return target;
 }
 
 // A Yjs or Loro document reopened by an application gets a new client or
@@ -112,7 +29,6 @@ async function reopen(previous, adapter, checkpoint, index) {
   const next = await fixture(adapter, {
     index,
     identity: previous.identity,
-    path: previous.document.documentPath,
     blockstore: previous.blockstore,
     datastore: previous.datastore,
     open: false,
@@ -171,7 +87,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
       test(`${adapter}: after ${entry}() fails while ${step}, the writer and a replica converge`, async () => {
         const writer = await fixture(adapter, { index: 1 });
         await edit(writer, adapter, 'a', 1);
-        const replica = await replicaOf(writer, adapter, 2);
+        const replica = await replicaOf(writer, 2, { adapter });
         const accepted = await writer.document.exportCheckpoint();
         const failure = new Error('QuotaExceededError');
         steps[step](writer, failure);
