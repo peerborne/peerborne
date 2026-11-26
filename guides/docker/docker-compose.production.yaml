@@ -11,6 +11,8 @@
 #   - Set RELAY_DOMAIN environment variable to your domain
 #   - Ensure DNS A records point to your server
 #   - Ports 80 and 443 must be open for Caddy's automatic TLS
+#   - The 172.30.0.0/24 network below must not overlap another Docker network;
+#     if it does, change the subnet, Caddy's address and TRUSTED_PROXY_IPS
 
 services:
   # Reverse proxy with automatic TLS (Let's Encrypt)
@@ -31,6 +33,10 @@ services:
         condition: service_healthy
     environment:
       - RELAY_DOMAIN=${RELAY_DOMAIN:-relay.localhost}
+    networks:
+      relay:
+        # The relays exempt only this address from GossipSub IP scoring.
+        ipv4_address: 172.30.0.2
 
   # Primary relay / bootstrap node
   relay-1:
@@ -42,6 +48,13 @@ services:
       - "9002:9002"   # TCP (node-to-node, inter-relay mesh)
     volumes:
       - relay-1-data:/shared
+    networks:
+      - relay
+    environment:
+      # Every browser arrives from Caddy's address. Trusting only that address
+      # keeps GossipSub IP scoring for peers that dial TCP 9002 directly.
+      # Enforce per-client limits in Caddy.
+      - TRUSTED_PROXY_IPS=172.30.0.2
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -59,12 +72,22 @@ services:
       - "9012:9002"   # TCP (offset ports for single-machine demo)
     volumes:
       - relay-2-data:/shared
+    networks:
+      - relay
+    environment:
+      - TRUSTED_PROXY_IPS=172.30.0.2
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 10s
+
+networks:
+  relay:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   caddy-data:

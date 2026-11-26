@@ -2,6 +2,7 @@ FROM node:26.13.1-alpine
 RUN npm install --global corepack@0.36.0 && corepack enable
 WORKDIR /app
 COPY relay-server/package.json relay-server/yarn.lock relay-server/tsconfig.json ./
+COPY relay-server/.yarn/patches ./.yarn/patches
 RUN yarn install
 COPY relay-server/src ./src
 RUN yarn exec tsc
