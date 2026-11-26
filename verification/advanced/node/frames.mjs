@@ -181,11 +181,14 @@ export async function oversizedFrames({ full }) {
     // carries every retained change inline.
     const edits = full ? 24 : 12;
     const historyStarted = performance.now();
-    for (let i = 0; i < edits; i++)
+    // Paced like an editing session, so a slow reader keeps up and every
+    // frame, not a burst, is what reaches it.
+    for (let i = 0; i < edits; i++) {
       await source.change((draft) => {
         draft[`value${i}`] = syntheticText(300_000, 10 + i);
       });
-    await until(() => text(target, `value${edits - 1}`) !== undefined);
+      await until(() => text(target, `value${i}`) !== undefined);
+    }
     const historyMs = performance.now() - historyStarted;
     assert(source.latestSnapshot !== undefined, 'the writer must compact');
     for (let i = 0; i < edits; i++)

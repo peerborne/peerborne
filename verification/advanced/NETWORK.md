@@ -40,7 +40,7 @@ dependency/ingress evidence, not default discovery or WebRTC routing evidence.
 
 `oversized-frames` joins a founder and an invited reader through a loopback
 WebSocket Circuit Relay with production GossipSub, topic validators and
-Bitswap. Twelve (full: 24) 300 KB edits must reach the reader while every
+Bitswap. Twelve (full: 24) 300 KB edits, each awaited by the reader, must reach it while every
 frame stays under the 4 MiB RPC limit and reaches a peer, and the founder must
 compact. A reader removal right after a 1.2 MB edit must succeed. A change
 larger than one frame must be refused with `GossipFrameLimitError` without a
