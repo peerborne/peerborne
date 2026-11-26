@@ -202,7 +202,13 @@ export interface CoordinatedGroupOptions {
   readonly subscribers?: boolean;
   /** Extra security options for every member's document. */
   readonly security?: Pick<CoordinatedDocumentOptions, 'onPublicationsDropped'>;
+  /** Give each member a libp2p PeerId, which enables redelivery requests. */
+  readonly peers?: boolean;
 }
+
+/** The base58 libp2p PeerId of a fixture member. */
+export const groupPeer = (index: number) =>
+  `12D3KooWTestPeer${'ABCDEFGHJKMNPQRS'[index]}`;
 
 /**
  * Members of one strict coordinated document opened through `Peerborne.doc`,
@@ -217,6 +223,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     catchUp = false,
     subscribers = false,
     security,
+    peers = false,
   }: CoordinatedGroupOptions,
 ) {
   const path = '/coordinated-group';
@@ -336,7 +343,12 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       legacy,
     );
     Object.assign(swarm, {
-      _heliaNode: { libp2p: { services: { pubsub: pubsubs[index] } } },
+      _heliaNode: {
+        libp2p: {
+          services: { pubsub: pubsubs[index] },
+          ...(peers ? { peerId: { toString: () => groupPeer(index) } } : {}),
+        },
+      },
       _config: { enableSigning: false },
     });
     return swarm;
@@ -495,9 +507,12 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
 
   /** Run the real pubsub handler for one publication at `recipient`. */
   const dispatch = (
-    publication: Pick<GroupPublication, 'topic' | 'data'>,
+    publication: Pick<GroupPublication, 'topic' | 'data'> &
+      Partial<Pick<GroupPublication, 'sender'>>,
     recipient: number,
-    from?: string,
+    from = publication.sender === undefined
+      ? undefined
+      : groupPeer(publication.sender),
   ) => {
     const event = new CustomEvent('message', {
       detail: {

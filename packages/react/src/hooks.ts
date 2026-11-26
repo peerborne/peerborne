@@ -170,7 +170,8 @@ export function usePeerborneDocumentState<
   (fn: ChangeFnType, message?: string) => void,
   {
     readers: PublicKey[];
-    addReader: (
+    /** Resend the Welcome to an existing reader; it cannot add a new identity. */
+    resendReaderWelcome: (
       user: PublicKey,
       readerKemPublicKey: Uint8Array,
     ) => Promise<void>;
@@ -429,7 +430,10 @@ export function usePeerborneDocumentState<
     },
     {
       readers: docReadersCache[documentCacheKey],
-      addReader: async (user: PublicKey, readerKemPublicKey: Uint8Array) => {
+      resendReaderWelcome: async (
+        user: PublicKey,
+        readerKemPublicKey: Uint8Array,
+      ) => {
         const docRef = docCache[documentCacheKey];
         await docRef.addReader(user, readerKemPublicKey);
       },

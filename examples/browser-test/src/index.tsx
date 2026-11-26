@@ -136,6 +136,7 @@ if (testIdentityFingerprint !== undefined) {
       const offer = await documentRef.createInvitation({
         role,
         rendezvous: [circuitAddress],
+        beforeAcceptance: async () => {},
       });
       return Array.from(encodeInvitationOffer(offer));
     },

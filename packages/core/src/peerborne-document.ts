@@ -1,5 +1,6 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
+import { isDocumentRedeliveryFrame } from './document-redelivery-wire.js';
 import {
   AntiEntropy,
   antiEntropyBudgetFor,
@@ -301,6 +302,25 @@ const loadCandidateResponders = new WeakMap<object, string>();
 // Stand-ins of the largest sizes a CID and a signature take in a frame.
 const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
 const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
+
+/** Above the 2 s a responder waits between answers to one member. */
+const REDELIVERY_MIN_SPACING_MS = 2_500;
+/** One subscribing peer triggers at most one request in this interval. */
+const REDELIVERY_PEER_DEBOUNCE_MS = 30_000;
+const REDELIVERY_SETTLE_MS = [200, 800] as const;
+const REDELIVERY_PERIOD_MS = [30_000, 60_000] as const;
+/** Non-authors answer in roster order, one step apart, so the first answer suppresses the rest. */
+const REDELIVERY_RESPONSE_STEP_MS = 200;
+const REDELIVERY_RESPONSE_MAX_RANK = 8;
+const REDELIVERY_RESPONSE_JITTER_MS = [100, 200] as const;
+
+function jitter([low, high]: readonly [number, number]): number {
+  return low + Math.random() * (high - low);
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  (timer as { unref?: () => void }).unref?.();
+}
 
 /** GossipSub publisher of a message, for per-sender receive admission. */
 function gossipSender(message: Message): string {
@@ -1189,9 +1209,9 @@ export class PeerborneDocument<
   // `_evaluateAndApplyBeeKEMWelcome`). When `undefined`, sealed Welcomes
   // addressed to us cannot be opened and are dropped (the recipient needs a
   // fresh Welcome after installing its KEM key pair). The application is
-  // responsible for plumbing in a stable KEM key pair via
-  // `setKemKeyPair` and sharing the matching raw public key with inviters
-  // out-of-band so they can pass it to `addReader`.
+  // responsible for plumbing in a stable KEM key pair via `setKemKeyPair`.
+  // An invitation recipient passes its key pair to `acceptInvitation`, which
+  // installs it; the founder's pair seeds BeeKEM leaf 0.
   private _kemKeyPair: CryptoKeyPair | undefined;
 
   // Cached raw SEC1-uncompressed bytes for `_kemKeyPair.publicKey`,
@@ -1203,13 +1223,11 @@ export class PeerborneDocument<
   private _kemPublicKeyRaw: Uint8Array | undefined;
 
   /**
-   * Install the recipient-side ECDH (P-256) key pair used to open
-   * incoming BeeKEM Welcome sealed payloads. The application is
-   * responsible for persisting and re-supplying this key pair across
-   * sessions; the matching raw public key (see
-   * `getKemPublicKeyRaw`) must be communicated out-of-band to any
-   * writer who will invite this user, so they can pass it to
-   * `addReader(reader, readerKemPublicKey)`.
+   * Install the ECDH (P-256) key pair that seeds the founder's BeeKEM leaf
+   * and opens BeeKEM Welcome sealed payloads addressed to this user. The
+   * application is responsible for persisting and re-supplying this key pair
+   * across sessions. A founder installs it before `createInvitation`; an
+   * invitation recipient supplies its pair to `acceptInvitation` instead.
    *
    * Idempotent: calling with the same key pair more than once is
    * fine. Pass `undefined` to clear (subsequent Welcomes will be
@@ -1263,8 +1281,7 @@ export class PeerborneDocument<
   /**
    * Returns the raw SEC1-uncompressed bytes (65 bytes) of the
    * installed ECDH public key, or `undefined` if no key pair has been
-   * set via `setKemKeyPair`. The bytes are what inviters pass to
-   * `addReader(reader, readerKemPublicKey)`.
+   * set via `setKemKeyPair`.
    *
    * The raw bytes are cached on `setKemKeyPair`, so this is a
    * synchronous lookup. A defensive copy of the cached `Uint8Array` is
@@ -1280,6 +1297,9 @@ export class PeerborneDocument<
    * Create a signed public offer for an online, distinct-identity join.
    * The offer contains only public metadata and is safe to encode in a URL
    * fragment. The inviter must remain online until the recipient accepts it.
+   * The founder can invite again after `removeReader` revokes its only
+   * collaborator; each completed `removeReader` invalidates every offer
+   * issued before it.
    */
   public async createInvitation(
     options: CreateInvitationOptions,
@@ -1320,10 +1340,40 @@ export class PeerborneDocument<
       );
     }
     assertInitialInvitationBeeKEMCapacity(
-      this._beekem?.memberCount,
+      this._invitationBeeKEMMemberCount(),
       false,
       this.documentPath,
     );
+  }
+
+  /**
+   * A founder tree whose every remote leaf has been revoked has no member that
+   * depends on it, and each revocation already rotated the document key. The
+   * next onboarding replaces it with a fresh founder-plus-one tree.
+   */
+  private _canReplaceRevokedFounderTree(): boolean {
+    return (
+      this._createdLocally &&
+      this._beekemInitialized &&
+      this._beekem !== null &&
+      this._beekem.memberCount > 1 &&
+      this._beekem.hasOnlyLocalLiveLeaf() &&
+      this._readerKemPublicKeys.size === 0 &&
+      this._readerLeafIndices.size === 0 &&
+      this._beekemWelcomeByLeaf.size === 0
+    );
+  }
+
+  private _invitationBeeKEMMemberCount(): number | undefined {
+    return this._canReplaceRevokedFounderTree() ? 1 : this._beekem?.memberCount;
+  }
+
+  /**
+   * @internal Number of completed reader revocations. Invitation offers
+   * issued before a revocation cannot claim the collaborator slot it frees.
+   */
+  public get readerRevocationCount(): number {
+    return this._readerRevocationCount;
   }
 
   private _assertInitialInvitationCapacityProfile(): void {
@@ -1354,9 +1404,10 @@ export class PeerborneDocument<
   //
   // The tree is initialized in one of two ways:
   //
-  //  1. **Founder**: the first `addReader` call prepares a detached tree
-  //     seeded at leaf 0 with the local key pair from `setKemKeyPair`, then
-  //     installs it at the staged reader-ACL publication boundary.
+  //  1. **Founder**: the first invitation onboarding, and the first after
+  //     every remote leaf has been revoked, prepares a detached tree seeded
+  //     at leaf 0 with the local key pair from `setKemKeyPair`, then installs
+  //     it at the staged reader-ACL publication boundary.
   //
   //  2. **Joiner**: a peer that receives an `eciesSealed` BeeKEM
   //     Welcome from an inviting writer calls `processWelcome` on a
@@ -1423,6 +1474,8 @@ export class PeerborneDocument<
   // recipient-bound Welcome or another explicit recovery path; a normal load
   // response cannot bootstrap a peer that lacks the current document key.
   private _beekemWelcomeByLeaf = new Map<number, BeeKEMWelcomeV2>();
+
+  private _readerRevocationCount = 0;
 
   /**
    * Set the history visibility for this document.
@@ -1574,6 +1627,12 @@ export class PeerborneDocument<
   private _securitySubscriptionHandler:
     | EventHandler<CustomEvent<SubscriptionChangeData>>
     | undefined;
+  private _redeliveryTimer?: ReturnType<typeof setTimeout>;
+  private _redeliveryDue = 0;
+  private _redeliverySentAt = -Infinity;
+  private _redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
+  private _redeliveryHeldSeen = 0;
+  private readonly _redeliveryPeers = new Map<string, number>();
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
   private _remoteBlockFetches?: RemoteBlockFetches;
 
@@ -8184,10 +8243,12 @@ export class PeerborneDocument<
           ? undefined
           : checkpointDecode(state.invitationEpoch);
       const restoredFounder =
-        state.invitationEpoch === null && beekem === null &&
-        (await writers.users()).length === 1 &&
-        (await readers.users()).length === 0 &&
-        (await writers.check(this._userPublicKey)) === true;
+        state.invitationEpoch === null &&
+        (await writers.check(this._userPublicKey)) === true &&
+        (beekem === null
+          ? (await writers.users()).length === 1 &&
+            (await readers.users()).length === 0
+          : beekem.myLeafIndex === 0);
       this._document = document;
       this._readers = readers;
       this._writers = writers;
@@ -8252,6 +8313,15 @@ export class PeerborneDocument<
       if (this._gcClosed) throw new Error('Coordinated document is closed');
       this._pubsubHandler = (event) => {
         if (event.detail.topic !== this._topic) return;
+        if (isDocumentRedeliveryFrame(event.detail.data)) {
+          void this._answerSecurityRedelivery(
+            event.detail.data,
+            event.detail.type === 'signed'
+              ? event.detail.from.toString()
+              : undefined,
+          ).catch(() => {});
+          return;
+        }
         void this._receiveSecurityFrame(
           event.detail.data,
           gossipSender(event.detail),
@@ -8259,13 +8329,23 @@ export class PeerborneDocument<
       };
       this._securitySubscriptionHandler = (event) => {
         if (
-          this._subscribed &&
-          event.detail?.subscriptions?.some(
+          !this._subscribed ||
+          !event.detail?.subscriptions?.some(
             (subscription) =>
               subscription.subscribe && subscription.topic === this._topic,
           )
         )
-          void this.retrySecurityPublications().catch(() => {});
+          return;
+        void this.retrySecurityPublications().catch(() => {});
+        const peer = String(event.detail.peerId);
+        const now = Date.now();
+        if (now - (this._redeliveryPeers.get(peer) ?? -Infinity) < REDELIVERY_PEER_DEBOUNCE_MS)
+          return;
+        this._redeliveryPeers.delete(peer);
+        this._redeliveryPeers.set(peer, now);
+        if (this._redeliveryPeers.size > 256)
+          this._redeliveryPeers.delete(this._redeliveryPeers.keys().next().value!);
+        this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.addEventListener(
@@ -8277,6 +8357,7 @@ export class PeerborneDocument<
       // Peers connected before open announced their subscriptions already, so
       // restored publications cannot wait for a subscription change.
       void this.retrySecurityPublications().catch(() => {});
+      this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       return true;
     } catch (error) {
       if (registered) await this.close();
@@ -8298,7 +8379,17 @@ export class PeerborneDocument<
     if (!engine)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    const applied = await engine.receive(frame, sender);
+    let applied: boolean;
+    try {
+      applied = await engine.receive(frame, sender);
+    } finally {
+      // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
+      if (engine.heldGeneration !== this._redeliveryHeldSeen) {
+        this._redeliveryHeldSeen = engine.heldGeneration;
+        this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
+        this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+      }
+    }
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
       if (rosterIsCurrent) {
@@ -8431,6 +8522,93 @@ export class PeerborneDocument<
     } finally {
       this._activationInProgress = false;
     }
+  }
+
+  /**
+   * Ask peers to resend the frames this replica lacks after its accepted heads.
+   * Requests are also sent automatically on open, when a peer subscribes,
+   * while frames wait for predecessors, and every 30-60 s. The request is
+   * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
+   */
+  /**
+   * Redelivery requests from members ignored because their issue time was more
+   * than 60 s from this node's clock. Redelivery needs clocks within that range.
+   */
+  public get securityRedeliveryStaleRequests(): number {
+    return this._coordinated?.staleRedeliveryRequests ?? 0;
+  }
+
+  public async requestSecurityRedelivery(): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed || this._gcClosed)
+      throw new Error('Coordinated document is not open');
+    const peer = this.swarm.heliaNode.libp2p.peerId?.toString();
+    if (!peer) return;
+    this._redeliverySentAt = Date.now();
+    this._redeliveryBackoff = engine.hasHeldFrames()
+      ? Math.min(this._redeliveryBackoff * 2, REDELIVERY_PERIOD_MS[0])
+      : REDELIVERY_MIN_SPACING_MS;
+    this._scheduleSecurityRedelivery(
+      engine.hasHeldFrames() ? this._redeliveryBackoff : jitter(REDELIVERY_PERIOD_MS),
+      true,
+    );
+    const frame = await engine.createRedeliveryRequest(peer);
+    engine.assertPublicationDispatchAllowed();
+    await this.swarm.heliaNode.libp2p.services.pubsub.publish(this._topic, frame);
+  }
+
+  private _scheduleSecurityRedelivery(delayMs: number, replace = false): void {
+    if (!this._coordinated || !this._subscribed || this._gcClosed) return;
+    const now = Date.now();
+    const due = Math.max(
+      now + delayMs,
+      this._redeliverySentAt + REDELIVERY_MIN_SPACING_MS,
+    );
+    if (this._redeliveryTimer !== undefined) {
+      if (!replace && this._redeliveryDue <= due) return;
+      clearTimeout(this._redeliveryTimer);
+    }
+    this._redeliveryDue = due;
+    this._redeliveryTimer = setTimeout(() => {
+      this._redeliveryTimer = undefined;
+      if (this._subscribed && !this._gcClosed)
+        void this.requestSecurityRedelivery().catch(() => {});
+    }, due - now);
+    unrefTimer(this._redeliveryTimer);
+  }
+
+  /** Resend retained frames a verified member asked for; others' after a pause. */
+  private async _answerSecurityRedelivery(
+    frame: Uint8Array,
+    from: string | undefined,
+  ): Promise<void> {
+    const engine = this._coordinated;
+    if (!engine || !this._subscribed || this._gcClosed) return;
+    const answer = await engine.answerRedelivery(frame, from);
+    const publish = async (frames: readonly Uint8Array[]) => {
+      for (const value of frames) {
+        if (!this._subscribed || this._gcClosed) return;
+        engine.assertPublicationDispatchAllowed();
+        await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+          this._topic,
+          value,
+        );
+      }
+    };
+    await publish(answer.own);
+    if (answer.others.length === 0) return;
+    await new Promise<void>((resolve) =>
+      unrefTimer(
+        setTimeout(
+          resolve,
+          Math.min(answer.rank, REDELIVERY_RESPONSE_MAX_RANK) *
+            REDELIVERY_RESPONSE_STEP_MS +
+            jitter(REDELIVERY_RESPONSE_JITTER_MS),
+        ),
+      ),
+    );
+    if (this._subscribed && !this._gcClosed)
+      await publish(engine.unansweredRedeliveries(answer));
   }
 
   private _securityPublicationTask?: Promise<SecurityPublicationReport>;
@@ -8917,6 +9095,8 @@ export class PeerborneDocument<
     this._remoteBlockFetches?.abortAll();
     this._gcClosed = true;
     this._gcLifecycle = {};
+    if (this._redeliveryTimer !== undefined) clearTimeout(this._redeliveryTimer);
+    this._redeliveryTimer = undefined;
     const coordinatedClose = this._coordinated?.close();
     await this._gcInProgress?.catch(() => {});
     await coordinatedClose;
@@ -10243,15 +10423,15 @@ export class PeerborneDocument<
 
   /**
    * Grant write authorization to an existing explicit reader. Users are
-   * identified by their public keys. Call `addReader()` before promoting a new
-   * writer so a later `removeWriter()` can safely return them to read-only
-   * access without misrepresenting retained document-key access as revocation.
+   * identified by their public keys. The target must already be a reader,
+   * normally through a `reader` invitation, so a later `removeWriter()` can
+   * safely return them to read-only access without misrepresenting retained
+   * document-key access as revocation.
    *
    * Promotion also requires the target's identity-bound reader KEM public key
-   * and a matching live BeeKEM leaf. That binding is recorded in memory when
-   * this document instance adds the reader; readers added before this
-   * instance was opened cannot be promoted. Requires
-   * `AuthProvider.serializePublicKey`.
+   * and a matching live BeeKEM leaf. The founder document records that binding
+   * when the invitation onboards the reader, and its checkpoints carry it
+   * across restarts. Requires `AuthProvider.serializePublicKey`.
    *
    * The local ACL commits only after GossipSub publication resolves. A rejected
    * publish rolls back local DAG bookkeeping, but transport rejection is
@@ -10531,25 +10711,23 @@ export class PeerborneDocument<
   }
 
   /**
-   * Add a new user as a valid reader. Users are identified by their public keys.
+   * Resend the BeeKEM Welcome to an identity that is already an explicit
+   * reader. Users are identified by their public keys.
    *
-   * After updating the readers ACL, this attempts to send a BeeKEM Welcome
-   * to the new reader so they receive (a) the keychain changes appropriate
-   * for the document's `historyVisibility` setting (so they can decrypt at
-   * least the current state), and (b) the invitation epoch ID they should
-   * record for subsequent `since_invited` history filtering. The Welcome
-   * is delivered via the `beekemWelcomeV2` protocol to every
-   * currently-connected peer; the receiving document ignores Welcomes
-   * addressed to a different reader.
+   * `addReader` cannot onboard a new identity. A recipient that has only a KEM
+   * key pair cannot authenticate a broadcast Welcome or decrypt the reader ACL
+   * row that would admit it, so it could never open the document, while its
+   * row would occupy the single collaborator slot. Any identity that is not
+   * already a reader is therefore rejected before ACL or BeeKEM state changes.
+   * Share a document with another identity through `createInvitation()` and
+   * the recipient's `Peerborne.acceptInvitation()`.
    *
-   * The BeeKEM registration is prepared on a detached tree and the reader ACL
-   * is claimed before publication. Live authorization is granted only after
-   * publication resolves, in the same synchronous turn that installs the
-   * prepared tree and identity caches.
-   *
-   * The initial release supports the first reader plus exact retries for that
-   * identity. After `removeReader` advances the BeeKEM tree, adding a
-   * replacement is rejected before ACL or BeeKEM state changes.
+   * For an existing reader, this re-sends the cached recipient-bound Welcome
+   * with the keychain changes appropriate for the document's
+   * `historyVisibility` setting and the current epoch ID. The Welcome is
+   * delivered via the `beekemWelcomeV2` protocol to every currently-connected
+   * peer; the receiving document ignores Welcomes addressed to a different
+   * reader.
    *
    * CONFIDENTIALITY: the Welcome's keychain delta is sealed with ECIES
    * (P-256 ECDH + AES-256-GCM) under `readerKemPublicKey`, so only the
@@ -10558,12 +10736,13 @@ export class PeerborneDocument<
    * payload is the **confidentiality** gate. See `_sendBeeKEMWelcome`
    * for the full construction.
    *
-   * @param reader User's identity (signing) public key.
+   * @param reader An existing reader's identity (signing) public key.
    * @param readerKemPublicKey Raw SEC1-uncompressed P-256 ECDH public key
-   *   (65 bytes) of the reader's KEM key pair. The reader must hold the
-   *   matching private key (see `setKemKeyPair`). The Welcome is sealed to
-   *   this key; the library never broadcasts an un-sealed Welcome.
+   *   (65 bytes) bound to that reader when it joined. The reader must hold
+   *   the matching private key (see `setKemKeyPair`). The Welcome is sealed
+   *   to this key; the library never broadcasts an un-sealed Welcome.
    * @returns The BeeKEM Welcome used for this reader.
+   * @throws If `reader` is not already an explicit reader.
    */
   public async addReader(
     reader: PublicKey,
@@ -10597,6 +10776,20 @@ export class PeerborneDocument<
     beginMutation?: () => void,
   ): Promise<BeeKEMWelcomeV2> {
     await this._ensureCurrentUserCanWrite();
+
+    if (
+      broadcastWelcome &&
+      (await retryACLConflict(() => this._readers.check(stableReader))) !== true
+    ) {
+      throw new Error(
+        `[${this.documentPath}] addReader cannot onboard a new identity: ` +
+          'the recipient could neither authenticate the Welcome nor decrypt ' +
+          'the reader ACL that admits it, so it could never open the ' +
+          'document. Share it with createInvitation() and have the recipient ' +
+          'call acceptInvitation(). addReader only resends the Welcome to an ' +
+          'existing reader.',
+      );
+    }
 
     if (this._beekemInitialized !== (this._beekem !== null)) {
       throw new Error(
@@ -10683,11 +10876,10 @@ export class PeerborneDocument<
           `that is not implemented yet.`,
       );
     }
-    if (!alreadyReader && (this._beekem?.memberCount ?? 0) > 1) {
+    if (!alreadyReader && (this._invitationBeeKEMMemberCount() ?? 0) > 1) {
       throw new Error(
-        `[${this.documentPath}] addReader: replacement readers are not ` +
-          `supported after BeeKEM membership has advanced. Create a new ` +
-          `document instead of reusing the revoked membership tree.`,
+        `[${this.documentPath}] addReader: a replacement reader can join only ` +
+          'after the founder has revoked every remote BeeKEM leaf.',
       );
     }
     if (!alreadyReader) {
@@ -10819,6 +11011,9 @@ export class PeerborneDocument<
    * Only an exact, same-process retry is eligible to complete and attest that
    * state. It publishes only the membership deltas that are still missing;
    * committed ACL nodes reach the recipient through the signed bootstrap tree.
+   * `assertCanMutate` guards the first membership mutation. `assertCanContinue`
+   * guards the remaining checkpoints and defaults to `assertCanMutate`, so a
+   * retry whose membership is already committed can use a weaker guard.
    *
    * @internal
    */
@@ -10827,6 +11022,7 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    assertCanContinue: (() => void) | undefined = assertCanMutate,
   ): Promise<InvitationBootstrapBundle> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
@@ -10848,6 +11044,7 @@ export class PeerborneDocument<
         stableReaderKemPublicKey,
         role,
         assertCanMutate,
+        assertCanContinue,
       );
     });
   }
@@ -10884,8 +11081,9 @@ export class PeerborneDocument<
     readerKemPublicKey: Uint8Array,
     role: 'reader' | 'editor',
     assertCanMutate?: () => void,
+    assertCanContinue?: () => void,
   ): Promise<InvitationBootstrapBundle> {
-    assertCanMutate?.();
+    assertCanContinue?.();
     assertInitialInvitationHistoryVisibility(this._historyVisibility);
     if (role !== 'reader' && role !== 'editor') {
       throw new Error(`Unsupported invitation role: ${String(role)}`);
@@ -10905,7 +11103,7 @@ export class PeerborneDocument<
         // Recheck after asynchronous capacity and topology preflight. The
         // one-shot guard passed below checks again immediately before the
         // first ACL or BeeKEM state writer, then admits the rest of that commit.
-        assertCanMutate?.();
+        assertCanContinue?.();
         return this._addReaderUnlocked(
           reader,
           serializedReader,
@@ -11063,7 +11261,7 @@ export class PeerborneDocument<
         leafIndex !== undefined && this._beekemWelcomeByLeaf.has(leafIndex);
     }
     assertInitialInvitationBeeKEMCapacity(
-      this._beekem?.memberCount,
+      this._invitationBeeKEMMemberCount(),
       readerAlreadyPresent,
       this.documentPath,
       hasRetryLeaf,
@@ -12523,6 +12721,7 @@ export class PeerborneDocument<
       this._readerLeafIndices = committedReaderLeafIndices;
       this._readerKemPublicKeys = committedReaderKemPublicKeys;
       this._beekemWelcomeByLeaf = committedWelcomes;
+      this._readerRevocationCount++;
     };
 
     // Both method identities and their receivers were captured from data
@@ -12586,10 +12785,69 @@ export class PeerborneDocument<
     }
   }
 
+  /**
+   * @internal Revoke an invitation claimant whose acceptance was never
+   * produced. It never received the document key from that invitation, so the
+   * revocation frees the collaborator slot. Only a claimant that this replica
+   * onboarded is touched: it must hold a local KEM binding that resolves to a
+   * live remote leaf of this replica's tree, and every removal precondition
+   * is checked before the demotion, in the same queued operation.
+   */
+  public async revokeUnacceptedInvitationMember(
+    recipient: PublicKey,
+  ): Promise<void> {
+    this._assertNoIncompleteBootstrapLoad();
+    const snapshot = this._startMembershipPublicKeySnapshot(
+      recipient,
+      'Invitation rollback',
+    );
+    const localWriterSnapshot = this._startMembershipPublicKeySnapshot(
+      this._userPublicKey,
+      'Invitation rollback local identity',
+    );
+    return this._runStateMutation(async () => {
+      const { publicKey, serialized } = await snapshot;
+      const kemPublicKey = this._readerKemPublicKeys.get(serialized);
+      if (
+        kemPublicKey === undefined ||
+        !this._beekemInitialized ||
+        this._beekem === null ||
+        serialized === (await localWriterSnapshot).serialized
+      ) {
+        return;
+      }
+      const leafIndex = await this._beekem.findLeafByPublicKey(
+        new Uint8Array(kemPublicKey),
+      );
+      const cachedLeafIndex = this._readerLeafIndices.get(serialized);
+      if (
+        leafIndex === undefined ||
+        leafIndex === this._beekem.myLeafIndex ||
+        (cachedLeafIndex !== undefined && cachedLeafIndex !== leafIndex)
+      ) {
+        return;
+      }
+      const [isReader, isWriter] = await Promise.all([
+        retryACLConflict(() => this._readers.check(publicKey)),
+        retryACLConflict(() => this._writers.check(publicKey)),
+      ]);
+      if (isWriter === true) {
+        if (isReader !== true) return;
+        await this._removeWriterUnlocked(
+          publicKey,
+          serialized,
+          false,
+          localWriterSnapshot,
+        );
+      }
+      await this._removeReaderUnlocked(publicKey, serialized);
+    });
+  }
+
   private async _assertKemPublicKeyAvailableForNewLeaf(
     readerKemPublicKey: Uint8Array,
   ): Promise<void> {
-    if (this._beekemInitialized) {
+    if (this._beekemInitialized && !this._canReplaceRevokedFounderTree()) {
       if (!this._beekem) {
         throw new Error(
           `[${this.documentPath}] addReader: BeeKEM is marked initialized ` +
@@ -12766,16 +13024,17 @@ export class PeerborneDocument<
       };
     }
 
-    // A KEM key is a unique live-leaf identifier. The public addReader path
+    // A KEM key is a unique live-leaf identifier. The onboarding path
     // performs the same check before its ACL mutation; this second gate covers
     // retries where the ACL row exists but no identity cache survived.
     await this._assertKemPublicKeyAvailableForNewLeaf(readerKemPublicKey);
 
-    // Bootstrap the local BeeKEM tree if needed. On the founder's
-    // first `addReader` this initializes leaf 0 with the founder's
-    // KEM key pair. On a non-founder writer this branch is invalid
-    // (writers other than the founder must themselves have been
-    // bootstrapped via a Welcome before they can call `addReader`).
+    // Bootstrap the local BeeKEM tree if needed. On the founder's first
+    // onboarding, or the first after every remote leaf was revoked, this
+    // initializes leaf 0 with the founder's KEM key pair. On a non-founder
+    // writer this branch is invalid (writers other than the founder must
+    // themselves have been bootstrapped via a Welcome before they can
+    // register readers).
     //
     // Defense-in-depth gate: the caller path through `addReader`
     // already rejects a joined writer before running `_makeChange`, so by
@@ -12787,7 +13046,7 @@ export class PeerborneDocument<
     // upstream `addReader` gate's recovery message points at the
     // right path.
     let beekem: BeeKEM;
-    if (!this._beekemInitialized) {
+    if (!this._beekemInitialized || this._canReplaceRevokedFounderTree()) {
       if (!this._createdLocally) {
         throw new Error(
           `[${this.documentPath}] _prepareBeeKEMReaderRegistration: cannot ` +

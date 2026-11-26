@@ -111,7 +111,7 @@ describe('ACL helper functions delegate to docRef', () => {
     resetCaches();
   });
 
-  test('addReader forwards the reader KEM public key', async () => {
+  test('resendReaderWelcome forwards the reader KEM public key', async () => {
     const mockDoc = createMockDocument();
     const mockSwarm = createMockPeerborne(mockDoc);
     const captureRef = { current: null as any };
@@ -134,7 +134,10 @@ describe('ACL helper functions delegate to docRef', () => {
 
     const readerKemPublicKey = new Uint8Array(65).fill(4);
     await act(async () => {
-      await captureRef.current.acl.addReader('newUserPubKey', readerKemPublicKey);
+      await captureRef.current.acl.resendReaderWelcome(
+        'newUserPubKey',
+        readerKemPublicKey,
+      );
       await captureRef.current.acl.addWriter('newUserPubKey');
     });
 

@@ -335,7 +335,45 @@ or whose author already uses its whole process-wide share, is rejected without
 evicting anything. A second frame for a held author sequence with different
 content is rejected as equivocation. Held frames are memory-only and are
 dropped at a new group context and on close. A held frame whose predecessor
-never arrives expires; nothing requests it yet.
+never arrives expires unless redelivery brings it first.
+
+A replica asks peers for the frames it lacks with a redelivery request. The
+request lists its accepted heads in the current context (at most 256) and the
+frames it already holds (at most 64). It is signed by the member, encrypted
+under the epoch key with its own AAD domain, and uses a separate outer format
+marker. It also carries a signed issue time and the node's libp2p PeerId. A
+responder answers only when:
+
+- GossipSub's signed sender is that PeerId, so a member cannot replay another
+  member's request from its own peer;
+- the issue time is within 60 s of the responder's clock; and
+- the issue time is newer than the last one it accepted from that member, so a
+  captured request cannot be replayed later.
+
+Redelivery therefore needs member clocks within 60 s of each other. A member
+whose clock is further off gets no answers and answers no one, without an
+error; `securityRedeliveryStaleRequests` counts the requests a document
+ignored for that reason.
+
+Requests go out about a second after open. One also goes out when a peer
+subscribes to the topic (at most once per peer every 30 s), and when a frame
+newly starts waiting. While frames stay held, requests back off from 5 s to
+30 s. Otherwise one goes out every 30-60 s. `requestSecurityRedelivery()`
+sends one at once. A document sends at most one request every 2.5 s.
+
+A current member that authenticates the request resends, on the topic, the
+exact encrypted frames it retains after each of the requester's heads. It
+does so only when it holds the complete suffix, its own frame at that head has
+the same hash, and the requester does not already hold the frame. The author
+resends its own frames at once. Other members wait in roster order, 200 ms
+apart (at most 1.6 s), and skip frames another member or they themselves
+resent in the meantime. Each replica
+answers a member at most once every 2 s. One answer is at most 64 frames and
+4 MiB, and all answers share a budget of 64 frames, refilled at 32 per second.
+Resent frames are ordinary frames: receivers admit them through the full path,
+and duplicates are no-ops. A requester further behind than the retained 64
+frames per author, or behind a restarted peer, still needs the controller
+checkpoint. Requests and resends are visible on the topic as traffic.
 
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
@@ -445,8 +483,8 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery requests, old-epoch edit
-rebasing and epoch-fork reconciliation remain future work. The controller
+Redelivery beyond the retained window, old-epoch edit rebasing and
+epoch-fork reconciliation remain future work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the
