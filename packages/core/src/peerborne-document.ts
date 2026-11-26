@@ -1561,9 +1561,6 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
-  // CID of the last local change whose frame publication resolved. A failed
-  // transaction compares it to tell a published change from one to roll back.
-  private _lastPublishedChange?: string;
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -4587,6 +4584,7 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
+    let deliveryFailure: { error: unknown } | undefined;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
     if (kind === crdtDocumentChangeNode) {
@@ -4691,7 +4689,6 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
-      this._lastPublishedChange = hash;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -4723,20 +4720,28 @@ export class PeerborneDocument<
         this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
-      throw error;
+      // A document change already in the retained tree stays there when
+      // encryption or publication fails: the next frame carries it inline, and
+      // sync and load responses serve it.
+      if (postPublishCommit || this._lastSyncMessage === lastSyncMessageBefore)
+        throw error;
+      deliveryFailure = { error };
     }
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
     // failures. Report them, but preserve the successful membership result.
-    try {
-      await this._fireLocalUpdateHandlers(
-        [hash],
-        postPublishCommit?.operation,
-      );
-    } catch (error) {
-      if (!postPublishCommit) throw error;
-      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+    // An unpublished change is announced with the next one.
+    if (!deliveryFailure) {
+      try {
+        await this._fireLocalUpdateHandlers(
+          [hash],
+          postPublishCommit?.operation,
+        );
+      } catch (error) {
+        if (!postPublishCommit) throw error;
+        this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      }
     }
 
     // Track document changes for compaction. Membership nodes deepen the
@@ -4744,6 +4749,12 @@ export class PeerborneDocument<
     if (kind === crdtDocumentChangeNode) {
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
+    }
+    if (deliveryFailure) {
+      // Keep the retained tree bounded while publication keeps failing. The
+      // next change retries a failed compaction.
+      await this._maybeCompact(undefined, publishedBytes).catch(() => {});
+      throw deliveryFailure.error;
     }
     await this._maybeCompact(undefined, publishedBytes);
   }
@@ -9307,9 +9318,9 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * A failure is handled as in `change()`: the batch is discarded when it
-   * fails before publication and kept when it fails after. Either way the
-   * transaction ends, and a new one must be started.
+   * A failure is handled as in `change()`: the batch is kept once it is
+   * stored and in the retained change tree, and discarded when it fails
+   * before. Either way the transaction ends, and a new one must be started.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -9393,30 +9404,31 @@ export class PeerborneDocument<
    * publishes the edits made before the throw and then rethrows the original
    * error. If committing that partial edit fails too, an `AggregateError`
    * holds the change function's error and the commit error. The call rejects
-   * with it when a local handler or compaction failed after publication, and
-   * otherwise retires the instance, as described below, with it as the cause.
+   * with it when the partial edit was kept, as described below, and otherwise
+   * retires the instance with it as the cause.
    *
-   * A failure before the change is published (block storage, signing,
-   * encryption or the publish call) discards it, so no later change
-   * depends on an edit peers never received. The attempt's history
-   * bookkeeping is removed. Automerge outdates the document a change
-   * consumes, so the document before the call is restored as a writable copy
-   * from `CRDTProvider.cloneDocument()`, which makes later changes under a
-   * new actor. An in-place provider (Yjs, Loro) cannot undo
-   * its edit, and Automerge cannot copy a document that holds remote changes
-   * waiting for missing dependencies. In those cases the instance is retired:
-   * the call rejects with an error whose `cause` is the failure, and the
-   * instance refuses further work until it is reopened from accepted state,
-   * such as the last checkpoint exported before the failure. A change too
-   * large for one frame retires the instance with a `GossipFrameLimitError`
-   * instead. A failure after publication, from a local update handler or
-   * compaction, keeps the published change and its bookkeeping.
+   * The change is committed locally once its block is stored and it is in the
+   * retained change tree. A later failure keeps it: when encrypting or
+   * publishing the frame fails, for example because GossipSub has no topic
+   * peers, the call rejects with that error, but the change stays in the
+   * document, the next change's frame carries it inline, and sync and load
+   * responses serve it. Local update handlers then run with the next change.
+   * Do not repeat the edit. A failure from a local update handler or
+   * compaction after publication also keeps the change.
    *
-   * A publish call can reject after the transport accepted the frame, so a
-   * peer may hold a change this replica discarded and later deliver it back.
-   * A restored Automerge copy uses a new actor, and a reopened Yjs or Loro
-   * document a new client or peer ID, so later local changes never collide
-   * with it.
+   * A failure before that point (block storage, signing or the frame size
+   * check) discards the change, so no later change depends on an edit peers
+   * never received. The attempt's history bookkeeping is removed. Automerge
+   * outdates the document a change consumes, so the document before the call
+   * is restored as a writable copy from `CRDTProvider.cloneDocument()`, which
+   * makes later changes under a new actor. An in-place provider (Yjs, Loro)
+   * cannot undo its edit, and Automerge cannot copy a document that holds
+   * remote changes waiting for missing dependencies. In those cases the
+   * instance is retired: the call rejects with an error whose `cause` is the
+   * failure, and the instance refuses further work until it is reopened from
+   * accepted state, such as the last checkpoint exported before the failure.
+   * A change too large for one frame retires the instance with a
+   * `GossipFrameLimitError` instead.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -9441,14 +9453,13 @@ export class PeerborneDocument<
   }
 
   /**
-   * Apply and publish a local change, discarding it when publication fails.
-   * The state queue keeps remote syncs out of the attempt, and Sets iterate
-   * in insertion order, so the CIDs past each Set's earlier size are the
-   * attempt's own.
+   * Apply and publish a local change, discarding it when it fails before it
+   * reaches the retained tree. The state queue keeps remote syncs out of the
+   * attempt, and Sets iterate in insertion order, so the CIDs past each Set's
+   * earlier size are the attempt's own.
    */
   private async _commitLocalChange(changeFn: ChangeFnType, message?: string) {
     const originalDocument = this._document;
-    const lastPublishedBefore = this._lastPublishedChange;
     const hashSizeBefore = this._hashes.size;
     const referencedAncestorsSizeBefore = this._referencedAncestors.size;
     const lastSyncSnapshot = this._lastSyncMessage;
@@ -9467,7 +9478,7 @@ export class PeerborneDocument<
       const thrown = failure
         ? partialChangeCommitFailure(failure.error, commitError)
         : commitError;
-      if (this._lastPublishedChange !== lastPublishedBefore) throw thrown;
+      if (this._lastSyncMessage !== lastSyncSnapshot) throw thrown;
       deleteEntriesAfter(this._hashes, hashSizeBefore);
       deleteEntriesAfter(
         this._referencedAncestors,

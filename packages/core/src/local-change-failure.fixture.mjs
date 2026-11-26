@@ -62,44 +62,63 @@ function rootOf(target, adapter) {
 }
 
 const steps = {
-  'storing the block'(target, failure) {
-    const put = target.helia.blockstore.put.bind(target.helia.blockstore);
-    let failed = false;
-    target.helia.blockstore.put = async (...args) => {
-      if (failed) return put(...args);
-      failed = true;
-      throw failure;
-    };
+  // Nothing is stored, so the change never reaches the retained tree.
+  'storing the block': {
+    kept: false,
+    failure: () => new Error('QuotaExceededError'),
+    inject(target, failure) {
+      const put = target.helia.blockstore.put.bind(target.helia.blockstore);
+      let failed = false;
+      target.helia.blockstore.put = async (...args) => {
+        if (failed) return put(...args);
+        failed = true;
+        throw failure;
+      };
+    },
   },
-  'publishing the frame'(target, failure) {
-    let failed = false;
-    target.setPublish(async () => {
-      if (failed) return;
-      failed = true;
-      throw failure;
-    });
+  // GossipSub rejects a publication without topic peers by default. The
+  // change is already stored and in the retained tree.
+  'publishing the frame': {
+    kept: true,
+    failure: () => new Error('PublishError.NoPeersSubscribedToTopic'),
+    inject(target, failure) {
+      let failed = false;
+      target.setPublish(async () => {
+        if (failed) return;
+        failed = true;
+        throw failure;
+      });
+    },
   },
 };
 
 for (const adapter of ['automerge', 'yjs', 'loro']) {
   for (const entry of ['change', 'endChange']) {
-    for (const step of Object.keys(steps)) {
-      test(`${adapter}: after ${entry}() fails while ${step}, the writer and a replica converge`, async () => {
+    for (const [step, { kept, failure: failureFor, inject }] of Object.entries(
+      steps,
+    )) {
+      const outcome = kept
+        ? 'the writer keeps the change and the next frame delivers it'
+        : 'the change is discarded';
+      test(`${adapter}: after ${entry}() fails while ${step}, ${outcome}, and the writer and a replica converge`, async () => {
         const writer = await fixture(adapter, { index: 1 });
         await edit(writer, adapter, 'a', 1);
         const replica = await replicaOf(writer, 2, { adapter });
         const accepted = await writer.document.exportCheckpoint();
-        const failure = new Error('QuotaExceededError');
-        steps[step](writer, failure);
+        const failure = failureFor();
+        inject(writer, failure);
 
         const error = await edit(writer, adapter, 'b', 2, entry).then(
           () => assert.fail('the failed change resolved'),
           (reason) => reason,
         );
         let author = writer;
-        if (adapter === 'automerge') {
+        if (kept || adapter === 'automerge') {
           assert.equal(error, failure);
-          assert.deepEqual(rootOf(writer, adapter), { a: 1 });
+          assert.deepEqual(
+            rootOf(writer, adapter),
+            kept ? { a: 1, b: 2 } : { a: 1 },
+          );
         } else {
           // An in-place edit cannot be undone, so the instance retires.
           assert.match(error.message, /could not be rolled back/);
@@ -120,8 +139,11 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
             await receiveEncrypted(replica, author.stats.lastFrame),
             true,
           );
+          assert.deepEqual(rootOf(replica, adapter), rootOf(author, adapter));
         }
-        const expected = { a: 1, c: 3, d: 4 };
+        const expected = kept
+          ? { a: 1, b: 2, c: 3, d: 4 }
+          : { a: 1, c: 3, d: 4 };
         assert.deepEqual(rootOf(author, adapter), expected);
         assert.deepEqual(rootOf(replica, adapter), expected);
 

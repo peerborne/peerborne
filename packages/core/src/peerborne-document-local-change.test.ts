@@ -259,7 +259,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document._documentChangeCount).toBe(2);
   });
 
-  test('change() retires the instance, with both errors as the cause, when publishing the partial edit fails', async () => {
+  test('change() rejects with both errors when publishing the partial edit fails, and the next change carries it', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -273,15 +273,18 @@ describe('committing the partial edit of a throwing change function', () => {
         throw failure;
       }),
     );
-    expect(error.message).toMatch(/could not be rolled back/);
-    expect(error.cause).toBeInstanceOf(AggregateError);
-    expect([...error.cause.errors]).toEqual([failure, offline]);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect([...error.errors]).toEqual([failure, offline]);
     expect(document.handled).toEqual([]);
-    expect(document._documentChangeCount).toBe(0);
-    expect(document._hashes.size).toBe(0);
-    await expect(
-      document.change((doc: string[]) => doc.push('next')),
-    ).rejects.toThrow(/could not be rolled back/);
+    const partialId = document._lastSyncMessage.changeId;
+    expect(document._hashes.has(partialId)).toBe(true);
+
+    await document.change((doc: string[]) => doc.push('next'));
+    expect(document.frames).toHaveLength(1);
+    expect(
+      document._lastSyncMessage.changes.children[partialId].change,
+    ).toEqual(['partial']);
+    expect(document.handled).toEqual([['partial', 'next']]);
   });
 
   test('change() rejects with both errors when a local handler fails after publication', async () => {
@@ -303,7 +306,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document.frames).toHaveLength(1);
   });
 
-  test('endChange() retires the instance, with both errors as the cause, and ends the transaction when publishing fails', async () => {
+  test('endChange() rejects with both errors, keeps the partial batch and ends the transaction when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -317,19 +320,21 @@ describe('committing the partial edit of a throwing change function', () => {
     });
 
     const error = await rejection(document.endChange());
-    expect(error.message).toMatch(/could not be rolled back/);
-    expect([...error.cause.errors]).toEqual([failure, offline]);
-    expect(document._hashes.size).toBe(0);
-    expect(document._lastSyncMessage).toBeUndefined();
+    expect(error).toBeInstanceOf(AggregateError);
+    expect([...error.errors]).toEqual([failure, offline]);
+    expect(document._hashes.size).toBe(1);
+    expect(document._lastSyncMessage.changes.change).toEqual(['partial']);
     expect(document._inTransaction).toBe(false);
     expect(document._committing).toBe(false);
   });
 });
 
 describe('a local change that fails before publication', () => {
-  const steps: [string, (document: any) => any][] = [
+  const beforeTheTree: [string, (document: any) => any][] = [
     ['storing the block', (document) => document._putBlock],
     ['signing the frame', (document) => document._signAsWriter],
+  ];
+  const inTheTree: [string, (document: any) => any][] = [
     ['encrypting the frame', (document) => document._authProvider.encrypt],
     [
       'publishing the frame',
@@ -347,11 +352,12 @@ describe('a local change that fails before publication', () => {
       },
     ],
   ];
-  const cases = entries.flatMap(([entry, commit]) =>
-    steps.map(
-      ([step, failingStep]) => [entry, step, commit, failingStep] as const,
-    ),
-  );
+  const cases = (steps: [string, (document: any) => any][]) =>
+    entries.flatMap(([entry, commit]) =>
+      steps.map(
+        ([step, failingStep]) => [entry, step, commit, failingStep] as const,
+      ),
+    );
 
   async function committedOnce(provider: object) {
     const document = publishingDocument(provider);
@@ -365,7 +371,7 @@ describe('a local change that fails before publication', () => {
     };
   }
 
-  test.each(cases)(
+  test.each(cases(beforeTheTree))(
     'in %s while %s, an in-place provider retires the instance',
     async (_entry, _step, commit, failingStep) => {
       const { document, hashes, tree, tips, ancestors } =
@@ -393,7 +399,7 @@ describe('a local change that fails before publication', () => {
     },
   );
 
-  test.each(cases)(
+  test.each(cases(beforeTheTree))(
     'in %s while %s, a provider that returns a new document restores the earlier one',
     async (_entry, _step, commit, failingStep) => {
       const { document, hashes, tree, tips } =
@@ -418,6 +424,51 @@ describe('a local change that fails before publication', () => {
       ]);
       expect(Object.keys(document._lastSyncMessage.changes.children)).toEqual([
         tree.changeId,
+      ]);
+    },
+  );
+
+  test.each(
+    cases(inTheTree).flatMap((entry) => [
+      [...entry, 'an in-place provider', inPlaceProvider] as const,
+      [
+        ...entry,
+        'a provider that returns a new document',
+        copyingProvider,
+      ] as const,
+    ]),
+  )(
+    'in %s while %s, %s keeps the stored change for the next frame',
+    async (_entry, _step, commit, failingStep, _name, provider) => {
+      const { document, tree } = await committedOnce(provider);
+      const failure = new Error('PublishError.NoPeersSubscribedToTopic');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await expect(
+        commit(document, (doc: string[]) => doc.push('kept')),
+      ).rejects.toBe(failure);
+      const keptId = document._lastSyncMessage.changeId;
+      expect(keptId).not.toBe(tree.changeId);
+      expect(document._hashes.has(keptId)).toBe(true);
+      expect(document._document).toEqual(['accepted', 'kept']);
+      expect(document._documentChangeCount).toBe(2);
+      expect(document._inTransaction).toBe(false);
+      expect(document.handled).toEqual([['accepted']]);
+      expect(document._closeDocument).not.toHaveBeenCalled();
+
+      await commit(document, (doc: string[]) => doc.push('next'));
+      expect(document.frames).toHaveLength(2);
+      const delivered = document._syncMessageSerializer.deserializeSyncMessage(
+        document.frames[1].subarray(KEY_ID_BYTES + NONCE_BYTES),
+      );
+      expect(delivered.changes.change).toEqual(['next']);
+      expect(delivered.changes.children[keptId].change).toEqual(['kept']);
+      expect(
+        Object.keys(delivered.changes.children[keptId].children),
+      ).toContain(tree.changeId);
+      expect(document.handled).toEqual([
+        ['accepted'],
+        ['accepted', 'kept', 'next'],
       ]);
     },
   );

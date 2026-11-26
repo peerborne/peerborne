@@ -91,11 +91,15 @@ function automergeDocument(): any {
   return document;
 }
 
-function publishedChange(document: any, index: number): Change[] {
+function publishedMessage(document: any, index: number): any {
   const frame: Uint8Array = document.frames[index];
   return document._syncMessageSerializer.deserializeSyncMessage(
     frame.subarray(KEY_ID_BYTES + NONCE_BYTES),
-  ).changes.change;
+  );
+}
+
+function publishedChange(document: any, index: number): Change[] {
+  return publishedMessage(document, index).changes.change;
 }
 
 function push(entry: string) {
@@ -139,9 +143,11 @@ function applyRemoteChangeAndSnapshot(document: any): void {
 }
 
 describe('an Automerge change that fails', () => {
-  const steps: [string, (document: any) => any][] = [
+  const beforeTheTree: [string, (document: any) => any][] = [
     ['storing the block', (document) => document._putBlock],
     ['signing the frame', (document) => document._signAsWriter],
+  ];
+  const inTheTree: [string, (document: any) => any][] = [
     ['encrypting the frame', (document) => document._authProvider.encrypt],
     [
       'publishing the frame',
@@ -152,15 +158,15 @@ describe('an Automerge change that fails', () => {
     ['change()', (document, entry) => document.change(push(entry))],
     ['endChange()', batch],
   ];
-
-  test.each(
+  const cases = (steps: [string, (document: any) => any][]) =>
     entries.flatMap(([entry, commit]) =>
       steps.map(
         ([step, failingStep]) => [entry, step, commit, failingStep] as const,
       ),
-    ),
-  )(
-    'in %s before publication, while %s, rolls back to a writable document',
+    );
+
+  test.each(cases(beforeTheTree))(
+    'in %s before the change is in the tree, while %s, rolls back to a writable document',
     async (_entry, _step, commit, failingStep) => {
       const document = automergeDocument();
       const failure = new Error('commit failed');
@@ -182,8 +188,8 @@ describe('an Automerge change that fails', () => {
         'batched',
       ]);
 
-      // A peer may hold the discarded change after an ambiguous publish. The
-      // replica's later changes must not reuse its actor sequence number.
+      // The discarded change's block may stay stored. The replica's later
+      // changes must not reuse its actor sequence number.
       let peer = provider.remoteChange(
         clone(genesis, { actor: '06' }),
         discarded,
@@ -192,6 +198,36 @@ describe('an Automerge change that fails', () => {
         peer = provider.remoteChange(peer, publishedChange(document, index));
       }
       expect([...peer.log].sort()).toEqual(['batched', 'lost', 'next']);
+      applyRemoteChangeAndSnapshot(document);
+    },
+  );
+
+  test.each(cases(inTheTree))(
+    'in %s after the change is in the tree, a failure while %s keeps it for the next frame',
+    async (_entry, _step, commit, failingStep) => {
+      const document = automergeDocument();
+      const failure = new Error('PublishError.NoPeersSubscribedToTopic');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await expect(commit(document, 'kept')).rejects.toBe(failure);
+      expect(document._document.log).toEqual(['kept']);
+      const keptId = document._lastSyncMessage.changeId;
+      expect(document._hashes.has(keptId)).toBe(true);
+      expect(document.frames).toHaveLength(0);
+
+      await document.change(push('next'));
+      await batch(document, 'batched');
+      expect(document._document.log).toEqual(['kept', 'next', 'batched']);
+      const next = publishedMessage(document, 0);
+      expect(Object.keys(next.changes.children)).toEqual([keptId]);
+      let peer = clone(genesis, { actor: '06' });
+      for (const changes of [
+        next.changes.children[keptId].change,
+        next.changes.change,
+        publishedChange(document, 1),
+      ])
+        peer = provider.remoteChange(peer, changes);
+      expect(peer.log).toEqual(['kept', 'next', 'batched']);
       applyRemoteChangeAndSnapshot(document);
     },
   );

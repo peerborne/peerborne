@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { mergeCompactionConfig } from './compaction-config.js';
-import { CHANGE_TREE_COMPACTION_DEPTH } from './change-tree-walk.js';
+import {
+  CHANGE_TREE_COMPACTION_DEPTH,
+  changeTreeDepth,
+} from './change-tree-walk.js';
 import {
   crdtDocumentChangeNode,
   crdtWriterChangeNode,
@@ -258,6 +261,41 @@ test.each([
       'retired after an oversized edit',
     );
     expect(document._closeDocument).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each([
+  ['large changes', 30, 200_000],
+  ['small changes', CHANGE_TREE_COMPACTION_DEPTH + 8, 1],
+])(
+  'a writer whose %s keep failing to publish still bounds its retained tree',
+  async (_name, count, size) => {
+    const { document, published } = writerDocument('a');
+    const { publish } = document.swarm.heliaNode.libp2p.services.pubsub;
+    publish.mockRejectedValue(
+      new Error('PublishError.NoPeersSubscribedToTopic'),
+    );
+    for (let index = 0; index < count; index++)
+      await expect(
+        document.change(() => ({ index, text: 'x'.repeat(size) })),
+      ).rejects.toThrow('NoPeersSubscribedToTopic');
+    expect(document._latestSnapshot).toBeDefined();
+    expect(
+      changeTreeDepth(
+        document._lastSyncMessage.changes,
+        CHANGE_TREE_COMPACTION_DEPTH,
+      ),
+    ).toBeLessThan(CHANGE_TREE_COMPACTION_DEPTH);
+    expect(document._closeDocument).not.toHaveBeenCalled();
+
+    publish.mockImplementation(async (_topic: string, bytes: Uint8Array) => {
+      published.push(bytes);
+    });
+    await document.change(() => ({ online: true }));
+    expect(published).toHaveLength(1);
+    expect(published[0].byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
+      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+    );
   },
 );
 
