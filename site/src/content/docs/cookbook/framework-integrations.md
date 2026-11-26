@@ -18,7 +18,7 @@ External-store hook, shared ownership, StrictMode test, and browser example. See
 
 ## Vue
 
-Shallow composable, SSR/lifecycle tests, and browser example. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
+Shallow composable, SSR/lifecycle tests, and browser example. Pass a getter such as `usePeerborneStore(() => props.store)` to follow a store prop. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
 
 ## Svelte
 

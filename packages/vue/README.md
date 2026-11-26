@@ -15,6 +15,10 @@ does not proxy CRDT internals. Ownership starts in `onMounted`, and listeners
 and ownership are released when the component scope is disposed. Server
 rendering uses the idle snapshot without opening documents.
 
+To follow a store prop, pass a getter or ref such as
+`usePeerborneStore(() => props.store)`. When it changes, the composable
+releases the previous store and connects the new one.
+
 Use the same composable in Nuxt client components, creating the node in the
 browser. This repository tests Vue server rendering and a Vue browser example;
 a complete Nuxt application is not an acceptance target yet.
