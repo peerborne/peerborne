@@ -345,6 +345,45 @@ describe('encrypted checkpoint', () => {
   });
 
   test.each([
+    ['an empty payload', 0, 3],
+    ['an empty signature', 3, 0],
+    ['a length past the end', 1_000, 3],
+    ['a signature over its limit', 1, 8193],
+  ])(
+    'rejects authenticated bytes with %s',
+    async (_name, payloadLength, signatureLength) => {
+      const key = await aesKey();
+      const cleartext = new Uint8Array(
+        4 + Math.min(payloadLength, 3) + signatureLength,
+      );
+      new DataView(cleartext.buffer).setUint32(0, payloadLength);
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = new Uint8Array(
+        await crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: nonce,
+            additionalData: new TextEncoder().encode(
+              JSON.stringify([
+                'peerborne/encrypted-document-checkpoint/1',
+                path,
+              ]),
+            ),
+          },
+          key,
+          cleartext,
+        ),
+      );
+      const sealed = new Uint8Array(nonce.length + ciphertext.length);
+      sealed.set(nonce);
+      sealed.set(ciphertext, nonce.length);
+      await expect(
+        openSealedDocumentCheckpoint(sealed, path, key),
+      ).rejects.toThrow('Invalid encrypted checkpoint');
+    },
+  );
+
+  test.each([
     ['an AES-CBC key', () => aesKey(['encrypt', 'decrypt'], 256, 'AES-CBC')],
     ['a 128-bit key', () => aesKey(['encrypt', 'decrypt'], 128)],
     ['a key that cannot encrypt', () => aesKey(['decrypt'])],

@@ -99,8 +99,8 @@ connected peer; with no peer that holds the document, it rejects with
 [encrypted checkpoint](../storage/#local-checkpoints) after each change and
 restore it on the fresh instance before `open()`. Peerborne Note and the
 password-manager example do this, and their CI suites reopen documents after a
-full Chromium relaunch. Other applications must test their own checkpoint
-path.
+full Chromium relaunch; the wiki example's suite reopens an article after a
+reload. Other applications must test their own checkpoint path.
 
 ### Local changes that fail before publication
 
@@ -159,7 +159,7 @@ These behaviors are verified by CI:
 - Encrypted existing-history retrieval through Circuit Relay
 - Automerge and Yjs provider initialization and basic operation
 - Crypto operations (signing, encryption, key generation)
-- Peerborne Note and the password-manager example reopening documents from their encrypted checkpoints after reload and a full Chromium relaunch
+- Peerborne Note and the password-manager example reopening documents from their encrypted checkpoints after reload and a full Chromium relaunch, and the wiki example after a reload
 
 These behaviors are **not** verified:
 

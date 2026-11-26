@@ -115,8 +115,8 @@ format.
 `exportPlaintextCheckpoint()` returns the same checkpoint unencrypted: its
 payload is JSON that holds the document's state and its document keys in
 base64. Use it only when the application encrypts it at once with its own
-authenticated format. The Peerborne Note and password-manager examples do this
-in [`browser-checkpoint-store.ts`](https://github.com/Peerborne/peerborne/blob/main/examples/shared/browser-checkpoint-store.ts),
+authenticated format. The Peerborne Note, password-manager and wiki examples
+do this in [`browser-checkpoint-store.ts`](https://github.com/Peerborne/peerborne/blob/main/examples/shared/browser-checkpoint-store.ts),
 which also binds a per-document revision so a stale save fails. Never store
 a plaintext checkpoint unencrypted and never transmit it.
 
