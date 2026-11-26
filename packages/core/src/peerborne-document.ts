@@ -1,6 +1,16 @@
 import { CoordinatedDocument, type CoordinatedDocumentOptions } from './coordinated-document.js';
 import { MAX_DOCUMENT_SECURITY_FRAME_BYTES } from './document-security-wire.js';
 import {
+  AntiEntropy,
+  antiEntropyBudgetFor,
+  disabledAntiEntropyStatus,
+  resolveAntiEntropyConfig,
+  type AntiEntropyEvent,
+  type AntiEntropyHandler,
+  type AntiEntropyRequestOutcome,
+  type AntiEntropyStatus,
+} from './anti-entropy.js';
+import {
   DocumentBlockReadLimitError,
   MAX_DOCUMENT_BLOCK_BYTES,
   readDocumentBlock,
@@ -237,6 +247,7 @@ import { TopicValidatorResult } from '@libp2p/gossipsub';
 import type {
   GossipSub,
   Message,
+  SubscriptionChangeData,
   TopicValidatorFn,
 } from '@libp2p/gossipsub';
 import { EventHandler, PeerId } from '@libp2p/interface';
@@ -3083,10 +3094,14 @@ export class PeerborneDocument<
             );
             assertWorkerActive();
             // A block the message's fetch bounds left unread stays a missing
-            // dependency.
-            if (missingChanges === undefined) continue;
+            // dependency, which catch-up asks peers for.
+            if (missingChanges === undefined) {
+              this._antiEntropy?.missingChange(missingHash);
+              continue;
+            }
             if (!missingChanges) {
               console.error(`Block '${missingHash}' returned nothing`);
+              this._antiEntropy?.missingChange(missingHash);
               continue;
             }
             switch (missingHashKind) {
@@ -3166,6 +3181,7 @@ export class PeerborneDocument<
               'Failed to fetch missing change from blockstore:',
               missingHash,
             );
+            this._antiEntropy?.missingChange(missingHash);
           }
         }
       };
@@ -7142,6 +7158,8 @@ export class PeerborneDocument<
    * @param preferredPeer Optional peer to try first (typically a PeerId from a
    *   pubsub message sender), matched against the last `/p2p/<id>` segment of
    *   each connection's multiaddr.
+   * @param signal Optional cancellation. Once it aborts, no further peer is
+   *   tried and an in-flight response stops before it applies more state.
    * @returns true after successful loading; false if no usable response is
    * available without a quorum decision. Neither result authorizes creation.
    * @throws {LoadQuorumFailedError} If required agreement or bound delivery fails.
@@ -7151,7 +7169,10 @@ export class PeerborneDocument<
    * @throws {Error} If trust configuration is absent or bootstrap application
    * left incomplete state. Discard an instance with incomplete application.
    */
-  public async load(preferredPeer?: PeerId | string): Promise<boolean> {
+  public async load(
+    preferredPeer?: PeerId | string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
     if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
@@ -7257,6 +7278,7 @@ export class PeerborneDocument<
     const agreeingPeerBindFailures = new Map<string, string>();
     let writerConflict: _LoadWriterVersionConflictError | undefined;
     for (const peer of orderedPeers) {
+      throwIfLoadAborted(signal);
       let peerBindFailed = false;
       if (this._compactionConfig.enabled) {
         try {
@@ -7265,12 +7287,17 @@ export class PeerborneDocument<
           const request = await addressedRequest(peer);
           const snapshotStream = await this.libp2p.dialProtocol(peer, [
             snapshotLoadV4,
-          ], { runOnLimitedConnection: true });
+          ], { runOnLimitedConnection: true, signal });
           const loaded = await this._sendLoadRequestAndSync(
             request.session,
             snapshotStream,
             request.serializedRequest,
             boundHashHexes.get(peer) ?? winningHashHex,
+            undefined,
+            false,
+            undefined,
+            undefined,
+            signal,
           );
           if (loaded) {
             this._assertNoIncompleteBootstrapLoad();
@@ -7302,12 +7329,17 @@ export class PeerborneDocument<
         const request = await addressedRequest(peer);
         const docStream = await this.libp2p.dialProtocol(peer, [
           documentLoadV4,
-        ], { runOnLimitedConnection: true });
+        ], { runOnLimitedConnection: true, signal });
         const loaded = await this._sendLoadRequestAndSync(
           request.session,
           docStream,
           request.serializedRequest,
           boundHashHexes.get(peer) ?? winningHashHex,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          signal,
         );
         if (loaded) {
           this._assertNoIncompleteBootstrapLoad();
@@ -7392,69 +7424,208 @@ export class PeerborneDocument<
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
   private _lastSyncResponseAt = 0;
+  private _antiEntropy?: AntiEntropy;
+  private readonly _antiEntropyHandlers = new Map<string, AntiEntropyHandler>();
   private _syncRequestsSeen = new Map<string, number>();
   private _syncRequestClock = 0;
   private readonly _knownSyncSnapshots = new Set<string>();
 
-  /** Ask current members for missed updates using the existing authenticated local membership. */
+  /** Automatic catch-up state for this document. */
+  public get antiEntropyStatus(): AntiEntropyStatus {
+    return this._antiEntropy?.status() ?? disabledAntiEntropyStatus;
+  }
+
+  /**
+   * Observe automatic catch-up: detected gaps, requests, loads and repairs.
+   * Handlers run in a microtask after the event and cannot interrupt it.
+   *
+   * @param handlerId An identifier used to unsubscribe the handler later.
+   */
+  public subscribeToAntiEntropy(
+    handlerId: string,
+    handler: AntiEntropyHandler,
+  ): void {
+    this._antiEntropyHandlers.set(handlerId, handler);
+  }
+
+  public unsubscribeFromAntiEntropy(handlerId: string): void {
+    this._antiEntropyHandlers.delete(handlerId);
+  }
+
+  private _localPeerId(): string | undefined {
+    return this.swarm.heliaNode.libp2p.peerId?.toString();
+  }
+
+  /**
+   * Whether `cid` is held or covered by held state: recorded, referenced as
+   * a parent by a held change, or the snapshot boundary.
+   */
+  private _holdsChange(cid: string): boolean {
+    return (
+      this._hashes.has(cid) ||
+      this._referencedAncestors.has(cid) ||
+      this._latestSnapshot?.lastChangeNodeCID === cid
+    );
+  }
+
+  /**
+   * Start automatic catch-up once the document is subscribed. Coordinated
+   * documents, unsigned swarms and nodes without a libp2p identity skip it.
+   */
+  private _startAntiEntropy(pubsub: GossipSub): void {
+    const config = resolveAntiEntropyConfig(this.swarm.config?.antiEntropy);
+    const libp2p = this.swarm.heliaNode.libp2p;
+    if (
+      !config.enabled ||
+      this._coordinated ||
+      !this._subscribed ||
+      !this._isSigningEnabled() ||
+      this._localPeerId() === undefined ||
+      typeof pubsub.addEventListener !== 'function' ||
+      typeof pubsub.removeEventListener !== 'function'
+    )
+      return;
+    const topic = this._topic;
+    const antiEntropy = new AntiEntropy(
+      config,
+      {
+        request: () =>
+          this._runStateMutation(() => this._publishSyncRequest(false)),
+        hasPendingChanges: () =>
+          this._crdtProvider.hasPendingChanges?.(this._document) === true,
+        isKnown: (cid) => this._holdsChange(cid),
+        canLoad: () => this.swarm.resolveLoadSecurityCommitments !== undefined,
+        isConnected: (peer) =>
+          libp2p
+            .getConnections()
+            .some(
+              (connection) =>
+                connection.status === 'open' &&
+                connection.remotePeer?.toString() === peer,
+            ),
+        load: (peer, signal) => this.load(peer, signal),
+      },
+      antiEntropyBudgetFor(this.swarm),
+      (event) => this._emitAntiEntropy(antiEntropy, event),
+    );
+    const onSubscriptionChange = (
+      event: CustomEvent<SubscriptionChangeData>,
+    ): void => {
+      const { peerId, subscriptions } = event.detail;
+      if (
+        subscriptions.some(
+          (subscription) =>
+            subscription.topic === topic && subscription.subscribe,
+        )
+      )
+        antiEntropy.peerSubscribed(
+          peerId.toString(),
+          libp2p
+            .getConnections(peerId)
+            .some((connection) => connection.direction === 'outbound'),
+        );
+    };
+    pubsub.addEventListener('subscription-change', onSubscriptionChange);
+    antiEntropy.onClose(() =>
+      pubsub.removeEventListener('subscription-change', onSubscriptionChange),
+    );
+    this._antiEntropy = antiEntropy;
+    antiEntropy.start();
+  }
+
+  private _emitAntiEntropy(
+    antiEntropy: AntiEntropy,
+    event: AntiEntropyEvent,
+  ): void {
+    if (this._antiEntropyHandlers.size === 0) return;
+    const status = antiEntropy.status();
+    queueMicrotask(() => {
+      for (const handler of this._antiEntropyHandlers.values()) {
+        try {
+          handler(event, status);
+        } catch {
+          console.warn('Anti-entropy handler failed');
+        }
+      }
+    });
+  }
+
+  /**
+   * Ask current members for missed updates using the existing authenticated
+   * local membership. Automatic catch-up (`antiEntropy` in the Peerborne
+   * config) sends the same request without an application call.
+   */
   public async requestSync(): Promise<void> {
     if (this._coordinated)
       throw new Error(
         'Legacy document operations are unavailable in coordinated mode',
       );
-    await this._runStateMutation(async () => {
-      if (
-        !this._subscribed ||
-        !this._lastSyncMessage?.changeId ||
-        !this._isSigningEnabled()
-      ) {
-        throw new Error('Sync requests require an open authenticated document');
-      }
-      if (
-        (await this._writers.check(this._userPublicKey)) !== true &&
-        (await this._readers.check(this._userPublicKey)) !== true
-      ) {
-        throw new Error('Sync requests require current document membership');
-      }
-      const now = Date.now();
-      if (now - this._lastSyncRequestAt < 2000) return;
-      const request = {
-        documentId: this.documentPath,
-        requester: await requireSerializePublicKey(
-          this._authProvider,
-          'Sync request',
-        )(this._userPublicKey),
-        requestId: Array.from(
-          crypto.getRandomValues(new Uint8Array(16)),
-          (byte) => byte.toString(16).padStart(2, '0'),
-        ).join(''),
-        issuedAtMs: now,
-        knownSnapshots: [...new Set([
-          ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
-          ...this._knownSyncSnapshots,
-        ])].slice(0, 32),
-        knownTips: [
-          ...new Set([
-            this._lastSyncMessage.changeId,
-            ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
-            ...this._recentTips
-              .slice()
-              .reverse()
-              .map((tip) => tip.cid),
-          ]),
-        ].slice(0, 32),
-      };
-      const signature = this._serializeSignature(
-        await this._authProvider.sign(
-          syncRequestSigningPayload(request),
-          this._userKey,
-        ),
-      );
-      await this._publishSyncBytes(
-        encodeSyncRequest({ ...request, signature }),
-      );
-      this._lastSyncRequestAt = now;
-    });
+    const outcome = await this._runStateMutation(() =>
+      this._publishSyncRequest(true),
+    );
+    if (outcome === 'sent') this._antiEntropy?.manualRequest();
+  }
+
+  private async _publishSyncRequest(
+    strict: boolean,
+  ): Promise<AntiEntropyRequestOutcome> {
+    const requesterPeer = this._localPeerId();
+    if (
+      !this._subscribed ||
+      !this._lastSyncMessage?.changeId ||
+      !this._isSigningEnabled() ||
+      requesterPeer === undefined
+    ) {
+      if (!strict) return 'not-ready';
+      throw new Error('Sync requests require an open authenticated document');
+    }
+    if (
+      (await this._writers.check(this._userPublicKey)) !== true &&
+      (await this._readers.check(this._userPublicKey)) !== true
+    ) {
+      if (!strict) return 'not-ready';
+      throw new Error('Sync requests require current document membership');
+    }
+    const now = Date.now();
+    if (now - this._lastSyncRequestAt < 2000) return 'rate-limited';
+    const request = {
+      documentId: this.documentPath,
+      requester: await requireSerializePublicKey(
+        this._authProvider,
+        'Sync request',
+      )(this._userPublicKey),
+      requesterPeer,
+      requestId: Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+      issuedAtMs: now,
+      knownSnapshots: [...new Set([
+        ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
+        ...this._knownSyncSnapshots,
+      ])].slice(0, 32),
+      knownTips: [
+        ...new Set([
+          this._lastSyncMessage.changeId,
+          ...(this._latestSnapshot?.lastChangeNodeCID ? [this._latestSnapshot.lastChangeNodeCID] : []),
+          ...this._recentTips
+            .slice()
+            .reverse()
+            .map((tip) => tip.cid),
+        ]),
+      ].slice(0, 32),
+    };
+    const signature = this._serializeSignature(
+      await this._authProvider.sign(
+        syncRequestSigningPayload(request),
+        this._userKey,
+      ),
+    );
+    await this._publishSyncBytes(
+      encodeSyncRequest({ ...request, signature }),
+    );
+    this._lastSyncRequestAt = now;
+    return 'sent';
   }
 
   private _observeSyncRequestClock(): number | undefined {
@@ -7490,17 +7661,25 @@ export class PeerborneDocument<
     );
   }
 
-  private async _verifySyncRequest(request: SyncRequest): Promise<boolean> {
+  private async _verifySyncRequest(
+    request: SyncRequest,
+    role = this._syncRequestRole(request),
+  ): Promise<boolean> {
+    return (await role) !== undefined;
+  }
+
+  /** The verified requester's current role, or undefined if unauthenticated. */
+  private async _syncRequestRole(
+    request: SyncRequest,
+  ): Promise<'writer' | 'reader' | undefined> {
     if (
       request.documentId !== this.documentPath ||
       !this._isSigningEnabled()
     )
-      return false;
-    const keys = [
-      ...(await this._writers.users()),
-      ...(await this._readers.users()),
-    ];
-    for (const key of keys) {
+      return;
+    const writers = await this._writers.users();
+    const keys = [...writers, ...(await this._readers.users())];
+    for (const [index, key] of keys.entries()) {
       if (
         (await requireSerializePublicKey(
           this._authProvider,
@@ -7508,24 +7687,84 @@ export class PeerborneDocument<
         )(key)) !== request.requester
       )
         continue;
-      return (
-        (await this._authProvider.verify(
-          syncRequestSigningPayload(request),
-          key,
-          this._deserializeSignature(request.signature),
-        )) === true
-      );
+      return (await this._authProvider.verify(
+        syncRequestSigningPayload(request),
+        key,
+        this._deserializeSignature(request.signature),
+      )) === true
+        ? index < writers.length
+          ? 'writer'
+          : 'reader'
+        : undefined;
     }
-    return false;
+    return;
   }
 
+  /**
+   * Feed a member's request to automatic catch-up. Its first known tip is the
+   * requester's head: an equal head postpones this replica's periodic
+   * request; a held head, once verified, retracts the member's earlier
+   * advertisement; and an unknown head, once verified, is recorded as newer
+   * state that the member's PeerId can serve. Advertisements are keyed by the
+   * member's signing key, so one identity counts once.
+   */
+  private async _observeSyncRequest(
+    request: SyncRequest,
+    now: number | undefined,
+    role: () => Promise<'writer' | 'reader' | undefined>,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    const antiEntropy = this._antiEntropy;
+    if (
+      antiEntropy === undefined ||
+      now === undefined ||
+      !isSyncRequestFresh(request, now) ||
+      request.documentId !== this.documentPath ||
+      request.requesterPeer === this._localPeerId()
+    )
+      return;
+    const head = request.knownTips[0]!;
+    const held =
+      head === this._lastSyncMessage?.changeId || this._holdsChange(head);
+    if (head === this._lastSyncMessage?.changeId)
+      antiEntropy.equivalentRequest();
+    if (
+      held
+        ? !antiEntropy.admitRetraction(request.requester)
+        : !antiEntropy.admitAdvertisement(request.requester, head)
+    )
+      return;
+    const verified = await role();
+    if (verified === undefined || !isCurrent()) return;
+    antiEntropy.memberPeer(request.requesterPeer);
+    if (held) antiEntropy.retractAdvertisement(request.requester);
+    else
+      antiEntropy.advertisement(
+        request.requester,
+        request.requesterPeer,
+        head,
+        verified === 'writer',
+      );
+  }
+
+  /**
+   * Answer a member's sync request. `sender` is the GossipSub publisher of
+   * the frame; a request whose signed `requesterPeer` names another peer is
+   * ignored, so one member cannot speak for other PeerIds.
+   */
   private async _handleSyncRequest(
     request: SyncRequest,
     isCurrent: () => boolean = () => this._subscribed,
+    sender?: string,
   ): Promise<void> {
+    if (sender === undefined || sender !== request.requesterPeer) return;
     await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
+      let verification: Promise<'writer' | 'reader' | undefined> | undefined;
+      const role = () => (verification ??= this._syncRequestRole(request));
+      await this._observeSyncRequest(request, now, role, isCurrent);
+      if (!isCurrent()) return;
       const previous = this._lastSyncMessage,
         snapshot = this._latestSnapshot;
       const hasChange = !!previous?.changeId && !!previous.changes;
@@ -7545,11 +7784,9 @@ export class PeerborneDocument<
         !this._syncRequestCanBeAdmitted(request, now)
       )
         return;
-      if (
-        !(await this._verifySyncRequest(request)) ||
-        (await this._writers.check(this._userPublicKey)) !== true
-      )
-        return;
+      if (!(await this._verifySyncRequest(request, verification))) return;
+      this._antiEntropy?.memberPeer(request.requesterPeer);
+      if ((await this._writers.check(this._userPublicKey)) !== true) return;
       const snapshotKnown =
         !snapshot ||
         request.knownSnapshots.includes(
@@ -8291,7 +8528,10 @@ export class PeerborneDocument<
       if (receiveAdmission.active)
         console.error('Inbound sync message handling failed');
     };
-    const receiveFrame = async (frame: Uint8Array): Promise<void> => {
+    const receiveFrame = async (
+      frame: Uint8Array,
+      sender: string,
+    ): Promise<void> => {
       const rawContent = await this._decryptGossipFrame(frame);
       if (!rawContent || !receiveAdmission.active) return;
 
@@ -8301,6 +8541,7 @@ export class PeerborneDocument<
           await this._handleSyncRequest(
             request,
             () => this._subscribed && receiveAdmission.active,
+            sender,
           );
         }
         return;
@@ -8312,27 +8553,29 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
-      await this._syncGossipMessage(
+      const applied = await this._syncGossipMessage(
         message,
         () => receiveAdmission.active,
         // A reply carrying a snapshot is not a frame the author published,
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
+      if (applied) this._antiEntropy?.memberPeer(sender);
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
-    const retryFrame = (frame: Uint8Array) =>
-      receiveFrame(frame).catch(reportReceiveFailure);
+    const retryFrame = (sender: string) => (frame: Uint8Array) =>
+      receiveFrame(frame, sender).catch(reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
+      const sender = gossipSender(rawMessage.detail);
       void receiveAdmission
         .run(
           rawMessage.detail.data,
-          receiveFrame,
-          retryFrame,
-          gossipSender(rawMessage.detail),
+          (frame) => receiveFrame(frame, sender),
+          retryFrame(sender),
+          sender,
         )
         .catch(reportReceiveFailure);
     };
@@ -8383,7 +8626,11 @@ export class PeerborneDocument<
 
                   if (isSyncRequest(rawContent)) {
                     const request = decodeSyncRequest(rawContent);
-                    if (!request) return TopicValidatorResult.Reject;
+                    if (
+                      !request ||
+                      request.requesterPeer !== gossipSender(message)
+                    )
+                      return TopicValidatorResult.Reject;
                     return await this._runStateMutation(async () => {
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
@@ -8398,6 +8645,7 @@ export class PeerborneDocument<
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
                       if (!signatureValid) return TopicValidatorResult.Reject;
+                      this._antiEntropy?.memberPeer(request.requesterPeer);
                       const verified = this._observeSyncRequestClock();
                       return verified !== undefined &&
                         isSyncRequestFresh(request, verified)
@@ -8452,7 +8700,7 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
-                retryFrame,
+                retryFrame(gossipSender(message)),
                 gossipSender(message),
               );
               return receiveAdmission.active
@@ -8512,6 +8760,7 @@ export class PeerborneDocument<
     }
 
     this._beekemForkGuard?.assertAcceptsWork();
+    this._startAntiEntropy(pubsub);
     return isExisting;
   }
 
@@ -8557,6 +8806,8 @@ export class PeerborneDocument<
   }
 
   private async _closeResources(): Promise<void> {
+    this._antiEntropy?.close();
+    this._antiEntropy = undefined;
     this._gossipReceiveAdmission?.close();
     this._gossipReceiveAdmission = undefined;
     this._remoteBlockFetches?.abortAll();
@@ -8637,11 +8888,12 @@ export class PeerborneDocument<
    * after its writer signature verifies, so a block that no reachable peer
    * holds cannot stall local changes, other frames or `close()`.
    */
+  /** Returns whether the authenticated message was applied. */
   private async _syncGossipMessage(
     message: CRDTSyncMessage<ChangesType>,
     isActive: () => boolean,
     frameBytes?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let remoteFetches: RemoteBlockFetchScope | undefined;
     let prefetchedBlocks: ReadonlyMap<string, Uint8Array> | undefined;
     try {
@@ -8651,7 +8903,7 @@ export class PeerborneDocument<
             ? this._unknownDeferredCids(message, true)
             : undefined,
         );
-        if (cids === undefined) return;
+        if (cids === undefined) return false;
         if (cids.length > 0) {
           // The scope starts no fetch after the prefetch, so the frame then
           // applies without the blocks it could not prefetch.
@@ -8664,9 +8916,9 @@ export class PeerborneDocument<
           );
         }
       }
-      await this._runStateMutation(async () => {
-        if (!isActive()) return;
-        await this._syncUnlocked(
+      return await this._runStateMutation(async () => {
+        if (!isActive()) return false;
+        return this._syncUnlocked(
           message,
           true,
           'ordinary-sync-v1',
@@ -9226,6 +9478,7 @@ export class PeerborneDocument<
       }
       assertStillActive();
     }
+    this._antiEntropy?.remoteStateApplied();
 
     if (message.snapshot && snapshotAfterChanges) {
       await applyIncomingSnapshot(message.snapshot);

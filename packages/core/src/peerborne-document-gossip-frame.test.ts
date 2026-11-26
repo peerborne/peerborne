@@ -404,6 +404,7 @@ test('a sync reply too large for GossipSub is reported instead of published', as
     {
       documentId: '/gossip-frame',
       requester: 'reader',
+      requesterPeer: '12D3KooWReader',
       requestId: '00'.repeat(16),
       issuedAtMs: Date.now(),
       knownSnapshots: [],
@@ -411,6 +412,7 @@ test('a sync reply too large for GossipSub is reported instead of published', as
       signature: 'AQ==',
     },
     () => true,
+    '12D3KooWReader',
   );
   expect(published).toHaveLength(0);
   expect(warn).toHaveBeenCalledWith(

@@ -193,8 +193,9 @@ compaction settings, a writer whose retained tree reaches 256 levels takes a
 snapshot and prunes the tree to its 128 most recent inline changes, whatever
 `keepRecentNodes` says. Membership changes count toward that limit, and older
 ones stay attached as leaves. A peer that misses more changes than the retained
-tree holds cannot fill the gap from later messages; it needs `requestSync()` or
-a reload. This runs after local changes, remote syncs and loads; readers do
+tree holds cannot fill the gap from later messages; automatic catch-up fetches
+the writer's snapshot with a sync request, or loads when the reply does not fit
+a frame. This runs after local changes, remote syncs and loads; readers do
 not snapshot. A CRDT provider without `getSnapshot` cannot compact, so its
 documents still stop accepting changes at 512 levels.
 

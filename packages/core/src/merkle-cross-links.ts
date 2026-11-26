@@ -458,7 +458,43 @@ export function mergeRemoteSyncTree<ChangesType>(
       pending.push(entries[index]!);
     }
   }
+  attachPayloadsBelowKnownNodes(remoteRootId, remoteRoot, byCid);
   return Array.from(byCid.values());
+}
+
+/**
+ * A new node can cross-link a change whose inline copy sits beneath a node
+ * this replica already holds, for example below a snapshot boundary, where
+ * the walk stops. Use that payload instead of fetching the block.
+ */
+function attachPayloadsBelowKnownNodes<ChangesType>(
+  remoteRootId: string,
+  remoteRoot: CRDTChangeNode<ChangesType>,
+  byCid: Map<string, MergedSyncEntry<ChangesType>>,
+): void {
+  const deferred = new Set<string>();
+  for (const [cid, , change] of byCid.values())
+    if (change === undefined) deferred.add(cid);
+  if (deferred.size === 0) return;
+  const walked = new Set<string>();
+  const pending: Array<readonly [string, CRDTChangeNode<ChangesType>]> = [
+    [remoteRootId, remoteRoot],
+  ];
+  while (pending.length > 0 && deferred.size > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (deferred.has(nodeId) && node.change !== undefined) {
+      byCid.set(nodeId, [nodeId, node.kind, node.change]);
+      deferred.delete(nodeId);
+    }
+    if (
+      walked.has(nodeId) ||
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred
+    )
+      continue;
+    walked.add(nodeId);
+    for (const entry of Object.entries(node.children)) pending.push(entry);
+  }
 }
 
 /**
