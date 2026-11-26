@@ -1,5 +1,16 @@
 import { describe, expect, test } from '@jest/globals';
+import { PartialLocalChangeError } from '@peerborne/core';
+import type { LoroDoc } from 'loro-crdt';
 import { LoroProvider } from './index.js';
+
+function capture(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected the change to throw');
+}
 
 describe('experimental Loro provider', () => {
   test('merges concurrent offline changes after snapshot onboarding', () => {
@@ -75,5 +86,51 @@ describe('experimental Loro provider', () => {
     provider.remoteChange(target, delta);
     provider.applySnapshot(target, snapshot);
     expect(target.toJSON()).toEqual(source.toJSON());
+  });
+
+  test('a throwing change exports its partial edit so later updates still apply', () => {
+    const provider = new LoroProvider();
+    const alice = provider.newDocument();
+    const bob = provider.newDocument();
+    const [, initial] = provider.localChange(alice, 'init', (doc) => {
+      doc.getMap('data').set('title', 'v0');
+    });
+    provider.remoteChange(bob, initial);
+    const failure = new Error('validation');
+    const error = capture(() =>
+      provider.localChange(alice, 'bad', (doc) => {
+        doc.getMap('data').set('partial', 1);
+        throw failure;
+      }),
+    ) as PartialLocalChangeError<LoroDoc, Uint8Array>;
+    expect(error).toBeInstanceOf(PartialLocalChangeError);
+    expect(error.cause).toBe(failure);
+    expect(error.document).toBe(alice);
+    provider.remoteChange(bob, error.changes);
+    const [, next] = provider.localChange(alice, 'edit', (doc) => {
+      doc.getMap('data').set('title', 'v1');
+    });
+    provider.remoteChange(bob, next);
+    expect(bob.toJSON()).toEqual({ data: { title: 'v1', partial: 1 } });
+    expect(bob.toJSON()).toEqual(alice.toJSON());
+  });
+
+  test('a change that throws before editing rethrows its own error', () => {
+    const provider = new LoroProvider();
+    const alice = provider.newDocument();
+    const failure = new Error('rejected');
+    expect(
+      capture(() =>
+        provider.localChange(alice, 'bad', () => {
+          throw failure;
+        }),
+      ),
+    ).toBe(failure);
+    const [, next] = provider.localChange(alice, 'edit', (doc) => {
+      doc.getMap('data').set('title', 'v1');
+    });
+    const bob = provider.newDocument();
+    provider.remoteChange(bob, next);
+    expect(bob.toJSON()).toEqual(alice.toJSON());
   });
 });

@@ -75,7 +75,7 @@ import {
 import type { Connection, Stream } from '@libp2p/interface';
 import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
-import { CRDTProvider } from './crdt-provider.js';
+import { CRDTProvider, PartialLocalChangeError } from './crdt-provider.js';
 import {
   AuthProvider,
   requireDeserializePublicKey,
@@ -8456,8 +8456,14 @@ export class PeerborneDocument<
    * For immutable CRDT providers (e.g. Automerge), rollback is reliable
    * because `localChange()` returns a new document object.
    *
+   * A queued change function that throws discards the batch with Automerge.
+   * With an in-place provider (Yjs, Loro), the edits made before the throw
+   * are published as this transaction's change, then the original error is
+   * rethrown, so no later change depends on an unpublished edit.
+   *
    * **Known limitation -- in-place mutating providers:** For CRDT providers
-   * that mutate in place (e.g. Yjs), rollback does NOT undo mutations.
+   * that mutate in place (e.g. Yjs), rollback of a publish failure does NOT
+   * undo mutations.
    * Yjs's `localChange()` mutates the document object directly and returns
    * the same reference, so restoring the saved reference after failure has
    * no effect -- the mutations have already been applied to the shared
@@ -8573,6 +8579,7 @@ export class PeerborneDocument<
     // Bounded copy (max MAX_RECENT_TIPS entries) -- cheap to snapshot.
     const recentTipsSnapshot = [...this._recentTips];
 
+    let failure: { error: unknown } | undefined;
     this._committing = true;
     try {
       await this._ensureCurrentUserCanWrite();
@@ -8586,19 +8593,11 @@ export class PeerborneDocument<
         }
       }) as ChangeFnType;
 
-      // Note: YjsProvider.localChange mutates the document in-place and returns
-      // the same reference, so rollback on failure is best-effort for Yjs.
-      // Automerge returns a new immutable document, so rollback is reliable.
-      const [newDocument, changes] = this._crdtProvider.localChange(
-        this._document,
-        message || '',
-        composedFn,
-      );
-      this._document = newDocument;
+      const applied = this._applyLocalChange(composedFn, message);
+      await this._makeChange(applied.changes);
+      failure = applied.failure;
 
-      await this._makeChange(changes);
-
-      // Success -- clear transaction state.
+      // The published change, partial or not, ends the transaction.
       this._inTransaction = false;
       this._pendingChangeFns = [];
     } catch (err) {
@@ -8654,12 +8653,16 @@ export class PeerborneDocument<
     } finally {
       this._committing = false;
     }
+    if (failure) throw failure.error;
   }
 
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
    * An oversized encrypted block retires the legacy instance before publication.
+   * If `changeFn` throws, its error is rethrown. Automerge discards the edit;
+   * an in-place provider (Yjs, Loro) first publishes the edits made before
+   * the throw.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -8681,15 +8684,30 @@ export class PeerborneDocument<
     }
     await this._ensureCurrentUserCanWrite();
 
-    const [newDocument, changes] = this._crdtProvider.localChange(
-      this._document,
-      message || '',
-      changeFn,
-    );
-    // Apply local change w/ automerge.
-    this._document = newDocument;
-
+    const { changes, failure } = this._applyLocalChange(changeFn, message);
     await this._makeChange(changes);
+    if (failure) throw failure.error;
+  }
+
+  /** Publish a partial in-place edit before its change function's error is rethrown. */
+  private _applyLocalChange(
+    changeFn: ChangeFnType,
+    message?: string,
+  ): { changes: ChangesType; failure?: { error: unknown } } {
+    try {
+      const [document, changes] = this._crdtProvider.localChange(
+        this._document,
+        message || '',
+        changeFn,
+      );
+      this._document = document;
+      return { changes };
+    } catch (error) {
+      if (!(error instanceof PartialLocalChangeError)) throw error;
+      const partial = error as PartialLocalChangeError<DocType, ChangesType>;
+      this._document = partial.document;
+      return { changes: partial.changes, failure: { error: partial.cause } };
+    }
   }
 
   /**

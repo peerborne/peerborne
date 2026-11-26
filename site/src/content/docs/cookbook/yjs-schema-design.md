@@ -46,6 +46,8 @@ await swarmDoc.change((doc: Y.Doc) => {
 
 A Yjs transaction does not make network publication transactional, does not span Peerborne documents, and does not roll back an in-place Yjs mutation if later asynchronous storage/publication fails.
 
+Yjs cannot roll back a change function that throws. Peerborne publishes the edits it made before the throw and then rejects with the function's own error, so peers keep applying later updates. Validate input before the first edit when a rejected change must leave the document untouched.
+
 ## IDs, lists, and counters
 
 Reference list entries by stable IDs, never array indexes. Reordering by delete/reinsert can duplicate an item under concurrency; for frequently sorted collections, consider a map keyed by ID plus an application-defined sortable key.

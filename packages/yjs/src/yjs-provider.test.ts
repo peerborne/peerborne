@@ -13,6 +13,7 @@ import {
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   MAX_KEYCHAIN_EPOCHS,
+  PartialLocalChangeError,
   retryACLConflict,
   snapshotDeepEnumerableData,
   type CRDTChangeNode,
@@ -161,6 +162,71 @@ describe('YjsProvider', () => {
     provider.remoteChange(doc2, changes);
     expect(doc2.getMap('shared').get('x')).toBe('synced');
     expect(doc2.getArray('list').get(0)).toBe('item1');
+  });
+
+  test.each([
+    [
+      'insertion',
+      (doc: Doc) => doc.getMap('data').set('partial', 1),
+      { title: 'v1', partial: 1 },
+    ],
+    [
+      'deletion',
+      (doc: Doc) => doc.getMap('data').delete('title'),
+      { title: 'v1' },
+    ],
+  ])(
+    'a change that throws after an %s exports the partial edit',
+    (_kind, edit, expected) => {
+      const provider = new YjsProvider();
+      const alice = provider.newDocument();
+      const bob = provider.newDocument();
+      const [, initial] = provider.localChange(alice, 'init', (doc) => {
+        doc.getMap('data').set('title', 'v0');
+      });
+      provider.remoteChange(bob, initial);
+      const failure = new Error('validation');
+      let error: unknown;
+      try {
+        provider.localChange(alice, 'bad', (doc) => {
+          edit(doc);
+          throw failure;
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(PartialLocalChangeError);
+      const partial = error as PartialLocalChangeError<Doc, Uint8Array>;
+      expect(partial.cause).toBe(failure);
+      expect(partial.document).toBe(alice);
+      provider.remoteChange(bob, partial.changes);
+      expect(bob.getMap('data').toJSON()).toEqual(
+        alice.getMap('data').toJSON(),
+      );
+      const [, next] = provider.localChange(alice, 'edit', (doc) => {
+        doc.getMap('data').set('title', 'v1');
+      });
+      provider.remoteChange(bob, next);
+      expect(bob.getMap('data').toJSON()).toEqual(expected);
+      expect(bob.getMap('data').toJSON()).toEqual(
+        alice.getMap('data').toJSON(),
+      );
+    },
+  );
+
+  test('a change that throws before editing rethrows its own error', () => {
+    const provider = new YjsProvider();
+    const doc = provider.newDocument();
+    const failure = new Error('rejected');
+    let error: unknown;
+    try {
+      provider.localChange(doc, 'bad', () => {
+        throw failure;
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBe(failure);
   });
 });
 

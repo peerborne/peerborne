@@ -9,6 +9,7 @@ import {
   CRDTProvider,
   CRDTDocumentSession,
   PreparedDocumentChange,
+  PartialLocalChangeError,
   DocumentOperationTargets,
   DocumentPreparationOptions,
   preparedDocumentChange,
@@ -800,7 +801,31 @@ export class YjsProvider
     changeFn: (doc: Doc) => void,
   ): [Doc, Uint8Array] {
     const beforeSV = encodeStateVector(document);
-    changeFn(document);
+    let edited = false;
+    const onTransaction = ({
+      beforeState,
+      afterState,
+      deleteSet,
+    }: Transaction) => {
+      edited ||=
+        deleteSet.clients.size > 0 ||
+        [...afterState].some(
+          ([client, clock]) => beforeState.get(client) !== clock,
+        );
+    };
+    document.on('afterTransaction', onTransaction);
+    try {
+      changeFn(document);
+    } catch (error) {
+      if (!edited) throw error;
+      throw new PartialLocalChangeError(
+        error,
+        document,
+        encodeStateAsUpdateV2(document, beforeSV),
+      );
+    } finally {
+      document.off('afterTransaction', onTransaction);
+    }
     const changes = encodeStateAsUpdateV2(document, beforeSV);
 
     // Y.Doc is always mutated in-place -- returning the same reference is

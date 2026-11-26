@@ -1,6 +1,22 @@
 import type { CRDTDocumentSession } from './document-crdt-session.js';
 
 /**
+ * A change function threw after editing a document that cannot be rolled back.
+ * `changes` encodes that partial edit. Publish it before surfacing `cause`, or
+ * later changes from this replica depend on an edit no peer received.
+ */
+export class PartialLocalChangeError<DocType, ChangesType> extends Error {
+  constructor(
+    cause: unknown,
+    readonly document: DocType,
+    readonly changes: ChangesType,
+  ) {
+    super('Change function failed after editing the document', { cause });
+    this.name = 'PartialLocalChangeError';
+  }
+}
+
+/**
  * The crdt provider provides an implementation of a set of methods for interacting with crdts generally
  */
 
@@ -25,6 +41,10 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
 
   /**
    * Apply locally made changes to provided CRDT document as defined by `changeFn`.
+   *
+   * If `changeFn` throws, leave `document` without its edits and rethrow the
+   * error. A provider that edits in place and cannot roll back throws
+   * {@link PartialLocalChangeError} instead when the callback edited anything.
    *
    * @param document CRDT document to change.
    * @param message A description of the change made.

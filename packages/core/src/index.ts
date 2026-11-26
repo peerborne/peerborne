@@ -27,7 +27,7 @@ import {
 // `dgram`) and must not be bundled by browser consumers. Import it from the
 // dedicated Node subpath export:
 //   import { PeerborneNode, defaultNodeConfig } from '@peerborne/core/node';
-import { CRDTProvider } from './crdt-provider.js';
+import { CRDTProvider, PartialLocalChangeError } from './crdt-provider.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import { ChangesSerializer } from './changes-serializer.js';
 import { JSONSerializer } from './json-serializer.js';
@@ -203,6 +203,7 @@ export {
   CRDTSyncMessage,
   isSyncMessageSignatureContext,
   CRDTProvider,
+  PartialLocalChangeError,
   ChangesSerializer,
   EPOCH_ID_LENGTH,
   toHex,
