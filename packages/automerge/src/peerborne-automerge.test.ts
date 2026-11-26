@@ -14,6 +14,7 @@ import {
   change as automergeChange,
   decodeChange,
   decodeChange as decodeAutomergeChange,
+  encodeChange as encodeAutomergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
@@ -682,10 +683,43 @@ describe('AutomergeACL', () => {
         (binaryChange) =>
           decodeAutomergeChange(binaryChange).actor === seed.actor,
       )!;
+      const authoredSeedChange = encodeAutomergeChange({
+        ...decodeAutomergeChange(
+          getAllAutomergeChanges(
+            automergeChange(
+              automergeInit<AutomergeACLShape>({ author: 'cdcd' }),
+              { time: seed.time },
+              (doc) => {
+                doc.users = {};
+              },
+            ),
+          )[0]!,
+        ),
+        actor: seed.actor,
+      });
+      const { author, hash, ...authoredSeed } =
+        decodeAutomergeChange(authoredSeedChange);
+      const { author: seedAuthor, hash: seedHash, ...canonicalSeed } = seed;
+      expect(author).toBe('cdcd');
+      expect(seedAuthor ?? null).toBeNull();
+      expect(hash).not.toBe(seedHash);
+      expect(authoredSeed).toMatchObject(canonicalSeed);
+      const seedWithExtraBytes = { ...seed, extra_bytes: [0xde, 0xad, 0xbe, 0xef] };
+      const extraBytesSeedChange = encodeAutomergeChange(seedWithExtraBytes);
+      const {
+        author: extraBytesAuthor,
+        hash: extraBytesHash,
+        ...extraBytesSeed
+      } = decodeAutomergeChange(extraBytesSeedChange);
+      expect(extraBytesAuthor ?? null).toBeNull();
+      expect(extraBytesHash).not.toBe(seedHash);
+      expect(extraBytesSeed).toMatchObject(canonicalSeed);
 
       for (const nearSeed of [
         getAllAutomergeChanges(malformedSeed)[0]!,
         dependentSeedChange,
+        authoredSeedChange,
+        extraBytesSeedChange,
       ]) {
         const oversizedNearSeedHistory = [
           nearSeed,
@@ -2046,6 +2080,42 @@ function appendTestKeychainEntry(
   });
 }
 
+describe('Automerge canonical change encoding', () => {
+  test('the encoder reproduces the pinned keychain and ACL change hashes', async () => {
+    const keychainHistory = new AutomergeKeychain().history();
+    expect(keychainHistory).toHaveLength(1);
+    const appended = automergeChange(
+      automergeClone(
+        applyAutomergeChanges(automergeInit<TestKeychainDoc>(), keychainHistory)[0],
+        { actor: 'cd'.repeat(16) },
+      ),
+      { time: 0 },
+      (doc) => {
+        doc.keys.push(['11'.repeat(32), btoa('"'.repeat(32))]);
+      },
+    );
+    const appendedHistory = getAllAutomergeChanges(appended);
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(appendedHistory),
+    ).not.toThrow();
+    const aclSeed = (
+      await new AutomergeACL().prepareAdd(
+        await importECDSAPublicKey(publicKeyData1),
+      )
+    ).changes[0]!;
+
+    expect(
+      [...appendedHistory, aclSeed].map(
+        (binaryChange) => decodeAutomergeChange(binaryChange).hash,
+      ),
+    ).toEqual([
+      '67853c31d15d770aae8dbea551f5467b9b72d54c0a3573b4d3aea5e8aae2c2af',
+      '05acb7975df99406a8a578ec684b7471a2963df10720c1bf290cb182b7e74fb0',
+      '6abe75e2d6c77d8c1ee0ca093f55a239d31a569eccfb23fac735b385d0751db8',
+    ]);
+  });
+});
+
 const KEYCHAIN_COMMITMENT_GOLDENS = [
   'afa90588687d49cacdf36100e04468733207c5544dabe98108d6b572a2fa4d1f',
   'bd87e8f14d8d98a4862512d74e47b1406b7f57773dc1f619551b7f47c49ce50f',
@@ -3007,6 +3077,36 @@ describe('AutomergeKeychain', () => {
     );
     expect(() =>
       new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(metadata)),
+    ).toThrow('Keychain history contains unrelated metadata');
+
+    const authored = appendTestKeychainEntry(
+      automergeClone(newTestKeychainDoc(), { author: 'cdcd' }),
+      firstEntry,
+    );
+    expect(
+      decodeAutomergeChange(getAllAutomergeChanges(authored)[1]).author,
+    ).toBe('cdcd');
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(authored)),
+    ).toThrow('Keychain history contains unrelated metadata');
+
+    const [plainSeed, plainAppend] = getAllAutomergeChanges(
+      appendTestKeychainEntry(newTestKeychainDoc(), firstEntry),
+    );
+    const appendWithExtraBytes = {
+      ...decodeAutomergeChange(plainAppend),
+      extra_bytes: [0xde, 0xad, 0xbe, 0xef],
+    };
+    const extraBytesAppend = encodeAutomergeChange(appendWithExtraBytes);
+    expect(decodeAutomergeChange(extraBytesAppend).author ?? null).toBeNull();
+    expect(decodeAutomergeChange(extraBytesAppend).hash).not.toBe(
+      decodeAutomergeChange(plainAppend).hash,
+    );
+    expect(() =>
+      new AutomergeKeychain().prepareMerge([plainSeed, plainAppend]),
+    ).not.toThrow();
+    expect(() =>
+      new AutomergeKeychain().prepareMerge([plainSeed, extraBytesAppend]),
     ).toThrow('Keychain history contains unrelated metadata');
 
     const concurrent = automergeMerge(

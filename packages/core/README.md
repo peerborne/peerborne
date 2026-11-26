@@ -27,6 +27,36 @@ Applications can instead supply compatible provider, serializer, ACL, and keycha
 - `@peerborne/core/node` — the Node-only `PeerborneNode` runtime and default node configuration
 - `@peerborne/core/browser-primitives` — targeted browser-safe primitives without the full libp2p and Helia stack
 
+## Choose a runtime configuration
+
+`defaultConfig` from `@peerborne/core` is for browsers. It stores blocks and
+data in IndexedDB, so `initialize()` rejects with `indexedDB is not defined`
+under Node.js. In Node.js, use `defaultNodeConfig` from `@peerborne/core/node`.
+
+`defaultNodeConfig` binds no local socket: a Node process accepts connections
+only through a Circuit Relay reservation, so two Node processes with the default
+cannot dial each other directly. To accept direct connections, add a listen
+address that a configured transport can bind:
+
+```ts
+import { defaultBootstrapConfig } from '@peerborne/core';
+import { defaultNodeConfig } from '@peerborne/core/node';
+
+const config = defaultNodeConfig(defaultBootstrapConfig([]));
+const libp2p = config.helia!.libp2p!;
+libp2p.addresses = {
+  ...libp2p.addresses,
+  listen: [...(libp2p.addresses?.listen ?? []), '/ip4/127.0.0.1/tcp/4010/ws'],
+};
+```
+
+Another node can then `connect()` to
+`/ip4/127.0.0.1/tcp/4010/ws/p2p/<peer-id>`. Bind a non-loopback interface only
+when the process should be reachable from the network.
+
+Opening an existing document from peers also needs trusted-load configuration;
+see [Open existing documents](https://peerborne.io/concepts/documents/#open-existing-documents).
+
 ## Diagnose connections
 
 `connect()` accepts cancellation, opt-in transport retries, and structured progress:

@@ -28,8 +28,8 @@ export interface PeerborneCollectionOptions<
 }
 
 /**
- * Experimental eager collection projection, pinned to the declared TanStack DB
- * peer version. Each document notification replaces the complete row snapshot.
+ * Experimental eager collection projection for the declared TanStack DB peer
+ * range. Each document notification replaces the complete row snapshot.
  * This does not implement query-driven network synchronization or persistence.
  * Construct during SSR, but start/preload the collection only in its owner runtime.
  */

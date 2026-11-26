@@ -48,7 +48,7 @@
     "node": ">=26.13.1"
   },
   "devDependencies": {
-    "@automerge/automerge": "3.5.0",
+    "@automerge/automerge": "^3.5.0",
     "@peculiar/webcrypto": "^1.7.2",
     "@types/node": "^26.6.7",
     "eslint": "^10.15.0",
@@ -59,10 +59,11 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@peerborne/core": "workspace:^"
+    "@peerborne/core": "workspace:^",
+    "js-base64": "^3.9.7"
   },
   "peerDependencies": {
-    "@automerge/automerge": "3.5.0"
+    "@automerge/automerge": "^3.5.0"
   },
   "publishConfig": {
     "access": "public"

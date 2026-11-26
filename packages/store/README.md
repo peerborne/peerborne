@@ -59,7 +59,7 @@ handle is not reopened: a configured `beekemForkStore` keeps its guard closed,
 and a closed coordinated document stays closed.
 
 - [Framework-free web guide](https://peerborne.io/getting-started/vanilla/)
-- [Runnable examples](../../examples/integrations/README.md)
+- [Runnable examples](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md)
 - [Integration evidence and limits](https://peerborne.io/reference/integration-status/)
 
 Peerborne remains alpha software, not production-ready. Package license: MIT.

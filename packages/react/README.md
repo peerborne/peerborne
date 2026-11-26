@@ -27,7 +27,7 @@ Use these bindings in a React application. It depends on `@peerborne/core`, decl
 - [Current limitations](https://peerborne.io/concepts/limitations/)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
 
-Pass `'create'` as the fourth argument to `usePeerborneDocumentState` when the application explicitly authorizes a new path. The default opens existing state; a failed open never creates a replacement on its own. Concurrent subscribers share one activation for that path. A `'create'` subscriber that joins an in-flight open creates the document only if that open fails, and a failed activation is dropped so the next mount retries it.
+Pass `'create'` as the fourth argument to `usePeerborneDocumentState` when the application explicitly authorizes a new path. The default `'open'` mode loads existing state from peers, so the node configuration must include `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters`. If no connected peer can serve the path (a relay cannot), the hook's activation error is `No document state is available…`; if one can and `resolveLoadSecurityCommitments` is missing, it is a `TrustedLoadSecurityCommitmentsError`. See [Open existing documents](https://peerborne.io/concepts/documents/#open-existing-documents). A failed open never creates a replacement on its own. Concurrent subscribers share one activation for that path. A `'create'` subscriber that joins an in-flight open creates the document only if that open fails, and a failed activation is dropped so the next mount retries it.
 
 ## Shared document stores
 
@@ -36,4 +36,7 @@ networking runtime. Pass one shared `@peerborne/store` per node/document path;
 the hook needs no context caches and retains ownership after mounting. Await
 `store.change` to handle mutation failures. See the
 [framework guide](https://peerborne.io/cookbook/framework-integrations/) and
-[browser examples](../../examples/integrations/README.md).
+[browser examples](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md).
+A document returned by `acceptInvitation()` is already open; wrap it with
+`createDocumentStore(document, { manageLifecycle: false })` and use this hook
+instead of opening its path again.

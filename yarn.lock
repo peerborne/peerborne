@@ -362,7 +362,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@automerge/automerge@npm:3.5.0":
+"@automerge/automerge@npm:3.5.0, @automerge/automerge@npm:^3.5.0":
   version: 3.5.0
   resolution: "@automerge/automerge@npm:3.5.0"
   checksum: 10/b3ac8d433359debfd7a5d6e26aa250d816b9d0515cccba0697ac66744df0e87dc49a1a0a0c3e8f68037c474514422df346fe9aa4cd851b5edca836a93f37b6dd
@@ -4060,18 +4060,19 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/automerge@workspace:packages/automerge"
   dependencies:
-    "@automerge/automerge": "npm:3.5.0"
+    "@automerge/automerge": "npm:^3.5.0"
     "@peculiar/webcrypto": "npm:^1.7.2"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.7"
     eslint: "npm:^10.15.0"
     fast-check: "npm:^4.11.0"
     jest: "npm:^30.5.2"
+    js-base64: "npm:^3.9.7"
     ts-jest: "npm:^29.4.15"
     ts-node: "npm:^10.9.2"
     typescript: "npm:^6.0.3"
   peerDependencies:
-    "@automerge/automerge": 3.5.0
+    "@automerge/automerge": ^3.5.0
   bin:
     peerborne-automerge-d: dist/esm/bin/peerborne-automerge-d.js
   languageName: unknown
@@ -4371,7 +4372,7 @@ __metadata:
   peerDependencies:
     "@peerborne/core": "workspace:^"
     redux: ^4.0.0 || ^5.0.0
-    redux-thunk: ^2.0.0 || ^3.0.0
+    redux-thunk: ^2.3.0 || ^3.0.0
   languageName: unknown
   linkType: soft
 
@@ -4415,7 +4416,7 @@ __metadata:
     ts-jest: "npm:^29.4.15"
     typescript: "npm:^6.0.3"
   peerDependencies:
-    svelte: ^5.59.1
+    svelte: ^4.0.0 || ^5.0.0
   languageName: unknown
   linkType: soft
 
@@ -4430,7 +4431,7 @@ __metadata:
     ts-jest: "npm:^29.4.15"
     typescript: "npm:^6.0.3"
   peerDependencies:
-    "@tanstack/db": 1.0.0-rc.1.5
+    "@tanstack/db": ^1.0.0-rc.1.5
   languageName: unknown
   linkType: soft
 
@@ -4470,7 +4471,7 @@ __metadata:
     typescript: "npm:^6.0.3"
     vue: "npm:^3.5.46"
   peerDependencies:
-    vue: ^3.5.46
+    vue: ^3.2.25
   languageName: unknown
   linkType: soft
 
@@ -4520,6 +4521,7 @@ __metadata:
     eslint: "npm:^10.15.0"
     fast-check: "npm:^4.11.0"
     jest: "npm:^30.5.2"
+    js-base64: "npm:^3.9.7"
     ts-jest: "npm:^29.4.15"
     ts-node: "npm:^10.9.2"
     typescript: "npm:^6.0.3"

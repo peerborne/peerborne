@@ -165,6 +165,10 @@ export function resolveIceServers(override?: ReadonlyArray<Readonly<IceServer>>)
 /**
  * Default peerborne config to use if none is provided.
  *
+ * Browser only: it stores blocks and data in IndexedDB, so `initialize()`
+ * rejects with `indexedDB is not defined` under Node.js. Use
+ * `defaultNodeConfig` from `@peerborne/core/node` in Node.js.
+ *
  * Note: This is a browser-compatible default. It does not include mDNS
  *       (which requires the Node-only `dgram` module). Without bootstrap
  *       nodes this node will be in a swarm of one; use

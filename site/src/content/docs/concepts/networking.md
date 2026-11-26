@@ -35,6 +35,26 @@ await swarm.initialize(config);
 
 In practice, browser peers typically use WebSocket to reach a relay, and may upgrade to WebRTC or WebTransport for direct peer connections when NAT traversal succeeds.
 
+`defaultConfig` is browser only: it stores blocks and data in IndexedDB, so
+`initialize()` rejects with `indexedDB is not defined` under Node.js. Node
+processes use `defaultNodeConfig` from `@peerborne/core/node`. Neither default
+includes the TCP transport. The Node default's listen addresses bind no local
+socket, so a Node process accepts connections only through a Circuit Relay
+reservation. To let another node dial it directly, add a listen address that a
+configured transport can bind:
+
+```ts
+import { defaultBootstrapConfig } from '@peerborne/core';
+import { defaultNodeConfig } from '@peerborne/core/node';
+
+const config = defaultNodeConfig(defaultBootstrapConfig([]));
+const libp2p = config.helia!.libp2p!;
+libp2p.addresses = {
+  ...libp2p.addresses,
+  listen: [...(libp2p.addresses?.listen ?? []), '/ip4/127.0.0.1/tcp/4010/ws'],
+};
+```
+
 ## PubSub: GossipSub
 
 Document updates are announced and delivered via **GossipSub** — a pubsub protocol built on libp2p. Each document has a corresponding pubsub topic derived from its document ID:

@@ -82,9 +82,67 @@ describe('peerborne-redux async thunks', () => {
     getState = jest.fn();
   });
 
-  test('connectAsync warns when node not initialized', async () => {
-    getState.mockReturnValue({ documents: {}, peers: [] });
-    await expect(actions.connectAsync(['addr1'])(dispatch, getState)).resolves.toBeUndefined();
+  test('rejects a nested store when no selector is supplied', async () => {
+    getState.mockReturnValue({ peerborne: { node: mockNode, documents: {}, peers: [] } });
+    for (const thunk of [
+      actions.initializeAsync({}),
+      actions.connectAsync(['addr1']),
+      actions.openDocumentAsync('/doc'),
+      actions.closeDocumentAsync('/doc'),
+      actions.changeDocumentAsync('/doc', {}),
+    ]) {
+      await expect(thunk(dispatch, getState)).rejects.toThrow(
+        'Peerborne Redux state was not found. The default selector expects peerborneReducer at the root of the store; pass a selector such as (state) => state.peerborne when the reducer is nested.',
+      );
+    }
+    expect(mockNode.subscribeToPeerConnect).not.toHaveBeenCalled();
+    expect(mockNode.initialize).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test('rejects a selector that does not return Peerborne state', async () => {
+    getState.mockReturnValue({ peerborne: undefined });
+    await expect(
+      actions.initializeAsync({}, (state: any) => state.peerborne)(dispatch, getState),
+    ).rejects.toThrow(TypeError);
+    expect(mockNode.initialize).not.toHaveBeenCalled();
+  });
+
+  test('initializeAsync uses the selector for a nested store', async () => {
+    const config = {};
+    getState.mockReturnValue({ peerborne: { node: mockNode, documents: {}, peers: [] } });
+    await expect(
+      actions.initializeAsync(config, (state: any) => state.peerborne)(dispatch, getState),
+    ).resolves.toBe(mockNode);
+    expect(mockNode.initialize).toHaveBeenCalledWith(config);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_INITIALIZE' }));
+  });
+
+  test('rejects root state that only resembles Peerborne state', async () => {
+    for (const state of [
+      { documents: {}, peers: [] },
+      { node: mockNode, documents: {} },
+      { node: mockNode, documents: null, peers: [] },
+      { documents: { '/doc': { documentRef: mockDocRef } }, todos: [] },
+    ]) {
+      getState.mockReturnValue(state);
+      for (const thunk of [
+        actions.initializeAsync({}),
+        actions.connectAsync(['addr1']),
+        actions.openDocumentAsync('/doc'),
+        actions.closeDocumentAsync('/doc'),
+        actions.changeDocumentAsync('/doc', {}),
+      ]) {
+        await expect(thunk(dispatch, getState)).rejects.toThrow(
+          'Peerborne Redux state was not found',
+        );
+      }
+    }
+    expect(mockNode.initialize).not.toHaveBeenCalled();
+    expect(mockNode.connect).not.toHaveBeenCalled();
+    expect(mockDocRef.close).not.toHaveBeenCalled();
+    expect(mockDocRef.change).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   test('connectAsync connects and dispatches when node exists', async () => {
@@ -92,12 +150,6 @@ describe('peerborne-redux async thunks', () => {
     await actions.connectAsync(['addr1'])(dispatch, getState);
     expect(mockNode.connect).toHaveBeenCalledWith(['addr1']);
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_CONNECT' }));
-  });
-
-  test('openDocumentAsync warns when node not initialized', async () => {
-    getState.mockReturnValue({ documents: {}, peers: [] });
-    const result = await actions.openDocumentAsync('/doc')(dispatch, getState);
-    expect(result).toBeNull();
   });
 
   test('openDocumentAsync warns when no doc for path', async () => {
@@ -136,6 +188,7 @@ describe('peerborne-redux async thunks', () => {
 
   test('closeDocumentAsync closes open document', async () => {
     getState.mockReturnValue({
+      node: mockNode,
       documents: { '/doc': { documentRef: mockDocRef, document: {} } },
       peers: [],
     });
@@ -146,13 +199,14 @@ describe('peerborne-redux async thunks', () => {
   });
 
   test('changeDocumentAsync throws when document not open', async () => {
-    getState.mockReturnValue({ documents: {}, peers: [] });
+    getState.mockReturnValue({ node: mockNode, documents: {}, peers: [] });
     await expect(actions.changeDocumentAsync('/doc', {})(dispatch, getState)).rejects.toThrow(/not opened/);
   });
 
   test('changeDocumentAsync changes document and dispatches', async () => {
     const changeFn = {};
     getState.mockReturnValue({
+      node: mockNode,
       documents: { '/doc': { documentRef: mockDocRef, document: { text: 'old' } } },
       peers: [],
     });

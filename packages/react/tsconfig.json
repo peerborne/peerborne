@@ -7,7 +7,6 @@
       "ESNext",
       "DOM"
     ],
-    "sourceMap": true,
     "strict": true,
     "declaration": true,
     "types": [

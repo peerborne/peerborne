@@ -65,7 +65,8 @@
     "yjs": "^13.6.33"
   },
   "dependencies": {
-    "@peerborne/core": "workspace:^"
+    "@peerborne/core": "workspace:^",
+    "js-base64": "^3.9.7"
   },
   "peerDependencies": {
     "yjs": "^13.6.33"
