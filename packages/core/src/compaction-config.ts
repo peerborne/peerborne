@@ -33,12 +33,17 @@ export interface CompactionConfig {
    * gone, peers that lazy-load it via {@link PeerborneDocument.loadChangeBlock}
    * or that re-broadcast the change will not be able to fetch the data locally.
    *
+   * Only blocks that this document stored for its own changes while this
+   * option was on are deleted, never blocks fetched from peers or stored by
+   * another document or the application, even when a change tree names them.
    * Deletion preserves current tree references, snapshot boundaries, recent
    * tips and existing Helia pins. A changed retention lease pauses the pass;
    * `collectGarbage()` can retry retained candidates. One block deletion holds
    * the mutation queue until its I/O settles, then yields to pending work.
-   * Candidate metadata is bounded to 32,768 identifiers of at most 512 code
-   * units each. This is not a total blockstore quota or browser heap bound.
+   * The record of stored blocks, and so the candidate metadata, is bounded to
+   * 32,768 identifiers of at most 512 code units each; once it is full, the
+   * oldest stored block is forgotten and kept. This is not a total blockstore
+   * quota or browser heap bound.
    * CIDs remain in `_hashes` for incoming-message deduplication.
    *
    * Has no effect when `pruneAfterSnapshot` is false.

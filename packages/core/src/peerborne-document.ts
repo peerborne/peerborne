@@ -224,6 +224,7 @@ import {
   collectLiveBlocks,
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
+  rememberOwnBlock,
 } from './blockstore-gc.js';
 import { documentTopic } from './document-topic.js';
 import { ACLProvider } from './acl-provider.js';
@@ -1599,6 +1600,7 @@ export class PeerborneDocument<
   private _gcClosed = false;
   private _gcInProgress?: Promise<void>;
   private _gcCandidates = new Set<string>();
+  private _ownBlocks = new Set<string>();
   private _gcRequested = false;
   private _snapshotUnsupported = false;
   // Counts only document-kind changes (excludes ACL reader/writer changes).
@@ -2231,8 +2233,14 @@ export class PeerborneDocument<
       );
     }
     const blockData = concatUint8Arrays(documentKeyID, nonce, data);
-    const newFileResult = await this.heliaFs.addBytes(blockData);
-    return newFileResult.toString();
+    const cid = (await this.heliaFs.addBytes(blockData)).toString();
+    if (
+      kind === crdtDocumentChangeNode &&
+      this._compactionConfig.gcAfterPrune &&
+      this._compactionConfig.pruneAfterSnapshot
+    )
+      rememberOwnBlock(this._ownBlocks, this._gcCandidates, cid);
+    return cid;
   }
 
   /**
@@ -5340,6 +5348,8 @@ export class PeerborneDocument<
 
   /**
    * Delete currently unreferenced, unpinned blocks under a retention lease.
+   * Only blocks this document stored itself are candidates: any writer can
+   * name an arbitrary CID in its change tree.
    * Each deletion owns one mutation-queue slot until its I/O settles.
    */
   private async _gcPrunedBlocks(
@@ -5352,6 +5362,7 @@ export class PeerborneDocument<
       throw new RangeError('Garbage collection candidate limit exceeded');
     const nextCandidates = new Set(this._gcCandidates);
     for (const cid of prunedCIDs) {
+      if (typeof cid === 'string' && !this._ownBlocks.has(cid)) continue;
       if (
         typeof cid !== 'string' ||
         !canRetainGcCandidate(
@@ -5399,7 +5410,9 @@ export class PeerborneDocument<
               ...(boundary ? [boundary] : []),
               ...tips.map((tip) => tip.cid),
             ];
-            const candidates = [...this._gcCandidates];
+            const candidates = [...this._gcCandidates].filter((cid) =>
+              this._ownBlocks.has(cid),
+            );
             const selected =
               message?.changeId && root && snapshot
                 ? filterDeletableCIDs(
@@ -5419,7 +5432,9 @@ export class PeerborneDocument<
             await this.swarm.heliaNode.blockstore.delete(CID.parse(cid));
           },
           completed: (cid, outcome) => {
-            if (outcome === 'deleted') this._gcCandidates.delete(cid);
+            if (outcome !== 'deleted') return;
+            this._gcCandidates.delete(cid);
+            this._ownBlocks.delete(cid);
           },
           yield: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
           failed: () => {
@@ -8027,6 +8042,7 @@ export class PeerborneDocument<
         hashes: [...this._hashes],
         ancestors: [...this._referencedAncestors],
         recentTips: this._recentTips.map(({ cid, kind }) => [cid, kind]),
+        ownBlocks: [...this._ownBlocks],
         gcCandidates: [...this._gcCandidates],
         documentChangeCount: this._documentChangeCount,
         changesSinceSnapshot: this._changesSinceSnapshot,
@@ -8240,6 +8256,7 @@ export class PeerborneDocument<
       this._hashes = hashes;
       this._referencedAncestors = ancestors;
       this._recentTips = recentTips;
+      this._ownBlocks = new Set(state.ownBlocks);
       this._gcCandidates = new Set(state.gcCandidates);
       this._latestSnapshot = message.snapshot;
       this._documentChangeCount = state.documentChangeCount;
