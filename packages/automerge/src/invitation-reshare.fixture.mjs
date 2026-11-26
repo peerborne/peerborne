@@ -338,8 +338,12 @@ test('a collaborator cannot plant its own key or ratchet tree in the founder', a
   const honestTree = document._beekem;
 
   // Any writer can publish a reader row, including one for the founder.
+  await editor._bindACLActor('reader');
   await editor._makeChangeOnce(
-    await editor._readers.add(founder.identity.publicKey),
+    await editor._authorACLChange(
+      'reader',
+      await editor._readers.add(founder.identity.publicKey),
+    ),
     'reader',
   );
   await until(
@@ -394,8 +398,12 @@ test('a collaborator cannot plant its own key or ratchet tree in the founder', a
   assert.equal(document._beekem, honestTree);
   assert.equal(document._invitationEpoch, undefined);
 
+  await editor._bindACLActor('reader');
   await editor._makeChangeOnce(
-    await editor._readers.remove(founder.identity.publicKey),
+    await editor._authorACLChange(
+      'reader',
+      await editor._readers.remove(founder.identity.publicKey),
+    ),
     'reader',
   );
   await until(
