@@ -819,7 +819,7 @@ test('bounds request receipts and checkpoint suffix frames at the codec boundary
   for (const suffixes of [
     [...fits, frame],
     [new Uint8Array()],
-    [new Uint8Array(200 * 1024), new Uint8Array(57 * 1024)],
+    [new Uint8Array(600 * 1024), new Uint8Array(500 * 1024)],
   ])
     expect(() =>
       encodeDocumentCatchUpCheckpoint(checkpoint(suffixes)),
