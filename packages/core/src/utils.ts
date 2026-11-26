@@ -1011,8 +1011,16 @@ export async function generateAndExportSymmetricKey(
   return await crypto.subtle.exportKey('jwk', documentKey);
 }
 
-const CANONICAL_PADDED_BASE64 =
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const PADDED_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * Whether `value` has the shape of padded base64. The check runs in linear
+ * time, so it accepts strings of any length; callers that need canonical
+ * encoding compare a decode-and-encode round trip.
+ */
+export function isPaddedBase64(value: string): boolean {
+  return value.length % 4 === 0 && PADDED_BASE64.test(value);
+}
 
 /**
  * Decode canonical padded base64, or return `undefined` when `value` is not
@@ -1026,7 +1034,7 @@ export function tryDecodeCanonicalBase64(
   if (maxBytes !== undefined && value.length > Math.ceil(maxBytes / 3) * 4) {
     return undefined;
   }
-  if (value.length % 4 !== 0 || !CANONICAL_PADDED_BASE64.test(value)) {
+  if (!isPaddedBase64(value)) {
     return undefined;
   }
   let decoded: Uint8Array;
