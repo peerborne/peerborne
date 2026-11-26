@@ -16,11 +16,24 @@ import {
   YjsKeychainProvider,
   YjsJSONSerializer,
 } from '@peerborne/yjs';
+import { LoroProvider } from '@peerborne/loro';
 
 export { A, Y };
 
 export function actor(index) {
   return index.toString(16).padStart(32, '0');
+}
+
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function fixturePeerId(index) {
+  let id = '';
+  let rest = index;
+  do {
+    id = BASE58[rest % 58] + id;
+    rest = Math.floor(rest / 58);
+  } while (rest > 0);
+  return `12D3KooWFixtureNode${id}`;
 }
 
 export function seededRandom(seed) {
@@ -64,9 +77,19 @@ export async function signingIdentity() {
 
 export function providerFor(adapter, index = 1, options = {}) {
   const provider =
-    adapter === 'automerge' ? new AutomergeProvider() : new YjsProvider();
+    adapter === 'automerge'
+      ? new AutomergeProvider()
+      : adapter === 'loro'
+        ? new LoroProvider()
+        : new YjsProvider();
+  const newDocument = provider.newDocument.bind(provider);
   provider.newDocument = () => {
     if (adapter === 'automerge') return A.init({ actor: actor(index) });
+    if (adapter === 'loro') {
+      const document = newDocument();
+      document.setPeerId(String(index));
+      return document;
+    }
     const document = new Y.Doc({ gc: options.gc ?? true });
     document.clientID = index;
     return document;
@@ -88,6 +111,7 @@ export async function documentFixture({
 } = {}) {
   identity ??= await signingIdentity();
   const provider = providerFor(adapter, index);
+  // Loro has no ACL, keychain or serializer of its own and uses Yjs's.
   const serializer =
     adapter === 'automerge'
       ? new AutomergeJSONSerializer()
@@ -114,8 +138,14 @@ export async function documentFixture({
     },
   });
   const helia = createHeliaLight({ blockstore, datastore, start: false });
+  // A fixed PeerId lets requestSync() sign its requests; catch-up stays off
+  // below because the substituted transport delivers no subscriptions.
   Object.assign(helia, {
-    libp2p: { getConnections: () => [], services: { pubsub } },
+    libp2p: {
+      peerId: { toString: () => fixturePeerId(index) },
+      getConnections: () => [],
+      services: { pubsub },
+    },
   });
   const swarm = new Peerborne(
     identity.privateKey,
@@ -129,7 +159,11 @@ export async function documentFixture({
     keychain,
   );
   swarm._heliaNode = helia;
-  swarm._config = { compaction, loadQuorumEnabled: false };
+  swarm._config = {
+    compaction,
+    loadQuorumEnabled: false,
+    antiEntropy: { enabled: false },
+  };
   const document = swarm.doc(path);
   if (adapter === 'yjs') {
     for (const name of ['root', 'local', 'cursors', 'left', 'right', 'ops']) {

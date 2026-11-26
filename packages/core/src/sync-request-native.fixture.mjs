@@ -15,6 +15,11 @@ import {
   syncSnapshotHint,
   MAX_SYNC_REQUEST_BYTES,
 } from './sync-request.ts';
+import {
+  AntiEntropy,
+  AntiEntropyBudget,
+  resolveAntiEntropyConfig,
+} from './anti-entropy.ts';
 
 const auth = new SubtleCrypto();
 const serializer = new JSONSerializer();
@@ -34,6 +39,10 @@ const encryptionKey = await crypto.subtle.generateKey(
 const keyId = new Uint8Array(16).fill(1);
 const root = 'bafkreigh2akiscaildc5uxiaeu4we7ubxqnv6tyc3bv7heor3weuztdf5y';
 const otherRoot = 'bafkqaaa';
+const localPeer = '12D3KooWThisNode';
+const readerPeer = '12D3KooWReaderNode';
+const writerPeer = '12D3KooWWriterNode';
+const base58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 function harness(identity = writer) {
   const published = [];
@@ -66,6 +75,8 @@ function harness(identity = writer) {
     _runStateMutation: async (operation) => operation(),
     _subscribed: true,
     _lastSyncMessage: message,
+    _hashes: new Set([root]),
+    _referencedAncestors: new Set(),
     _recentTips: [],
     _topic: 'fixture',
     _lastSyncRequestAt: 0,
@@ -86,6 +97,7 @@ function harness(identity = writer) {
       config: { enableSigning: true },
       heliaNode: {
         libp2p: {
+          peerId: { toString: () => localPeer },
           services: {
             pubsub: {
               publish: async (_topic, bytes) => {
@@ -100,6 +112,16 @@ function harness(identity = writer) {
   return { document, published, message, work };
 }
 
+// Delivers a request as GossipSub would, published by `sender`.
+function handle(document, request, sender = request.requesterPeer) {
+  return document._handleSyncRequest(request, undefined, sender);
+}
+
+// A StrictSign GossipSub message published by `peer`.
+function gossipMessage(data, peer = readerPeer) {
+  return { type: 'signed', from: { toString: () => peer }, data };
+}
+
 async function plaintext(bytes) {
   return auth.decrypt(
     bytes.subarray(keyId.length + auth.nonceBytes),
@@ -112,6 +134,7 @@ async function request(identity = reader, overrides = {}) {
   const unsigned = {
     documentId: '/resume',
     requester: await auth.serializePublicKey(identity.publicKey),
+    requesterPeer: identity === writer ? writerPeer : readerPeer,
     requestId: '12'.repeat(16),
     issuedAtMs: Date.now(),
     knownTips: [otherRoot],
@@ -148,6 +171,7 @@ async function registeredValidator(document) {
       : undefined;
   document.swarm.registerDocument = () => {};
   document.swarm.config.enableTopicValidators = true;
+  document.swarm.config.antiEntropy = { enabled: false };
   await document.open();
   const validate = validators.get('fixture');
   assert.equal(typeof validate, 'function');
@@ -181,6 +205,7 @@ test('a current reader requests updates using a signed, encrypted, detached fram
     await auth.serializePublicKey(reader.publicKey),
   );
   assert.deepEqual(decoded.knownTips, [root]);
+  assert.equal(decoded.requesterPeer, localPeer);
   assert.equal(Object.isFrozen(decoded), true);
   assert.equal(Object.isFrozen(decoded.knownTips), true);
   assert.equal(
@@ -197,7 +222,7 @@ test('a current reader requests updates using a signed, encrypted, detached fram
 
 test('a writer answers with the existing ordinary signed update without creating a change', async () => {
   const { document, published, message } = harness();
-  await document._handleSyncRequest(await request());
+  await handle(document, await request());
   assert.equal(published.length, 1);
   assert.equal(document._lastSyncMessage, message);
   const decoded = serializer.deserializeSyncMessage(
@@ -219,18 +244,17 @@ test('a writer answers with the existing ordinary signed update without creating
 test('replays, requests for a known root, and bursts do not amplify responses', async () => {
   const { document, published } = harness();
   const first = await request();
-  await document._handleSyncRequest(first);
+  await handle(document, first);
   document._lastSyncResponseAt = Date.now() - 3000;
-  await document._handleSyncRequest(first);
+  await handle(document, first);
   assert.equal(published.length, 1);
-  await document._handleSyncRequest(
+  await handle(
+    document,
     await request(reader, { requestId: '13'.repeat(16), knownTips: [root] }),
   );
   assert.equal(published.length, 1);
   document._lastSyncResponseAt = Date.now();
-  await document._handleSyncRequest(
-    await request(reader, { requestId: '14'.repeat(16) }),
-  );
+  await handle(document, await request(reader, { requestId: '14'.repeat(16) }));
   assert.equal(published.length, 1);
 });
 
@@ -243,9 +267,7 @@ test('a known root does not suppress a missing snapshot, while known snapshots a
     compactedCount: 1,
     timestamp: 1,
   };
-  await document._handleSyncRequest(
-    await request(reader, { knownTips: [root] }),
-  );
+  await handle(document, await request(reader, { knownTips: [root] }));
   assert.equal(published.length, 1);
   const first = serializer.deserializeSyncMessage(
     await plaintext(published[0]),
@@ -253,7 +275,8 @@ test('a known root does not suppress a missing snapshot, while known snapshots a
   assert.ok(first.snapshot);
   const hint = await syncSnapshotHint(document._latestSnapshot.signature);
   document._lastSyncResponseAt = 0;
-  await document._handleSyncRequest(
+  await handle(
+    document,
     await request(reader, {
       requestId: '31'.repeat(16),
       knownTips: [root],
@@ -261,7 +284,8 @@ test('a known root does not suppress a missing snapshot, while known snapshots a
     }),
   );
   assert.equal(published.length, 1);
-  await document._handleSyncRequest(
+  await handle(
+    document,
     await request(reader, {
       requestId: '32'.repeat(16),
       knownSnapshots: [hint],
@@ -284,14 +308,14 @@ test('unknown members, forged signatures, cross-document requests and stale requ
     await request(reader, { issuedAtMs: Date.now() - 61_000 }),
     await request(reader, { issuedAtMs: Date.now() + 31_000 }),
   ])
-    await document._handleSyncRequest(candidate);
+    await handle(document, candidate);
   assert.equal(published.length, 0);
   assert.equal(document._syncRequestsSeen.size, 0);
 });
 
 test('reader-only replicas never issue writer responses, and closed or unsigned replicas do not request', async () => {
   const readOnly = harness(reader);
-  await readOnly.document._handleSyncRequest(await request(writer));
+  await handle(readOnly.document, await request(writer));
   assert.equal(readOnly.published.length, 0);
   for (const mutate of [
     (document) => {
@@ -329,11 +353,24 @@ test('the codec rejects malformed framing and binds every request field to its o
     { signature: 'not base64!' },
     { knownSnapshots: ['invalid'] },
     { knownSnapshots: ['ab'.repeat(32), 'ab'.repeat(32)] },
+    { requesterPeer: '' },
+    { requesterPeer: '12D3KooW Peer' },
+    { requesterPeer: '12D3KooW0OIl' },
+    { requesterPeer: 'a'.repeat(129) },
+    { requesterPeer: 12 },
+    { requesterPeer: undefined },
   ])
     assert.throws(() => encodeSyncRequest({ ...valid, ...change }));
+  assert.deepEqual(
+    decodeSyncRequest(
+      encodeSyncRequest({ ...valid, requesterPeer: 'a'.repeat(128) }),
+    )?.requesterPeer,
+    'a'.repeat(128),
+  );
   for (const change of [
     { documentId: '/other' },
     { requester: 'other' },
+    { requesterPeer: writerPeer },
     { requestId: 'ab'.repeat(16) },
     { issuedAtMs: valid.issuedAtMs + 1 },
     { knownTips: [root] },
@@ -407,7 +444,7 @@ test('generated response delays expire at verification, signing and ciphertext d
           const { document, published, work } = harness();
           const signed = await request();
           const paused = pauseMethod(document._authProvider, stage);
-          const response = document._handleSyncRequest(signed);
+          const response = handle(document, signed);
           await Promise.race([
             paused.started,
             response.then(() => {
@@ -448,7 +485,7 @@ test('authenticated no-op floods cannot displace a live replay record or spend r
       await withClock(async (clock) => {
         const { document, published, work } = harness();
         const first = await request();
-        await document._handleSyncRequest(first);
+        await handle(document, first);
         const firstWork = { ...work };
         clock.advance(2000);
         for (let index = 0; index < count; index++) {
@@ -456,12 +493,12 @@ test('authenticated no-op floods cannot displace a live replay record or spend r
             requestId: index.toString(16).padStart(32, '0'),
             knownTips: [root],
           });
-          await document._handleSyncRequest(noop);
+          await handle(document, noop);
         }
         assert.equal(document._syncRequestsSeen.size, 1);
         assert.deepEqual(work, firstWork);
         clock.advance(2000);
-        await document._handleSyncRequest(first);
+        await handle(document, first);
         assert.equal(published.length, 1);
         assert.deepEqual(work, firstWork);
       });
@@ -482,24 +519,24 @@ test('replay expiry remains terminal across wall-clock rollback and cache capaci
           const start = clock.now;
           const first = await request();
           clock.set(invalidClock);
-          await document._handleSyncRequest(first);
+          await handle(document, first);
           assert.equal(published.length, 0);
           assert.equal(work.verifications, 0);
           clock.set(start);
-          await document._handleSyncRequest(first);
+          await handle(document, first);
           clock.advance(jump);
           const probe = await request(reader, {
             requestId: 'ff'.repeat(16),
             knownTips: [root],
           });
           assert.equal(
-            await validate({}, { data: await encryptedRequest(probe) }),
+            await validate({}, gossipMessage(await encryptedRequest(probe))),
             TopicValidatorResult.Accept,
           );
-          await document._handleSyncRequest(probe);
+          await handle(document, probe);
           assert.equal(published.length, 1);
           clock.set(start + 2000);
-          await document._handleSyncRequest(first);
+          await handle(document, first);
           assert.equal(published.length, 1);
           assert.equal(document._syncRequestClock, start + jump);
           clock.set(start + jump + 2000);
@@ -512,7 +549,8 @@ test('replay expiry remains terminal across wall-clock rollback and cache capaci
           );
           const before = [...document._syncRequestsSeen],
             spent = { ...work };
-          await document._handleSyncRequest(
+          await handle(
+            document,
             await request(reader, { requestId: 'fe'.repeat(16) }),
           );
           assert.deepEqual([...document._syncRequestsSeen], before);
@@ -546,7 +584,7 @@ test('settled response preparation delays and failures reserve the cooldown', as
               throw new Error('Injected preparation failure');
             return original.apply(this, args);
           };
-          const first = document._handleSyncRequest(await request());
+          const first = handle(document, await request());
           try {
             if (stage === 'success') await first;
             else await assert.rejects(first, /Injected preparation failure/);
@@ -555,13 +593,15 @@ test('settled response preparation delays and failures reserve the cooldown', as
           }
           const settled = clock.now,
             spent = { ...work };
-          await document._handleSyncRequest(
+          await handle(
+            document,
             await request(reader, { requestId: 'cc'.repeat(16) }),
           );
           assert.deepEqual(work, spent);
           assert.equal(document._lastSyncResponseAt, settled);
           clock.advance(2000);
-          await document._handleSyncRequest(
+          await handle(
+            document,
             await request(reader, { requestId: 'dd'.repeat(16) }),
           );
           assert.equal(published.length, stage === 'success' ? 2 : 1);
@@ -591,7 +631,7 @@ test('dense future-dated signed response histories retain at most 46 live attemp
             requestId: index.toString(16).padStart(32, '0'),
             issuedAtMs: clock.now + 30000,
           });
-          await document._handleSyncRequest(signed);
+          await handle(document, signed);
           assert.equal(
             document._syncRequestsSeen.size,
             Math.min(index + 1, 46),
@@ -624,7 +664,7 @@ test('sync admission rejects nonboolean membership authorization results', async
         await withClock(async () => {
           const { document, published, work } = harness();
           document._writers.check = async () => authorization;
-          await document._handleSyncRequest(await request());
+          await handle(document, await request());
           assert.equal(published.length, 0);
           assert.equal(document._syncRequestsSeen.size, 0);
           assert.equal(work.signatures, 0);
@@ -686,24 +726,24 @@ test('registered GossipSub validation accepts authenticated re-encryptions indep
             : authentication === 'valid'
               ? TopicValidatorResult.Accept
               : TopicValidatorResult.Reject;
-          assert.equal(await validate({}, { data: first }), expected);
-          assert.equal(await validate({}, { data: second }), expected);
+          assert.equal(await validate({}, gossipMessage(first)), expected);
+          assert.equal(await validate({}, gossipMessage(second)), expected);
           assert.deepEqual([...document._syncRequestsSeen], retained);
-          await document._handleSyncRequest(signed);
+          await handle(document, signed);
           const responds =
             fresh && authentication === 'valid' && history === 'fresh';
           assert.equal(published.length, responds ? 1 : 0);
-          assert.equal(await validate({}, { data: second }), expected);
+          assert.equal(await validate({}, gossipMessage(second)), expected);
           const after = [...document._syncRequestsSeen];
           const start = clock.now;
           clock.advance(90002);
           assert.equal(
-            await validate({}, { data: first }),
+            await validate({}, gossipMessage(first)),
             TopicValidatorResult.Ignore,
           );
           clock.set(start);
           assert.equal(
-            await validate({}, { data: second }),
+            await validate({}, gossipMessage(second)),
             TopicValidatorResult.Ignore,
           );
           assert.deepEqual([...document._syncRequestsSeen], after);
@@ -711,7 +751,7 @@ test('registered GossipSub validation accepts authenticated re-encryptions indep
             clock.set(start + 90002);
             const delayed = await encryptedRequest(await request());
             const paused = pauseMethod(document._authProvider, 'verify');
-            const validation = validate({}, { data: delayed });
+            const validation = validate({}, gossipMessage(delayed));
             await Promise.race([
               paused.started,
               validation.then(() => {
@@ -748,4 +788,256 @@ test('registered GossipSub validation accepts authenticated re-encryptions indep
       ],
     },
   );
+});
+
+test('the codec rejects other domains, missing or extra fields and a non-string requester peer', async () => {
+  const valid = await request();
+  const fields = (domain, values) =>
+    new TextEncoder().encode(`\u0000${domain}\u0000${JSON.stringify(values)}`);
+  const encoded = [
+    valid.documentId,
+    valid.requester,
+    valid.requesterPeer,
+    valid.requestId,
+    valid.issuedAtMs,
+    valid.knownTips,
+    valid.knownSnapshots,
+    valid.signature,
+  ];
+  assert.deepEqual(
+    decodeSyncRequest(fields('peerborne/sync-request/3', encoded)),
+    valid,
+  );
+  const foreign = fields('peerborne/sync-response/3', encoded);
+  assert.equal(isSyncRequest(foreign), false);
+  assert.equal(decodeSyncRequest(foreign), undefined);
+  for (const values of [
+    encoded.filter((_, index) => index !== 2),
+    [...encoded, 'extra'],
+    encoded.map((value, index) => (index === 2 ? [value] : value)),
+    encoded.map((value, index) => (index === 2 ? null : value)),
+  ])
+    assert.equal(
+      decodeSyncRequest(fields('peerborne/sync-request/3', values)),
+      undefined,
+    );
+});
+
+function observedHarness(identity = writer) {
+  const fixture = harness(identity);
+  const calls = { admitted: 0, advertisements: [], equivalent: 0 };
+  const antiEntropy = new AntiEntropy(
+    resolveAntiEntropyConfig(),
+    {
+      request: async () => 'sent',
+      hasPendingChanges: () => false,
+      isKnown: (cid) => cid === root,
+      canLoad: () => false,
+      isConnected: () => true,
+      load: async () => false,
+    },
+    new AntiEntropyBudget(),
+    () => {},
+    {
+      now: () => Date.now(),
+      setTimeout: () => undefined,
+      clearTimeout: () => {},
+      random: () => 0.5,
+    },
+  );
+  const admit = antiEntropy.admitAdvertisement.bind(antiEntropy);
+  antiEntropy.admitAdvertisement = (member, head) => {
+    const admitted = admit(member, head);
+    if (admitted) calls.admitted++;
+    return admitted;
+  };
+  const advertise = antiEntropy.advertisement.bind(antiEntropy);
+  antiEntropy.advertisement = (...args) => {
+    calls.advertisements.push(args);
+    advertise(...args);
+  };
+  const equivalent = antiEntropy.equivalentRequest.bind(antiEntropy);
+  antiEntropy.equivalentRequest = () => {
+    calls.equivalent++;
+    equivalent();
+  };
+  fixture.document._antiEntropy = antiEntropy;
+  return { ...fixture, calls, antiEntropy };
+}
+
+test('a verified member request with an unknown head records the member and the PeerId that published it', async () => {
+  const writerKey = await auth.serializePublicKey(writer.publicKey);
+  const readerKey = await auth.serializePublicKey(reader.publicKey);
+  const { document, published, work, calls, antiEntropy } = observedHarness();
+  await handle(
+    document,
+    await request(writer, { knownTips: [otherRoot, root] }),
+  );
+  assert.deepEqual(calls.advertisements, [
+    [writerKey, writerPeer, otherRoot, true],
+  ]);
+  assert.equal(antiEntropy.status().gap, true);
+  assert.equal(published.length, 0);
+  assert.equal(work.verifications, 1);
+  // A requester that lacks the responder's head is still answered, and the
+  // observation and the response share one verification.
+  const responder = observedHarness();
+  await handle(responder.document, await request(reader));
+  assert.deepEqual(responder.calls.advertisements, [
+    [readerKey, readerPeer, otherRoot, false],
+  ]);
+  assert.equal(responder.published.length, 1);
+  assert.equal(responder.work.verifications, 1);
+});
+
+test('a request is ignored unless the PeerId it signs published it', async () => {
+  const { document, published, work, calls } = observedHarness();
+  const signed = await request(reader);
+  await handle(document, signed, writerPeer);
+  await handle(document, signed, '');
+  await document._handleSyncRequest(signed);
+  assert.equal(published.length, 0);
+  assert.equal(work.verifications, 0);
+  assert.equal(calls.admitted, 0);
+  assert.equal(document._syncRequestsSeen.size, 0);
+  await handle(document, signed);
+  assert.equal(published.length, 1);
+
+  const validated = harness();
+  const validate = await registeredValidator(validated.document);
+  const frame = await encryptedRequest(signed);
+  assert.equal(
+    await validate({}, gossipMessage(frame, writerPeer)),
+    TopicValidatorResult.Reject,
+  );
+  assert.equal(
+    await validate({}, { data: frame }),
+    TopicValidatorResult.Reject,
+  );
+  assert.equal(validated.work.verifications, 0);
+  assert.equal(
+    await validate({}, gossipMessage(frame)),
+    TopicValidatorResult.Accept,
+  );
+});
+
+test('requests matching the local head postpone the periodic request without verification', async () => {
+  const { document, published, work, calls } = observedHarness();
+  await handle(document, await request(reader, { knownTips: [root] }));
+  assert.equal(calls.equivalent, 1);
+  assert.equal(calls.admitted, 0);
+  assert.equal(work.verifications, 0);
+  assert.equal(published.length, 0);
+});
+
+test('forged, relabelled, foreign, stale, cross-document, self and misdelivered requests never record an advertisement', async () => {
+  const { document, published, calls, antiEntropy } = observedHarness(reader);
+  const valid = await request(writer);
+  for (const candidate of [
+    { ...valid, signature: Base64.fromUint8Array(new Uint8Array(96)) },
+    { ...valid, requesterPeer: '12D3KooWRenamed' },
+    await request(stranger, { requesterPeer: '12D3KooWStranger' }),
+    await request(writer, {
+      requesterPeer: '12D3KooWExpired',
+      issuedAtMs: Date.now() - 61_000,
+    }),
+    await request(writer, {
+      requesterPeer: '12D3KooWFuture',
+      issuedAtMs: Date.now() + 31_000,
+    }),
+    await request(writer, {
+      requesterPeer: '12D3KooWAnother',
+      documentId: '/other',
+    }),
+    await request(writer, { requesterPeer: localPeer }),
+  ])
+    await handle(document, candidate);
+  await handle(document, valid, '12D3KooWSomeoneElse');
+  assert.deepEqual(calls.advertisements, []);
+  assert.equal(calls.admitted, 3);
+  assert.equal(antiEntropy.status().gap, false);
+  assert.equal(published.length, 0);
+});
+
+test('one member flooding from many PeerIds is verified once per cooldown, and replays once', async () => {
+  await withClock(async (clock) => {
+    const { document, published, work, calls, antiEntropy } = observedHarness();
+    const signed = await request(writer);
+    await handle(document, signed);
+    await handle(document, signed);
+    await handle(document, { ...signed });
+    assert.equal(calls.advertisements.length, 1);
+    assert.equal(work.verifications, 1);
+    assert.equal(published.length, 1);
+    const before = work.verifications;
+    for (let index = 0; index < 64; index++)
+      await handle(
+        document,
+        await request(writer, {
+          requesterPeer: `12D3KooWFake${base58[index % 58]}${base58[Math.floor(index / 58)]}`,
+          requestId: index.toString(16).padStart(32, '0'),
+          knownTips: [`bafkqab${base58[index % 58]}`],
+        }),
+      );
+    assert.equal(work.verifications, before);
+    assert.equal(calls.advertisements.length, 1);
+    assert.ok(antiEntropy.status().suppressed >= 64);
+    await handle(
+      document,
+      await request(reader, {
+        requestId: 'dd'.repeat(16),
+        knownTips: ['bafkqaab'],
+      }),
+    );
+    assert.equal(calls.advertisements.length, 2);
+    clock.advance(30_000);
+    await handle(
+      document,
+      await request(writer, {
+        requesterPeer: '12D3KooWAfterWait',
+        requestId: 'ee'.repeat(16),
+        knownTips: ['bafkqaac'],
+      }),
+    );
+    assert.equal(calls.advertisements.length, 3);
+    assert.equal(calls.advertisements.at(-1)[1], '12D3KooWAfterWait');
+    antiEntropy.close();
+  });
+});
+
+test("a verified request with a held head retracts that member's advertisement; a forged one does not", async () => {
+  const { document, work, antiEntropy } = observedHarness(reader);
+  await handle(document, await request(writer));
+  assert.equal(antiEntropy.status().gap, true);
+  const retraction = await request(writer, {
+    requestId: 'ab'.repeat(16),
+    knownTips: [root],
+  });
+  await handle(document, {
+    ...retraction,
+    signature: Base64.fromUint8Array(new Uint8Array(96)),
+  });
+  assert.equal(antiEntropy.status().gap, true);
+  await handle(document, retraction);
+  assert.equal(antiEntropy.status().gap, false);
+  assert.equal(work.verifications, 3);
+});
+
+test('a manual request restarts the automatic cycle and readiness failures do not publish', async () => {
+  const { document, published, antiEntropy } = observedHarness(reader);
+  let manual = 0;
+  antiEntropy.manualRequest = () => manual++;
+  await document.requestSync();
+  await document.requestSync();
+  assert.equal(published.length, 1);
+  assert.equal(manual, 1);
+  assert.equal(await document._publishSyncRequest(false), 'rate-limited');
+  document._lastSyncRequestAt = 0;
+  document._subscribed = false;
+  assert.equal(await document._publishSyncRequest(false), 'not-ready');
+  document._subscribed = true;
+  document.swarm.heliaNode.libp2p.peerId = undefined;
+  assert.equal(await document._publishSyncRequest(false), 'not-ready');
+  await assert.rejects(document.requestSync(), /open authenticated document/);
+  assert.equal(published.length, 1);
 });

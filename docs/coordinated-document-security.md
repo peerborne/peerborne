@@ -95,7 +95,37 @@ document path, role head, recipient and one-shot request challenge bind the
 response. Only a current controller with whole-document write authority can
 issue it. A replica can import a missing receipt for another current writer.
 Overlapping receipts must agree on their sequence and hash, and the requester
-keeps its own sequence. A conflicting head requires ordered frame redelivery.
+keeps its own sequence.
+
+A requester that holds part of another writer's history and missed its tail
+can still resume. The request lists the requester's accepted heads, at most
+256. For each writer whose head is behind, the controller adds that writer's
+signed frames from the requester's head toward its own. The suffix shares the
+1 MiB sealed checkpoint with the snapshot and holds at most 256 frames, so a
+small snapshot leaves room for at least one maximum-size frame. When a
+writer's frames do not all fit, or are not all retained, the controller offers
+that writer's receipt only at the last frame it included, or at the
+requester's own head, and the requester advances over later rounds. Other
+writers are unaffected. A retained frame at the requester's head with a
+different hash keeps the controller's head, so a fork still conflicts. The
+requester accepts a higher head only after checking each frame: the writer's
+signature, this document, genesis, permission head and group context,
+consecutive sequences, and a parent hash chain from its own head to the
+offered one. An offer below a head the requester accepted after sending the
+request is kept when it matches a frame the requester retains. Anything else
+conflicts as before.
+
+Each document retains its latest 64 accepted frames per author in the current
+context, in memory only, as signed content and ciphertext. A document retains
+at most 16 MiB, and all coordinated documents in a process at most 64 MiB.
+Over either budget, the author holding the most retained bytes gives up its
+oldest frame first, so one writer's large frames do not push out other
+writers' tails. Retained frames are dropped at a new group context, at the
+receipt reset of a role transition and on close. A requester whose head is
+ahead of the controller's, a gap longer than the retained frames, or a
+controller restarted since accepting them still requires ordered frame
+redelivery. The proved receipt policy is unchanged; these extensions run
+beside it at runtime and are outside the formal proof.
 The encoded snapshot payload is limited to 512 KiB. Native snapshot generation
 and merge costs still depend on the document and adapter.
 

@@ -4,7 +4,7 @@
   "propertyGroups": [
     {
       "id": "coordinated-checkpoint-catch-up",
-      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. Native tests cover signed and encrypted binding, detached CRDT merge, acknowledged journal publication, replay, context changes and restart. Trusted controller behavior, group membership and cryptographic secrecy remain separate assumptions.",
+      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. Replacing a conflicting shorter head with an offered one after verifying the writer's signed suffix chain is runtime logic beside that policy, exercised by generated forged, truncated, reordered and tampered suffixes. Native tests cover signed and encrypted binding, detached CRDT merge, acknowledged journal publication, replay, context changes and restart. Trusted controller behavior, group membership and cryptographic secrecy remain separate assumptions.",
       "evidence": ["packages/core/src/document-catch-up-properties.test.ts"],
       "sources": [
         "packages/core/src/coordinated-document.ts",
@@ -515,6 +515,16 @@
         "packages/core/src/policy/sync-request.ts",
         "packages/core/src/sync-request.ts",
         "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
+      "id": "automatic-catch-up-scheduling",
+      "formalBoundary": "No scheduler contract is proved. Generated signal histories with fake time check that at most one timer is armed, requests stay at least the minimum interval apart, quiet periods are never longer than four thirds of the periodic interval, loads stay a load interval apart, follow a request by the load delay and target only connected writer advertisers, and nothing loads without the commitment resolver. Real timers, the shared budget across documents, signature verification of advertisements and the authenticated load itself are covered by example, native and real-node tests; network delivery, UI latency and many-peer traffic are outside this evidence.",
+      "evidence": [
+        "packages/core/src/anti-entropy-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/anti-entropy.ts"
       ]
     },
     {
