@@ -127,10 +127,36 @@ Yjs inspects integrated items and deletion ranges before native GC. Comparing
 only visible JSON would miss hidden concurrent writes. Restricted local Yjs
 changes serialize inspectable items before GC. With GC enabled, the private
 mirror is pruned after serialization. A GC callback that adds unencoded state
-invalidates the preparation. The engine checks every
-reported target before local signing, WAL staging and CRDT commit. Missing,
-unknown or unsupported inspection fails closed for a restricted member.
-Permission changes require the existing fresh-epoch signed role transition.
+invalidates the preparation. The engine checks every reported target before
+local signing, WAL staging and CRDT commit. Missing, unknown or unsupported
+inspection fails closed for a restricted member. Permission changes require the
+existing fresh-epoch signed role transition.
+
+A Yjs operation can arrive after a replica has accepted and collected the
+deletion of its container. Yjs then integrates it as a GC struct with no parent
+or content. It cannot become visible, so it uses inspection work but reports no
+target. An honest writer's concurrent edit inside a deleted granted container
+is admitted at every replica, and its sequence keeps advancing. Replicas that
+receive the edit before the deletion check its real path. Keeping GC off in the
+private mirror would not fix this. The mirror is rebuilt from the collected
+document snapshot after a restart or a discarded preparation, and it would
+retain deleted content.
+
+The mirror always collects with the default policy. The application's document
+can keep deleted items through a custom `gcFilter`, items an undo manager keeps,
+or GC turned off after opening. An operation the mirror collected could then
+integrate as a live item in that document. In that case the update is inspected
+again against an uncollected copy of the document, which reports the real path.
+That copy costs time proportional to the document. A restricted frame cannot
+send GC structs directly.
+
+A dishonest writer can still get an out-of-scope edit into a collected container
+accepted, but only where it has no effect. Replicas that see the edit first
+reject it, so they reject that writer's later frames. Honest members' later
+changes that build on what the writer wrote after that point then fail with
+missing causal dependencies at those replicas, which stalls their sequences too.
+Like equivocation, this can split replicas, but it cannot change protected
+state.
 
 Each member has at most 64 grant paths, each with 32 segments of at most 1,024
 UTF-16 units. A roster has aggregate caps of 4,096 paths, 32,768 segments and

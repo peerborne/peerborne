@@ -154,6 +154,24 @@ test('bounds inspection work, distinct targets and path metadata without droppin
   );
 });
 
+test('inert operations consume the shared inspection work budget without recording a target', () => {
+  fc.assert(
+    fc.property(fc.integer({ min: 1, max: 131071 }), (work) => {
+      const targets = new DocumentOperationTargets();
+      targets.addInert(work);
+      expect(targets.snapshot()).toEqual([]);
+      expect(() => targets.add(['field'], 131073 - work)).toThrow(/bounds/);
+      expect(() => targets.addInert(131073 - work)).toThrow(/bounds/);
+      for (const invalid of [0, -1, NaN, Number.MAX_SAFE_INTEGER])
+        expect(() => targets.addInert(invalid)).toThrow(/bounds/);
+      targets.add(['field'], 131072 - work);
+      expect(targets.snapshot()).toEqual([['field']]);
+      expect(() => targets.addInert(1)).toThrow(/bounds/);
+    }),
+    { seed: 2012309, numRuns: 20, examples: [[1], [131071]] },
+  );
+});
+
 test('bounds aggregate roster grants before retaining excessive path, segment or string data', () => {
   fc.assert(
     fc.property(fc.constantFrom('paths', 'segments', 'units'), (mode) => {
