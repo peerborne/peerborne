@@ -41,10 +41,15 @@ checkpoint holds it. A frame that reaches no peer known to serve a member, with
 no peers at all or only a relay subscribed to the topic, is reported as a
 `NoDeliveryPeersError`. The failure clears, and a released store then closes the
 document, once there is evidence that a member holds the change or was sent it:
-a later frame sent to a peer that recently proved it serves a member, a load
-served to a member, a member's sync request that names the change, or a
+a later frame sent to a peer that recently proved it serves a member with a
+signed sync request, a member's sync request that names the change, or a
 writer's frame that builds on it. That is evidence of delivery, not an
-acknowledgment that a member stored the change. Explicit `start()` and `stop()`
+acknowledgment that a member stored the change. A frame that reaches members
+only through a relay mesh stays reported until a member's next sync request,
+usually a few seconds with automatic catch-up. A custom handle reports its
+delivery state through `subscribeDeliveryState` and `unsubscribeDeliveryState`,
+which every handle implements; one that never fails to deliver accepts the
+handler and never calls it. Explicit `start()` and `stop()`
 return promises for imperative applications: `start()` keeps the document open until
 `stop()`, and `stop()` closes it even with consumers or a delivery failure.
 Operations are serialized so a close waits for pending writes. `change` never

@@ -222,6 +222,7 @@ export function usePeerborneDocumentState<
       activationRetries,
       createdPaths,
       retainedDocuments,
+      retentionTimers,
     } = hookCaches;
     let active = true;
     let subscribedDocRef: PeerborneDocument<
@@ -440,12 +441,15 @@ export function usePeerborneDocumentState<
         (subscriberCounts.get(documentPath) || 0) === 0 &&
         openTasks.get(documentPath) === pendingTask;
       const release = (docRef: NonNullable<Awaited<OpenTask>['docRef']>) => {
+        clearTimeout(retentionTimers.get(documentPath));
+        retentionTimers.delete(documentPath);
         docRef.unsubscribeDeliveryState(RETAINED_DOCUMENT_SUBSCRIPTION);
         openTasks.delete(documentPath);
         if (typeof docRef.close === 'function') docRef.close().catch(() => {});
       };
       // A document this node created stays open while a change is not known
-      // to have reached a member, because it may hold the only copy.
+      // to have reached a member, because it may hold the only copy, for at
+      // most retainedCloseDelayMs.
       pendingTask
         .then((result) => {
           if (!unused()) return;
@@ -460,6 +464,12 @@ export function usePeerborneDocumentState<
             docRef.deliveryFailure !== undefined
           ) {
             retainedDocuments.add(docRef);
+            clearTimeout(retentionTimers.get(documentPath));
+            const expiry = setTimeout(() => {
+              if (unused()) release(docRef);
+            }, hookCaches.retainedCloseDelayMs);
+            (expiry as { unref?: () => void }).unref?.();
+            retentionTimers.set(documentPath, expiry);
             docRef.subscribeDeliveryState(
               RETAINED_DOCUMENT_SUBSCRIPTION,
               (failure) => {

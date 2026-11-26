@@ -31,12 +31,16 @@ export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
     originFilter?: 'all' | 'local' | 'remote',
   ): void;
   unsubscribe(id: string): void;
-  /** Call `handler` with `deliveryFailure` each time it is set or cleared. */
-  subscribeDeliveryState?(
+  /**
+   * Call `handler` with `deliveryFailure` each time it is set or cleared. A
+   * handle that never fails to deliver can accept the handler and never call
+   * it.
+   */
+  subscribeDeliveryState(
     id: string,
     handler: (failure: DocumentDeliveryFailure | undefined) => void,
   ): void;
-  unsubscribeDeliveryState?(id: string): void;
+  unsubscribeDeliveryState(id: string): void;
 }
 
 /** A new snapshot is published even when the underlying CRDT mutates in place. */
@@ -255,7 +259,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     if (current) {
       try {
         current.unsubscribe(id);
-        current.unsubscribeDeliveryState?.(id);
+        current.unsubscribeDeliveryState(id);
       } catch (error) {
         errors.push(error);
       }
@@ -316,7 +320,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
           latest = { readers, writers };
           if (live()) ready(data, readers, writers, snapshot.deliveryFailure);
         });
-        current.subscribeDeliveryState?.(id, (failure) => {
+        current.subscribeDeliveryState(id, (failure) => {
           if (!live()) return;
           publish({ ...snapshot, deliveryFailure: failure });
           if (failure === undefined) {

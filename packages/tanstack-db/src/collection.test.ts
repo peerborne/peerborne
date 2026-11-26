@@ -59,6 +59,8 @@ function fixture(duplicate = false) {
     unsubscribe(id) {
       handlers.delete(id);
     },
+    subscribeDeliveryState() {},
+    unsubscribeDeliveryState() {},
   };
   const store = createDocumentStore(() => source);
   const createProjection = () =>

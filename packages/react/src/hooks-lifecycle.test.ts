@@ -2,6 +2,7 @@ import { describe, expect, test, jest, afterEach } from '@jest/globals';
 import React, { useState } from 'react';
 import { render, act, cleanup, waitFor } from '@testing-library/react';
 import { usePeerborneDocumentState } from './hooks.js';
+import { getPeerborneHookCaches } from './hooks-cache.js';
 import {
   resetCaches,
   getCacheSizes,
@@ -777,6 +778,22 @@ describe('documents this hook created', () => {
     mockDoc.deliveryFailure = undefined;
     act(() => retained(undefined));
     expect(mockDoc.close).toHaveBeenCalledTimes(1);
+    expect(mockDoc._deliveryHandlers.size).toBe(0);
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+  });
+
+  test('a retained created document closes after retainedCloseDelayMs even while undelivered', async () => {
+    const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
+    const mockSwarm = createMockPeerborne(mockDoc);
+    getPeerborneHookCaches(mockSwarm).retainedCloseDelayMs = 30;
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Hello ' }));
+    view.unmount();
+    await act(async () => {});
+    expect(mockDoc.close).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockDoc.close).toHaveBeenCalledTimes(1));
     expect(mockDoc._deliveryHandlers.size).toBe(0);
     expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
   });
