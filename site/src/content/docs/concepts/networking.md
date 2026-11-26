@@ -137,6 +137,8 @@ The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data v
 
 Relayed connections are limited connections in libp2p. Peerborne runs Bitswap on them by default (`helia.bitswap.runOnLimitedConnections: true`), so a peer reachable only through a relay can still fetch change blocks within the relay's circuit data and duration limits. Setting it to `false` stops block fetches over relays, which can stall loads and invitations.
 
+Streams that accept limited connections, Bitswap included, open on the existing relayed connection to the peer. On its own, libp2p reuses only unlimited connections and dials a new circuit for each such stream. The receiving node limits inbound connections to five per second per host, and every relayed connection comes from the relay's host, so a burst of block requests would be refused and the load would stall. A peer that also has a direct or WebRTC address still gets the libp2p dial first, and the stream falls back to the relayed connection if that dial fails. New connections from different peers through one relay still share that per-host limit.
+
 ### DCUtR (Direct Connection Upgrade through Relay)
 
 After an initial relayed connection, peers attempt to establish a direct WebRTC connection using DCUtR. The relay facilitates the hole-punching handshake; if successful, peers communicate directly, reducing relay load and latency.

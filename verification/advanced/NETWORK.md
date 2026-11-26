@@ -38,6 +38,16 @@ must each reach D through both branches but enter application crypto exactly
 once. Gossip settings require both links and disable peer exchange; this is
 dependency/ingress evidence, not default discovery or WebRTC routing evidence.
 
+`relay-fetch` starts a WebSocket Circuit Relay with the relay server's default
+16 MiB and 30 minute circuit limits, and real Peerborne Yjs nodes that listen
+only on `/p2p-circuit`. In each round a fresh device of the only writer loads a
+snapshot and the later change blocks over Bitswap from the founder, a second
+fresh device loads from that holder, and a new edit must reach both. Each load
+has a 30 second deadline and must use one relayed connection per peer pair.
+Smoke runs three rounds and full runs ten. It is loopback-only and does not
+exercise browser transports, WebRTC upgrades, relay failover or exhausted
+circuit limits.
+
 `slow-peer` places one replica in a separate CDP target and makes the other
 three mutate concurrently over ordered SCTP channels. A no-loss baseline and
 100% blackout control precede 80% WebRTC packet-loss emulation. The control
