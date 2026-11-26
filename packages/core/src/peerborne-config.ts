@@ -26,6 +26,7 @@ import { ipnsValidator } from 'ipns/validator';
 import { IDBDatastore } from 'datastore-idb';
 import { IDBBlockstore } from 'blockstore-idb';
 import { CompactionConfig } from './compaction-config.js';
+import type { AntiEntropyConfig } from './anti-entropy.js';
 import {
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   DEFAULT_PEER_DISCOVERY_TOPIC,
@@ -86,6 +87,19 @@ export const DEFAULT_WEBRTC_ICE_SERVERS: ReadonlyArray<Readonly<IceServer>> =
     Object.freeze({ urls: 'stun:stun.cloudflare.com:3478' }),
     Object.freeze({ urls: 'stun:global.stun.twilio.com:3478' }),
   ]);
+
+/**
+ * Inbound connections per second that the default configs accept from one
+ * host, in place of libp2p's default of 5.
+ *
+ * libp2p attributes a relayed connection to the relay's host, so every peer
+ * that arrives through one relay shares this budget. With the libp2p default,
+ * a sixth peer joining or reconnecting through a relay in the same second is
+ * refused, and its Noise handshake times out. libp2p still refuses inbound
+ * connections while `maxIncomingPendingConnections` (10) upgrades are pending,
+ * and beyond `maxConnections`.
+ */
+export const DEFAULT_INBOUND_CONNECTION_THRESHOLD = 128;
 
 /**
  * Returns a deep-enough copy of an {@link IceServer} so callers can hand the
@@ -217,6 +231,9 @@ export const defaultConfig = (
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
+        connectionManager: {
+          inboundConnectionThreshold: DEFAULT_INBOUND_CONNECTION_THRESHOLD,
+        },
         // @libp2p/bootstrap rejects an empty list during construction. A
         // brand-new/offline swarm is valid, so omit that discovery service
         // until at least one bootstrap address is configured.
@@ -341,6 +358,22 @@ export interface PeerborneConfig {
    * create snapshot nodes to compact the Merkle-DAG change history.
    */
   compaction?: Partial<CompactionConfig>;
+
+  /**
+   * Automatic catch-up for default (non-coordinated) documents. An open
+   * document sends the existing signed sync request when it opens, when a
+   * peer subscribed to its topic connects, when the CRDT waits for missing
+   * dependencies, when a frame names a change that cannot be fetched, when a
+   * member advertises a head it lacks, and every 30-60 s. A gap that outlives
+   * a request is repaired with the authenticated V4 load path when the CRDT
+   * itself shows the gap or two members advertise the same head; that needs
+   * `resolveLoadSecurityCommitments` and keeps every load quorum rule.
+   * Observe it with `document.antiEntropyStatus` and
+   * `document.subscribeToAntiEntropy()`.
+   *
+   * Pass `{ enabled: false }` to disable it. Default: enabled.
+   */
+  antiEntropy?: Partial<AntiEntropyConfig>;
 
   /**
    * Enable network statistics tracking.

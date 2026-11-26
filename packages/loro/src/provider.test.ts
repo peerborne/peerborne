@@ -53,6 +53,49 @@ describe('experimental Loro provider', () => {
     expect(target.toJSON()).toEqual(source.toJSON());
   });
 
+  test('hasIntegrated is false while a change waits for a dependency that history omits', () => {
+    const provider = new LoroProvider();
+    const [alice, bob, carol] = ['1', '2', '3'].map((peer) => {
+      const doc = provider.newDocument();
+      doc.setPeerId(peer);
+      return doc;
+    });
+    const [, base] = provider.localChange(alice, 'base', (doc) => {
+      doc.getList('log').push('base');
+    });
+    provider.remoteChange(bob, base);
+    provider.remoteChange(carol, base);
+    const [, dependency] = provider.localChange(bob, 'b1', (doc) => {
+      doc.getList('log').push('b1');
+    });
+    provider.remoteChange(alice, dependency);
+    const [, dependent] = provider.localChange(alice, 'a2', (doc) => {
+      doc.getList('log').push('a2');
+    });
+
+    provider.remoteChange(carol, dependent);
+    expect(provider.hasIntegrated(carol, base)).toBe(true);
+    expect(provider.hasIntegrated(carol, dependent)).toBe(false);
+    expect(carol.getList('log').toJSON()).toEqual(['base']);
+
+    const restored = provider.newDocument();
+    provider.remoteChange(restored, provider.getHistory(carol));
+    provider.remoteChange(restored, dependency);
+    expect(restored.getList('log').toJSON()).toEqual(['base', 'b1']);
+    expect(provider.hasIntegrated(restored, dependent)).toBe(false);
+    provider.remoteChange(restored, dependent);
+    expect(provider.hasIntegrated(restored, dependent)).toBe(true);
+
+    provider.remoteChange(carol, dependency);
+    expect(provider.hasIntegrated(carol, dependency)).toBe(true);
+    expect(provider.hasIntegrated(carol, dependent)).toBe(true);
+    expect(provider.hasIntegrated(carol, provider.getSnapshot(alice))).toBe(
+      true,
+    );
+    for (const doc of [carol, restored])
+      expect(doc.toJSON()).toEqual(alice.toJSON());
+  });
+
   test('rejects truncated and corrupt payloads without changing accepted state', () => {
     const provider = new LoroProvider();
     const source = provider.newDocument();

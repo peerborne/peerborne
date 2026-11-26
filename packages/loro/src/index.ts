@@ -379,6 +379,14 @@ export class LoroProvider implements CRDTProvider<
     return document;
   }
 
+  /**
+   * An update is integrated once the oplog covers the end of every peer range
+   * it carries. One still waiting for a dependency is not.
+   */
+  hasIntegrated(document: LoroDoc, changes: Uint8Array): boolean {
+    return covers(document.oplogVersion().toJSON(), rangeOf(changes));
+  }
+
   getHistory(document: LoroDoc): Uint8Array {
     return document.export({ mode: 'update' });
   }

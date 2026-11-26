@@ -31,13 +31,14 @@ update bytes. `remoteChange` accepts only update blobs and `applySnapshot` only
 full snapshots. A snapshot contributes its operation history; its encoded state
 is never loaded. `getHistory` exports that history as one update, so a
 checkpoint restore replays it through the same validation. An update whose
-dependencies are missing waits outside the document. Once it can integrate, it
-is imported into a fork together with the waiting updates it releases, and the
-batch is rejected if an operation writes to an unknown container type, deletes
-elements outside its container or causal past, or moves a tree node that does
-not exist, or if any root container reads differently after a snapshot round
-trip. Only a batch that passes reaches the document; a rejected one leaves it
-unchanged.
+dependencies are missing waits outside the document, and `hasIntegrated` reports
+it as not yet integrated, so Peerborne does not record it as applied and
+checkpoints omit it. Once it can integrate, it is imported into a fork together
+with the waiting updates it releases, and the batch is rejected if an operation
+writes to an unknown container type, deletes elements outside its container or
+causal past, or moves a tree node that does not exist, or if any root container
+reads differently after a snapshot round trip. Only a batch that passes reaches
+the document; a rejected one leaves it unchanged.
 
 Validation reads the whole document, so every integrated remote update costs
 O(document). Duplicate and waiting deliveries cost microseconds. The rules

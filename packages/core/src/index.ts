@@ -5,6 +5,7 @@ import {
 } from './peerborne.js';
 import {
   PeerborneConfig,
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
   defaultConfig,
@@ -224,6 +225,7 @@ export {
   defaultConfig,
   defaultBootstrapConfig,
   getDefaultConfig,
+  DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
   // Capabilities
@@ -334,6 +336,19 @@ export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
 export type { CRDTSnapshotNode } from './snapshot-node.js';
 export type { CompactionConfig } from './compaction-config.js';
+export {
+  defaultAntiEntropyConfig,
+  resolveAntiEntropyConfig,
+} from './anti-entropy.js';
+export type {
+  AntiEntropyConfig,
+  AntiEntropyEvent,
+  AntiEntropyHandler,
+  AntiEntropyLoadOutcome,
+  AntiEntropyRequestOutcome,
+  AntiEntropyStatus,
+  AntiEntropyTrigger,
+} from './anti-entropy.js';
 export {
   LOAD_SECURITY_STATE_VERSION,
   LOAD_SECURITY_HASH_LENGTH,

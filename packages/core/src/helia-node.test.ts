@@ -6,6 +6,7 @@ import { isLibp2p } from 'libp2p';
 import type { PeerborneConfig } from './peerborne-config.js';
 import { createAndStartHeliaNode } from './helia-node.js';
 import { acquirePeerIdentity } from './peer-identity.js';
+import { reuseLimitedConnections } from './limited-connection-reuse.js';
 
 jest.mock(
   'helia',
@@ -26,6 +27,9 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('./peer-identity.js', () => ({ acquirePeerIdentity: jest.fn() }));
+jest.mock('./limited-connection-reuse.js', () => ({
+  reuseLimitedConnections: jest.fn(),
+}));
 jest.mock('@ipld/dag-cbor', () => ({}), { virtual: true });
 jest.mock('@ipld/dag-json', () => ({}), { virtual: true });
 jest.mock('multiformats/codecs/json', () => ({}), { virtual: true });
@@ -40,6 +44,7 @@ const mockWithBitswap = jest.mocked(withBitswap);
 const mockWithLibp2pLight = jest.mocked(withLibp2pLight);
 const mockIsLibp2p = jest.mocked(isLibp2p);
 const mockAcquirePeerIdentity = jest.mocked(acquirePeerIdentity);
+const mockReuseLimitedConnections = jest.mocked(reuseLimitedConnections);
 const generatedKey = { type: 'Ed25519' } as never;
 const release = jest.fn();
 
@@ -166,6 +171,24 @@ describe('Helia node startup cleanup', () => {
       libp2p: { privateKey: generatedKey },
       bitswap: { runOnLimitedConnections: false },
     });
+  });
+
+  test('reuses relayed connections on the started libp2p node', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
+      libp2p: { services: { pubsub: {} } },
+    };
+    const { helia } = createConfig();
+    arrangeNode(node);
+
+    await createAndStartHeliaNode(helia);
+
+    expect(mockReuseLimitedConnections).toHaveBeenCalledWith(node.libp2p);
+    expect(node.start.mock.invocationCallOrder[0]).toBeLessThan(
+      mockReuseLimitedConnections.mock.invocationCallOrder[0]!,
+    );
   });
 
   test('loads the persisted key while holding the datastore identity', async () => {

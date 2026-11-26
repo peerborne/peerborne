@@ -201,6 +201,35 @@ describe('AutomergeProvider', () => {
     expect({ ...peer }).toEqual({ title: 'v1' });
     expect({ ...peer }).toEqual({ ...next });
   });
+
+  test('hasIntegrated() is false while a change waits for its dependencies', () => {
+    const [base, baseChanges] = provider.localChange(
+      provider.newDocument(),
+      '',
+      (d) => {
+        d.title = 'base';
+      },
+    );
+    const [withDependency, dependency] = provider.localChange(base, '', (d) => {
+      d.count = 1;
+    });
+    const [, dependent] = provider.localChange(withDependency, '', (d) => {
+      d.count = 2;
+    });
+
+    let replica = provider.remoteChange(provider.newDocument(), baseChanges);
+    expect(provider.hasIntegrated(replica, baseChanges)).toBe(true);
+    replica = provider.remoteChange(replica, dependent);
+    expect(provider.hasIntegrated(replica, dependent)).toBe(false);
+    expect(provider.hasIntegrated(replica, baseChanges)).toBe(true);
+    expect({ ...replica }).toEqual({ title: 'base' });
+    expect(provider.getHistory(replica)).toHaveLength(1);
+
+    replica = provider.remoteChange(replica, dependency);
+    expect(provider.hasIntegrated(replica, dependency)).toBe(true);
+    expect(provider.hasIntegrated(replica, dependent)).toBe(true);
+    expect({ ...replica }).toEqual({ title: 'base', count: 2 });
+  });
 });
 
 // ─── serializeKey / deserializeKey ──────────────────────────────────
@@ -4771,5 +4800,28 @@ describe('bounded initial invitation profile', () => {
     expect(sealedWelcomeGrowth).toBeLessThanOrEqual(
       INITIAL_INVITATION_MAX_SEALED_WELCOME_GROWTH_BYTES,
     );
+  });
+});
+
+describe('AutomergeProvider pending changes', () => {
+  test('reports changes queued for a missing dependency until it arrives', () => {
+    const provider = new AutomergeProvider<{ count?: number }>();
+    const [first, base] = provider.localChange(
+      provider.newDocument(),
+      '',
+      (d) => {
+        d.count = 1;
+      },
+    );
+    const [, dependent] = provider.localChange(first, '', (d) => {
+      d.count = 2;
+    });
+    let replica = provider.newDocument();
+    expect(provider.hasPendingChanges(replica)).toBe(false);
+    replica = provider.remoteChange(replica, dependent);
+    expect(provider.hasPendingChanges(replica)).toBe(true);
+    replica = provider.remoteChange(replica, base);
+    expect(provider.hasPendingChanges(replica)).toBe(false);
+    expect(replica.count).toBe(2);
   });
 });
