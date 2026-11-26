@@ -55,6 +55,28 @@ describe('demo gateway resource limits', () => {
     expect(limiter.admit('192.0.2.3')).toBeDefined()
   })
 
+  it('does not let one IP spend the shared attempt budget', () => {
+    const limiter = new GatewayLimiter(demoGatewayLimits, () => now)
+    for (let index = 0; index < demoGatewayLimits.attemptsPerMinute * 2; index++) {
+      const session = limiter.admit('192.0.2.1')
+      if (session) limiter.release(session)
+      now += 500
+    }
+    expect(limiter.admit('192.0.2.2')).toBeDefined()
+  })
+
+  it('does not charge the shared attempt budget while the gateway is full', () => {
+    const limiter = new GatewayLimiter({
+      ...demoGatewayLimits, attemptsPerMinute: 2, maxConnections: 1,
+    }, () => now)
+    const first = limiter.admit('192.0.2.1')!
+    for (let index = 2; index < 10; index++) {
+      expect(limiter.admit(`192.0.2.${index}`)).toBeUndefined()
+    }
+    limiter.release(first)
+    expect(limiter.admit('192.0.2.10')).toBeDefined()
+  })
+
   it('caps cumulative bytes for one session', () => {
     const limiter = new GatewayLimiter({ ...demoGatewayLimits, sessionBytes: 10 }, () => now)
     const session = limiter.admit('192.0.2.1')!

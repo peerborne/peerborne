@@ -42,6 +42,11 @@ services:
       - "9002:9002"   # TCP (node-to-node, inter-relay mesh)
     volumes:
       - relay-1-data:/shared
+    environment:
+      # Browsers arrive through Caddy, so GossipSub sees one source IP for all
+      # of them. To keep IP scoring for direct TCP peers on 9002, pin Caddy's
+      # address and list it instead. Enforce per-client limits in Caddy.
+      - TRUSTED_PROXY_IPS=*
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -59,6 +64,8 @@ services:
       - "9012:9002"   # TCP (offset ports for single-machine demo)
     volumes:
       - relay-2-data:/shared
+    environment:
+      - TRUSTED_PROXY_IPS=*
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s

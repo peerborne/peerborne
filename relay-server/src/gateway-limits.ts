@@ -56,9 +56,6 @@ export class GatewayLimiter {
 
   admit(ip: string): GatewaySession | undefined {
     if (this.exhausted) return undefined
-    if (this.increment(this.attempts, 60_000) > this.limits.attemptsPerMinute) {
-      return undefined
-    }
     for (const [address, windows] of this.addresses) {
       if (this.now() - windows.minute.start >= 60_000) this.addresses.delete(address)
     }
@@ -76,10 +73,15 @@ export class GatewayLimiter {
     if (
       minute > this.limits.attemptsPerIpPerMinute ||
       burst > this.limits.attemptsPerIpPerTenSeconds ||
-      this.sessions.size >= this.limits.maxConnections ||
       [...this.sessions].filter((session) => session.ip === ip).length >=
-        this.limits.maxConnectionsPerIp
+        this.limits.maxConnectionsPerIp ||
+      this.sessions.size >= this.limits.maxConnections
     ) {
+      return undefined
+    }
+    // Charge the shared budget only for attempts every other limit admits, so
+    // one client or a full gateway cannot spend it for everyone else.
+    if (this.increment(this.attempts, 60_000) > this.limits.attemptsPerMinute) {
       return undefined
     }
 

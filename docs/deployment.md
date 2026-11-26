@@ -106,12 +106,13 @@ All configuration is done through environment variables on the relay process.
 | `READINESS_PORT` | `9000` | Internal HTTP port for `/livez` and `/readyz` |
 | `RELAY_IDENTITY_KEY_PATH` | `./relay-identity.key` | App-managed protobuf libp2p private-key file. The standard image sets `/shared/relay-identity.key` |
 | `EXTRA_TOPICS` | (unset) | Comma-separated additional topics to subscribe |
-| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
+| `TOPIC_ALLOWLIST` | `/peerborne/document/v3/,peerborne/coordinated/v1/` | Comma-separated exact topics or slash-terminated namespace prefixes for auto-subscribe. Set exactly `*` for explicit open mode |
 | `MAX_AUTO_TOPICS` | `1000` | Cap on auto-subscribed topics to prevent unbounded growth |
 | `MAX_AUTO_TOPICS_PER_PEER` | `32` | Cap on dynamic topics tracked for one remote peer |
-| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer |
+| `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` | `65536` | Ingestion-layer topic-name byte budget for one remote peer. Each subscription costs its name length plus 1024 bytes |
+| `TRUSTED_PROXY_IPS` | (unset) | Comma-separated exact proxy IPs exempt from GossipSub IP-colocation scoring, or `*` when every connection arrives through a proxy. See [Reverse proxies](#reverse-proxies-and-gossipsub-ip-scoring) |
 | `MAX_CONNECTIONS` | `256` | Global ceiling for established libp2p transport connections |
-| `RELAY_MAX_RESERVATIONS` | `128` | Maximum active Circuit Relay v2 reservations |
+| `RELAY_MAX_RESERVATIONS` | `128` | Maximum active Circuit Relay v2 reservations. A peer's reservation is freed when its last connection closes |
 | `RELAY_RESERVATION_TTL_MS` | `600000` | Reservation lifetime before renewal, in milliseconds |
 | `RELAY_MAX_CIRCUIT_DURATION_MS` | `1800000` | Per-circuit duration limit, in milliseconds |
 | `RELAY_MAX_CIRCUIT_BYTES` | `16777216` | Per-circuit data limit, in bytes |
@@ -135,7 +136,8 @@ automatically unsubscribes. The relay tracks subscriptions by peer, cleans them
 on disconnect, and periodically reconciles its bounded dynamic-topic set with
 GossipSub as a backstop for missed unsubscribe events.
 
-The default admits only the `/peerborne/document/v3/` document namespace.
+The default admits the `/peerborne/document/v3/` document namespace and the
+`peerborne/coordinated/v1/` namespace that core uses for coordinated documents.
 Allowlist entries ending in `/` match a namespace prefix; entries without a
 trailing slash match one exact topic. A custom client namespace must be added
 to every relay's `TOPIC_ALLOWLIST`. All peers must use the same runtime and
@@ -150,6 +152,40 @@ intentional opt-out of topic filtering, not a recommended public-relay default.
 This policy controls only the topics to which the relay node itself subscribes
 for GossipSub forwarding. It does not inspect or restrict opaque, Noise-encrypted
 Circuit Relay streams, and it is not document authorization.
+
+GossipSub silently ignores a subscription that would exceed
+`GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER`, so the relay never forwards that topic for
+that peer. Each subscription costs its topic name's length plus 1024 bytes. A
+client subscribes to the 38-character discovery topic plus one topic per open
+document; coordinated-document topics are 89 characters. The default 64 KiB
+budget fits about 57 such document topics; Render's 16 KiB fits 13. Keep the
+budget above the discovery topic plus `MAX_AUTO_TOPICS_PER_PEER` document topics.
+
+### Reverse proxies and GossipSub IP scoring
+
+GossipSub penalizes many peer IDs that share one source IP and retains the
+scores of disconnected peers for an hour. Behind Fly, Caddy, a Kubernetes
+Ingress or any other reverse proxy, every browser arrives from the proxy's
+address. From about the 15th browser identity in an hour, new peers fall below
+the graylist threshold and the relay silently ignores their subscriptions.
+
+Set `TRUSTED_PROXY_IPS` on every proxied relay:
+
+- `*` disables IP-colocation scoring entirely. The checked-in Fly and
+  Docker+Caddy configurations use it because every browser connection arrives
+  through the proxy.
+- A comma-separated list of exact IPv4 or IPv6 addresses, such as the proxy
+  container's pinned address, exempts only those addresses. Peers that connect
+  directly, for example over TCP 9002, keep IP scoring. Invalid entries are
+  ignored; CIDR ranges and hostnames are not supported.
+
+When every libp2p listener is loopback-only, as in the Render gateway, the relay
+exempts `127.0.0.1` and `::1` automatically.
+
+The trade-off: the relay does not read forwarded-for headers, so an exempted
+address loses GossipSub's protection against one host creating many identities.
+Enforce per-client connection and request-rate limits at the proxy, and keep
+`MAX_CONNECTIONS`, `MAX_AUTO_TOPICS_PER_PEER` and the topic byte budget bounded.
 
 ## Fly.io: persistent identity and WSS
 
@@ -172,8 +208,10 @@ fly checks list
 ```
 
 `RELAY_IDENTITY_KEY_PATH=/data/relay-identity.key` is already set in
-`fly.toml`; no identity secret needs to be generated or passed to Fly. Back up
-the volume if preserving the peer ID matters. Losing the file creates a new
+`fly.toml`; no identity secret needs to be generated or passed to Fly.
+`TRUSTED_PROXY_IPS=*` is also set because every browser arrives through
+fly-proxy; see [Reverse proxies](#reverse-proxies-and-gossipsub-ip-scoring).
+Back up the volume if preserving the peer ID matters. Losing the file creates a new
 identity and invalidates multiaddrs pinned to the previous `/p2p/<peerId>`.
 
 For `relay.peerborne.io`, add the hostname to the Fly app, follow Fly's emitted
@@ -211,7 +249,7 @@ When every libp2p listener is loopback-only, the relay excludes `127.0.0.1` and
 gateway, not individual clients. Without this exception, retained scores from
 closed browser sessions eventually suppress subscriptions for new sessions.
 The gateway continues to enforce real client IP limits. Relays with any public
-listener retain GossipSub's default IP scoring.
+listener retain GossipSub's default IP scoring unless `TRUSTED_PROXY_IPS` is set.
 
 Render Free has no persistent disk. The Blueprint generates a private
 `RELAY_IDENTITY_SEED` once; the entry point reconstructs the same Ed25519 identity
@@ -257,14 +295,22 @@ both directions, including traffic outside document GossipSub topics:
 | Limit | Demo value |
 | --- | --- |
 | Simultaneous WebSocket connections | 16 total, 4 per client IP |
-| Upgrade attempts | 30/minute total, 6/minute and 3/10 seconds per IP |
+| Upgrade attempts | 6/minute and 3/10 seconds per IP, then 30/minute total |
 | Tracked IP rate-limit records | 512, expiring after the minute window |
+| Rejected upgrade lifetime | 1 second to drain the response, then closed |
 | Session lifetime / inactivity | 10 minutes / 60 seconds |
 | Total bytes per session | 2 MiB across both directions |
 | Session throughput | 64 KiB/second with a 128 KiB burst |
 | Aggregate tunnel traffic per gateway process | 32 MiB, then close sessions and reject upgrades |
+| GossipSub topic budget per peer | 16 KiB: discovery plus 13 coordinated-document topics |
 | Circuit Relay reservations / individual circuit bytes | 16 / 1 MiB |
 | Individual circuit lifetime | 5 minutes |
+
+Per-IP limits are checked before the shared budget: only an attempt that passes
+its IP's limits and finds a free session counts toward the 30-attempt total, so
+one client cannot exhaust it for everyone. The reservation cap matches the 16
+sessions, and reservations are freed when a client disconnects, so it is not the
+first limit reached.
 
 IP headers are trusted only after checking the origin secret. The gateway never
 forwards that credential to libp2p or logs credentials, IP addresses, or payloads.
@@ -399,9 +445,11 @@ Caddy (or your own load balancer) at their IP addresses.
 - Keep `GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER` bounded at the protocol ingestion layer.
 - Tune the global transport-connection cap, reservation cap/TTL, per-connection
   HOP/STOP stream limits, and per-circuit duration/data limits for measured
-  capacity. The pinned relay dependency may retain a disconnected reservation
-  until its TTL, so the browser launch uses a 10-minute TTL and a 128-reservation
-  cap to bound stale capacity. These are resource controls, not a scale guarantee.
+  capacity. The relay frees a peer's reservation when its last connection
+  closes; otherwise reservations expire at their TTL. These are resource
+  controls, not a scale guarantee.
+- Set `TRUSTED_PROXY_IPS` on relays behind a reverse proxy and enforce
+  per-client limits at that proxy.
 - Run the relay as a non-root user (the Dockerfiles already do this).
 - Use `restart: unless-stopped` in Compose (already set in the production file).
 - Monitor container health via Docker's built-in `HEALTHCHECK` -- the relay
@@ -517,7 +565,9 @@ spec:
               name: tcp
           env:
             - name: TOPIC_ALLOWLIST
-              value: "/peerborne/document/v3/"
+              value: "/peerborne/document/v3/,peerborne/coordinated/v1/"
+            - name: TRUSTED_PROXY_IPS
+              value: "*"
             - name: MAX_AUTO_TOPICS
               value: "5000"
             - name: MAX_AUTO_TOPICS_PER_PEER

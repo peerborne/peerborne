@@ -41,6 +41,7 @@ describe('loadConfig', () => {
         DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
       )
       expect(cfg.maxConnections).toBe(DEFAULT_MAX_CONNECTIONS)
+      expect(cfg.trustedProxyIps).toEqual([])
       expect(cfg.extraTopics).toEqual([])
       expect(cfg.relayLimits).toEqual({
         maxReservations: DEFAULT_RELAY_MAX_RESERVATIONS,
@@ -247,6 +248,25 @@ describe('loadConfig', () => {
         ).toBe(DEFAULT_GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER)
       },
     )
+  })
+
+  describe('TRUSTED_PROXY_IPS parsing', () => {
+    it('trusts no proxy when unset or empty', () => {
+      expect(loadConfig({}).trustedProxyIps).toEqual([])
+      expect(loadConfig({ TRUSTED_PROXY_IPS: '' }).trustedProxyIps).toEqual([])
+    })
+
+    it('treats an explicit wildcard as every connection being proxied', () => {
+      expect(loadConfig({ TRUSTED_PROXY_IPS: ' * ' }).trustedProxyIps).toBe('*')
+    })
+
+    it('keeps only valid IPv4 and IPv6 addresses', () => {
+      expect(
+        loadConfig({
+          TRUSTED_PROXY_IPS: ' 172.16.0.2, fdaa::3 ,caddy,10.0.0.0/8,,*',
+        }).trustedProxyIps,
+      ).toEqual(['172.16.0.2', 'fdaa::3'])
+    })
   })
 
   describe('EXTRA_TOPICS parsing', () => {
