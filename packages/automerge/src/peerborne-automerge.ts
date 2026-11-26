@@ -31,6 +31,7 @@ import {
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
+  DocumentCausalDependencyError,
   PreparedDocumentChange,
   DocumentPreparationOptions,
   DocumentWritePaths,
@@ -117,7 +118,7 @@ export class AutomergeProvider<T = any>
           if (closed)
             throw new Error('Document session closed during preparation');
           if (getMissingDeps(next, []).length !== 0)
-            throw new Error('Document change has missing causal dependencies');
+            throw new DocumentCausalDependencyError();
           const staged = next;
           const changes = delta.map(
             (bytes) => new Uint8Array(bytes) as BinaryChange,

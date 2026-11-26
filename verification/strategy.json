@@ -406,6 +406,22 @@
       ]
     },
     {
+      "id": "coordinated-held-frames",
+      "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, equivocation check, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection is adapter behavior, so generated arrival orders exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
+      "evidence": [
+        "packages/core/src/coordinated-document-held-frames.test.ts",
+        "packages/automerge/src/coordinated-held-frames.test.ts",
+        "packages/yjs/src/coordinated-held-frames.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/document-crdt-session.ts",
+        "packages/core/src/policy/document-content.ts",
+        "packages/automerge/src/peerborne-automerge.ts",
+        "packages/yjs/src/peerborne-yjs.ts"
+      ]
+    },
+    {
       "id": "coordinated-document-security",
       "formalBoundary": "Sequence, role, epoch advancement, journal recovery, publication-ledger insertion/projection, durable selection, finite-history provenance and exact bounded roster equality are proved. Native checks exercise authority changes during journal reads, delayed identity checks, malformed provider rosters, ownership of recovered paths and authenticated group revocation across restart. Native Map aliasing, detached candidates, encrypted receipts, provider signatures/exporters, CRDT parsing, signed roster ownership, IndexedDB transactions, mixed crash histories and rollback-anchor conformance also require runtime checks. Cryptographic primitives, network liveness and secure hardware storage remain outside these checks.",
       "evidence": [
