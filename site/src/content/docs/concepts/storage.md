@@ -140,11 +140,22 @@ prune older nodes from the in-memory shadow tree. Automatic compaction is **off
 by default**; writers can still request one directly with
 `await document.snapshot();`.
 
+Each change embeds the retained tree as its parent, so the tree grows one level
+per change and serialization rejects trees deeper than 512 levels. Whatever the
+compaction settings, a writer whose retained tree reaches 256 levels takes a
+snapshot and prunes the tree to its 128 most recent inline changes, whatever
+`keepRecentNodes` says. Membership changes count toward that limit, and older
+ones stay attached as leaves. A peer that misses more changes than the retained
+tree holds cannot fill the gap from later messages; it needs `requestSync()` or
+a reload. This runs after local changes, remote syncs and loads; readers do
+not snapshot. A CRDT provider without `getSnapshot` cannot compact, so its
+documents still stop accepting changes at 512 levels.
+
 When compaction runs:
 1. The current CRDT state is serialized as a full snapshot
 2. Its state and boundary metadata are signed when signing is enabled
 3. It is included in a signed-when-enabled, encrypted load response rather than stored as a CID-addressed change payload
-4. Older nodes are pruned from the in-memory sync tree only when `pruneAfterSnapshot` is enabled
+4. Older nodes are pruned from the in-memory sync tree when `pruneAfterSnapshot` is enabled, and always for a depth-bound snapshot
 5. Eligible pruned blocks are scheduled for deletion only when both `pruneAfterSnapshot` and `gcAfterPrune` are enabled
 
 Snapshots can reduce replay work, but:
