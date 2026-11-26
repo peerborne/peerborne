@@ -266,13 +266,18 @@ Automerge names missing change hashes before it clones the document, and a Yjs
 update that integrated nothing keeps the private mirror instead of rebuilding
 it from a snapshot. A retried frame goes through the whole admission path
 again, including field-scope inspection. A document holds at most 64 frames
-and 8 MiB; each author holds at most 32 of those frames and 2 MiB. All
+and 8 MiB; each author holds at most 32 of those frames and 4 MiB. All
 documents in a process hold at most 1,024 frames and 64 MiB, and one author at
-most a quarter of that. A held frame expires after two minutes. When a bound is
-reached, the author that would hold the most bytes gives up its farthest-ahead
-frame, so one writer's far-ahead frames cannot push out another author's
-out-of-order frame; a frame farther ahead than everything its author holds is
-rejected instead. A second frame for a held author sequence with different
+most a quarter of that. A held frame expires two minutes after it was held, by
+a timer even in a document that receives nothing more; frames that an arriving
+predecessor makes admissible are retried before anything expires. When a bound
+is reached, the author occupying the largest fraction of its frame or byte
+share gives up its farthest-ahead frame, in any document for the process-wide
+bound, so one writer's far-ahead frames cannot push out another author's
+out-of-order frame. Evictions are planned first and applied only if the new
+frame is then admitted; a frame farther ahead than everything its author holds,
+or whose author already uses its whole process-wide share, is rejected without
+evicting anything. A second frame for a held author sequence with different
 content is rejected as equivocation. Held frames are memory-only and are
 dropped at a new group context and on close. A held frame whose predecessor
 never arrives expires; nothing requests it yet.

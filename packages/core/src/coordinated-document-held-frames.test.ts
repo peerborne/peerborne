@@ -161,7 +161,7 @@ describe('coordinated document held frames', () => {
       ),
       { seed: 202611251, numRuns: 25 },
     );
-  });
+  }, 60_000);
 
   test('refuses an equivocating or damaged held frame and bounds each author', async () => {
     const f = await documentFixture(),
@@ -280,9 +280,9 @@ describe('coordinated document held frames', () => {
         expect(await g.doc(0).receiveSecurityFrame(publication.data)).toBe(
           true,
         );
-      // Only the four nearest frames fit the author's 2 MiB share.
-      expect(g.doc(0).document).toHaveLength(2 + 6 * 28_000);
-      for (const publication of heavy.slice(6))
+      // Only the eight nearest frames fit the author's 4 MiB share.
+      expect(g.doc(0).document).toHaveLength(2 + 10 * 28_000);
+      for (const publication of heavy.slice(10))
         expect(await g.doc(0).receiveSecurityFrame(publication.data)).toBe(
           true,
         );
@@ -292,7 +292,7 @@ describe('coordinated document held frames', () => {
     }
   }, 120_000);
 
-  test('evicts the heaviest author’s farthest frame when held frames reach their bound', async () => {
+  test('evicts the farthest frame of the author with the largest share when held frames reach their bound', async () => {
     const g = await coordinatedGroupFixture(testCRDT, testChanges, {
       members: 4,
     });
@@ -313,20 +313,24 @@ describe('coordinated document held frames', () => {
           expect(await g.doc(0).receiveSecurityFrame(publication.data)).toBe(
             false,
           );
-      await g.doc(3).change(push(1));
-      await g.doc(3).change(push(2));
+      // The honest author's 17 KB frames hold more bytes than either writer,
+      // but a far smaller share of its frame count.
+      const big = (offset: number) =>
+        Array.from({ length: 1000 }, (_, index) => 1e15 + offset + index);
+      await g.doc(3).change(push(...big(0)));
+      await g.doc(3).change(push(...big(1000)));
       const honest = g.take();
       expect(await g.doc(0).receiveSecurityFrame(honest[1].data)).toBe(false);
       expect(await g.doc(0).receiveSecurityFrame(honest[0].data)).toBe(true);
-      expect(g.doc(0).document).toEqual([1, 2]);
+      expect(g.doc(0).document).toEqual([...big(0), ...big(1000)]);
       for (const chain of chains)
         for (const publication of chain.slice(0, 2))
           expect(await g.doc(0).receiveSecurityFrame(publication.data)).toBe(
             true,
           );
       expect(g.doc(0).document).toEqual([
-        1,
-        2,
+        ...big(0),
+        ...big(1000),
         ...values(1, 34),
         ...values(2, 33),
       ]);
@@ -345,8 +349,8 @@ describe('coordinated document held frames', () => {
     await a.activate();
     await b.activate();
     const frames = await writes(a, [1, 2, 3]);
-    const start = Date.now();
-    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    const start = performance.now();
+    const now = jest.spyOn(performance, 'now').mockReturnValue(start);
     try {
       expect(await b.receive(frames[2])).toBe(false);
       now.mockReturnValue(start + 120_000);
@@ -360,6 +364,57 @@ describe('coordinated document held frames', () => {
       await a.close();
       await b.close();
     }
+  });
+
+  test('retries a held frame before expiring it when its predecessor arrives late', async () => {
+    const f = await documentFixture(),
+      a = create(f),
+      b = create(f);
+    await a.activate();
+    await b.activate();
+    const frames = await writes(a, [1, 2]);
+    const start = performance.now();
+    const now = jest.spyOn(performance, 'now').mockReturnValue(start);
+    try {
+      expect(await b.receive(frames[1])).toBe(false);
+      now.mockReturnValue(start + 120_000);
+      expect(await b.receive(frames[0])).toBe(true);
+      expect(b.document).toEqual([1, 2]);
+    } finally {
+      now.mockRestore();
+      await a.close();
+      await b.close();
+    }
+  });
+
+  test('expires held frames in a document that receives nothing more', async () => {
+    const f = await documentFixture(),
+      a = create(f),
+      b = create(f);
+    await a.activate();
+    await b.activate();
+    const frames = await writes(a, [1, 2, 3]);
+    const held = () =>
+      (b as unknown as { held?: { frames: unknown[] } }).held?.frames.length ??
+      0;
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    });
+    try {
+      expect(await b.receive(frames[2])).toBe(false);
+      expect(held()).toBe(1);
+      jest.advanceTimersByTime(119_000);
+      expect(held()).toBe(1);
+      jest.advanceTimersByTime(1_000);
+      expect(held()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(await b.receive(frames[0])).toBe(true);
+    expect(await b.receive(frames[1])).toBe(true);
+    expect(b.document).toEqual([1, 2]);
+    await a.close();
+    await b.close();
   });
 
   test('retries a frame held for a native dependency only once that dependency is accepted', async () => {
@@ -420,6 +475,61 @@ describe('coordinated document held frames', () => {
       await g.close();
     }
   });
+
+  test('evicts across documents when the process bound is full and refuses an author past its share before evicting others', async () => {
+    type Group = Awaited<ReturnType<typeof coordinatedGroupFixture>>;
+    const groups: Group[] = [];
+    const heldIn = (g: Group) =>
+      (
+        g.doc(0) as unknown as {
+          _coordinated: { held?: { frames: unknown[] } };
+        }
+      )._coordinated.held?.frames.length ?? 0;
+    try {
+      // Four writers each fill their quarter of the process-wide bound with
+      // 32 far-ahead frames in each of eight documents.
+      for (let index = 0; index < 17; index++) {
+        const g = await coordinatedGroupFixture(testCRDT, testChanges, {
+          members: 6,
+          journal: false,
+        });
+        groups.push(g);
+        for (let member = 1; member < 6; member++) await g.addMember(member);
+        for (let member = 0; member < 6; member++) await g.open(member);
+        if (index === 16) break;
+        for (const author of index < 8 ? [1, 2] : [3, 4]) {
+          for (let value = 0; value < 34; value++)
+            await g.doc(author).change(push(value));
+          for (const publication of g.take().slice(2))
+            expect(await g.doc(0).receiveSecurityFrame(publication.data)).toBe(
+              false,
+            );
+        }
+        expect(heldIn(g)).toBe(64);
+      }
+      const crowded = groups[8];
+      for (let value = 0; value < 3; value++)
+        await crowded.doc(1).change(push(value));
+      await expect(
+        crowded.doc(0).receiveSecurityFrame(crowded.take()[2].data),
+      ).rejects.toThrow('exceed their bound');
+      expect(heldIn(crowded)).toBe(64);
+      const idle = groups[16];
+      await idle.doc(5).change(push(1));
+      await idle.doc(5).change(push(2));
+      const honest = idle.take();
+      expect(await idle.doc(0).receiveSecurityFrame(honest[1].data)).toBe(
+        false,
+      );
+      expect(groups.slice(0, 16).reduce((sum, g) => sum + heldIn(g), 0)).toBe(
+        1023,
+      );
+      expect(await idle.doc(0).receiveSecurityFrame(honest[0].data)).toBe(true);
+      expect(idle.doc(0).document).toEqual([1, 2]);
+    } finally {
+      for (const g of groups) await g.close();
+    }
+  }, 240_000);
 
   test('does not hold a frame whose receive finishes after close', async () => {
     const f = await documentFixture(),
