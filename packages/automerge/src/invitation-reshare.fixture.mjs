@@ -19,6 +19,7 @@ import {
   DEFAULT_DOCUMENT_TOPIC_PREFIX,
   Peerborne,
   SubtleCrypto,
+  deriveEpochIdFromRootSecret,
   documentTopic,
 } from '@peerborne/core';
 import {
@@ -438,6 +439,91 @@ test('a collaborator cannot plant its own key or ratchet tree in the founder', a
     'founder sees the replacement',
     () => document.document.reply === 'converged',
   );
+});
+
+test('a collaborator cannot plant a leaf in the founder tree through its own PathUpdate', async (t) => {
+  const path = `/reshare/planted-leaf-${crypto.randomUUID()}`;
+  const [founder, mallory, replacement] = await network(t, path, 3);
+  const document = await founded(founder, path, 'before');
+  const rendezvous = [founder.circuit];
+  const editor = await mallory.swarm.acceptInvitation(
+    await document.createInvitation({
+      role: 'editor',
+      rendezvous,
+      beforeAcceptance: unstored,
+    }),
+    mallory.kem,
+  );
+  await until('collaborator state', () => editor.document?.body === 'before');
+  const keyIds = async (replica) =>
+    (await replica._keychain.keys()).map(([id]) => hex(id));
+  const processed = [];
+  const handle = document.handleBeeKEMPathUpdateRequestData.bind(document);
+  document.handleBeeKEMPathUpdateRequestData = async (...args) => {
+    await handle(...args);
+    processed.push(document._beekem.generation);
+  };
+  const send = async (transition) => {
+    const count = processed.length;
+    await editor._distributeBeeKEMPathUpdate(
+      transition.pathUpdate,
+      await deriveEpochIdFromRootSecret(transition.rootSecret),
+    );
+    await until('PathUpdate handled', () => processed.length > count);
+  };
+
+  const ghostKeys = await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveBits'],
+  );
+  const planted = await editor._beekem.clone().addMember(ghostKeys.publicKey);
+  const ghost = new BeeKEM();
+  await ghost.processWelcome(
+    planted.welcome,
+    ghostKeys.privateKey,
+    ghostKeys.publicKey,
+  );
+  const honestKeys = await keyIds(document);
+  const honestTree = document._beekem;
+  await send(planted);
+  // A refreshed leaf key would hide the editor's leaf from removeReader.
+  await send(await editor._beekem.clone().update());
+  assert.equal(document._beekem, honestTree);
+  assert.equal(document._beekem.memberCount, 2);
+  assert.deepEqual(await keyIds(document), honestKeys);
+
+  const pathOnly = await editor._beekem.updatePath();
+  await send(pathOnly);
+  const [memberEpoch] = await document._keychain.current();
+  assert.equal(
+    hex(memberEpoch),
+    hex(await deriveEpochIdFromRootSecret(pathOnly.rootSecret)),
+  );
+
+  let rotation;
+  const distribute = document._distributeBeeKEMPathUpdate.bind(document);
+  document._distributeBeeKEMPathUpdate = async (update, epoch) => {
+    rotation = update;
+    return distribute(update, epoch);
+  };
+  await document.removeWriter(mallory.identity.publicKey);
+  await document.removeReader(mallory.identity.publicKey);
+  const [rotated] = await document._keychain.current();
+  assert.equal(await holdsKey(editor, rotated), false);
+  await assert.rejects(ghost.processPathUpdate(rotation));
+  assert.equal(document._beekem.hasOnlyLocalLiveLeaf(), true);
+
+  const joined = await replacement.swarm.acceptInvitation(
+    await document.createInvitation({
+      role: 'reader',
+      rendezvous,
+      beforeAcceptance: unstored,
+    }),
+    replacement.kem,
+  );
+  await until('replacement state', () => joined.document?.body === 'before');
+  assert.deepEqual(await keyIds(joined), await keyIds(document));
 });
 
 test('a founder restored from its acceptance checkpoint revokes the collaborator and re-shares', async (t) => {

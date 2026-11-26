@@ -14079,6 +14079,11 @@ export class PeerborneDocument<
       let rootSecret: Uint8Array;
       let disposition: 'applied' | 'duplicate';
       try {
+        // Members join only through this replica's own addMember and leave
+        // only through its own removeReader. A remote update that adds or
+        // blanks a leaf could plant one its signer controls, and one that
+        // replaces the signer's leaf key would hide that leaf from the
+        // identity-bound lookup removeReader uses to revoke it.
         ({ rootSecret, disposition } =
           await beekem.processPathUpdateTransactionally(
             pathUpdate,
@@ -14086,6 +14091,7 @@ export class PeerborneDocument<
               rootSecret: appliedRoot,
               disposition: appliedDisposition,
             }),
+            { fixedLeaves: true },
           ));
       } catch (error) {
         if (error instanceof BeeKEMCompetingEpochError) {

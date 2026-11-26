@@ -78,7 +78,9 @@ The initial online invitation protocol binds three signed envelopes:
 Accepting an invitation verifies every binding and the resulting ACL before
 opening the document. Failure never falls back to new-document creation. See
 [Invite a collaborator](../../cookbook/invitations/) for the API and its
-founder-plus-one, online-only trust boundary.
+founder-plus-one, online-only trust boundary. Invitations require the attested
+Automerge capacity profile, so Yjs and Loro documents are founder-only: they
+cannot be shared with another identity.
 
 Before changing membership, the founder also performs a fail-closed capacity
 check. The bundled Automerge JSON providers and P-384/SHA-384 SubtleCrypto
@@ -424,7 +426,7 @@ Reader revocation is more complex. Since readers hold the document key, simply r
 
 What exists:
 - **BeeKEM key separation** can generate new document keys that exclude a former member
-- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation. A receiver applies one only when its signer is the current writer that owns the sender leaf. A replica knows the owners of its own leaf and of reader leaves it registered, so it rejects updates from any other leaf. A joiner therefore cannot apply the inviter's rotations; membership beyond founder plus one needs a replicated leaf-owner record first
+- **PathUpdate V2** carries writer-signed ratchet updates bound to the exact parent tree and next generation. A receiver applies one only when its signer is the current writer that owns the sender leaf, and only when it keeps the leaf count and every leaf public key, including the sender's. Members join only through the founder's own `addMember` and leave only through its own `removeReader()`, so an update that adds, blanks, or re-keys a leaf is refused: otherwise a collaborator could plant a leaf it controls and read every later rotation, or hide its leaf from the identity-bound lookup that revokes it. A replica knows the owners of its own leaf and of reader leaves it registered, so it rejects updates from any other leaf. A joiner therefore cannot apply the inviter's rotations; membership beyond founder plus one needs a replicated leaf-owner record first
 - A signed local checkpoint can carry accepted BeeKEM state across restart. The application can pin its exact commitment in independent trusted storage.
 - PathUpdate delivery is best effort.
 
@@ -448,6 +450,10 @@ epoch. Recovery requires a separate recipient-bound re-invitation or explicit
 key-recovery flow; Peerborne does not automatically re-invite members or run
 a key-recovery flow. A Welcome must carry a generation-bearing BeeKEM tree;
 key-only Welcome payloads are rejected.
+The key a removal creates exists only on the founder device that ran it.
+Another device of the same founder, or one that restores a checkpoint taken
+before the removal, cannot recover that key and can neither read nor be read
+by members using it; restore a checkpoint taken after the last removal.
 
 A document stops when a current writer signs a different validated public tree
 for the same generation and last accepted predecessor. The application can read

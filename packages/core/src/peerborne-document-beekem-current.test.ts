@@ -157,8 +157,8 @@ describe('document current BeeKEM delivery', () => {
       prepareEpochKey,
       installedEpochs,
     } = await currentDeliveryHarness();
-    const first = await founder.update();
-    const second = await founder.update();
+    const first = await founder.updatePath();
+    const second = await founder.updatePath();
     await deliver(second);
     expect(document._beekem).toBe(reader);
     expect(prepareEpochKey).not.toHaveBeenCalled();
@@ -179,9 +179,9 @@ describe('document current BeeKEM delivery', () => {
     expect(document._beekem).toBe(committedTree);
 
     await deliver(first);
-    await staleFounder.update();
-    await staleFounder.update();
-    const wrongParent = await staleFounder.update();
+    await staleFounder.updatePath();
+    await staleFounder.updatePath();
+    const wrongParent = await staleFounder.updatePath();
     await deliver(wrongParent);
     expect(document._beekem).toBe(committedTree);
     expect(prepareEpochKey).toHaveBeenCalledTimes(2);
@@ -198,7 +198,7 @@ describe('document current BeeKEM delivery', () => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     const { founder, reader, document, deliver, otherWriter, installedEpochs } =
       await currentDeliveryHarness();
-    const update = await founder.update();
+    const update = await founder.updatePath();
 
     await deliver(update, 'beekem-path-update-v2', otherWriter);
     expect(warn).toHaveBeenCalledWith(
@@ -212,12 +212,30 @@ describe('document current BeeKEM delivery', () => {
     expect(document._beekem.generation).toBe(update.pathUpdate.generation);
   });
 
+  test('drops a signed update that adds or re-keys a leaf', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    const { founder, reader, document, deliver, installedEpochs } =
+      await currentDeliveryHarness();
+    const ghostKeys = await generateEciesKeyPair();
+    for (const update of [
+      await founder.clone().addMember(ghostKeys.publicKey),
+      await founder.clone().update(),
+    ]) {
+      await deliver(update);
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith('Failed to apply BeeKEM PathUpdateV2');
+    expect(document._beekem).toBe(reader);
+    expect(installedEpochs).toHaveLength(0);
+  });
+
   test('drops a signed PathUpdateV2 tagged with the retired V1 context', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
     const { founder, reader, document, deliver, installedEpochs } =
       await currentDeliveryHarness();
-    const update = await founder.update();
+    const update = await founder.updatePath();
 
     await deliver(update, 'beekem-path-update-v1');
     expect(warn).toHaveBeenCalledWith('Dropping malformed BeeKEM PathUpdateV2');
@@ -235,7 +253,7 @@ describe('document current BeeKEM delivery', () => {
     const founder = new BeeKEM();
     await founder.initialize(founderKeys.privateKey, founderKeys.publicKey);
     const { welcome } = await founder.addMember(readerKeys.publicKey);
-    const update = await founder.update();
+    const update = await founder.updatePath();
     const signed: unknown[] = [];
     const document: any = Object.assign(
       Object.create(PeerborneDocument.prototype),

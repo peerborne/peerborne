@@ -83,8 +83,17 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   the ACL or BeeKEM state, and only resends the Welcome to an existing reader.
   Share a document through an invitation. Invitations require the attested
   Automerge capacity profile, which the bundled Yjs and Loro adapters do not
-  declare, so an application built on them, including the password-manager
-  example, has no supported way to share a document with another identity.
+  declare.
+- **Yjs and Loro documents are founder-only.** No supported path shares a
+  Yjs or Loro document with another identity, so an application built on them,
+  including the password-manager example, can only sync it between devices
+  that hold the founder's identity and keys.
+- **A removal's key stays on the device that made it.** `removeReader()`
+  derives the next key from fresh secrets on the removing device, and remote
+  PathUpdates cannot replay it on another device of the same founder. A
+  founder device that missed the removal, or that restores a checkpoint taken
+  before it, cannot recover that key and can neither read nor be read by
+  members using it. Restore a checkpoint taken after the last removal.
 - **Initial invitations require founder authority.** Note can restore its
   founding browser from an encrypted local checkpoint and issue a fresh offer
   while the note has no active collaborator. A founder restored from a
