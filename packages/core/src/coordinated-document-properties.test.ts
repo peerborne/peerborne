@@ -158,6 +158,54 @@ describe('coordinated document runtime boundaries', () => {
     }
   });
 
+  test('queues received frames beyond the local operation budget up to their own bound', async () => {
+    const f = await documentFixture(),
+      a = create(f),
+      b = create(f);
+    await a.activate();
+    await b.activate();
+    const frames: Uint8Array[] = [];
+    for (let value = 0; value < 257; value++)
+      frames.push(
+        await a.change((doc) => {
+          doc.push(value);
+        }),
+      );
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const nativeVerify = f.auth.verify;
+    f.auth.verify = async (...args) => {
+      await waiting;
+      return nativeVerify(...args);
+    };
+    const received = frames.slice(0, 256).map((frame) => b.receive(frame));
+    await expect(b.receive(frames[256])).rejects.toMatchObject({
+      code: 'capacity-exceeded',
+    });
+    const changing = Array.from({ length: 16 }, (_, value) =>
+      b.change((doc) => {
+        doc.push(-value - 1);
+      }),
+    );
+    await expect(
+      b.change((doc) => {
+        doc.push(-17);
+      }),
+    ).rejects.toMatchObject({ code: 'capacity-exceeded' });
+    release();
+    f.auth.verify = nativeVerify;
+    expect(await Promise.all(received)).toEqual(Array(256).fill(true));
+    await Promise.all(changing);
+    expect(b.document).toEqual([
+      ...Array.from({ length: 256 }, (_, value) => value),
+      ...Array.from({ length: 16 }, (_, value) => -value - 1),
+    ]);
+    await a.close();
+    await b.close();
+  });
+
   test('bounds queued work before retaining input or calling a second CRDT preparation', async () => {
     const f = await documentFixture(),
       a = create(f);

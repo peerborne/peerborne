@@ -227,6 +227,7 @@ import { TopicValidatorResult } from '@libp2p/gossipsub';
 import type {
   GossipSub,
   Message,
+  SubscriptionChangeData,
   TopicValidatorFn,
 } from '@libp2p/gossipsub';
 import { EventHandler, PeerId } from '@libp2p/interface';
@@ -284,6 +285,13 @@ const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
 /** GossipSub publisher of a message, for per-sender receive admission. */
 function gossipSender(message: Message): string {
   return message.type === 'signed' ? message.from.toString() : '';
+}
+
+/** A publish allowed with zero topic peers reports an empty recipient list. */
+function securityPublicationReachedPeers(result: unknown): boolean {
+  if (typeof result !== 'object' || result === null) return true;
+  const recipients: unknown = Reflect.get(result, 'recipients');
+  return !Array.isArray(recipients) || recipients.length > 0;
 }
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
@@ -1478,6 +1486,9 @@ export class PeerborneDocument<
   // Handler for listening for sync messages on the document topic. Is `undefined` until
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
+  private _securitySubscriptionHandler:
+    | EventHandler<CustomEvent<SubscriptionChangeData>>
+    | undefined;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
@@ -7426,7 +7437,21 @@ export class PeerborneDocument<
         if (event.detail.topic !== this._topic) return;
         void this.receiveSecurityFrame(event.detail.data).catch(() => {});
       };
+      this._securitySubscriptionHandler = (event) => {
+        if (
+          this._subscribed &&
+          event.detail?.subscriptions?.some(
+            (subscription) =>
+              subscription.subscribe && subscription.topic === this._topic,
+          )
+        )
+          void this.retrySecurityPublications().catch(() => {});
+      };
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
+      pubsub.addEventListener(
+        'subscription-change',
+        this._securitySubscriptionHandler as EventListener,
+      );
       pubsub.subscribe(this._topic);
       this._subscribed = true;
       return true;
@@ -7596,10 +7621,13 @@ export class PeerborneDocument<
           this._securityPublicationQueued = undefined;
         for (const frame of await engine.pendingPublications()) {
           engine.assertPublicationDispatchAllowed();
-          await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-            this._topic,
-            frame,
-          );
+          const result: unknown =
+            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+              this._topic,
+              frame,
+            );
+          // Keep this frame and its successors until a topic peer receives them.
+          if (!securityPublicationReachedPeers(result)) return;
           await engine.publicationSent(frame);
         }
       })
@@ -8059,6 +8087,12 @@ export class PeerborneDocument<
 
       // Cast required: see addEventListener comment above
       pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
+      if (this._securitySubscriptionHandler)
+        pubsub.removeEventListener(
+          'subscription-change',
+          this._securitySubscriptionHandler as EventListener,
+        );
+      this._securitySubscriptionHandler = undefined;
 
       if (
         this._topicValidator &&

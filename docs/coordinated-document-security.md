@@ -228,6 +228,12 @@ context, keeping it bounded by the roster. A signing identity must have one
 document author at a time; independent offline branches using the same member
 ID are detected as conflicting prefixes rather than merged.
 
+Received frames wait in their own queue, separate from the 16 local operations
+and 16 MiB a document admits. A document queues at most 256 received frames and
+32 MiB of ciphertext, and all coordinated documents in a process at most 1,024
+frames and 128 MiB. A frame that arrives beyond those bounds is rejected before
+it is copied.
+
 The WAL holds at most 128 accepted entries and 128 MiB. It periodically replaces
 older entries with a native CRDT snapshot and complete replay receipts. Local
 snapshots are bounded to 64 MiB. IndexedDB stores head metadata, accepted entries,
@@ -257,9 +263,13 @@ structured cloning, decoder buffers or total browser heap use.
 The publication outbox has at most 16 frames/16 MiB and survives restart with
 the journal. After a publication failure, `retrySecurityPublications()` retries
 the exact ciphertext without rerunning the change callback. Capacity exhaustion
-rejects a new change before visible commit. A successful pubsub publication
-removes that frame from the outbox; this is transport handoff, **not** a durable
-peer receipt. Outbox availability is not protected by the replay rollback
+rejects a new change before visible commit. A pubsub publication that reaches
+at least one topic peer removes that frame from the outbox; this is transport
+handoff, **not** a durable peer receipt. A publication that reports no topic
+recipients, as GossipSub does while no peer has joined the topic, stays in the
+outbox with every later frame. The document retries them in order when a peer
+subscribes to the topic, after the next change, or on
+`retrySecurityPublications()`. Outbox availability is not protected by the replay rollback
 anchor. Without a journal, receipts and the bounded outbox are process-local.
 Outbox reads and acknowledgments run through the document queue; publication
 cannot observe an accepted store record before its anchor decision completes.

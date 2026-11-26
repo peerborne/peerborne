@@ -152,6 +152,10 @@ function receiptEntries(
 }
 
 const aggregate = new GroupDocumentOperationBudget(64, 64 * 1024 * 1024);
+const aggregateInbound = new GroupDocumentOperationBudget(
+  1024,
+  128 * 1024 * 1024,
+);
 const ZERO_HASH = new Uint8Array(32);
 
 /** Coordinator-backed mutation path, deliberately separate from the BeeKEM wire protocol. */
@@ -167,6 +171,10 @@ export class CoordinatedDocument<
   private readonly budget = new GroupDocumentOperationBudget(
     16,
     16 * 1024 * 1024,
+  );
+  private readonly inbound = new GroupDocumentOperationBudget(
+    256,
+    32 * 1024 * 1024,
   );
   private tail: Promise<void> = Promise.resolve();
   private receipts = new Map<string, Receipt>();
@@ -349,12 +357,13 @@ export class CoordinatedDocument<
   private enqueue<T>(
     bytes: number,
     capture: () => () => Promise<T>,
+    received = false,
   ): Promise<T> {
     let local: (() => void) | undefined, shared: (() => void) | undefined;
     try {
       this.assertUsable();
-      shared = aggregate.reserve(bytes);
-      local = this.budget.reserve(bytes);
+      shared = (received ? aggregateInbound : aggregate).reserve(bytes);
+      local = (received ? this.inbound : this.budget).reserve(bytes);
       const work = capture();
       const result = this.tail.then(() => {
         this.assertUsable();
@@ -440,7 +449,7 @@ export class CoordinatedDocument<
           const result = await this.apply(owned);
           return result.length !== 0;
         };
-      });
+      }, true);
     } catch (error) {
       return Promise.reject(error);
     }
