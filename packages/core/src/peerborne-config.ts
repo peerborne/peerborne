@@ -363,6 +363,16 @@ export interface PeerborneConfig {
    * removed during close(). The application receiver still validates messages
    * when this optional transport check is disabled.
    *
+   * Validators check writer signatures, so this setting has no effect when
+   * {@link enableSigning} is false.
+   *
+   * A node stops forwarding every frame its validator does not accept at
+   * once, including honest frames beyond its receive budget during a burst
+   * and frames from a writer whose ACL change it has not applied yet. Keyless
+   * relays forward all frames regardless. The default configs set no GossipSub
+   * topic score parameters, so a rejection lowers no peer score unless the
+   * application adds them.
+   *
    * @default false
    */
   enableTopicValidators?: boolean;

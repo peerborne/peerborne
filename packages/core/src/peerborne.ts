@@ -254,6 +254,15 @@ type SharedProtocolName =
   | 'beekem-pathupdate'
   | 'security-advertise';
 
+function captureConfig(config: PeerborneConfig): Readonly<PeerborneConfig> {
+  const { compaction, antiEntropy } = config;
+  return Object.freeze({
+    ...config,
+    ...(compaction && { compaction: Object.freeze({ ...compaction }) }),
+    ...(antiEntropy && { antiEntropy: Object.freeze({ ...antiEntropy }) }),
+  });
+}
+
 function sharedProtocolRequestTimeoutMs(configured: unknown): number {
   return typeof configured === 'number' &&
     Number.isSafeInteger(configured) &&
@@ -521,7 +530,7 @@ export class Peerborne<
   }
 
   // configs for the swarm, thus passing its config to all documents opened in a swarm
-  protected _config: PeerborneConfig | null = null;
+  protected _config: Readonly<PeerborneConfig> | null = null;
   private _loadTrustPolicy: Pick<PeerborneConfig,
     'resolveTrustedDocumentWriters' | 'resolveLoadSecurityCommitments' | 'validateDocumentPath' | 'beekemForkStore'> = {};
 
@@ -656,9 +665,12 @@ export class Peerborne<
   }
 
   /**
-   * Gets the current peerborne configuration.
+   * Gets the configuration captured by the last `initialize()`. It is a
+   * frozen copy: changing the object passed to `initialize()` afterwards has
+   * no effect, and assigning to this one throws in strict mode. `helia` is
+   * the caller's object, used only to start the node.
    */
-  public get config(): PeerborneConfig | null {
+  public get config(): Readonly<PeerborneConfig> | null {
     return this._config;
   }
 
@@ -712,9 +724,7 @@ export class Peerborne<
       this._peerIds = [];
     }
 
-    if (!config) {
-      config = defaultConfig(defaultBootstrapConfig([]));
-    }
+    config = captureConfig(config ?? defaultConfig(defaultBootstrapConfig([])));
 
     // Validate the load-quorum tuning knobs at startup so an operator
     // misconfiguration (e.g. `loadQuorumK: 1.5`, `loadQuorumQ: NaN`)
@@ -739,6 +749,19 @@ export class Peerborne<
       beekemForkStore: config.beekemForkStore,
     });
     this._config = config;
+    if (config.enableSigning === false) {
+      console.warn(
+        'Peerborne: enableSigning is false, so ordinary sync and snapshot ' +
+          'signatures are not checked and any peer that can decrypt document ' +
+          'traffic can forge changes. Topic validators are not installed.',
+      );
+    }
+    if (config.loadQuorumEnabled === false) {
+      console.warn(
+        'Peerborne: loadQuorumEnabled is false, so a network load accepts one ' +
+          'trusted signed response without independent corroboration.',
+      );
+    }
 
     this._sharedHandlersRegistration = undefined;
 

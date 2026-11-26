@@ -340,6 +340,12 @@ Document signing is controlled by `PeerborneConfig.enableSigning` (default: `tru
 | **`enableSigning: true`** (default) | Ordinary sync messages are signed with ECDSA P-384, then serialized and encrypted with the document key. Post-load receivers verify outer message signatures against current writers. |
 | **`enableSigning: false`** | Stored payloads and sync envelopes remain encrypted with the document key, but application-level signing and verification for ordinary sync messages and snapshots are bypassed. A peer able to decrypt the affected traffic can forge those messages. Signing-enabled receivers reject unsigned ordinary messages, so mixed settings do not provide bidirectional interoperability. Invitation creation and acceptance are rejected. |
 
+`initialize()` captures a frozen copy of the configuration, so changing the
+object afterwards cannot switch signing, topic validators or load-quorum
+checks off for open documents. It logs a warning when `enableSigning` or
+`loadQuorumEnabled` is `false`. Topic validators check writer signatures, so
+`enableTopicValidators` has no effect while signing is off.
+
 Initial loads, security advertisements, and the BeeKEM Welcome and PathUpdate
 membership-control protocols are a deliberate exception to that toggle. Load
 and advertisement requests are always signed by the requester and addressed to
