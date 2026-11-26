@@ -1,5 +1,8 @@
 import { createBrowserCheckpointStorage } from '../../shared/browser-checkpoint-store.js';
-export type { BrowserIdentity } from '../../shared/browser-checkpoint-store.js';
+export type {
+  BrowserIdentity,
+  SavedDocument,
+} from '../../shared/browser-checkpoint-store.js';
 
 export const NOTE_DATABASE = 'peerborne-note-documents';
 const storage = createBrowserCheckpointStorage(

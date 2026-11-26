@@ -304,39 +304,85 @@ both directions, including traffic outside document GossipSub topics:
 | Simultaneous WebSocket connections | 16 total, 4 per client |
 | Upgrade attempts | 6/minute and 3/10 seconds per client |
 | New clients admitted | 30 distinct clients/minute; their reconnects are not counted again |
-| Tracked client rate-limit records | 512, expiring after the minute window; when full, the least recently seen client without a session is forgotten |
+| Tracked client records | 512, kept until the minute window has passed and the client's traffic share has refilled; when full, the least recently seen client without a session is forgotten |
 | Rejected upgrade lifetime | 1 second to drain the response, then closed |
 | Session lifetime / inactivity | 10 minutes / 60 seconds |
-| Total bytes per session | 2 MiB across both directions |
+| Total bytes per session | 8 MiB across both directions |
 | Session throughput | 64 KiB/second with a 128 KiB burst |
-| Aggregate tunnel traffic per gateway process | 32 MiB, then close sessions and reject upgrades |
+| Shared tunnel traffic window (`RELAY_GATEWAY_WINDOW_BYTES`) | 128 MiB, refilling continuously over 10 minutes; below 128 KiB, upgrades get `503` and sessions that send more close |
+| Tunnel traffic per client (`RELAY_GATEWAY_CLIENT_WINDOW_BYTES`) | 32 MiB across the client's sessions, refilling continuously over 10 minutes; below 128 KiB, the client's upgrades get `429` and its sessions that send more close |
 | GossipSub topic budget per peer | 16 KiB: discovery plus 13 coordinated-document topics |
 | Circuit Relay reservations / individual circuit bytes | 16 / 1 MiB |
 | Individual circuit lifetime | 5 minutes |
 
 A client is one IPv4 address or one IPv6 /64, so rotating addresses inside a
 /64 does not create new clients. Per-client limits are checked first, and the
-shared budget counts distinct clients admitted in the current minute rather than
-sessions. A few clients reconnecting cannot exhaust it, and a client already
-admitted this minute can reconnect after the budget is spent. A full rate-limit
+new-client budget counts distinct clients admitted in the current minute rather
+than sessions. A few clients reconnecting cannot exhaust it, and a client
+already admitted this minute can reconnect after the budget is spent. A full
 registry forgets idle clients instead of rejecting unseen ones.
 
-This bounds rather than removes lockout. An attacker that controls 30 or more
-IPv4 addresses or IPv6 /64s, which one IPv6 /56 provides, can still prevent new
-clients from connecting for the rest of each minute. Sessions that are already
-open and clients admitted earlier in that minute are unaffected. Stopping that
-needs limits upstream of the gateway, such as Cloudflare rate-limiting rules.
+Each tunnel's bytes in both directions count against its session, its client's
+share, and the shared window. A client's sessions draw on one share, so
+reconnecting does not refill it. Both allowances refill continuously, so neither
+stays spent after traffic stops, and one client can use at most a quarter of the
+window: 32 MiB at once, then about 56 KB/s. Other clients keep connecting while
+it does.
+
+The values are sized from Peerborne Note traffic measured through this gateway.
+Sixteen idle tabs on eight shared notes, two tabs per client, moved about
+100 KB/s in total for the first five minutes after connecting and about
+31 KB/s afterwards, and sharing one note moved about 240 KB. Per-tab traffic
+grows with the number of connected tabs: two idle tabs alone move about
+2.5 KB/s. The window refills at about twice the peak traffic of 16 idle tabs,
+a client's share at about twice that of the 4 tabs it can hold, and 8 MiB
+covers a 10-minute session at the peak rate twice over. With the previous
+2 MiB session cap, those idle tabs began losing sessions after about five
+minutes.
+
+These limits bound rather than remove lockout. An attacker with 4 clients can
+hold all 16 connections, or spend the shared window and keep it nearly empty;
+upgrades then get `503` and sessions that send more close until the attack
+stops and the window refills. With 30 clients it can also use up the new-client
+budget for the rest of each minute. One IPv6 /56 provides 256 /64 clients.
+Stopping these needs limits upstream of the gateway, such as Cloudflare
+rate-limiting rules.
+
+Traffic counts against the session that carries it, including GossipSub
+messages that the relay forwards from other clients. The relay does not limit
+the size or rate of messages on the peer-discovery topic that every client
+subscribes to, so a client publishing there spends every subscriber's session
+and share allowances and the shared window once per subscriber. In a local
+test, one session publishing about 50 KiB/s there reached each of six
+subscribers in full; with four or more subscribers, that one client outpaces
+the window's refill.
+
+While the window holds less than one session burst, the public `/readyz` still
+returns HTTP 200 but reports
+`{"status":"budget-exhausted","peerId":"<peerId>","retryAfterSeconds":<seconds>}`.
+Rejected upgrades carry the same `Retry-After`, and the gateway logs
+`Relay gateway traffic window exhausted` at most once a minute. Monitor that
+status or log line. The health check deliberately keeps passing: Render stops
+routing to an instance after 15 seconds of failed checks and restarts it after
+60 seconds. With one instance, failing the check would turn throttling into an
+outage, and each restart would give an attacker a fresh window. The window
+recovers by itself.
 
 The reservation cap matches the 16 sessions, and reservations are freed when a
 client disconnects, so it is not the first limit reached.
 
 IP headers are trusted only after checking the origin secret. The gateway never
 forwards that credential to libp2p or logs credentials, IP addresses, or payloads.
-The byte allowance covers traffic passing through the gateway's tunnels, not
-every HTTP header, rejection response, or byte billed by Render. It is a
-**per-process cutoff**, not a durable daily or monthly quota: Render restarts and
-idle spin-down reset the counters. Render's workspace allowance and suspension
-policy remain the billing boundary.
+The traffic limits cover bytes passing through the gateway's tunnels, not every
+HTTP header, rejection response, or byte billed by Render. They are
+**per-process** limits, not a durable daily or monthly quota: Render restarts and
+idle spin-down reset them. They bound abuse to about twice the traffic of a full
+gateway, not to Render's allowance. Render's Hobby workspace includes 5 GB of
+outbound bandwidth per month; 16 idle Note tabs move 2.7 to 8.6 GB a day
+through the tunnels, and the window refills at up to about 19 GB a day. Render's
+workspace allowance and suspension policy remain the billing boundary: without
+a payment method, Render suspends Free services for the rest of the month once
+the allowance is used.
 
 Cloudflare Free currently has one rate-limit rule with restricted expression
 fields and 10-second windows. Do not apply a broad path-only rule that also
@@ -353,6 +399,8 @@ aggressive limits. These controls do not establish production readiness.
 
 Provider references: [Render Free](https://render.com/docs/free),
 [Blueprints](https://render.com/docs/blueprint-spec),
+[health checks](https://render.com/docs/health-checks),
+[outbound bandwidth](https://render.com/docs/outbound-bandwidth),
 [Cloudflare DNS setup](https://render.com/docs/configure-cloudflare-dns),
 [WebSocket WAF behavior](https://developers.cloudflare.com/network/websockets/),
 and [rate-limit plan availability](https://developers.cloudflare.com/waf/rate-limiting-rules/).

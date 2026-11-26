@@ -28,9 +28,24 @@ irreplaceable work, or other sensitive or durable data into it.
 The invitation expires after 15 minutes. It cannot be accepted offline, and
 restarting the founder invalidates its in-memory offer and retry state. The
 initial release supports one founder and one active collaborator, not a larger
-group. Note has no control for removing a collaborator, so it cannot invite a
-replacement either. The founding tab stores a checkpoint that records the new
-collaborator before it releases the document key.
+group. The founding tab stores a checkpoint that records the new collaborator
+before it releases the document key.
+
+The founder's share panel shows the collaborator's fingerprint and a **Remove
+collaborator** control. Removal rotates the note key: the removed browser keeps
+what it already received but cannot read later edits, and the founder can then
+create a new link. Use it when a recipient's tab closed after accepting but
+before its note was saved. That browser then reports the interrupted acceptance,
+and the old link cannot be claimed again.
+
+## Edit together
+
+Both editors' typing is merged. Unsaved text in one browser is rebased onto
+edits that arrive from the other, and the cursor stays with the surrounding
+characters. The status line shows whether the relay is connected, how many
+peers are online and whether a local edit failed to reach them. Closing the tab
+while **Saving…** is shown asks for confirmation; a pending edit is written
+first when the page is hidden.
 
 ## What the link contains
 

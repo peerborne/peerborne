@@ -1,4 +1,11 @@
-import { type Change, type Doc, splice } from '@automerge/automerge';
+import {
+  type Change,
+  type Doc,
+  decodeChange,
+  getHeads,
+  getLastLocalChange,
+  view,
+} from '@automerge/automerge';
 import {
   AutomergeACLProvider,
   AutomergeJSONSerializer,
@@ -23,22 +30,52 @@ import {
   isConfiguredRelayAddress,
   rendezvousForCircuitReservation,
 } from './invitation-link.js';
+import { identityFingerprint } from './identity-store.js';
 import {
   getNoteIdentity,
   NoteStore,
   type BrowserIdentity,
+  type SavedDocument,
 } from './note-store.js';
+import {
+  applyTextEdit,
+  noteBody,
+  noteVersion,
+  rebaseText,
+  sameHeads,
+  type NoteData,
+  type NoteVersion,
+  type RebasedText,
+  type TextSelection,
+} from './note-text.js';
 import { NoteSharingError } from './sharing-error.js';
+
+export type { NoteVersion, TextSelection } from './note-text.js';
 
 export const MAX_NOTE_CHARACTERS = 20_000;
 
-export interface NoteData {
-  body?: string;
+export interface NoteCollaborator {
+  readonly fingerprint: string;
+  readonly role: InvitationRole;
 }
 
-export interface NoteSnapshot {
-  readonly body: string;
+export interface NoteMembership {
+  readonly founder: boolean;
+  readonly canShare: boolean;
+  readonly collaborator?: NoteCollaborator;
 }
+
+export interface NoteSyncStatus {
+  readonly sharing: boolean;
+  readonly relayConnected: boolean;
+  readonly peers: number;
+  readonly undelivered: boolean;
+}
+
+export type BodyUpdate =
+  | { readonly kind: 'stale' }
+  | { readonly kind: 'saved'; readonly version: NoteVersion }
+  | { readonly kind: 'failed'; readonly version?: NoteVersion };
 
 type NoteChange = (document: NoteData) => void;
 type NotePeerborne = Peerborne<
@@ -62,38 +99,19 @@ const NOTE_SUBSCRIBER_ID = 'peerborne-note-ui';
 const PEER_SUBSCRIBER_ID = 'peerborne-note-network-ui';
 const RESERVATION_TIMEOUT_MS = 45_000;
 
-function snapshot(document: Doc<NoteData>): NoteSnapshot {
-  return { body: typeof document.body === 'string' ? document.body : '' };
+class StaleNoteBase extends Error {}
+
+function lastLocalChange(document: Doc<NoteData>) {
+  const change = getLastLocalChange(document);
+  return change && decodeChange(change);
 }
 
-function applyTextEdit(document: NoteData, next: string): void {
-  const previous = typeof document.body === 'string' ? document.body : '';
-  if (typeof document.body !== 'string') {
-    document.body = next;
-    return;
-  }
-  let prefix = 0;
-  while (
-    prefix < previous.length &&
-    prefix < next.length &&
-    previous[prefix] === next[prefix]
-  ) {
-    prefix++;
-  }
-  let suffix = 0;
-  while (
-    suffix < previous.length - prefix &&
-    suffix < next.length - prefix &&
-    previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
-  splice(
-    document as unknown as Doc<NoteData>,
-    ['body'],
-    prefix,
-    previous.length - prefix - suffix,
-    next.slice(prefix, next.length - suffix),
+function sameMembership(a: NoteMembership, b: NoteMembership): boolean {
+  return (
+    a.founder === b.founder &&
+    a.canShare === b.canShare &&
+    a.collaborator?.fingerprint === b.collaborator?.fingerprint &&
+    a.collaborator?.role === b.collaborator?.role
   );
 }
 
@@ -130,20 +148,30 @@ export class PeerborneNoteSession {
   private readonly peerborne: NotePeerborne;
   private document?: NoteDocument;
   private documentRole?: InvitationRole;
-  private founder = false;
+  private membership: NoteMembership = { founder: false, canShare: false };
+  private membershipRefresh?: Promise<void>;
+  private membershipOutdated = false;
   private founderKemKeyPair?: CryptoKeyPair;
   private recipientKemKeyPair?: CryptoKeyPair;
-  private readonly noteListeners = new Set<(note: NoteSnapshot) => void>();
-  private readonly networkListeners = new Set<(peerCount: number) => void>();
+  private readonly noteListeners = new Set<(note: NoteVersion) => void>();
+  private readonly networkListeners = new Set<
+    (status: NoteSyncStatus) => void
+  >();
+  private readonly membershipListeners = new Set<
+    (membership: NoteMembership) => void
+  >();
   private readonly storageListeners = new Set<
     (state: 'saving' | 'saved' | 'error') => void
   >();
   private readonly store: NoteStore;
+  private readonly relayPeerId?: string;
   private revision = 0;
   private writes: Promise<void> = Promise.resolve();
   private pendingSaves = 0;
   private pendingChanges = 0;
   private storageFailed = false;
+  private deliveryFailures = 0;
+  private undelivered = false;
   private sharingActive = false;
   private sharingTimer?: ReturnType<typeof setTimeout>;
   private sharingTask?: Promise<void>;
@@ -168,6 +196,9 @@ export class PeerborneNoteSession {
       new AutomergeKeychainProvider(),
     );
     this.store = new NoteStore(identity, owner);
+    this.relayPeerId = relayMultiaddr?.slice(
+      relayMultiaddr.lastIndexOf('/p2p/') + 5,
+    );
   }
 
   static async initialize(
@@ -211,29 +242,31 @@ export class PeerborneNoteSession {
     return this.documentRole;
   }
 
-  get isFounder(): boolean {
-    return this.founder;
-  }
-
   get storageStatus(): 'saving' | 'saved' | 'error' {
     return this.storageState();
   }
 
-  get currentNote(): NoteSnapshot | undefined {
-    return this.document ? snapshot(this.document.document) : undefined;
+  get currentNote(): NoteVersion | undefined {
+    return this.document ? noteVersion(this.document.document) : undefined;
   }
 
-  onNote(listener: (note: NoteSnapshot) => void): () => void {
+  onNote(listener: (note: NoteVersion) => void): () => void {
     this.noteListeners.add(listener);
     const current = this.currentNote;
     if (current) listener(current);
     return () => this.noteListeners.delete(listener);
   }
 
-  onNetwork(listener: (peerCount: number) => void): () => void {
+  onNetwork(listener: (status: NoteSyncStatus) => void): () => void {
     this.networkListeners.add(listener);
-    listener(new Set(this.peerborne.peerIds).size);
+    listener(this.syncStatus());
     return () => this.networkListeners.delete(listener);
+  }
+
+  onMembership(listener: (membership: NoteMembership) => void): () => void {
+    this.membershipListeners.add(listener);
+    listener(this.membership);
+    return () => this.membershipListeners.delete(listener);
   }
 
   onStorage(
@@ -246,11 +279,11 @@ export class PeerborneNoteSession {
     };
   }
 
-  listSavedNotes(): Promise<string[]> {
+  listSavedNotes(): Promise<SavedDocument[]> {
     return this.store.listDocuments();
   }
 
-  async openSavedNote(path: string): Promise<NoteSnapshot> {
+  async openSavedNote(path: string): Promise<NoteVersion> {
     if (this.document) throw new Error('A note is already open');
     const saved = await this.store.load(path);
     if (!saved) throw new Error('No saved note is available in this browser');
@@ -269,19 +302,10 @@ export class PeerborneNoteSession {
         : 'reader';
       await document.open();
       this.revision = saved.revision;
-      let founder = false;
-      try {
-        await document.assertCanCreateInitialInvitation();
-        founder = true;
-      } catch {}
-      this.activateDocument(document, role, founder);
-      if (
-        (await document.getReaders()).length > 0 ||
-        writerIds.some((writer) => writer !== this.owner)
-      ) {
-        this.startSharing();
-      }
-      return snapshot(document.document);
+      this.activateDocument(document, role);
+      await this.refreshMembership();
+      if (this.membership.collaborator) this.startSharing();
+      return noteVersion(document.document);
     } catch (error) {
       await document.close().catch(() => undefined);
       throw error;
@@ -290,7 +314,8 @@ export class PeerborneNoteSession {
       saved.checkpoint.signature.fill(0);
     }
   }
-  async createNote(): Promise<NoteSnapshot> {
+
+  async createNote(): Promise<NoteVersion> {
     if (this.document) throw new Error('A note is already open');
     const document = this.peerborne.doc(`/notes/${crypto.randomUUID()}`);
     await document.setKemKeyPair(this.identity.kem);
@@ -299,9 +324,13 @@ export class PeerborneNoteSession {
     await document.change((draft) => {
       draft.body = '';
     }, 'Create note');
-    this.activateDocument(document, 'editor', true);
-    await this.persistDocument();
-    return snapshot(document.document);
+    this.activateDocument(document, 'editor');
+    try {
+      await this.persistDocument();
+    } finally {
+      await this.refreshMembership().catch(() => undefined);
+    }
+    return noteVersion(document.document);
   }
 
   async createInvitation(
@@ -310,7 +339,7 @@ export class PeerborneNoteSession {
     onProgress?: (event: ConnectionProgress) => void | Promise<void>,
   ): Promise<{ readonly href: string; readonly offer: InvitationOfferV1 }> {
     const document = this.requireDocument();
-    if (!this.founder) {
+    if (!this.membership.canShare) {
       throw new Error('Only the founding browser can invite a collaborator');
     }
     if (!this.relayMultiaddr) {
@@ -376,7 +405,10 @@ export class PeerborneNoteSession {
       offer = await document.createInvitation({
         role,
         rendezvous: [rendezvous],
-        beforeAcceptance: () => this.persistDocument(),
+        beforeAcceptance: async () => {
+          await this.persistDocument();
+          void this.refreshMembership().catch(() => undefined);
+        },
       });
     } catch (error) {
       throw new NoteSharingError(
@@ -393,7 +425,7 @@ export class PeerborneNoteSession {
     };
   }
 
-  async acceptInvitation(encodedOffer: Uint8Array): Promise<NoteSnapshot> {
+  async acceptInvitation(encodedOffer: Uint8Array): Promise<NoteVersion> {
     if (this.document) throw new Error('A note is already open');
     if (!this.recipientKemKeyPair) {
       this.recipientKemKeyPair = this.identity.kem;
@@ -403,13 +435,66 @@ export class PeerborneNoteSession {
       offer,
       this.recipientKemKeyPair,
     );
-    this.activateDocument(document, offer.role, false);
+    this.activateDocument(document, offer.role);
     this.startSharing();
-    await this.persistDocument();
-    return snapshot(document.document);
+    try {
+      await this.persistDocument();
+    } finally {
+      await this.refreshMembership().catch(() => undefined);
+    }
+    return noteVersion(document.document);
   }
 
-  async updateBody(body: string): Promise<void> {
+  async removeCollaborator(): Promise<void> {
+    const document = this.requireDocument();
+    const { founder, collaborators } = await this.readMembers(document);
+    if (!founder) {
+      throw new Error('Only the founding browser can remove a collaborator');
+    }
+    try {
+      for (const collaborator of collaborators) {
+        if (collaborator.writer)
+          await document.removeWriter(collaborator.key, {
+            requireRemainingWriter: true,
+          });
+        await document.removeReader(collaborator.key);
+      }
+    } finally {
+      await this.persistDocument().catch(() => undefined);
+      await this.refreshMembership();
+    }
+  }
+
+  refreshMembership(): Promise<void> {
+    if (this.membershipRefresh) {
+      this.membershipOutdated = true;
+      return this.membershipRefresh;
+    }
+    const refresh = (async () => {
+      do {
+        this.membershipOutdated = false;
+        const next = await this.readMembership();
+        if (!sameMembership(next, this.membership)) {
+          this.membership = next;
+          for (const listener of this.membershipListeners) listener(next);
+        }
+      } while (this.membershipOutdated);
+    })().finally(() => {
+      this.membershipRefresh = undefined;
+    });
+    this.membershipRefresh = refresh;
+    return refresh;
+  }
+
+  rebase(
+    base: NoteVersion,
+    text: string,
+    selection?: TextSelection,
+  ): RebasedText {
+    return rebaseText(this.requireDocument().document, base, text, selection);
+  }
+
+  async updateBody(base: NoteVersion, body: string): Promise<BodyUpdate> {
     if (body.length > MAX_NOTE_CHARACTERS) {
       throw new Error(`Note exceeds ${MAX_NOTE_CHARACTERS} characters`);
     }
@@ -417,11 +502,37 @@ export class PeerborneNoteSession {
       throw new Error('This invitation grants read-only access');
     }
     const document = this.requireDocument();
+    if (body === base.body) return { kind: 'saved', version: base };
     this.pendingChanges++;
     this.emitStorage();
     try {
-      await document.change((draft) => applyTextEdit(draft, body), 'Edit note');
-      await this.persistDocument();
+      const previous = lastLocalChange(document.document)?.hash;
+      const failures = this.deliveryFailures;
+      let failure: { error: unknown } | undefined;
+      try {
+        await document.change((draft) => {
+          if (!sameHeads(getHeads(document.document), base.heads))
+            throw new StaleNoteBase();
+          applyTextEdit(draft, base.body, body);
+        }, 'Edit note');
+      } catch (error) {
+        if (error instanceof StaleNoteBase) return { kind: 'stale' };
+        failure = { error };
+      }
+      const latest = lastLocalChange(document.document);
+      const version =
+        latest &&
+        latest.hash !== previous &&
+        noteBody(view(document.document, [latest.hash])) === body
+          ? { body, heads: [latest.hash] }
+          : undefined;
+      if (failure || !version) return { kind: 'failed', version };
+      if (this.undelivered && this.deliveryFailures === failures) {
+        this.undelivered = false;
+        this.emitNetwork();
+      }
+      await this.persistDocument().catch(() => undefined);
+      return { kind: 'saved', version };
     } finally {
       this.pendingChanges--;
       this.emitStorage();
@@ -490,12 +601,14 @@ export class PeerborneNoteSession {
     this.peerborne.unsubscribeFromPeerDisconnect(PEER_SUBSCRIBER_ID);
     if (this.document) {
       this.document.unsubscribe(NOTE_SUBSCRIBER_ID);
+      this.document.unsubscribeDeliveryFailures(NOTE_SUBSCRIBER_ID);
       await this.writes.catch(() => undefined);
       await this.document.close();
       this.document = undefined;
     }
     this.noteListeners.clear();
     this.networkListeners.clear();
+    this.membershipListeners.clear();
     this.storageListeners.clear();
     await this.peerborne.heliaNode.stop().catch(() => undefined);
   }
@@ -503,14 +616,16 @@ export class PeerborneNoteSession {
   private startSharing(): void {
     if (this.sharingActive || !this.relayMultiaddr) return;
     this.sharingActive = true;
+    this.emitNetwork();
     const maintain = (): void => {
       if (!this.sharingActive) return;
       this.sharingTask = this.reconnectSharing().finally(() => {
-        if (this.sharingActive)
-          this.sharingTimer = setTimeout(
-            maintain,
-            this.sharingFailed ? 30_000 : 5000,
-          );
+        if (!this.sharingActive) return;
+        void this.refreshMembership().catch(() => undefined);
+        this.sharingTimer = setTimeout(
+          maintain,
+          this.sharingFailed ? 30_000 : 5000,
+        );
       });
     };
     maintain();
@@ -525,14 +640,11 @@ export class PeerborneNoteSession {
     );
     let errorType: ConnectionProgress['errorType'];
     try {
-      const relayId = this.relayMultiaddr!.slice(
-        this.relayMultiaddr!.lastIndexOf('/p2p/') + 5,
-      );
       const connected = this.peerborne.libp2p
         .getConnections()
         .some(
           (connection) =>
-            connection.remotePeer.toString() === relayId &&
+            connection.remotePeer.toString() === this.relayPeerId &&
             connection.status === 'open',
         );
       if (!connected)
@@ -561,36 +673,98 @@ export class PeerborneNoteSession {
         this.sharingController = undefined;
     }
   }
+
   private requireDocument(): NoteDocument {
     if (!this.document) throw new Error('No note is open');
     return this.document;
   }
 
-  private activateDocument(
-    document: NoteDocument,
-    role: InvitationRole,
-    founder: boolean,
-  ): void {
+  private async readMembers(document: NoteDocument): Promise<{
+    founder: boolean;
+    collaborators: { key: CryptoKey; writer: boolean }[];
+  }> {
+    const auth = new SubtleCrypto();
+    const [writers, readers] = await Promise.all([
+      document.getWriters(),
+      document.getReaders(),
+    ]);
+    const writerIds = new Set(
+      await Promise.all(writers.map((key) => auth.serializePublicKey(key))),
+    );
+    const others = new Map<string, CryptoKey>();
+    for (const key of [...readers, ...writers]) {
+      const id = await auth.serializePublicKey(key);
+      if (id !== this.owner && !others.has(id)) others.set(id, key);
+    }
+    return {
+      founder:
+        writerIds.has(this.owner) && document.invitationEpoch === undefined,
+      collaborators: [...others].map(([id, key]) => ({
+        key,
+        writer: writerIds.has(id),
+      })),
+    };
+  }
+
+  private async readMembership(): Promise<NoteMembership> {
+    const document = this.document;
+    if (!document) return { founder: false, canShare: false };
+    const { founder, collaborators } = await this.readMembers(document);
+    let canShare = false;
+    if (founder && collaborators.length === 0) {
+      try {
+        await document.assertCanCreateInitialInvitation();
+        canShare = true;
+      } catch {}
+    }
+    const [collaborator] = collaborators;
+    return {
+      founder,
+      canShare,
+      collaborator: collaborator && {
+        fingerprint: await identityFingerprint(collaborator.key),
+        role: collaborator.writer ? 'editor' : 'reader',
+      },
+    };
+  }
+
+  private activateDocument(document: NoteDocument, role: InvitationRole): void {
     this.document = document;
     this.documentRole = role;
-    this.founder = founder;
     document.subscribe(
       NOTE_SUBSCRIBER_ID,
       (current) => {
-        this.emitNote(snapshot(current));
+        this.emitNote(noteVersion(current));
         void this.persistDocument().catch(() => undefined);
       },
       'all',
     );
-    this.emitNote(snapshot(document.document));
+    document.subscribeDeliveryFailures(NOTE_SUBSCRIBER_ID, () => {
+      this.deliveryFailures++;
+      this.undelivered = true;
+      this.emitNetwork();
+    });
+    this.emitNote(noteVersion(document.document));
   }
 
-  private emitNote(note: NoteSnapshot): void {
+  private emitNote(note: NoteVersion): void {
     for (const listener of this.noteListeners) listener(note);
   }
 
+  private syncStatus(): NoteSyncStatus {
+    const peers = new Set(this.peerborne.peerIds);
+    const relayConnected =
+      this.relayPeerId !== undefined && peers.has(this.relayPeerId);
+    return {
+      sharing: this.sharingActive,
+      relayConnected,
+      peers: peers.size - (relayConnected ? 1 : 0),
+      undelivered: this.undelivered,
+    };
+  }
+
   private emitNetwork(): void {
-    const count = new Set(this.peerborne.peerIds).size;
-    for (const listener of this.networkListeners) listener(count);
+    const status = this.syncStatus();
+    for (const listener of this.networkListeners) listener(status);
   }
 }
