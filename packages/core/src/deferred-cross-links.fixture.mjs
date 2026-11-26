@@ -349,7 +349,7 @@ for (const restore of [false, true])
       if (restore) {
         // The restored founder no longer has the delivered history of the
         // collaborator's branch, which its next change would have carried.
-        const saved = await fd.exportCheckpoint();
+        const saved = await fd.exportPlaintextCheckpoint();
         await founder.stop();
         founder = await join(adapter, {
           identity: founder.identity,
@@ -357,7 +357,7 @@ for (const restore of [false, true])
         });
         fd = founder.doc(path);
         await fd.setKemKeyPair(founder.kem);
-        await fd.restoreCheckpoint(saved);
+        await fd.restorePlaintextCheckpoint(saved);
         await fd.open();
         fd.historyVisibility = 'full_history';
         await set(fd, 'body', 'v1');
