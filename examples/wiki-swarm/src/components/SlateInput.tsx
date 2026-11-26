@@ -37,7 +37,7 @@ export function SlateInput({placeholder, disabled, value, onChange}: {
                 placeholder={placeholder}
                 onKeyDown={onHotkeyDown(editor)}
                 spellCheck
-                disabled={disabled}
+                readOnly={disabled}
             />
         </Slate>
     );

@@ -21,7 +21,7 @@ Svelte 5 readable, server/lifecycle tests, and compiled browser example. See the
 
 ## TanStack DB
 
-Experimental collection adapter for `^1.0.0-rc.1.1`, tested with 1.0.0-rc.1.1; CRUD, rollback, and browser exercise. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
+Experimental collection adapter for `^1.0.0-rc.1.5`, tested with 1.0.0-rc.1.5; CRUD, rollback, and browser exercise. See the [source examples](https://github.com/Peerborne/peerborne/tree/main/examples/integrations) and [integration status](../../reference/integration-status/).
 
 ## Zustand
 

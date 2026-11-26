@@ -13,8 +13,8 @@
 # to /shared/relay-info.json on startup. Mount a volume to access it:
 #   docker run -p 9001:9001 -p 9002:9002 -v relay-data:/shared peerborne-relay
 
-FROM node:22-alpine
-RUN corepack enable
+FROM node:26.13.1-alpine
+RUN npm install --global corepack@0.36.0 && corepack enable
 WORKDIR /app
 
 # Install dependencies

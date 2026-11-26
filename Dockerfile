@@ -1,4 +1,6 @@
-FROM node:22.19-alpine AS builder
+FROM node:26.13.1-alpine AS builder
+
+RUN npm install --global corepack@0.36.0 && corepack enable
 
 RUN apk update && apk add dos2unix
 
@@ -34,7 +36,8 @@ COPY examples/wiki-swarm/package.json /app/examples/wiki-swarm/package.json
 COPY examples/password-manager/package.json /app/examples/password-manager/package.json
 RUN yarn install
 
-FROM node:22.19-alpine
+FROM node:26.13.1-alpine
+RUN npm install --global corepack@0.36.0 && corepack enable
 RUN mkdir -p /app
 COPY --from=builder /app /app
 WORKDIR /app

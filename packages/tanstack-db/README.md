@@ -2,7 +2,7 @@
 
 Experimental TanStack DB collection options over a Peerborne document store.
 Alpha source workspace; unpublished. The TanStack DB peer range is
-`^1.0.0-rc.1.1`. Repository tests run against `1.0.0-rc.1.1`; TanStack DB is a
+`^1.0.0-rc.1.5`. Repository tests run against `1.0.0-rc.1.5`; TanStack DB is a
 release candidate, so a later release can change the collection contract.
 
 `peerborneCollectionOptions` takes an `id`, shared `store`, row `getKey`, document

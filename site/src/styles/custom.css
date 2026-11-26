@@ -333,7 +333,7 @@ site-search {
   --pagefind-ui-font: var(--sl-font);
 }
 
-starlight-menu-button button,
+.sl-menu-button,
 mobile-starlight-toc .toggle,
 .starlight-badge {
   border: 2px solid var(--pb-color-border);

@@ -7,7 +7,6 @@
       "ESNext",
       "DOM"
     ],
-    "downlevelIteration": true,
     "strict": true,
     "declaration": true,
     "types": [

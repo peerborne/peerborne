@@ -205,6 +205,7 @@ test('native pred-reference and operation-boundary fuzzing cannot relabel a prot
         try {
           const frame = A.encodeChange({
             actor: 'bb',
+            author: null,
             seq: 1,
             startOp: history.startOp + history.ops.length,
             deps: A.getHeads(base),
@@ -404,6 +405,7 @@ test('real counter predecessor fuzzing admits a valid increment and preserves pr
         const increment = (pred: string[]) =>
           A.encodeChange({
             actor: 'bb',
+            author: null,
             seq: 1,
             startOp: change.startOp + change.ops.length,
             deps: A.getHeads(base),

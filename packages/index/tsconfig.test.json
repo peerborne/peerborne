@@ -2,11 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "CommonJS",
-    "moduleResolution": "Node",
+    "moduleResolution": "Bundler",
     "outDir": "dist/test",
     "declaration": false,
     "composite": false,
-    "baseUrl": ".",
     "paths": {
       // Jest consumes Core declarations emitted by the package build.
       // Mapping Core source here would escape this package's rootDir.

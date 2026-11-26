@@ -26,11 +26,12 @@ Peerborne wraps **Automerge or Yjs** documents with encryption, local storage, p
 
 ## Run it from source
 
-Requires **Node.js 22.19.0** and **Yarn 4.5.0** through Corepack. The eleven library packages are not published to npm.
+Requires **Node.js 26.13.1** and **Yarn 4.19.0** through Corepack 0.36.0, which Node.js 26 no longer bundles. The eleven library packages are not published to npm.
 
 ```sh
 git clone https://github.com/Peerborne/peerborne.git peerborne
 cd peerborne
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build

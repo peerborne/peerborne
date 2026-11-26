@@ -58,7 +58,7 @@ The eleven libraries are source workspaces and are not yet published to npm. Mos
 
 - [FAQ](https://peerborne.io/community/faq/): Production readiness, key management, relay requirements, conflict handling, browser support, offline capability.
 - [Roadmap](https://peerborne.io/community/roadmap/): 11 priority gaps — persistence, key exchange, convergence, pinning, relay identity, publication, docs, benchmarks, search, examples, and a Reticulum transport adapter.
-- [Contributing](https://peerborne.io/community/contributing/): Node 22.19.0 setup, Yarn 4.5.0, build/test commands, Docker-backed suite readiness helpers, PR expectations.
+- [Contributing](https://peerborne.io/community/contributing/): Node 26.13.1 setup, Yarn 4.19.0, build/test commands, Docker-backed suite readiness helpers, PR expectations.
 - [Help wanted](https://peerborne.io/community/help-wanted/): Specific contribution areas with evidence gaps.
 
 ## Architecture, evidence, and limits

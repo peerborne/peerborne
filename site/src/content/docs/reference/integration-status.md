@@ -17,7 +17,7 @@ establish those behaviors for every integration or production readiness.
 | Vue | Shallow composable, SSR/lifecycle tests, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, and local browser mutation | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| TanStack DB | Experimental collection adapter for `^1.0.0-rc.1.1`, tested with 1.0.0-rc.1.1; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| TanStack DB | Experimental collection adapter for `^1.0.0-rc.1.5`, tested with 1.0.0-rc.1.5; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Tiptap / ProseMirror | Tiptap/ProseMirror collaboration over the shared editor bridge | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Monaco | Monaco binding, worker configuration, module-path alias, and typing acceptance | Live multi-peer behavior, restart recovery, and deployment acceptance |

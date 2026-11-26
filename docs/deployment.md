@@ -419,7 +419,7 @@ The repository provides four relay-related Dockerfiles:
 | `guides/docker/Dockerfile.relay` | Standalone relay with extended comments | `docker build -f guides/docker/Dockerfile.relay -t peerborne-relay relay-server/` |
 | `guides/docker/Dockerfile.bootstrap` | Relay with pubsub peer discovery (same code) | `docker build -f guides/docker/Dockerfile.bootstrap -t peerborne-bootstrap relay-server/` |
 
-The standard `relay-server/Dockerfile` is based on `node:22.19.0-alpine`, runs
+The standard `relay-server/Dockerfile` is based on `node:26.13.1-alpine`, runs
 as a non-root `app` user, persists its identity under `/shared`, and uses the
 HTTP readiness check. Wrapper images should be audited separately before
 deployment.

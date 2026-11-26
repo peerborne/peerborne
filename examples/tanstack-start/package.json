@@ -1,25 +1,25 @@
 {
   "name": "@peerborne/tanstack-start-starter",
   "dependencies": {
-    "@hono/node-server": "^2.1.6",
+    "@hono/node-server": "^2.1.11",
     "@peerborne/core": "workspace:^",
     "@peerborne/react": "workspace:^",
     "@peerborne/store": "workspace:^",
     "@peerborne/yjs": "workspace:^",
     "@tanstack/react-router": "^1.170.46",
-    "@tanstack/react-start": "^1.169.4",
-    "hono": "^4.13.16",
+    "@tanstack/react-start": "^1.169.7",
+    "hono": "^4.13.21",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.1.2",
-    "typescript": "^5.9.3",
-    "vite": "^8.3.5"
+    "@types/node": "^26.6.7",
+    "@types/react": "^19.3.1",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.8"
   },
   "scripts": {
     "start": "vite --host 127.0.0.1",
@@ -30,6 +30,6 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.1"
   }
 }

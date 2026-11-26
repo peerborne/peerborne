@@ -8,7 +8,7 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "types": ["vite/client"],
     "resolveJsonModule": true,
     "isolatedModules": true,

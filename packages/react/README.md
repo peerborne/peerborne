@@ -1,6 +1,6 @@
 # `@peerborne/react`
 
-Version 0.1.0 is alpha software, not production-ready. Packages ship one ESM build, with native CommonJS `require()` interoperability on Node.js 22.19.0 or newer.
+Version 0.1.0 is alpha software, not production-ready. Packages ship one ESM build, with native CommonJS `require()` interoperability on Node.js 26.13.1 or newer.
 
 React hooks and context for Peerborne — initialize the node, open documents, subscribe to changes, and manage ACL state, all from your component tree.
 

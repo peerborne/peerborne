@@ -11,6 +11,7 @@ Use `docs/feature-audit.md` and the site concept pages as the evidence baseline.
 ## Toolchain
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build
@@ -18,7 +19,7 @@ yarn test
 yarn workspace @peerborne/site build
 ```
 
-Use Node.js 22.19.0 and Yarn 4.5.0. Run `yarn test:relay` and the relevant example or Docker-backed suite when affected. `yarn test:e2e` runs four Vite/Chromium smoke suites without Docker. Integration, NAT, and cross-NAT tests require their matching Compose topologies; follow `.github/workflows/ci.yml`.
+Use Node.js 26.13.1 and Yarn 4.19.0. Run `yarn test:relay` and the relevant example or Docker-backed suite when affected. `yarn test:e2e` runs four Vite/Chromium smoke suites without Docker. Integration, NAT, and cross-NAT tests require their matching Compose topologies; follow `.github/workflows/ci.yml`.
 
 ## Repository boundaries
 

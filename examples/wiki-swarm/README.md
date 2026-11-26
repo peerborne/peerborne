@@ -7,9 +7,10 @@ This workspace is a source example with startup coverage, not a complete collabo
 
 ## Run from source
 
-Use Node.js 22.19.0 and Yarn 4.5.0 through Corepack. From the repository root:
+Use Node.js 26.13.1 and Yarn 4.19.0 through Corepack. From the repository root:
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build
