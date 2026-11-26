@@ -195,13 +195,16 @@ class ReceivedFrameBudget {
   }
 }
 
+// Each received frame is charged twice its ciphertext: once for the frame
+// and once for the plaintext pre-authentication keeps for its turn.
 // One full outbox is 16 publications of up to 1,024 frames and 16 MiB. A
-// sender's share holds that backlog plus live edits sent while it drains.
+// sender's share in one document holds that backlog plus live edits sent
+// while it drains, and two senders' shares leave room for every other one.
 const SENDER_FRAMES = 16 * 1024 + 4096,
-  SENDER_BYTES = 24 * 1024 * 1024;
-const aggregateInbound = new ReceivedFrameBudget(128 * 1024, 128 * 1024 * 1024);
-// One network sender may hold a quarter of the process-wide received queue.
-const aggregateSenders = new Map<string, ReceivedFrameBudget>();
+  SENDER_BYTES = 40 * 1024 * 1024;
+const DOCUMENT_FRAMES = 48 * 1024,
+  DOCUMENT_BYTES = 96 * 1024 * 1024;
+const aggregateInbound = new ReceivedFrameBudget(128 * 1024, 192 * 1024 * 1024);
 const ZERO_HASH = new Uint8Array(32);
 const MAX_PUBLICATIONS = 16,
   MAX_PUBLICATION_BYTES = 16 * 1024 * 1024,
@@ -232,14 +235,12 @@ interface AdmittedFrame {
   readonly plaintext: Uint8Array;
   readonly context: GroupSecurityDocumentContext;
   readonly aad: Uint8Array;
-  readonly release: () => void;
+  release(): void;
 }
 
 // A replacement publication must still fit beside 15 full ones in the
 // journal's 16 MiB, counting each row's storage overhead.
 const MAX_JOINED_PUBLICATION_BYTES = MAX_DOCUMENT_SECURITY_FRAME_BYTES - 2048;
-// Bounds one encoded frame: content plus its identity, context and signature.
-const MAX_FRAME_ESTIMATE = MAX_DOCUMENT_CONTENT_BYTES + 32 * 1024;
 
 function reserveSender(
   senders: Map<string, ReceivedFrameBudget>,
@@ -323,10 +324,12 @@ export class CoordinatedDocument<
     16 * 1024 * 1024,
   );
   private readonly inbound = new ReceivedFrameBudget(
-    32 * 1024,
-    64 * 1024 * 1024,
+    DOCUMENT_FRAMES,
+    DOCUMENT_BYTES,
   );
   private readonly senders = new Map<string, ReceivedFrameBudget>();
+  // Admitted frames waiting for their turn, by author, sequence and hash.
+  private readonly admittedFrames = new Map<string, number>();
   // The last queued publication; null when the outbox is known to be empty.
   private outboxTail: OutboxTail | null | undefined;
   private deriving?: {
@@ -606,8 +609,9 @@ export class CoordinatedDocument<
    * charged against the received bounds; a `sender` names the network peer,
    * whose share holds one full outbox backlog plus live edits. Each frame
    * must decrypt under the current epoch before the publication waits for its
-   * turn, and frames the author already delivered are dropped then, so
-   * unauthenticated input and replays cost no signature check.
+   * turn. Frames the author already delivered, and copies of frames already
+   * waiting or held, are dropped then, so unauthenticated input and replays
+   * cost no signature check.
    */
   receive(frame: Uint8Array, sender?: string): Promise<boolean> {
     const reserved: Array<Array<() => void>> = [];
@@ -634,28 +638,19 @@ export class CoordinatedDocument<
       for (const value of frames) {
         const releases: Array<() => void> = [];
         reserved.push(releases);
-        releases.push(aggregateInbound.reserve(value.length));
-        releases.push(this.inbound.reserve(value.length));
-        if (sender !== undefined) {
-          releases.push(
-            reserveSender(
-              aggregateSenders,
-              sender,
-              value.length,
-              aggregateInbound.maxFrames / 4,
-              aggregateInbound.maxBytes / 4,
-            ),
-          );
+        const charge = 2 * value.length;
+        releases.push(aggregateInbound.reserve(charge));
+        releases.push(this.inbound.reserve(charge));
+        if (sender !== undefined)
           releases.push(
             reserveSender(
               this.senders,
               sender,
-              value.length,
+              charge,
               SENDER_FRAMES,
               SENDER_BYTES,
             ),
           );
-        }
       }
       const admitted = this.admitFrames(
         frames,
@@ -679,7 +674,15 @@ export class CoordinatedDocument<
         }
         return applied;
       });
-      const settled = result.finally(() => release());
+      const settled = result.finally(() => {
+        release();
+        void admitted.then(
+          (values) => {
+            for (const value of values) value.release();
+          },
+          () => {},
+        );
+      });
       this.tail = settled.then(
         () => {},
         () => {},
@@ -761,9 +764,13 @@ export class CoordinatedDocument<
   /**
    * Pre-authenticate a publication before it waits for its turn: every frame
    * must decrypt under the current epoch and binding, and all of them must
-   * come from one author with consecutive sequences. Frames at or below the
-   * author's accepted sequence are released and dropped without a signature
-   * check.
+   * come from one author with consecutive sequences. Frames below the
+   * author's accepted sequence, the accepted frame itself, and copies of a
+   * frame already waiting or held are released and dropped without a
+   * signature check. Copies are matched by author, sequence and content
+   * hash, so a forged frame cannot shadow the genuine one, and a different
+   * frame at the accepted sequence still goes on to be reported as
+   * equivocation.
    */
   private async admitFrames(
     frames: readonly Uint8Array[],
@@ -771,9 +778,12 @@ export class CoordinatedDocument<
   ): Promise<AdmittedFrame[]> {
     const context = this.options.coordinator.documentContext;
     const key = await this.frameKey();
-    const admitted: AdmittedFrame[] = [];
-    let author: string | undefined,
-      first = 0;
+    const decoded: Array<{
+      plaintext: Uint8Array;
+      author: string;
+      sequence: number;
+      hash: Uint8Array;
+    }> = [];
     for (const [index, frame] of frames.entries()) {
       const envelope = decodeEncryptedDocumentContent(frame);
       if (!documentBytesEqual(envelope.epochTag, key.material.epochTag))
@@ -796,32 +806,82 @@ export class CoordinatedDocument<
           'Document frame does not decrypt under the current epoch',
         );
       }
-      const content = decodeDocumentContent(
-        decodeSignedDocumentContent(plaintext).unsigned,
-      );
-      const id = documentBytesId(content.memberId);
-      if (index === 0) {
-        author = id;
-        first = content.sequence;
-      } else if (id !== author || content.sequence !== first + index)
+      const { unsigned } = decodeSignedDocumentContent(plaintext);
+      const content = decodeDocumentContent(unsigned);
+      const author = documentBytesId(content.memberId);
+      if (
+        index !== 0 &&
+        (author !== decoded[0].author ||
+          content.sequence !== decoded[0].sequence + index)
+      )
         throw new Error(
           'Document publication frames must be one author’s consecutive sequences',
         );
-      admitted.push({
-        frame,
+      decoded.push({
         plaintext,
-        context,
-        aad: key.aad,
-        release: releaser(index),
+        author,
+        sequence: content.sequence,
+        hash: new Uint8Array(
+          await crypto.subtle.digest(
+            'SHA-256',
+            unsigned as Uint8Array<ArrayBuffer>,
+          ),
+        ),
       });
     }
-    const accepted = this.receiptsAt(context).get(author!)?.sequence ?? 0;
-    const delivered = Math.max(
-      0,
-      Math.min(admitted.length, accepted - first + 1),
+    // Decide and register synchronously, so concurrent copies of one
+    // publication keep exactly one whole instance.
+    const accepted = this.receiptsAt(context).get(decoded[0].author);
+    const admitted: AdmittedFrame[] = [];
+    for (const [index, value] of decoded.entries()) {
+      const release = releaser(index);
+      const id = `${value.author}:${value.sequence}:${documentBytesId(value.hash)}`;
+      const acceptedSequence = accepted?.sequence ?? 0;
+      if (
+        value.sequence < acceptedSequence ||
+        (value.sequence === acceptedSequence &&
+          documentBytesEqual(value.hash, accepted!.hash)) ||
+        this.admittedFrames.has(id) ||
+        this.isHeld(value.author, value.sequence, value.hash)
+      ) {
+        release();
+        continue;
+      }
+      this.admittedFrames.set(id, (this.admittedFrames.get(id) ?? 0) + 1);
+      let done = false;
+      admitted.push({
+        frame: frames[index],
+        plaintext: value.plaintext,
+        context,
+        aad: key.aad,
+        release: () => {
+          if (done) return;
+          done = true;
+          release();
+          const count = (this.admittedFrames.get(id) ?? 1) - 1;
+          if (count === 0) this.admittedFrames.delete(id);
+          else this.admittedFrames.set(id, count);
+        },
+      });
+    }
+    return admitted;
+  }
+
+  private isHeld(author: string, sequence: number, hash: Uint8Array): boolean {
+    const held = this.held;
+    return (
+      !!held &&
+      documentContextsMatch(
+        held.context,
+        this.options.coordinator.documentContext,
+      ) &&
+      held.frames.some(
+        (entry) =>
+          entry.author === author &&
+          entry.sequence === sequence &&
+          documentBytesEqual(entry.hash, hash),
+      )
     );
-    for (const value of admitted.slice(0, delivered)) value.release();
-    return admitted.slice(delivered);
   }
 
   private async receiveOwned(
@@ -1432,17 +1492,12 @@ export class CoordinatedDocument<
       ? MAX_PUBLICATIONS - 1
       : MAX_PUBLICATIONS;
     if (input === undefined && this.options.joinPublications) {
-      if (
-        this.outboxTail === undefined ||
-        (this.outboxTail !== null && !this.mayJoin(this.outboxTail))
-      )
-        await this.loadOutboxTail();
+      if (this.outboxTail === undefined) await this.loadOutboxTail();
       tail = this.outboxTail ?? undefined;
       rows = tail?.rows ?? 0;
       // The journal stages a replacement beside the publication it replaces,
       // so its last row stays free for that staging.
-      if ((!tail || !this.mayJoin(tail)) && rows >= maxRows)
-        throw new DocumentPublicationBacklogError();
+      if (!tail && rows >= maxRows) throw new DocumentPublicationBacklogError();
     }
     let outbound: Uint8Array | undefined,
       merged = false;
@@ -2149,7 +2204,9 @@ export class CoordinatedDocument<
   hasQueuedPublications(): Promise<boolean | undefined> {
     return this.enqueue(0, () => async () => {
       this.assertActivated();
-      return this.outboxTail === undefined ? undefined : this.outboxTail !== null;
+      return this.outboxTail === undefined
+        ? undefined
+        : this.outboxTail !== null;
     });
   }
 
@@ -2168,13 +2225,6 @@ export class CoordinatedDocument<
     }
   }
 
-  private mayJoin(tail: OutboxTail): boolean {
-    return (
-      tail.frames < MAX_DOCUMENT_PUBLICATION_FRAMES &&
-      tail.bytes.length + MAX_FRAME_ESTIMATE <= MAX_JOINED_PUBLICATION_BYTES
-    );
-  }
-
   /** Learn the queued tail publication and how many publications are queued. */
   private async loadOutboxTail(): Promise<void> {
     const rows = this.options.journal
@@ -2191,7 +2241,9 @@ export class CoordinatedDocument<
       bytes: last,
       frames: parts.length,
       // A stale tail never matches a new frame's binding.
-      aad: (await this.decryptsUnder(parts[0], key)) ? key.aad : new Uint8Array(),
+      aad: (await this.decryptsUnder(parts[0], key))
+        ? key.aad
+        : new Uint8Array(),
       rows: rows.length,
     };
   }

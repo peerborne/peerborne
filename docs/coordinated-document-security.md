@@ -255,22 +255,26 @@ document author at a time; independent offline branches using the same member
 ID are detected as conflicting prefixes rather than merged.
 
 Received publications wait in their own queue, separate from the 16 local
-operations and 16 MiB a document admits, and every frame they carry is charged.
-A document queues at most 32,768 frames and 64 MiB of ciphertext, and all
-coordinated documents in a process at most 131,072 frames and 128 MiB. One
-GossipSub sender may hold 20,480 frames and 24 MiB of a document's queue, which
-covers one full outbox backlog plus live edits sent while it drains, and a
-quarter of the process queue. Each frame's charge is released once it is
-processed. A publication that arrives beyond those bounds is rejected before it
-is copied. Before it waits behind earlier work, every frame it carries must
-carry the current epoch tag and decrypt under the current document key and
-authority head, and all of them must come from one author with consecutive
-sequences, so input from a non-member is released within one decryption per
-frame and repeated copies are refused. Frames at or below the author's accepted
-sequence are dropped then, without a signature check, and the decrypted
-plaintext of the rest is reused. A refused publication is not retained: the
-author's later frames wait as held frames until the missing ones are delivered
-again.
+operations and 16 MiB a document admits, and every frame they carry is charged
+twice its ciphertext size, covering the plaintext that pre-authentication keeps
+for its turn. A document queues at most 49,152 frames and 96 MiB of charged
+bytes, and all coordinated documents in a process at most 131,072 frames and
+192 MiB. One GossipSub sender may hold 20,480 frames and 40 MiB of a document's
+queue, which covers one full outbox backlog plus live edits sent while it
+drains, and two senders' shares leave room for everyone else. Each frame's
+charge is released once it is processed. A publication that arrives beyond
+those bounds is rejected before it is copied. Before it waits behind earlier
+work, every frame it carries must carry the current epoch tag and decrypt under
+the current document key and authority head, and all of them must come from one
+author with consecutive sequences, so input from a non-member is released
+within one decryption per frame. Frames below the author's accepted sequence,
+the accepted frame itself, and copies of a frame that is already waiting or
+held are dropped then, without a signature check. Copies are matched by author,
+sequence and content hash, so a member's forged frame cannot shadow the genuine
+one, and a different frame at the accepted sequence is still verified and
+reported as equivocation. The decrypted plaintext of the remaining frames is
+reused. A refused publication is not retained: the author's later frames wait
+as held frames until the missing ones are delivered again.
 
 A frame can arrive before its author's previous frame, or before another
 author's change that it natively depends on. After full decryption, signature,
@@ -325,8 +329,10 @@ replacement commits; a copy left by a crash only repeats accepted frames, which
 receivers drop before any signature check. The journal stages a replacement
 beside the row it replaces, so one of its 16 rows stays free for that staging.
 Offline editing therefore continues until 15 publications, about 15 MiB of
-unsent ciphertext, are queued. Beyond that, a change fails before its callback
-runs with `DocumentPublicationBacklogError`, a `DocumentJournalCapacityError`.
+unsent ciphertext, are queued. Whether a frame fits is decided by its actual
+size, and the outbox is read only when its tail is unknown, such as after a
+restart or a delivery. Beyond that bound, a change fails before visible commit
+with `DocumentPublicationBacklogError`, a `DocumentJournalCapacityError`.
 The
 document retries publications in order when it opens, when a peer subscribes
 to the topic, after the next change, or on `retrySecurityPublications()`, which

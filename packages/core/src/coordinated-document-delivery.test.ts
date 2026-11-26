@@ -396,6 +396,76 @@ describe('coordinated document delivery', () => {
     }
   });
 
+  test('admits one copy of a publication that is still waiting and verifies each frame once', async () => {
+    const g = await group(2);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 50; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      expect(splitDocumentPublication(publication.data)).toHaveLength(50);
+      const resume = blockVerification(g.auth);
+      const verifications = countVerifications(g.auth);
+      try {
+        g.dispatch(publication, 0, 'writer');
+        for (let index = 0; index < 5; index++)
+          g.dispatch(publication, 0, `replayer-${index % 2}`);
+        expect(queued(g.doc(0))).toBe(300);
+        expect(await settled(() => queued(g.doc(0)) === 50)).toBe(true);
+      } finally {
+        resume();
+      }
+      expect(await settled(() => g.doc(0).document.length === 50)).toBe(true);
+      expect(await settled(() => queued(g.doc(0)) === 0)).toBe(true);
+      expect(verifications.calls).toBeLessThanOrEqual(50);
+      verifications.restore();
+      expect(g.doc(0).document).toEqual(
+        Array.from({ length: 50 }, (_, value) => value),
+      );
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('keeps room for another author while outsiders replay a waiting publication', async () => {
+    const g = await group(3);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 200; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      await g.doc(2).change(push(-2));
+      const [other] = g.take();
+      const frames = splitDocumentPublication(publication.data);
+      const resume = blockVerification(g.auth);
+      let outcome: Promise<boolean>;
+      try {
+        g.dispatch(publication, 0, 'writer');
+        // Two outsiders fill their whole shares synchronously.
+        for (let index = 0; index < 102; index++)
+          g.dispatch(publication, 0, 'r1');
+        for (let index = 0; index < 102; index++)
+          g.dispatch(publication, 0, 'r2');
+        for (let index = 0; index < 1000; index++)
+          g.dispatch(
+            { topic: publication.topic, data: frames[index % 200] },
+            0,
+            'r3',
+          );
+        expect(queued(g.doc(0))).toBeLessThan(48 * 1024);
+        outcome = engine(g.doc(0)).receive(other.data, 'member-2');
+        expect(await settled(() => queued(g.doc(0)) === 201)).toBe(true);
+      } finally {
+        resume();
+      }
+      await expect(outcome).resolves.toBe(true);
+      expect(await settled(() => g.doc(0).document.length === 201)).toBe(true);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
   test('applies live edits sent while a reconnect backlog drains and keeps the author live', async () => {
     const g = await group(2, { subscribers: true });
     try {
