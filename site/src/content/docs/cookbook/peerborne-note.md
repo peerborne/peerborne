@@ -86,9 +86,11 @@ invitation and retry state remains in memory and is lost on founder restart.
 There is no account/key backup or recovery after all local state is lost.
 
 After the first save, the application asks the browser for persistent storage
-with `navigator.storage.persist()` and shows a notice if the browser refuses.
-A refusal leaves saved notes and the identity subject to eviction when storage
-runs low. If a saved note's record disappears, the editor reports that the
+with `navigator.storage.persist()` and shows a dismissible notice if the
+browser refuses. A refusal leaves saved notes and the identity subject to
+eviction when storage runs low. The dismissal is remembered in local storage;
+the notice returns only if the browser's answer changes or its saved data is
+evicted. If a saved note's record disappears, the editor reports that the
 browser deleted the saved data instead of offering a retry. A local storage
 marker holds the last identity fingerprint, so a reload that had to create a
 new identity says that earlier notes are no longer available in this browser.

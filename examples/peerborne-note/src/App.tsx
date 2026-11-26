@@ -56,8 +56,9 @@ const INTERRUPTED_ACCEPTANCE_ERROR =
 const IDENTITY_MARKER_KEY = 'peerborne-note-identity';
 const IDENTITY_REPLACED_NOTICE =
   'This browser deleted Peerborne Note’s saved data, so it started with a new browser identity. Notes saved here before are no longer available in this browser.';
+const PERSISTENCE_KEY = 'peerborne-note-persistence';
 const PERSISTENCE_DENIED_NOTICE =
-  'This browser did not grant persistent storage, so it may delete your saved notes and this browser identity when storage runs low.';
+  'This browser may clear saved notes if it runs low on storage.';
 const EVICTED_MESSAGE =
   'This browser deleted Peerborne Note’s saved data, including this note and this browser identity. New edits cannot be saved here. Copy the note text before you leave this page.';
 
@@ -90,6 +91,24 @@ function identityReplaced(fingerprint: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The browser's last persistence answer, or `dismissed` once its refusal notice was dismissed. */
+type PersistenceRecord = 'granted' | 'denied' | 'dismissed';
+
+function storedPersistence(): string | null {
+  try {
+    return localStorage.getItem(PERSISTENCE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberPersistence(record: PersistenceRecord | undefined): void {
+  try {
+    if (record) localStorage.setItem(PERSISTENCE_KEY, record);
+    else localStorage.removeItem(PERSISTENCE_KEY);
+  } catch {}
 }
 
 async function persistentStorageGranted(): Promise<boolean> {
@@ -171,7 +190,8 @@ export default function App({ initialFragment }: AppProps) {
   );
   const [errorMessage, setErrorMessage] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [storageNotices, setStorageNotices] = useState<string[]>([]);
+  const [identityNotice, setIdentityNotice] = useState(false);
+  const [persistenceNotice, setPersistenceNotice] = useState(false);
   const persistenceRequestedRef = useRef(false);
   const [identityId, setIdentityId] = useState<string>();
   const [session, setSession] = useState<PeerborneNoteSession>();
@@ -256,8 +276,10 @@ export default function App({ initialFragment }: AppProps) {
         ]);
         if (cancelled) return;
         setIdentityId(fingerprint);
-        if (identityReplaced(fingerprint))
-          setStorageNotices([IDENTITY_REPLACED_NOTICE]);
+        if (identityReplaced(fingerprint)) {
+          rememberPersistence(undefined);
+          setIdentityNotice(true);
+        }
 
         setBootMessage('Starting encrypted local storage and peer networking…');
         createdSession = await PeerborneNoteSession.initialize(
@@ -454,6 +476,7 @@ export default function App({ initialFragment }: AppProps) {
     return session.onStorage((state) => {
       setStorageState(state);
       setStorageError(state === 'error');
+      if (state === 'evicted') rememberPersistence(undefined);
     });
   }, [session]);
 
@@ -466,10 +489,20 @@ export default function App({ initialFragment }: AppProps) {
       return;
     persistenceRequestedRef.current = true;
     void persistentStorageGranted().then((granted) => {
-      if (!granted)
-        setStorageNotices((notices) => [...notices, PERSISTENCE_DENIED_NOTICE]);
+      if (granted) {
+        rememberPersistence('granted');
+        return;
+      }
+      if (storedPersistence() === 'dismissed') return;
+      rememberPersistence('denied');
+      setPersistenceNotice(true);
     });
   }, [screen, storageState]);
+
+  const dismissPersistenceNotice = () => {
+    rememberPersistence('dismissed');
+    setPersistenceNotice(false);
+  };
 
   useEffect(() => {
     if (!session) return;
@@ -796,16 +829,17 @@ export default function App({ initialFragment }: AppProps) {
             {notice}
           </div>
         ) : null}
-        {storageNotices.map((storageNotice) => (
-          <div
-            key={storageNotice}
-            className="message notice"
-            role="status"
-            aria-live="polite"
-          >
-            {storageNotice}
+        {identityNotice ? (
+          <div className="message notice" role="status" aria-live="polite">
+            {IDENTITY_REPLACED_NOTICE}
           </div>
-        ))}
+        ) : null}
+        {persistenceNotice ? (
+          <div className="message notice" role="status" aria-live="polite">
+            {PERSISTENCE_DENIED_NOTICE}{' '}
+            <button onClick={dismissPersistenceNotice}>Dismiss</button>
+          </div>
+        ) : null}
 
         {screen === 'booting' ? (
           <section className="panel centered" aria-live="polite">

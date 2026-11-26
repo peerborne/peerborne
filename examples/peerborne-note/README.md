@@ -12,8 +12,9 @@ refresh or browser restart, choose a saved note on the home screen. Signing,
 KEM, and storage keys remain non-extractable browser key handles. Wait for
 **Saved in this browser** before closing the tab. A failed write shows a retry
 action, and damaged data is retained without an empty replacement. After the
-first save the note asks the browser for persistent storage and says so if the
-browser refuses. If the browser evicts the saved data, the editor reports it
+first save the note asks the browser for persistent storage. If the browser
+refuses, a dismissible notice says so; it returns only if the browser's answer
+changes or its saved data is evicted. If the browser evicts the saved data, the editor reports it
 instead of offering a retry, and the next load says that a new browser identity
 replaced the earlier one.
 

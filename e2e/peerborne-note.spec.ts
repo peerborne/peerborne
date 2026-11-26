@@ -298,6 +298,9 @@ test('reports evicted storage and a replaced identity instead of retry advice', 
     page.getByText('Saved in this browser', { exact: true }),
   ).toBeVisible();
   const original = await page.locator('.identity-chip code').textContent();
+  await page.evaluate(() =>
+    localStorage.setItem('peerborne-note-persistence', 'dismissed'),
+  );
 
   const cdp = await context.newCDPSession(page);
   await cdp.send('Storage.clearDataForOrigin', {
@@ -306,6 +309,12 @@ test('reports evicted storage and a replaced identity instead of retry advice', 
   });
   await editor.pressSequentially(' after', { delay: 20 });
   await expect(page.getByRole('alert')).toHaveText(evicted);
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem('peerborne-note-persistence'),
+    ),
+    'a dismissed persistence notice is shown again after eviction',
+  ).toBeNull();
   await expect(
     page.getByText('Unsaved changes', { exact: true }),
   ).toBeVisible();
@@ -330,27 +339,37 @@ test('reports evicted storage and a replaced identity instead of retry advice', 
   expect(errors, 'application runtime errors').toEqual([]);
 });
 
+const persistenceNotice =
+  'This browser may clear saved notes if it runs low on storage. Dismiss';
+
+async function stubPersistentStorage(page: Page) {
+  await page.addInitScript(() => {
+    const requests = window as unknown as { persistRequests: number };
+    requests.persistRequests = 0;
+    Object.defineProperties(StorageManager.prototype, {
+      persisted: { value: async () => false },
+      persist: {
+        value: async () => {
+          requests.persistRequests++;
+          return sessionStorage.getItem('grant-persistence') === 'yes';
+        },
+      },
+    });
+  });
+  return () =>
+    page.evaluate(
+      () => (window as unknown as { persistRequests: number }).persistRequests,
+    );
+}
+
 for (const granted of [false, true]) {
   test(`requests persistent storage after the first save when the browser ${granted ? 'grants' : 'refuses'} it`, async ({
     page,
   }) => {
-    await page.addInitScript((grant) => {
-      const requests = window as unknown as { persistRequests: number };
-      requests.persistRequests = 0;
-      Object.defineProperties(StorageManager.prototype, {
-        persisted: { value: async () => false },
-        persist: {
-          value: async () => {
-            requests.persistRequests++;
-            return grant;
-          },
-        },
-      });
-    }, granted);
-    const requests = () =>
-      page.evaluate(
-        () =>
-          (window as unknown as { persistRequests: number }).persistRequests,
+    const requests = await stubPersistentStorage(page);
+    if (granted)
+      await page.addInitScript(() =>
+        sessionStorage.setItem('grant-persistence', 'yes'),
       );
     await page.goto('/');
     await expect(
@@ -366,10 +385,7 @@ for (const granted of [false, true]) {
     await expect.poll(requests).toBe(1);
     const notice = page.getByRole('status');
     if (granted) await expect(notice).toHaveCount(0);
-    else
-      await expect(notice).toHaveText(
-        'This browser did not grant persistent storage, so it may delete your saved notes and this browser identity when storage runs low.',
-      );
+    else await expect(notice).toHaveText(persistenceNotice);
     await page
       .getByRole('textbox', { name: 'Note text' })
       .fill('Another saved edit');
@@ -379,6 +395,43 @@ for (const granted of [false, true]) {
     expect(await requests()).toBe(1);
   });
 }
+
+test('keeps a dismissed persistent-storage notice hidden until the browser answer changes', async ({
+  page,
+}) => {
+  const requests = await stubPersistentStorage(page);
+  const stored = () =>
+    page.evaluate(() => localStorage.getItem('peerborne-note-persistence'));
+  const notice = page.getByRole('status');
+  const reopenNote = async () => {
+    await page.reload();
+    await page.getByRole('button', { name: /^Open note added /u }).click();
+    await expect.poll(requests).toBe(1);
+  };
+
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Create a note', exact: true })
+    .click();
+  await expect(notice).toHaveText(persistenceNotice);
+  await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  expect(await stored()).toBe('dismissed');
+
+  await reopenNote();
+  expect(await stored()).toBe('dismissed');
+  await expect(notice).toHaveCount(0);
+
+  await page.evaluate(() => sessionStorage.setItem('grant-persistence', 'yes'));
+  await reopenNote();
+  await expect.poll(stored).toBe('granted');
+  await expect(notice).toHaveCount(0);
+
+  await page.evaluate(() => sessionStorage.removeItem('grant-persistence'));
+  await reopenNote();
+  await expect(notice).toHaveText(persistenceNotice);
+  expect(await stored()).toBe('denied');
+});
 
 test('saves a pending edit and warns before the page unloads', async ({
   page,
