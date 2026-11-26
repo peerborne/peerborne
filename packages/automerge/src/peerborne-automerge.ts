@@ -106,28 +106,29 @@ export type AutomergeDocumentChangeHandler<T = any> =
 
 const AUTOMERGE_MAGIC = [0x85, 0x6f, 0x4a, 0x83];
 const AUTOMERGE_DOCUMENT_CHUNK = 0;
+const AUTOMERGE_CHANGE_CHUNK = 1;
+const AUTOMERGE_HASH_BYTES = 32;
 
-function automergeChangeActor(change: unknown): string {
-  if (!(change instanceof Uint8Array))
-    throw new CRDTActorBindingError('Automerge change must be bytes');
-  return decodeChange(change).actor;
-}
-
-function isAutomergeDocumentChunk(chunk: unknown): chunk is Uint8Array {
-  return (
-    chunk instanceof Uint8Array &&
+function automergeChunkType(chunk: unknown): number | undefined {
+  return chunk instanceof Uint8Array &&
     chunk.byteLength > 9 &&
-    AUTOMERGE_MAGIC.every((byte, index) => chunk[index] === byte) &&
-    chunk[8] === AUTOMERGE_DOCUMENT_CHUNK
-  );
+    AUTOMERGE_MAGIC.every((byte, index) => chunk[index] === byte)
+    ? chunk[8]
+    : undefined;
 }
 
 /**
- * The actor table that opens a single saved document chunk. Every change in
- * the chunk names its actor by an index into this table, so it lists the
- * document's change authors without loading the document.
+ * Read the body of a single uncompressed chunk with `read`, which returns
+ * `undefined` for a layout it does not recognize.
  */
-function documentChunkActors(chunk: Uint8Array): string[] | undefined {
+function readAutomergeChunk<T>(
+  chunk: Uint8Array,
+  read: (next: {
+    uleb(): number | undefined;
+    skip(bytes: number): boolean;
+    hex(bytes: number): string | undefined;
+  }) => T | undefined,
+): T | undefined {
   let offset = 9;
   const uleb = (): number | undefined => {
     let value = 0;
@@ -143,21 +144,63 @@ function documentChunkActors(chunk: Uint8Array): string[] | undefined {
   const length = uleb();
   if (length === undefined || offset + length !== chunk.byteLength)
     return undefined;
-  const count = uleb();
-  if (count === undefined) return undefined;
-  const actors: string[] = [];
-  for (let index = 0; index < count; index++) {
-    const size = uleb();
-    if (size === undefined || size === 0 || offset + size > chunk.byteLength)
-      return undefined;
-    actors.push(
-      Array.from(chunk.subarray(offset, offset + size), (byte) =>
+  return read({
+    uleb,
+    skip(bytes) {
+      if (offset + bytes > chunk.byteLength) return false;
+      offset += bytes;
+      return true;
+    },
+    hex(bytes) {
+      if (bytes === 0 || offset + bytes > chunk.byteLength) return undefined;
+      const value = Array.from(chunk.subarray(offset, offset + bytes), (byte) =>
         byte.toString(16).padStart(2, '0'),
-      ).join(''),
-    );
-    offset += size;
-  }
-  return actors;
+      ).join('');
+      offset += bytes;
+      return value;
+    },
+  });
+}
+
+/**
+ * The author of an uncompressed change chunk, read from its header: the
+ * actor follows the dependency hashes. Every operation in the change has
+ * this actor, so its operations need not be decoded.
+ */
+function automergeChangeActor(change: unknown): string {
+  if (!(change instanceof Uint8Array))
+    throw new CRDTActorBindingError('Automerge change must be bytes');
+  const actor =
+    automergeChunkType(change) === AUTOMERGE_CHANGE_CHUNK
+      ? readAutomergeChunk(change, ({ uleb, skip, hex }) => {
+          const deps = uleb();
+          if (deps === undefined || !skip(deps * AUTOMERGE_HASH_BYTES))
+            return undefined;
+          const size = uleb();
+          return size === undefined ? undefined : hex(size);
+        })
+      : undefined;
+  return actor ?? decodeChange(change).actor;
+}
+
+/**
+ * The actor table that opens a single saved document chunk. Every change in
+ * the chunk names its actor by an index into this table, so it lists the
+ * document's change authors without loading the document.
+ */
+function documentChunkActors(chunk: Uint8Array): string[] | undefined {
+  return readAutomergeChunk(chunk, ({ uleb, hex }) => {
+    const count = uleb();
+    if (count === undefined) return undefined;
+    const actors: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const size = uleb();
+      const actor = size === undefined ? undefined : hex(size);
+      if (actor === undefined) return undefined;
+      actors.push(actor);
+    }
+    return actors;
+  });
 }
 
 function loadedDocumentActors(document: Doc<unknown>): Set<string> {
@@ -169,16 +212,16 @@ function automergeStateActors(state: BinaryChange[]): ReadonlySet<string> {
     throw new CRDTActorBindingError('Automerge state must be a change list');
   const actors = new Set<string>();
   for (const chunk of state) {
-    if (!isAutomergeDocumentChunk(chunk)) {
+    if (automergeChunkType(chunk) !== AUTOMERGE_DOCUMENT_CHUNK) {
       actors.add(automergeChangeActor(chunk));
       continue;
     }
-    const table = documentChunkActors(chunk);
+    const table = documentChunkActors(chunk as Uint8Array);
     if (table !== undefined) {
       for (const actor of table) actors.add(actor);
       continue;
     }
-    const loaded = load(chunk);
+    const loaded = load(chunk as Uint8Array);
     try {
       for (const actor of loadedDocumentActors(loaded)) actors.add(actor);
     } finally {
