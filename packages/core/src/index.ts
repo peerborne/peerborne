@@ -73,7 +73,10 @@ import {
   serializeChangeNodeForJSON,
   deserializeChangeNodeFromJSON,
 } from './merkle-dag-serialization.js';
-import { EPOCH_ID_LENGTH, toHex } from './epoch.js';
+import {
+  EPOCH_ID_LENGTH,
+  toHex,
+} from './epoch.js';
 import {
   CAP_DOC_ADMIN,
   CAP_DOC_WRITE,
@@ -286,11 +289,7 @@ export {
 };
 
 export type { NetworkStatsSnapshot } from './network-stats.js';
-export type {
-  ConnectOptions,
-  ConnectionProgress,
-  ConnectionErrorType,
-} from './connection.js';
+export type { ConnectOptions, ConnectionProgress, ConnectionErrorType } from './connection.js';
 export type { CreateInvitationOptions } from './peerborne.js';
 export type { InvitationBootstrapBundle } from './peerborne-document.js';
 export type {
@@ -327,7 +326,9 @@ export type {
   SerializedWelcomeNodePublicKey,
   SerializedWelcomePathNodeUpdate,
 } from './beekem-welcome-wire.js';
-export type { WelcomeSealedPayloadV2 } from './welcome-sealed-payload.js';
+export type {
+  WelcomeSealedPayloadV2,
+} from './welcome-sealed-payload.js';
 export type { DocumentCapability } from './capabilities.js';
 export type { UCAN, UCANCapability, UCANPayload } from './ucan.js';
 export type { UCANACLEntry } from './ucan-acl.js';
@@ -459,14 +460,8 @@ export type {
 export * from './document-recovery.js';
 
 export * from './coordinated-document.js';
-export {
-  DocumentOperationTargets,
-  assertDocumentOperationsAllowed,
-} from './document-field-authorization.js';
-export type {
-  DocumentFieldPath,
-  DocumentWritePaths,
-} from './document-field-authorization.js';
+export { DocumentOperationTargets, assertDocumentOperationsAllowed } from './document-field-authorization.js';
+export type { DocumentFieldPath, DocumentWritePaths } from './document-field-authorization.js';
 export * from './document-authority-log.js';
 export * from './document-replay-journal.js';
 export * from './document-journal-store.js';
