@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { MemoryBlockstore } from 'blockstore-core/memory';
+import { CID } from 'multiformats/cid';
 import {
   documentFixture,
   publishedMessage,
@@ -24,6 +26,25 @@ async function members(acl) {
 
 const heldCount = (fixture) => fixture.document._heldACL?.size ?? 0;
 
+// Browser WebCrypto settles exportKey by queuing a task, not a microtask.
+function exportKeyAsTask(t) {
+  const exportKey = crypto.subtle.exportKey;
+  crypto.subtle.exportKey = (...args) =>
+    new Promise((resolve, reject) =>
+      setTimeout(
+        () => exportKey.apply(crypto.subtle, args).then(resolve, reject),
+        0,
+      ),
+    );
+  t.after(() => {
+    delete crypto.subtle.exportKey;
+  });
+}
+
+const microtasks = async (count) => {
+  for (let index = 0; index < count; index++) await undefined;
+};
+
 function isHeld(fixture, cid) {
   return (
     !fixture.document._hashes.has(cid) &&
@@ -44,12 +65,13 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
     return created;
   }
 
-  async function join(t, fixtures, source, identity, index) {
+  async function join(t, fixtures, source, identity, index, options = {}) {
     const target = await fixture(t, fixtures, {
       index,
       identity,
       path: source.document.documentPath,
       open: false,
+      ...options,
     });
     target.document._writers.merge(source.document._writers.current());
     target.document._readers.merge(source.document._readers.current());
@@ -63,11 +85,16 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
     return target;
   }
 
-  async function founded(t, path, extraMembers) {
+  async function founded(t, path, extraMembers, options = {}) {
     const fixtures = [];
     t.after(() => Promise.all(fixtures.map((created) => created.close())));
     const identity = await signingIdentity();
-    const founder = await fixture(t, fixtures, { index: 1, identity, path });
+    const founder = await fixture(t, fixtures, {
+      index: 1,
+      identity,
+      path,
+      ...options,
+    });
     for (const publicKey of extraMembers) {
       await founder.document._writers.add(publicKey);
       await founder.document._readers.add(publicKey);
@@ -245,4 +272,136 @@ export function aclDependencyScenarios({ adapter, orphan, write }) {
       assert.equal(replica.document._hashes.has(message.changeId), true);
     });
   }
+
+  // The founder adds a writer and then removes it. The removal depends on
+  // the addition.
+  async function revocation(fixture, revoked) {
+    await fixture.document._makeChangeOnce(
+      await fixture.document._writers.add(revoked.publicKey),
+      'writer',
+    );
+    const addition = await publishedMessage(fixture);
+    await fixture.document._makeChangeOnce(
+      await fixture.document._writers.remove(revoked.publicKey),
+      'writer',
+    );
+    return { addition, removal: await publishedMessage(fixture) };
+  }
+
+  test(`${adapter}: a fetched writer removal applies when its addition arrives during the hold`, async (t) => {
+    const blockstore = new MemoryBlockstore();
+    const revoked = await signingIdentity();
+    const { fixtures, founder } = await founded(
+      t,
+      '/acl-dependencies-fetched-removal',
+      [],
+      { blockstore },
+    );
+    const replica = await join(t, fixtures, founder, founder.identity, 2, {
+      blockstore,
+    });
+    const { addition, removal } = await revocation(founder, revoked);
+    await founder.document.change(write('later', 1));
+    const head = await publishedMessage(founder);
+    // Both ACL nodes are deferred leaves, the removal first.
+    const frame = await signedMessage(founder, {
+      changeId: head.changeId,
+      changes: {
+        kind: head.changes.kind,
+        change: head.changes.change,
+        children: {
+          [removal.changeId]: { kind: 'writer' },
+          [addition.changeId]: { kind: 'writer' },
+        },
+      },
+    });
+    exportKeyAsTask(t);
+
+    assert.equal(await replica.document.sync(frame), true);
+
+    assert.equal(
+      await replica.document._writers.check(revoked.publicKey),
+      false,
+    );
+    assert.equal(heldCount(replica), 0);
+    for (const { changeId } of [addition, removal, head]) {
+      assert.equal(replica.document._hashes.has(changeId), true);
+    }
+  });
+
+  test(`${adapter}: concurrent merges of a removal and its addition never leave the removal held`, async (t) => {
+    const revoked = await signingIdentity();
+    const { fixtures, founder } = await founded(
+      t,
+      '/acl-dependencies-concurrent-removal',
+      [],
+    );
+    const offsets = [0, 1, 2, 3, 5, 8, 13, 'task'];
+    const replicas = [];
+    for (const [index] of offsets.entries()) {
+      replicas.push(
+        await join(t, fixtures, founder, founder.identity, index + 2),
+      );
+    }
+    const { addition, removal } = await revocation(founder, revoked);
+    const signer = await replicas[0].document._serializeFrameSigner(
+      founder.identity.publicKey,
+    );
+
+    for (const [index, offset] of offsets.entries()) {
+      const { document } = replicas[index];
+      if (offset === 'task') exportKeyAsTask(t);
+      await Promise.all([
+        document._mergeRemoteACL(
+          'writer',
+          removal.changeId,
+          removal.changes.change,
+          signer,
+        ),
+        (offset === 'task'
+          ? new Promise((resolve) => setImmediate(resolve))
+          : microtasks(offset)
+        ).then(() =>
+          document._mergeRemoteACL(
+            'writer',
+            addition.changeId,
+            addition.changes.change,
+            signer,
+          ),
+        ),
+      ]);
+
+      assert.equal(heldCount(replicas[index]), 0, `offset ${offset}`);
+      assert.equal(await document._writers.check(revoked.publicKey), false);
+    }
+  });
+
+  test(`${adapter}: a load's writer set is not established from incomplete writer blocks`, async (t) => {
+    const revoked = await signingIdentity();
+    const { founder } = await founded(t, '/acl-dependencies-load-writers', []);
+    const { addition } = await revocation(founder, revoked);
+    const message = await publishedMessage(founder);
+    const blocks = new Map();
+    const collect = (cid, node) => {
+      if (node.kind === 'writer') blocks.set(cid, undefined);
+      for (const [child, value] of Object.entries(node.children ?? {}))
+        collect(child, value);
+    };
+    collect(message.changeId, message.changes);
+    for (const cid of blocks.keys())
+      blocks.set(cid, await founder.document._readBlock(CID.parse(cid)));
+    const writers = async (prefetched) =>
+      Promise.all(
+        (
+          await founder.document._writersEstablishedByLoadResponse(
+            message,
+            prefetched,
+          )
+        ).map((key) => crypto.subtle.exportKey('raw', key)),
+      );
+
+    assert.equal((await writers(blocks)).length, 1);
+    blocks.delete(addition.changeId);
+    assert.deepEqual(await writers(blocks), []);
+  });
 }

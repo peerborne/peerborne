@@ -902,8 +902,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly applySnapshotAfterChanges?: boolean;
   /** Serialized size of the received frame, for size-bound compaction. */
   readonly frameBytes?: number;
-  /** Verified signer of the received frame, which ACL changes it holds count against. */
-  readonly signer?: unknown;
+  /** Serialized verified signer of the received frame, which ACL changes it holds count against. */
+  readonly signer?: string;
 }
 
 /**
@@ -3635,6 +3635,7 @@ export class PeerborneDocument<
     rootId?: string,
   ): {
     readonly aclEntries: BoundedChangeTreeEntry<ChangesType>[];
+    readonly hasACLNodes: boolean;
     readonly changes: CRDTChangeNode<ChangesType>;
   } {
     const { entries, root: changes } = snapshotBoundedChangeTree(rootId, node, {
@@ -3653,6 +3654,10 @@ export class PeerborneDocument<
         ({ nodeId }) => nodeId,
         rootId,
         changes,
+      ),
+      hasACLNodes: entries.some(
+        ({ kind }) =>
+          kind === crdtWriterChangeNode || kind === crdtReaderChangeNode,
       ),
       changes,
     };
@@ -3678,7 +3683,7 @@ export class PeerborneDocument<
     entries: readonly BoundedChangeTreeEntry<ChangesType>[],
     assertStillActive?: () => void,
     signal?: AbortSignal,
-    signer?: unknown,
+    signer?: string,
   ): Promise<void> {
     for (const { nodeId, kind, change } of entries) {
       assertStillActive?.();
@@ -3709,7 +3714,7 @@ export class PeerborneDocument<
     kind: HeldACLKind,
     cid: string | undefined,
     changes: ChangesType,
-    signer: unknown,
+    signer: string | undefined,
     assertStillActive?: () => void,
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -3718,8 +3723,13 @@ export class PeerborneDocument<
       changed = await this._mergeACL(kind, changes, assertStillActive, signal);
     } catch (error) {
       if (!(error instanceof ACLMergeDependencyError)) throw error;
-      if (cid !== undefined) {
-        await this._holdACLChange(kind, cid, changes, signer, error.ready);
+      if (cid === undefined) return false;
+      // Hold without yielding: a concurrent merge that supplies the
+      // dependency then finds this change held. One that already ran before
+      // the hold is caught by `ready()`.
+      this._holdACLChange(kind, cid, changes, signer, error.ready);
+      if (error.ready?.() !== false) {
+        await this._mergeReadyHeldACL(kind, assertStillActive, signal);
       }
       return false;
     }
@@ -3741,28 +3751,19 @@ export class PeerborneDocument<
       : this._mergeReaders(changes, assertStillActive, signal);
   }
 
-  private async _holdACLChange(
+  private _holdACLChange(
     kind: HeldACLKind,
     cid: string,
     changes: ChangesType,
-    signer: unknown,
+    signer: string | undefined,
     ready: (() => boolean) | undefined,
-  ): Promise<void> {
+  ): void {
     this._noteWaiting(cid, kind, undefined, true);
     this._heldACL ??= new HeldACLChanges();
     const held = this._heldACL.get(cid);
     if (held !== undefined) {
       held.ready = ready;
       return;
-    }
-    let signerId = '';
-    if (signer !== undefined) {
-      try {
-        signerId = await requireSerializePublicKey(
-          this._authProvider,
-          'Held ACL changes',
-        )(signer as PublicKey);
-      } catch {}
     }
     let byteLength = Number.POSITIVE_INFINITY;
     try {
@@ -3772,7 +3773,7 @@ export class PeerborneDocument<
       cid,
       kind,
       changes,
-      signer: signerId,
+      signer: signer ?? '',
       byteLength,
       ready,
     });
@@ -4592,6 +4593,19 @@ export class PeerborneDocument<
     return signer !== undefined;
   }
 
+  private async _serializeFrameSigner(
+    signer: PublicKey,
+  ): Promise<string | undefined> {
+    try {
+      return await requireSerializePublicKey(
+        this._authProvider,
+        'Held ACL changes',
+      )(signer);
+    } catch {
+      return undefined;
+    }
+  }
+
   /** The current writer whose key verifies `signature` over `raw`. */
   private async _writerSigner(
     raw: Uint8Array,
@@ -4723,7 +4737,8 @@ export class PeerborneDocument<
 
   /**
    * The writer set that applying a load response's writer blocks to an empty
-   * ACL would produce, computed in an isolated ACL instance.
+   * ACL would produce, computed in an isolated ACL instance. It is empty when
+   * a writer block depends on history the response does not carry.
    */
   private async _writersEstablishedByLoadResponse(
     message: CRDTSyncMessage<ChangesType>,
@@ -4762,7 +4777,9 @@ export class PeerborneDocument<
           await this._decodeBlock(CID.parse(nodeId), block, signal, getKey),
         );
       }
-      mergeACLChanges(writers, changes);
+      // A writer change still waiting for history would leave the set
+      // partial, so no writer is established.
+      if (mergeACLChanges(writers, changes).length > 0) return [];
     }
     return writers.users();
   }
@@ -8571,6 +8588,10 @@ export class PeerborneDocument<
       this._localActor = undefined;
       this._readers = readers;
       this._writers = writers;
+      // Held ACL changes and waiting nodes belong to the replaced state.
+      this._heldACL = undefined;
+      this._mergedHeldACL = undefined;
+      this._waiting = undefined;
       this._keychain = keychain;
       this._lastSyncMessage = message;
       this._hashes = hashes;
@@ -9852,6 +9873,16 @@ export class PeerborneDocument<
       );
     }
     assertStillActive();
+    // Serialize the frame signer once, before any ACL merge, so holding an
+    // ACL change never waits for it.
+    const signer =
+      verified.signer === undefined || changeTreePreflight?.hasACLNodes !== true
+        ? undefined
+        : await awaitLoadWork(
+            this._serializeFrameSigner(verified.signer),
+            changeFetchOptions.signal,
+          );
+    assertStillActive();
 
     let stateApplicationStarted = false;
     const beginStateApplication = (): void => {
@@ -9873,7 +9904,7 @@ export class PeerborneDocument<
         changeTreePreflight.aclEntries,
         assertStillActive,
         changeFetchOptions.signal,
-        verified.signer,
+        signer,
       );
       assertStillActive();
     }
@@ -10077,7 +10108,7 @@ export class PeerborneDocument<
           changeTreePreflight.changes,
           {
             ...changeFetchOptions,
-            signer: verified.signer,
+            signer,
             ...(remoteFetches === undefined ? {} : { remoteFetches }),
           },
         );

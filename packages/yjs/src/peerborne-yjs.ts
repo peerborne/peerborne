@@ -1290,24 +1290,58 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
-  // Name the structs and deletions a held update waits for, so it is merged
-  // again only once the live ACL holds all of them.
+  // Name the exact structs and deletions a held update waits for, so it is
+  // merged again only once the live ACL holds all of them. Yjs records only a
+  // lower bound for a missing origin, which any later struct of that client
+  // would satisfy.
   private _missingDependencies(staged: Doc): ACLMergeDependencyError {
-    const structs = [...(staged.store.pendingStructs?.missing ?? [])];
-    const deletions: Array<[number, number]> = [];
+    const required = new Map<number, number>();
+    const require = (client: number, state: number) => {
+      if (state > (required.get(client) ?? 0)) required.set(client, state);
+    };
+    const pending = staged.store.pendingStructs;
+    if (pending !== null) {
+      const structs = decodeUpdateV2(pending.update).structs.filter(
+        (struct) => !(struct instanceof Skip),
+      );
+      const held = new Map<number, [number, number]>();
+      for (const { id, length } of structs) {
+        const range = held.get(id.client);
+        held.set(
+          id.client,
+          range === undefined
+            ? [id.clock, id.clock + length]
+            : [
+                Math.min(range[0], id.clock),
+                Math.max(range[1], id.clock + length),
+              ],
+        );
+      }
+      for (const [client, [first]] of held) require(client, first);
+      const external = (id: ID | null) => {
+        if (id === null) return;
+        const range = held.get(id.client);
+        if (range === undefined || id.clock < range[0] || id.clock >= range[1])
+          require(id.client, id.clock + 1);
+      };
+      for (const struct of structs) {
+        if (!(struct instanceof Item)) continue;
+        external(struct.origin);
+        external(struct.rightOrigin);
+        if (struct.parent instanceof ID) external(struct.parent);
+      }
+    }
     if (staged.store.pendingDs) {
       for (const [client, ranges] of decodeUpdateV2(staged.store.pendingDs).ds
         .clients) {
-        for (const { clock, len } of ranges)
-          deletions.push([client, clock + len]);
+        for (const { clock, len } of ranges) require(client, clock + len);
       }
     }
     return new ACLMergeDependencyError(() => {
       const store = this._acl.store;
-      return (
-        structs.every(([client, clock]) => getState(store, client) > clock) &&
-        deletions.every(([client, end]) => getState(store, client) >= end)
-      );
+      for (const [client, state] of required)
+        if (getState(store, client) < state) return false;
+      return true;
     });
   }
 

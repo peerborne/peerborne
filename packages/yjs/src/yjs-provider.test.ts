@@ -1306,6 +1306,42 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
+  test('a refused update is ready only once the exact origin it needs arrives', async () => {
+    const [first, second] = await Promise.all([
+      serializeKey(key1),
+      serializeKey(key2),
+    ]);
+    const author = new Doc({ gc: false });
+    author.clientID = 11;
+    const users = author.getMap('users');
+    users.set(first, true);
+    const earlier = encodeStateAsUpdateV2(author);
+    const beforeOrigin = encodeStateVector(author);
+    users.set(second, true);
+    const origin = encodeStateAsUpdateV2(author, beforeOrigin);
+    const overwriter = new Doc({ gc: false });
+    applyUpdateV2(overwriter, encodeStateAsUpdateV2(author));
+    overwriter.clientID = 22;
+    const beforeOverwrite = encodeStateVector(overwriter);
+    overwriter.getMap('users').set(second, true);
+    const overwrite = encodeStateAsUpdateV2(overwriter, beforeOverwrite);
+    const receiver = new YjsACL();
+
+    let refusal: unknown;
+    try {
+      receiver.merge(overwrite);
+    } catch (error) {
+      refusal = error;
+    }
+    const { ready } = refusal as ACLMergeDependencyError;
+    receiver.merge(earlier);
+    expect(ready?.()).toBe(false);
+    receiver.merge(origin);
+    expect(ready?.()).toBe(true);
+    expect(receiver.merge(overwrite)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
   test('merge() refuses dependency-incomplete updates until dependencies arrive', async () => {
     const source = new Doc();
     const users = source.getMap('users');
