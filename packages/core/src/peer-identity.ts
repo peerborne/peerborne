@@ -1,4 +1,3 @@
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 
 /** The subset of the Web Locks API used to claim a persisted PeerId. */
@@ -22,6 +21,8 @@ export interface PeerIdentityLease {
 const heldDatastores = new WeakSet<object>();
 
 async function ephemeral(): Promise<PeerIdentityLease> {
+  // Loaded on demand so Jest suites that import core source can omit it.
+  const { generateKeyPair } = await import('@libp2p/crypto/keys');
   return {
     privateKey: await generateKeyPair('Ed25519'),
     release: () => undefined,
