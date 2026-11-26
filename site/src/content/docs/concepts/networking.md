@@ -61,6 +61,37 @@ GossipSub is **best-effort**:
 - There is no message persistence, acknowledgment, or guaranteed delivery
 - Initial load and catch-up use point-to-point bitswap / HTTP fetch, not GossipSub
 
+### Frame size
+
+`@libp2p/gossipsub` sends and accepts RPCs of at most 4 MiB, and the outbound
+limit is not configurable. A longer RPC is never sent: `publish()` resolves
+with no recipients and no error. Peerborne caps one serialized sync message at
+3.5 MiB (`MAX_GOSSIP_SYNC_MESSAGE_BYTES`), leaving room for encryption, the
+GossipSub envelope and piggybacked control messages.
+
+Every frame carries the retained change tree inline, so the cap is split in
+half:
+
+- **One change** may need at most 1.75 MiB on its own
+  (`MAX_CHANGE_FRAME_BYTES`). A larger one makes `change()` or `endChange()`
+  reject with `GossipFrameLimitError` and is rolled back. With a provider that
+  returns a new document, such as Automerge, the document is unchanged and
+  keeps working. A provider that edits in place, such as Yjs, cannot undo the
+  edit, so the instance is retired as for an oversized block; reopen it from
+  accepted state and split the edit.
+- **The retained tree** is compacted once the frame that carried it passes
+  1.75 MiB: the writer snapshots and keeps only its newest changes, up to
+  512 KiB of payload. A writer that adopts a published tree prunes it the same
+  way, so author and writer replicas hold the same tree and load digests. A
+  reader keeps the larger tree, as with depth-bound compaction. A peer that
+  missed the pruned changes recovers them with `requestSync()` or a load.
+- **A membership change** is never refused for retained size: if its frame
+  would not fit, the tree is compacted first and the change published again.
+
+A `requestSync()` reply that does not fit GossipSub, usually because of its
+snapshot, is not sent. The responder logs a warning, and the requester must
+load the document.
+
 ## Peer discovery
 
 Peerborne peers find each other through several mechanisms:

@@ -15,6 +15,20 @@
       "entry": "echoStorm"
     },
     {
+      "id": "oversized-frames",
+      "name": "Large history, an oversized change and a membership change between real Peerborne nodes",
+      "runtime": "node",
+      "module": "./node/frames.mjs",
+      "entry": "oversizedFrames"
+    },
+    {
+      "id": "author-offline-frames",
+      "name": "Lagging replica takes another writer's frames while the author is offline",
+      "runtime": "node",
+      "module": "./node/frames.mjs",
+      "entry": "authorOfflineFrames"
+    },
+    {
       "id": "slow-peer",
       "name": "Ordered SCTP loss and healthy-peer progress",
       "runtime": "browser",

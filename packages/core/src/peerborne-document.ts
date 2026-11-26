@@ -45,6 +45,13 @@ import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
 import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipFrameLimitError,
+  MAX_CHANGE_FRAME_BYTES,
+  MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+  RETAINED_TREE_HIGH_BYTES,
+  RETAINED_TREE_KEEP_BYTES,
+} from './gossip-frame.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -259,6 +266,10 @@ export type { HistoryVisibility } from './invitation-policy.js';
 
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
 const loadCandidateResponders = new WeakMap<object, string>();
+
+// Stand-ins of the largest sizes a CID and a signature take in a frame.
+const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
+const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -782,6 +793,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
+  /** Serialized size of the received frame, for size-bound compaction. */
+  readonly frameBytes?: number;
 }
 
 /**
@@ -2861,12 +2874,16 @@ export class PeerborneDocument<
     // through `_recentTips` regardless, so concurrent heads are recovered
     // on the next local write.
     this._refreshLastSyncMessageFromSync(changeId, changes);
+    const adoptedFrameBytes =
+      changeId !== undefined && this._lastSyncMessage?.changeId === changeId
+        ? fetchOptions.frameBytes
+        : undefined;
 
     assertStillActive();
     if (this._isStateApplicationBlocked()) {
       this._bootstrapCompactionDeferred = true;
     } else {
-      await this._maybeCompact();
+      await this._maybeCompact(undefined, adoptedFrameBytes);
     }
   }
 
@@ -4042,6 +4059,26 @@ export class PeerborneDocument<
     kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
     postPublishCommit?: PostPublishCommit,
   ) {
+    try {
+      await this._makeChangeOnce(changes, kind, postPublishCommit);
+    } catch (error) {
+      // A membership change is never refused for retained size: the tree is
+      // compacted and the change published again from scratch.
+      if (
+        !(error instanceof GossipFrameLimitError) ||
+        kind === crdtDocumentChangeNode ||
+        !(await this._compactRetainedTree())
+      )
+        throw error;
+      await this._makeChangeOnce(changes, kind, postPublishCommit);
+    }
+  }
+
+  private async _makeChangeOnce(
+    changes: ChangesType,
+    kind: CRDTChangeNodeKind,
+    postPublishCommit?: PostPublishCommit,
+  ) {
     // A staged ACL change does not mutate live authorization until publication
     // resolves. Every caller supplying `postPublishCommit` owns the shared
     // membership queue, so supported remote sync cannot interleave with these
@@ -4059,13 +4096,12 @@ export class PeerborneDocument<
     // reconcile it. This boundary prevents deterministic local reattachment,
     // not a distributed publish transaction.
     const lastSyncMessageBefore = this._lastSyncMessage;
-    const recentTipsBefore = postPublishCommit
-      ? [...this._recentTips]
-      : undefined;
+    const recentTipsBefore = [...this._recentTips];
     const newlyReferencedAncestors: string[] = [];
     let hash = '';
     let hashWasKnown = false;
     let commitResolved = false;
+    let publishedBytes = 0;
     try {
       // Store changes in blockstore.
       hash = await this._putBlock(changes, kind);
@@ -4131,11 +4167,33 @@ export class PeerborneDocument<
       // Sign new message.
       updateMessage.signature = await this._signAsWriter(updateMessage);
 
+      const serializedUpdate =
+        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
+      // GossipSub would silently drop a longer frame, and every later frame
+      // carries this change inline, so one change may use at most half a
+      // frame. Both are refused, and rolled back below, before the change
+      // becomes part of the retained tree.
+      if (
+        kind === crdtDocumentChangeNode &&
+        serializedUpdate.byteLength > MAX_CHANGE_FRAME_BYTES
+      ) {
+        const ownFrameBytes = this._changeFrameBytes(changes, kind);
+        if (ownFrameBytes > MAX_CHANGE_FRAME_BYTES)
+          throw new GossipFrameLimitError(
+            ownFrameBytes,
+            MAX_CHANGE_FRAME_BYTES,
+          );
+      }
+      if (serializedUpdate.byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+        throw new GossipFrameLimitError(
+          serializedUpdate.byteLength,
+          MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+        );
+      }
+      publishedBytes = serializedUpdate.byteLength;
       if (!postPublishCommit) {
         this._lastSyncMessage = updateMessage;
       }
-      const serializedUpdate =
-        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
 
       // Encrypt sync message.
       const [documentKeyID, documentKey] = await this._keychain.current();
@@ -4171,14 +4229,17 @@ export class PeerborneDocument<
       }
       commitResolved = true;
     } catch (error) {
-      if (postPublishCommit && !commitResolved) {
+      if (
+        (postPublishCommit || error instanceof GossipFrameLimitError) &&
+        !commitResolved
+      ) {
         if (hash && !hashWasKnown) {
           this._hashes.delete(hash);
         }
         for (const childCid of newlyReferencedAncestors) {
           this._referencedAncestors.delete(childCid);
         }
-        this._recentTips = recentTipsBefore!;
+        this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
       throw error;
@@ -4203,7 +4264,7 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact();
+    await this._maybeCompact(undefined, publishedBytes);
   }
 
   /**
@@ -4284,20 +4345,29 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact(signal?: AbortSignal) {
+  private async _maybeCompact(signal?: AbortSignal, frameBytes = 0) {
     // Each local change nests the retained tree one level deeper, so a writer
     // must compact before the tree reaches the serialization depth limit even
     // when periodic compaction is disabled.
-    const depthBound =
+    const canBound =
       !this._snapshotUnsupported &&
       !this._compactionInProgress &&
-      this._lastSyncMessage?.changes !== undefined &&
+      this._lastSyncMessage?.changes !== undefined;
+    const depthBound =
+      canBound &&
       changeTreeDepth(
-        this._lastSyncMessage.changes,
+        this._lastSyncMessage!.changes!,
         CHANGE_TREE_COMPACTION_DEPTH,
       ) >= CHANGE_TREE_COMPACTION_DEPTH;
+    // Every frame carries the retained tree, so it is also kept within half a
+    // GossipSub frame. A writer that adopts a published tree measures the same
+    // frame and prunes it the same way as its author, so their trees, and
+    // load digests, stay identical.
+    const sizeBound =
+      canBound && !depthBound && frameBytes > RETAINED_TREE_HIGH_BYTES;
     if (
       !depthBound &&
+      !sizeBound &&
       !shouldCompact(
         this._compactionConfig.enabled,
         this._snapshotUnsupported,
@@ -4322,12 +4392,80 @@ export class PeerborneDocument<
     throwIfLoadAborted(signal);
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked(signal, depthBound);
+      await this._snapshotUnlocked(
+        signal,
+        depthBound || sizeBound,
+        sizeBound ? this._sizeBoundKeepCount() : undefined,
+      );
     } catch (error) {
-      // The triggering change is already published. A failed depth-bound
+      // The triggering change is already published. A failed bounded
       // snapshot is retried by the next change instead of rolling it back.
-      if (!depthBound || signal?.aborted) throw error;
-      console.warn(`Depth-bound compaction failed for ${this.documentPath}`);
+      if (!(depthBound || sizeBound) || signal?.aborted) throw error;
+      console.warn(
+        `${depthBound ? 'Depth' : 'Size'}-bound compaction failed for ${this.documentPath}`,
+      );
+    } finally {
+      this._compactionInProgress = false;
+    }
+  }
+
+  /** Serialized size of a frame carrying only `changes`. */
+  private _changeFrameBytes(
+    changes: ChangesType,
+    kind: CRDTChangeNodeKind,
+  ): number {
+    return this._syncMessageSerializer.serializeSyncMessage({
+      documentId: this.documentPath,
+      signatureContext: 'ordinary-sync-v1',
+      changeId: FRAME_CID_PLACEHOLDER,
+      changes: { kind, change: changes },
+      signature: FRAME_SIGNATURE_PLACEHOLDER,
+    }).byteLength;
+  }
+
+  /**
+   * How many inline changes, counted in `_pruneChanges` depth-bound order,
+   * fit `RETAINED_TREE_KEEP_BYTES`. The newest change is always kept. Only the
+   * tree's content decides, so every writer holding it prunes it alike.
+   */
+  private _sizeBoundKeepCount(): number {
+    const root = this._lastSyncMessage?.changes;
+    if (root === undefined) return 1;
+    let bytes = 0;
+    let kept = 0;
+    const queue: CRDTChangeNode<ChangesType>[] = [root];
+    for (let index = 0; index < queue.length; index++) {
+      const node = queue[index]!;
+      if (node.change !== undefined) {
+        bytes += this._changesSerializer.serializeChanges(
+          node.change,
+        ).byteLength;
+        if (kept > 0 && bytes > RETAINED_TREE_KEEP_BYTES) break;
+        kept++;
+      }
+      if (
+        node.children !== undefined &&
+        node.children !== crdtChangeNodeDeferred
+      )
+        queue.push(...Object.values(node.children));
+    }
+    return Math.max(1, kept);
+  }
+
+  /** Size-bound compaction ahead of a membership change; true if it ran. */
+  private async _compactRetainedTree(): Promise<boolean> {
+    if (this._snapshotUnsupported || this._compactionInProgress) return false;
+    this._compactionInProgress = true;
+    try {
+      return (
+        (await this._snapshotUnlocked(
+          undefined,
+          true,
+          this._sizeBoundKeepCount(),
+        )) !== undefined
+      );
+    } catch {
+      return false;
     } finally {
       this._compactionInProgress = false;
     }
@@ -6856,8 +6994,16 @@ export class PeerborneDocument<
           ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
         };
         message.signature = await this._signAsWriter(message);
+        const reply =
+          this._syncMessageSerializer.serializeSyncMessage(message);
+        if (reply.byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+          console.warn(
+            `Sync response for ${this.documentPath} exceeds the GossipSub frame limit; the requester must load the document`,
+          );
+          return;
+        }
         await this._publishSyncBytes(
-          this._syncMessageSerializer.serializeSyncMessage(message),
+          reply,
           () => {
             const dispatch = this._observeSyncRequestClock();
             return (
@@ -7575,6 +7721,7 @@ export class PeerborneDocument<
                   if (!receiveAdmission.active)
                     throw new Error('GossipSub receive subscription closed');
                 },
+                frameBytes: rawContent.byteLength,
               },
             );
           });
@@ -8609,7 +8756,13 @@ export class PeerborneDocument<
 
       const applied = this._applyLocalChange(composedFn, message);
       failure = applied.failure;
-      await this._makeChange(applied.changes);
+      try {
+        await this._makeChange(applied.changes);
+      } catch (error) {
+        if (error instanceof GossipFrameLimitError)
+          this._retireAfterOversizedLocalChange();
+        throw error;
+      }
 
       // The published change, partial or not, ends the transaction.
       this._inTransaction = false;
@@ -8707,9 +8860,26 @@ export class PeerborneDocument<
     try {
       await this._makeChange(changes);
     } catch (error) {
+      if (error instanceof GossipFrameLimitError)
+        this._retireAfterOversizedLocalChange();
       throw failure ? partialChangeCommitFailure(failure.error, error) : error;
     }
     if (failure) throw failure.error;
+  }
+
+  /**
+   * A local change that cannot be published is already in the local
+   * document: Yjs edits in place, and Automerge marks the previous document
+   * outdated. A later change would depend on the unpublished edit, so the
+   * instance is retired, as for an oversized block, and must be reopened
+   * from accepted state. The DAG was rolled back, so nothing reached history.
+   */
+  private _retireAfterOversizedLocalChange(): void {
+    this._bootstrapLoadApplicationRevision++;
+    this._oversizedEditClose ??= Promise.resolve().then(() =>
+      this._closeDocument(),
+    );
+    void this._oversizedEditClose.catch(() => {});
   }
 
   /** Publish a partial in-place edit before its change function's error is rethrown. */
@@ -8835,6 +9005,7 @@ export class PeerborneDocument<
   private async _snapshotUnlocked(
     signal?: AbortSignal,
     depthBound = false,
+    boundedKeepCount = CHANGE_TREE_COMPACTION_KEEP,
   ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     const gcLifecycle = this._gcLifecycle;
     await this._ensureCurrentUserCanWrite();
@@ -8891,9 +9062,7 @@ export class PeerborneDocument<
       // A depth-bound prune keeps a fixed window of inline changes: enough
       // for lagging peers to heal from live traffic, and room to grow again.
       const prunedCIDs = this._pruneChanges(
-        depthBound
-          ? CHANGE_TREE_COMPACTION_KEEP
-          : this._compactionConfig.keepRecentNodes,
+        depthBound ? boundedKeepCount : this._compactionConfig.keepRecentNodes,
         depthBound,
       );
 

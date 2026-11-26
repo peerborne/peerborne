@@ -179,7 +179,10 @@ test('closing and reopening skips old queued receive work and applies fresh fram
       undefined,
       false,
       undefined,
-      { assertStillActive: expect.any(Function) },
+      {
+        assertStillActive: expect.any(Function),
+        frameBytes: expect.any(Number),
+      },
     );
   } finally {
     unblock.resolve();
