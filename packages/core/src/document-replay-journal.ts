@@ -19,6 +19,11 @@ import {
   writeDocumentContext,
 } from './document-security-wire.js';
 import type { GroupSecurityDocumentContext } from './group-security-coordinator.js';
+import {
+  copyRecordedOperationPaths,
+  MAX_RECORDED_OPERATION_PATHS,
+  type DocumentWritePaths,
+} from './document-field-authorization.js';
 import { copyUnsharedUint8Array } from './utils.js';
 
 export class DocumentJournalCapacityError extends Error {
@@ -90,6 +95,8 @@ export interface DocumentJournalStore {
   ): Promise<void>;
   discard(key: string, token: Uint8Array): Promise<void>;
   publicationSent?(key: string, id: Uint8Array): Promise<void>;
+  /** Remove every record stored under `key`. */
+  delete?(key: string): Promise<void>;
 }
 export interface DocumentReplayReceipt {
   readonly memberId: Uint8Array;
@@ -97,6 +104,7 @@ export interface DocumentReplayReceipt {
   readonly hash: Uint8Array;
 }
 export interface DocumentJournalItem {
+  /** Published frame of a local entry; on restore, present while it is still unsent. */
   readonly outboundFrame?: Uint8Array;
   readonly checkpoint: boolean;
   readonly context: GroupSecurityDocumentContext;
@@ -104,6 +112,11 @@ export interface DocumentJournalItem {
   readonly receipts: ReadonlyArray<DocumentReplayReceipt>;
   readonly authorityHead: Uint8Array;
   readonly authorityRecords: ReadonlyArray<Uint8Array>;
+  /**
+   * Required on every non-checkpoint entry and absent on checkpoints: the
+   * bounded operation paths of a local entry's changes, `[]` for a peer's.
+   */
+  readonly operationPaths?: DocumentWritePaths;
 }
 export interface PreparedDocumentJournal {
   commit(): Promise<void>;
@@ -131,6 +144,11 @@ const ACCEPTED_DOMAIN = Uint8Array.from(
 export const MAX_DOCUMENT_JOURNAL_ENTRIES = 128;
 export const MAX_DOCUMENT_JOURNAL_BYTES = 128 * 1024 * 1024;
 const ZERO = new Uint8Array(32);
+const ENTRY = 0,
+  CHECKPOINT = 1,
+  DIVERGED = 2;
+/** Encoded bound of a full recorded path list: 4,096 paths of 32 segments and 1 Mi units. */
+const MAX_OPERATION_PATH_BYTES = 4 * 1024 * 1024;
 
 interface PublicationBinding {
   readonly token: Uint8Array;
@@ -209,6 +227,17 @@ function encodeItem(
       )
       .integer(binding.revision, 8);
   }
+  if (item.checkpoint) {
+    if (item.operationPaths !== undefined)
+      throw new Error('Journal checkpoints carry no operation paths');
+  } else {
+    const paths = copyRecordedOperationPaths(item.operationPaths);
+    writer.integer(paths.length, 2);
+    for (const path of paths) {
+      writer.integer(path.length, 1);
+      for (const segment of path) writer.text(segment, 4096);
+    }
+  }
   return writer.finish();
 }
 
@@ -255,6 +284,22 @@ function decodeItem(
       token: reader.fixed(32),
       revision: reader.number(8),
     });
+  let operationPaths: DocumentWritePaths | undefined;
+  if (!checkpoint) {
+    const pathCount = reader.number(2);
+    if (pathCount > MAX_RECORDED_OPERATION_PATHS)
+      throw new Error('Invalid journal operation paths');
+    const paths: string[][] = [];
+    for (let index = 0; index < pathCount; index++) {
+      const depth = reader.number(1);
+      if (depth > 32) throw new Error('Invalid journal operation paths');
+      const path: string[] = [];
+      for (let segment = 0; segment < depth; segment++)
+        path.push(reader.text(4096));
+      paths.push(path);
+    }
+    operationPaths = copyRecordedOperationPaths(paths);
+  }
   reader.end();
   return {
     publicationBindings,
@@ -264,6 +309,7 @@ function decodeItem(
     receipts,
     authorityHead,
     authorityRecords,
+    ...(operationPaths ? { operationPaths } : {}),
   };
 }
 
@@ -359,6 +405,7 @@ export class DocumentReplayJournal {
   private opened = false;
   private active = false;
   private failed = false;
+  private divergedMarker = false;
   private acceptedPublicationBindings = new Map<string, number>();
   private pendingPublicationBindings = new Map<string, PublicationBinding>();
 
@@ -392,11 +439,16 @@ export class DocumentReplayJournal {
   get needsCheckpoint(): boolean {
     return (
       this.entryCount >= MAX_DOCUMENT_JOURNAL_ENTRIES - 1 ||
-      this.retainedBytes > MAX_DOCUMENT_JOURNAL_BYTES - 18 * 1024 * 1024
+      this.retainedBytes >
+        MAX_DOCUMENT_JOURNAL_BYTES - 18 * 1024 * 1024 - MAX_OPERATION_PATH_BYTES
     );
   }
   get revision(): number {
     return this.head?.revision ?? 0;
+  }
+  /** The accepted branch ends in an authenticated divergence marker; it takes no more entries. */
+  get diverged(): boolean {
+    return this.divergedMarker;
   }
 
   async restore(): Promise<ReadonlyArray<DocumentJournalItem>> {
@@ -415,12 +467,16 @@ export class DocumentReplayJournal {
         previous: Uint8Array | undefined,
         previousRevision = 0,
         authenticated = true;
-      const items: DocumentJournalItem[] = [];
+      const items: StoredDocumentJournalItem[] = [],
+        itemRevisions: number[] = [];
       let acceptedBindings = new Map<string, number>();
       let last:
         | { revision: number; commitment: Uint8Array; parent: Uint8Array }
         | undefined;
+      let diverged = false;
       for (const owned of snapshot.entries) {
+        if (diverged)
+          throw new Error('Journal entry follows a divergence marker');
         bytes += owned.length;
         const accepted = new DocumentBinaryReader(owned, MAX_ENTRY + 128);
         const payload = accepted.bytes(MAX_ENTRY + 96),
@@ -435,12 +491,12 @@ export class DocumentReplayJournal {
         reader.end();
         if (
           !revision ||
-          marker > 1 ||
+          marker > DIVERGED ||
           (previous &&
             (!documentBytesEqual(previous, parent) ||
               revision !== previousRevision + 1)) ||
           (!previous &&
-            marker === 0 &&
+            marker !== CHECKPOINT &&
             (revision !== 1 || !documentBytesEqual(parent, ZERO)))
         )
           throw new Error('Journal causal chain is invalid');
@@ -454,7 +510,7 @@ export class DocumentReplayJournal {
           throw new Error(
             'Journal entry has no authenticated acceptance marker',
           );
-        const aad = this.aad(revision, marker === 1, parent);
+        const aad = this.aad(revision, marker, parent);
         const plaintext = await crypto.subtle.decrypt(
           {
             name: 'AES-GCM',
@@ -464,7 +520,19 @@ export class DocumentReplayJournal {
           this.key,
           ciphertext as Uint8Array<ArrayBuffer>,
         );
-        const item = decodeItem(new Uint8Array(plaintext), marker === 1);
+        if (marker === DIVERGED) {
+          if (plaintext.byteLength !== 0)
+            throw new Error('Invalid journal divergence marker');
+          diverged = true;
+          previous = await digest(owned);
+          previousRevision = revision;
+          last = { revision, commitment: previous, parent };
+          continue;
+        }
+        const item = decodeItem(
+          new Uint8Array(plaintext),
+          marker === CHECKPOINT,
+        );
         if (previous && item.checkpoint)
           throw new Error('Noninitial journal checkpoint');
         for (const binding of item.publicationBindings) {
@@ -488,6 +556,7 @@ export class DocumentReplayJournal {
           );
         }
         items.push(item);
+        itemRevisions.push(revision);
         previous = await digest(owned);
         previousRevision = revision;
         last = { revision, commitment: previous, parent };
@@ -543,11 +612,17 @@ export class DocumentReplayJournal {
         )
       )
         throw new Error('Journal anchor changed during recovery');
+      for (const [index, frame] of publications.frames.entries()) {
+        const entry = itemRevisions.indexOf(publications.revisions[index]);
+        if (entry !== -1 && !items[entry].checkpoint)
+          items[entry] = { ...items[entry], outboundFrame: frame };
+      }
       this.acceptedPublicationBindings = acceptedBindings;
       this.pendingPublicationBindings = publications.bindings;
       this.head = stored;
-      this.entryCount = items.length;
+      this.entryCount = snapshot.entries.length;
       this.retainedBytes = bytes;
+      this.divergedMarker = diverged;
       this.opened = true;
       return items;
     } catch (error) {
@@ -573,6 +648,7 @@ export class DocumentReplayJournal {
       !this.opened ||
       this.failed ||
       this.active ||
+      this.divergedMarker ||
       this.revision === Number.MAX_SAFE_INTEGER ||
       (this.needsCheckpoint && !checkpoint)
     )
@@ -633,34 +709,12 @@ export class DocumentReplayJournal {
         );
       }
       const plaintext = encodeItem(item, bindings);
-      if (
-        !documentJournalAnchorsEqual(
-          expected,
-          copyAnchor(await this.anchor.load(this.storageKey)),
-        )
-      )
-        throw new Error('Document journal anchor changed');
-      const parent = expected?.commitment ?? ZERO,
-        nonce = crypto.getRandomValues(new Uint8Array(12)),
-        aad = this.aad(revision, checkpoint, parent);
-      const ciphertext = new Uint8Array(
-        await crypto.subtle.encrypt(
-          {
-            name: 'AES-GCM',
-            iv: nonce,
-            additionalData: aad as Uint8Array<ArrayBuffer>,
-          },
-          this.key,
-          plaintext as Uint8Array<ArrayBuffer>,
-        ),
+      const entry = await this.sealEntry(
+        expected,
+        revision,
+        checkpoint ? CHECKPOINT : ENTRY,
+        plaintext,
       );
-      const entry = new DocumentBinaryWriter(MAX_ENTRY + 128)
-        .integer(revision, 8)
-        .integer(checkpoint ? 1 : 0, 1)
-        .fixed(parent)
-        .fixed(nonce)
-        .bytes(ciphertext, MAX_ENTRY + 16)
-        .finish();
       const publication =
         outboundFrame === undefined
           ? undefined
@@ -690,62 +744,23 @@ export class DocumentReplayJournal {
             throw new Error('Journal preparation has already completed');
           done = true;
           try {
-            const accepted = await this.createAcceptedEntry(revision, entry);
-            const commitment = await digest(accepted);
-            await this.store.commit(
-              this.storageKey,
-              expected?.revision ?? 0,
-              token.slice(),
+            const { next, bytes } = await this.acceptStaged(
+              expected,
+              revision,
+              token,
               checkpoint,
-              accepted.slice(),
-              publication && {
-                id: publication.id.slice(),
-                frame: await this.sealPublication(
-                  revision,
-                  publication.id,
-                  binding!.token,
-                  outboundFrame!,
-                ),
-              },
-            );
-            const actual = this.store.loadAcceptedHead
-              ? await this.store.loadAcceptedHead(this.storageKey)
-              : await this.store.load(this.storageKey).then((value) => ({
-                  revision: value.revision,
-                  entry: value.entries.at(-1),
-                }));
-            if (
-              actual.revision !== revision ||
-              !actual.entry ||
-              !documentBytesEqual(
-                await digest(
-                  copyUnsharedUint8Array(
-                    actual.entry,
-                    1,
-                    MAX_ENTRY + 128,
-                    'accepted journal entry',
+              entry,
+              publication &&
+                (async () => ({
+                  id: publication.id.slice(),
+                  frame: await this.sealPublication(
+                    revision,
+                    publication.id,
+                    binding!.token,
+                    outboundFrame!,
                   ),
-                ),
-                commitment,
-              )
-            )
-              throw new Error('Journal accepted marker was not persisted');
-            const next = { revision, commitment };
-            if (
-              !(await this.anchor.compareAndSwap(
-                this.storageKey,
-                copyAnchor(expected),
-                copyAnchor(next)!,
-              ))
-            )
-              throw new Error('Document journal anchor conflict');
-            if (
-              !documentJournalAnchorsEqual(
-                next,
-                copyAnchor(await this.anchor.load(this.storageKey)),
-              )
-            )
-              throw new Error('Document journal anchor was not persisted');
+                })),
+            );
             this.acceptedPublicationBindings =
               selectDocumentPublicationBindings(
                 beforeBindings,
@@ -760,8 +775,8 @@ export class DocumentReplayJournal {
             this.head = next;
             this.entryCount = checkpoint ? 1 : this.entryCount + 1;
             this.retainedBytes = checkpoint
-              ? accepted.length
-              : this.retainedBytes + accepted.length;
+              ? bytes
+              : this.retainedBytes + bytes;
           } catch (error) {
             this.acceptedPublicationBindings =
               selectDocumentPublicationBindings(
@@ -806,6 +821,157 @@ export class DocumentReplayJournal {
     }
   }
 
+  /**
+   * Durably end the accepted branch with an authenticated divergence marker.
+   * It advances the rollback anchor, so dropping it reads as a rollback, and
+   * the journal takes no further entries. Only a new journal starts clear.
+   */
+  async markDiverged(): Promise<void> {
+    if (this.divergedMarker) return;
+    if (
+      !this.opened ||
+      this.failed ||
+      this.active ||
+      this.revision === Number.MAX_SAFE_INTEGER
+    )
+      throw new Error('Document journal is unavailable');
+    this.active = true;
+    try {
+      const expected = copyAnchor(this.head),
+        revision = this.revision + 1,
+        token = crypto.getRandomValues(new Uint8Array(32));
+      const entry = await this.sealEntry(
+        expected,
+        revision,
+        DIVERGED,
+        new Uint8Array(),
+      );
+      await this.store.stage(
+        this.storageKey,
+        expected?.revision ?? 0,
+        token.slice(),
+        entry.slice(),
+        undefined,
+        false,
+      );
+      const { next, bytes } = await this.acceptStaged(
+        expected,
+        revision,
+        token,
+        false,
+        entry,
+      );
+      this.head = next;
+      this.entryCount++;
+      this.retainedBytes += bytes;
+      this.divergedMarker = true;
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    } finally {
+      this.active = false;
+    }
+  }
+
+  private async sealEntry(
+    expected: DocumentJournalAnchor | undefined,
+    revision: number,
+    marker: number,
+    plaintext: Uint8Array,
+  ): Promise<Uint8Array> {
+    if (
+      !documentJournalAnchorsEqual(
+        expected,
+        copyAnchor(await this.anchor.load(this.storageKey)),
+      )
+    )
+      throw new Error('Document journal anchor changed');
+    const parent = expected?.commitment ?? ZERO,
+      nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce,
+          additionalData: this.aad(
+            revision,
+            marker,
+            parent,
+          ) as Uint8Array<ArrayBuffer>,
+        },
+        this.key,
+        plaintext as Uint8Array<ArrayBuffer>,
+      ),
+    );
+    return new DocumentBinaryWriter(MAX_ENTRY + 128)
+      .integer(revision, 8)
+      .integer(marker, 1)
+      .fixed(parent)
+      .fixed(nonce)
+      .bytes(ciphertext, MAX_ENTRY + 16)
+      .finish();
+  }
+
+  /** Accept a staged entry, confirm the stored head, then advance the independent anchor. */
+  private async acceptStaged(
+    expected: DocumentJournalAnchor | undefined,
+    revision: number,
+    token: Uint8Array,
+    checkpoint: boolean,
+    entry: Uint8Array,
+    publication?: () => Promise<DocumentJournalPublication>,
+  ): Promise<{ next: DocumentJournalAnchor; bytes: number }> {
+    const accepted = await this.createAcceptedEntry(revision, entry);
+    const commitment = await digest(accepted);
+    await this.store.commit(
+      this.storageKey,
+      expected?.revision ?? 0,
+      token.slice(),
+      checkpoint,
+      accepted.slice(),
+      publication && (await publication()),
+    );
+    const actual = this.store.loadAcceptedHead
+      ? await this.store.loadAcceptedHead(this.storageKey)
+      : await this.store.load(this.storageKey).then((value) => ({
+          revision: value.revision,
+          entry: value.entries.at(-1),
+        }));
+    if (
+      actual.revision !== revision ||
+      !actual.entry ||
+      !documentBytesEqual(
+        await digest(
+          copyUnsharedUint8Array(
+            actual.entry,
+            1,
+            MAX_ENTRY + 128,
+            'accepted journal entry',
+          ),
+        ),
+        commitment,
+      )
+    )
+      throw new Error('Journal accepted marker was not persisted');
+    const next = { revision, commitment };
+    if (
+      !(await this.anchor.compareAndSwap(
+        this.storageKey,
+        copyAnchor(expected),
+        copyAnchor(next)!,
+      ))
+    )
+      throw new Error('Document journal anchor conflict');
+    if (
+      !documentJournalAnchorsEqual(
+        next,
+        copyAnchor(await this.anchor.load(this.storageKey)),
+      )
+    )
+      throw new Error('Document journal anchor was not persisted');
+    return { next, bytes: accepted.length };
+  }
+
   async pendingPublications(): Promise<ReadonlyArray<Uint8Array>> {
     if (!this.opened || this.failed || this.active)
       throw new Error('Document journal is unavailable');
@@ -836,13 +1002,18 @@ export class DocumentReplayJournal {
     maximumRevision: number,
   ): Promise<{
     frames: Uint8Array[];
+    revisions: number[];
     bindings: Map<string, PublicationBinding>;
   }> {
     const publications = this.store.loadPublications
       ? await this.store.loadPublications(this.storageKey)
       : (await this.store.load(this.storageKey)).publications;
     if (publications === undefined)
-      return { frames: [], bindings: new Map<string, PublicationBinding>() };
+      return {
+        frames: [],
+        revisions: [],
+        bindings: new Map<string, PublicationBinding>(),
+      };
     if (!Array.isArray(publications) || publications.length > 16)
       throw new Error('Invalid document publication queue');
     let bytes = 0;
@@ -863,6 +1034,7 @@ export class DocumentReplayJournal {
       };
     });
     const result: Uint8Array[] = [],
+      revisions: number[] = [],
       bindings = new Map<string, PublicationBinding>();
     const seenTokens = new Set<string>();
     for (const publication of owned) {
@@ -912,10 +1084,11 @@ export class DocumentReplayJournal {
       if (!documentBytesEqual(await digest(frame), publication.id))
         throw new Error('Publication commitment mismatch');
       result.push(frame);
+      revisions.push(revision);
       bindings.set(id, { token, revision });
       seenTokens.add(tokenId);
     }
-    return { frames: result, bindings };
+    return { frames: result, revisions, bindings };
   }
 
   private publicationAAD(
@@ -961,6 +1134,32 @@ export class DocumentReplayJournal {
       .fixed(nonce)
       .bytes(ciphertext, 1024 * 1024 + 16)
       .finish();
+  }
+
+  /**
+   * Delete a restored diverged journal from its store, so a rebuild can reuse
+   * the store. The rollback anchor still holds the diverged head, so the
+   * rebuilt journal needs a new anchor namespace. Frames re-signed before the
+   * divergence drain only while the diverged document stays open; deletion is
+   * refused while any publication is unsent unless `discardUnsent` is set.
+   */
+  async deleteDiverged({ discardUnsent = false } = {}): Promise<void> {
+    if (!this.opened || this.failed || this.active || !this.divergedMarker)
+      throw new Error('Only a restored diverged journal can be deleted');
+    if (typeof this.store.delete !== 'function')
+      throw new Error('Journal store cannot delete a journal');
+    this.active = true;
+    try {
+      const unsent = this.store.loadPublications
+        ? await this.store.loadPublications(this.storageKey)
+        : ((await this.store.load(this.storageKey)).publications ?? []);
+      if (unsent.length > 0 && discardUnsent !== true)
+        throw new Error('Diverged journal still holds unsent publications');
+      this.failed = true;
+      await this.store.delete(this.storageKey);
+    } finally {
+      this.active = false;
+    }
   }
 
   async publicationSent(frame: Uint8Array): Promise<void> {
@@ -1030,7 +1229,7 @@ export class DocumentReplayJournal {
 
   private aad(
     revision: number,
-    checkpoint: boolean,
+    marker: number,
     parent: Uint8Array,
   ): Uint8Array {
     return new DocumentBinaryWriter()
@@ -1038,7 +1237,7 @@ export class DocumentReplayJournal {
       .text(this.documentId)
       .fixed(this.genesis)
       .integer(revision, 8)
-      .integer(checkpoint ? 1 : 0, 1)
+      .integer(marker, 1)
       .fixed(parent)
       .finish();
   }

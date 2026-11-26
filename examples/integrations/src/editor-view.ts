@@ -18,7 +18,7 @@ export async function mountEditorView(
     alert.hidden = false;
     alert.textContent = 'Editor write failed. Reopen this example to recover.';
   };
-  const bridge = createYjsEditorBridge(session.document, {
+  const bridge = await createYjsEditorBridge(session.document, {
     onError: reportError,
   });
   let destroyEditor: () => void;

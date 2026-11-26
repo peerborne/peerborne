@@ -6,6 +6,7 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  CRDTActorBinding,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
@@ -40,6 +41,8 @@ import {
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
+  attachCRDTActorPrefix,
+  detachCRDTActorPrefix,
 } from '@peerborne/core';
 import { recordYjsOperationTargets } from './operation-targets.js';
 import {
@@ -56,10 +59,12 @@ import {
   encodeStateVector,
   getState,
   mergeDeleteSets,
+  mergeUpdatesV2,
   tryGc,
   GC,
   ID,
   Item,
+  Skip,
   ContentType,
   ContentFormat,
   type Transaction,
@@ -489,9 +494,37 @@ function assertStagedYjsValues(structs: Iterable<unknown>): void {
   }
 }
 
+function updateClients(update: Uint8Array): ReadonlySet<string> {
+  const clients = new Set<string>();
+  for (const struct of decodeUpdateV2(update).structs)
+    if (!(struct instanceof Skip)) clients.add(String(struct.id.client));
+  return clients;
+}
+
+const yjsActorBinding: CRDTActorBinding<Doc, Uint8Array> = {
+  actorFromDigest(digest) {
+    let clientID = digest[0]! & 0x1f;
+    for (let index = 1; index < 7; index++)
+      clientID = clientID * 256 + digest[index]!;
+    return String(clientID);
+  },
+  localActor: (document) => String(document.clientID),
+  setLocalActor(document, actor) {
+    document.clientID = Number(actor);
+    return document;
+  },
+  changeActors: updateClients,
+  stateActors: updateClients,
+  attach: attachCRDTActorPrefix,
+  detach: detachCRDTActorPrefix,
+};
+
 export class YjsProvider
   implements CRDTProvider<Doc, Uint8Array, (doc: Doc) => void>
 {
+  /** Client IDs are 53-bit values derived from the signer and an instance nonce. */
+  readonly actorBinding: CRDTActorBinding<Doc, Uint8Array> = yjsActorBinding;
+
   /** Staging accepts scalars and shared Map/Array/Text values, not opaque mutable payloads. */
   createDocumentSession(
     document: Doc,
@@ -677,8 +710,9 @@ export class YjsProvider
         }
         const baseRevision = revision;
         let stable: Uint8Array;
+        const recording = options?.inspectOperations === 'record';
         let targets =
-          options?.inspectOperations === true
+          options?.inspectOperations === true || recording
             ? new DocumentOperationTargets()
             : undefined;
         const preparingDocument = shadow;
@@ -688,11 +722,11 @@ export class YjsProvider
         let inspectionFailed = false;
         let collected = false;
         const inspect = (transaction: Transaction) => {
+          if (preserveEncoding && transaction.deleteSet.clients.size > 0)
+            deletions.push(transaction.deleteSet);
           try {
             if (recordYjsOperationTargets(transaction, targets!))
               collected = true;
-            if (preserveEncoding && transaction.deleteSet.clients.size > 0)
-              deletions.push(transaction.deleteSet);
           } catch {
             inspectionFailed = true;
           }
@@ -707,7 +741,7 @@ export class YjsProvider
             if (preserveEncoding) preparingDocument.gc = collectGarbage;
             if (targets) preparingDocument.off('beforeObserverCalls', inspect);
           }
-          if (inspectionFailed)
+          if (inspectionFailed && !recording)
             throw new Error('Yjs document operation inspection failed');
           assertHealthy();
           if (shadow.isDestroyed)
@@ -731,12 +765,18 @@ export class YjsProvider
           )
             throw new Error('Document root type changed during preparation');
           const { structs } = decodeUpdateV2(stable);
-          if (targets && collected)
-            targets = inspectAgainstDocument(
-              preparingDocument,
-              structs,
-              stable,
-            );
+          if (targets && collected && !inspectionFailed) {
+            try {
+              targets = inspectAgainstDocument(
+                preparingDocument,
+                structs,
+                stable,
+              );
+            } catch (error) {
+              if (!recording) throw error;
+              inspectionFailed = true;
+            }
+          }
           assertStagedYjsValues(structs);
           complete(shadow);
         } catch (error) {
@@ -756,6 +796,7 @@ export class YjsProvider
           throw error;
         }
         const operationTargets = targets;
+        const wholeDocument = inspectionFailed;
         const stagedVersion = shadowVersion;
         const stagedRoots = captureRoots(shadow);
         const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
@@ -829,7 +870,9 @@ export class YjsProvider
             active = undefined;
           },
           () => this.getSnapshot(shadow!),
-          operationTargets ? () => operationTargets.snapshot() : undefined,
+          operationTargets
+            ? () => (wholeDocument ? [[]] : operationTargets.snapshot())
+            : undefined,
         );
         active = plan;
         return plan;
@@ -857,7 +900,8 @@ export class YjsProvider
             return encodeStateAsUpdateV2(value, before);
           },
           options,
-          options?.inspectOperations === true,
+          options?.inspectOperations === true ||
+            options?.inspectOperations === 'record',
         ),
       prepareRemote: (changes, options) => {
         const owned = new Uint8Array(changes);
@@ -880,43 +924,36 @@ export class YjsProvider
   newDocument(): Doc {
     return new Doc();
   }
+  /**
+   * The change holds only the transactions `changeFn` ran. Yjs folds pending
+   * remote structs into a state-vector diff, which would make a local change
+   * carry other actors' operations.
+   */
   localChange(
     document: Doc,
     message: string,
     changeFn: (doc: Doc) => void,
   ): [Doc, Uint8Array] {
-    const beforeSV = encodeStateVector(document);
-    let edited = false;
-    const onTransaction = ({
-      beforeState,
-      afterState,
-      deleteSet,
-    }: Transaction) => {
-      edited ||=
-        deleteSet.clients.size > 0 ||
-        [...afterState].some(
-          ([client, clock]) => beforeState.get(client) !== clock,
-        );
+    const updates: Uint8Array[] = [];
+    const onUpdate = (update: Uint8Array) => {
+      updates.push(update);
     };
-    document.on('afterTransaction', onTransaction);
+    const changes = () =>
+      updates.length === 1 ? updates[0]! : mergeUpdatesV2(updates);
+    document.on('updateV2', onUpdate);
     try {
       changeFn(document);
     } catch (error) {
-      if (!edited) throw error;
-      throw new PartialLocalChangeError(
-        error,
-        document,
-        encodeStateAsUpdateV2(document, beforeSV),
-      );
+      if (updates.length === 0) throw error;
+      throw new PartialLocalChangeError(error, document, changes());
     } finally {
-      document.off('afterTransaction', onTransaction);
+      document.off('updateV2', onUpdate);
     }
-    const changes = encodeStateAsUpdateV2(document, beforeSV);
 
     // Y.Doc is always mutated in-place -- returning the same reference is
     // correct Yjs behavior. Callers must not rely on reference equality to
     // detect changes.
-    return [document, changes];
+    return [document, changes()];
   }
   remoteChange(document: Doc, changes: Uint8Array): Doc {
     applyUpdateV2(document, changes);

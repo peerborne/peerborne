@@ -8,6 +8,8 @@ import {
   providerFor,
   shuffled,
   syntheticText,
+  actorRegistration,
+  authoredChange,
   documentFixture,
   replicaOf,
   signedMessage,
@@ -363,7 +365,8 @@ export async function causal({ full, seed }) {
     // expose the separate resource-bound problem after authentication.
     let acceptedOrphans = 0;
     for (let i = 0; i < count; i++) {
-      const provider = providerFor('yjs', i + 10000);
+      const { registration, actor } = await actorRegistration(fixture);
+      const provider = providerFor('yjs', Number(actor));
       let source = provider.newDocument();
       [source] = provider.localChange(source, '', (doc) =>
         doc.getArray('flood').push(['ancestor']),
@@ -371,9 +374,10 @@ export async function causal({ full, seed }) {
       const [, orphan] = provider.localChange(source, '', (doc) =>
         doc.getArray('flood').push(['orphan']),
       );
+      const change = await authoredChange(fixture, registration, orphan);
       const message = await signedMessage(fixture, {
-        changeId: await fixture.document._putBlock(orphan),
-        changes: { kind: 'document', change: orphan },
+        changeId: await fixture.document._putBlock(change),
+        changes: { kind: 'document', change },
       });
       if (await fixture.document.sync(message)) acceptedOrphans++;
       source.destroy();

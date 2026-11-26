@@ -704,6 +704,17 @@ export async function runProductionDocumentChecks() {
         read(docs[1]).missedBeforeCatchUp === undefined,
       'restart retains accepted local content while missing the peer suffix',
     );
+    await docs[1].retrySecurityPublications();
+    const resigned = publications.splice(0);
+    check(
+      resigned.length === 1 && resigned[0].sender === 1,
+      'the returning writer re-signs its partitioned edit in the new epoch',
+    );
+    check(
+      (await docs[0].receiveSecurityFrame(resigned[0].data)) &&
+        read(docs[0]).acceptedOfflineEdit === 21,
+      'the controller accepts the re-signed partitioned edit',
+    );
     await docs[0].change(change('missedInCurrentEpoch', 22));
     check(
       publications.splice(0).length === 1,

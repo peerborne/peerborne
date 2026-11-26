@@ -553,3 +553,32 @@ test('inspects deletion and insertion targets before discard and rebuilds no his
     index.mockRestore();
   }
 });
+
+test('record inspection reports the whole document where strict inspection fails, and keeps its index', () => {
+  const session = new AutomergeProvider<any>().createDocumentSession(initial());
+  const long = 'x'.repeat(1025);
+  expect(() =>
+    session.prepareLocal(
+      '',
+      (draft) => {
+        draft[long] = 1;
+      },
+      { inspectOperations: true },
+    ),
+  ).toThrow('exceeds bounds');
+  for (const [edit, expected] of [
+    [(draft: any) => void (draft.allowed = 2), [['allowed']]],
+    [(draft: any) => void (draft[long] = { inner: 1 }), [[]]],
+    [(draft: any) => void (draft[long].inner = 2), [[]]],
+    [(draft: any) => void (draft.profile.name = 'next'), [['profile', 'name']]],
+  ] as const) {
+    const plan = session.prepareLocal('', edit, {
+      inspectOperations: 'record',
+    });
+    expect(plan.operationPaths!()).toEqual(expected);
+    plan.commit();
+  }
+  expect(session.document.allowed).toBe(2);
+  session.close();
+  A.free(session.document);
+});

@@ -31,17 +31,19 @@ function state(
 ): DocumentCheckpointState {
   const bytes = checkpointEncode(new Uint8Array([1]));
   return {
-    format: 'peerborne/local-document-checkpoint/2',
+    format: 'peerborne/local-document-checkpoint/3',
     documentPath: '/checkpoint',
     owner: 'owner',
     document: bytes,
     readers: bytes,
     writers: bytes,
     keychain: bytes,
+    actors: bytes,
     message: bytes,
     hashes: ['cid-root'],
     ancestors: [],
     recentTips: [['cid-root', 'document']],
+    ownBlocks: [],
     gcCandidates: [],
     documentChangeCount: 1,
     changesSinceSnapshot: 1,
@@ -61,6 +63,7 @@ describe('document checkpoint state', () => {
       hashes: cids(LIMIT),
       ancestors: cids(LIMIT),
       recentTips: [['cid-1', 'document']],
+      ownBlocks: cids(GC_CANDIDATE_LIMIT, 'cid-pruned-'),
       gcCandidates: cids(GC_CANDIDATE_LIMIT, 'cid-pruned-'),
     });
     expect(decodeCheckpointState(encodeCheckpointState(value))).toEqual(value);
@@ -83,13 +86,43 @@ describe('document checkpoint state', () => {
       /Invalid checkpoint tip/,
     ],
     [
+      'too many own blocks',
+      { ownBlocks: cids(GC_CANDIDATE_LIMIT + 1) },
+      /own block/,
+    ],
+    [
+      'a duplicate own block',
+      { ownBlocks: ['cid-stored', 'cid-stored'] },
+      /own block/,
+    ],
+    [
+      'a non-canonical own block',
+      { ownBlocks: ['cid-NotCanonical'] },
+      /Invalid checkpoint CID/,
+    ],
+    ['no own blocks', { ownBlocks: undefined }, /Invalid document checkpoint/],
+    [
       'too many garbage collection candidates',
-      { gcCandidates: cids(GC_CANDIDATE_LIMIT + 1) },
+      {
+        ownBlocks: cids(GC_CANDIDATE_LIMIT),
+        gcCandidates: cids(GC_CANDIDATE_LIMIT + 1),
+      },
       /garbage collection candidate/,
     ],
     [
       'a duplicate garbage collection candidate',
-      { gcCandidates: ['cid-pruned', 'cid-pruned'] },
+      {
+        ownBlocks: ['cid-pruned'],
+        gcCandidates: ['cid-pruned', 'cid-pruned'],
+      },
+      /garbage collection candidate/,
+    ],
+    [
+      'a garbage collection candidate the document did not store',
+      {
+        ownBlocks: ['cid-stored'],
+        gcCandidates: ['cid-stored', 'cid-foreign'],
+      },
       /garbage collection candidate/,
     ],
     [

@@ -1,5 +1,6 @@
 import type { ChangesSerializer } from '../changes-serializer.js';
 import type { CRDTProvider } from '../crdt-provider.js';
+import { isDocumentRedeliveryFrame } from '../document-redelivery-wire.js';
 import {
   coordinatedGroupFixture,
   type GroupPublication,
@@ -96,6 +97,124 @@ export async function missedTailCatchUpScenario<Document, Changes, Change>(
     await edit(2, 'four', [0, 1]);
     return {
       errors,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}
+
+/**
+ * Members 1 and 2 build a causal chain. Member 0 never receives its first
+ * frame, holds the rest, and recovers through a redelivery request.
+ */
+export async function lostFrameRedeliveryScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    peers: true,
+  });
+  const errors: string[] = [];
+  const content = () =>
+    g.take().filter((publication) => !isDocumentRedeliveryFrame(publication.data));
+  try {
+    await g.addMember(1);
+    await g.addMember(2);
+    for (let index = 0; index < 3; index++) await g.open(index);
+    const chain: GroupPublication[] = [];
+    for (let step = 0; step < 4; step++) {
+      const author = 1 + (step % 2);
+      await g.doc(author).change(adapter.edit(`c${step}`));
+      const [publication] = content();
+      chain.push(publication);
+      errors.push(...(await g.deliver(publication, [3 - author])));
+    }
+    for (const publication of chain.slice(1))
+      errors.push(...(await g.deliver(publication, [0])));
+    const held = adapter.read(g.doc(0).document);
+    g.take();
+    await g.doc(0).requestSecurityRedelivery();
+    const [request] = g
+      .take()
+      .filter((publication) => isDocumentRedeliveryFrame(publication.data));
+    g.dispatch(request, 1);
+    g.dispatch(request, 2);
+    for (let turn = 0; g.publications.length === 0 && turn < 300; turn++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    for (const publication of content())
+      errors.push(...(await g.deliver(publication, [0])));
+    return {
+      errors,
+      held,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}
+
+/**
+ * Member 1 edits while its publication fails, then the controller adds
+ * member 2 in a new epoch. Member 2 resumes from the controller checkpoint;
+ * member 1 learns the epoch, re-signs its unsent edit and keeps editing.
+ */
+export async function retiredEpochScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    catchUp: true,
+  });
+  const errors: string[] = [];
+  const deliverAll = async (recipients: number[]) => {
+    for (const publication of g.take())
+      errors.push(...(await g.deliver(publication, recipients)));
+  };
+  try {
+    await g.addMember(1);
+    await g.open(0);
+    await g.open(1);
+    await g.doc(0).change(adapter.edit('c0'));
+    await g.doc(1).change(adapter.edit('m1a'));
+    await deliverAll([0, 1]);
+    const publish = g.pubsubs[1].publish;
+    g.pubsubs[1].publish = async () => {
+      throw new Error('offline');
+    };
+    let offline = '';
+    try {
+      await g.doc(1).change(adapter.edit('offlineEdit'));
+    } catch (error) {
+      offline = (error as Error).message;
+    }
+    const { delivery, record } = await g.addMember(2, { applyTo: [] });
+    await g.open(2);
+    const request = await g.doc(2).createSecurityCatchUpRequest();
+    await g
+      .doc(2)
+      .applySecurityCatchUpCheckpoint(
+        await g.doc(0).createSecurityCatchUpCheckpoint(request),
+      );
+    g.pubsubs[1].publish = publish;
+    await g.coordinators[1].applyCommit(
+      delivery.commit!,
+      delivery.controlRecord,
+      delivery.welcomes,
+    );
+    const update = await g.doc(1).applySecurityAuthorityUpdate(record);
+    await g.doc(1).retrySecurityPublications();
+    await deliverAll([0, 2]);
+    await g.doc(1).change(adapter.edit('afterReturn'));
+    await deliverAll([0, 2]);
+    await g.doc(1).retrySecurityPublications();
+    const leftover = g.take().length;
+    return {
+      offline,
+      update,
+      errors,
+      leftover,
       views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
     };
   } finally {

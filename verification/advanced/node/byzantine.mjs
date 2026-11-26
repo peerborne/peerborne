@@ -10,6 +10,8 @@ import {
 import {
   A,
   Y,
+  actorRegistration,
+  authoredChange,
   documentFixture,
   providerFor,
   signingIdentity,
@@ -104,15 +106,21 @@ export async function authorization({ full, seed }) {
     await target.document._runWriterMutation(() =>
       target.document._writers.add(attacker.publicKey),
     );
+    const { registration, actor } = await actorRegistration(target, attacker);
     const allowed = new Y.Doc();
-    allowed.clientID = 9001;
+    allowed.clientID = Number(actor);
     allowed.getMap('root').set('roles', { owner: 'synthetic-attacker' });
     allowed.getMap('root').set('anotherUsersProperty', 'synthetic-overwrite');
     const acceptedRestrictedOperation = await receiveEncrypted(
       target,
       await envelope(
         target,
-        Y.encodeStateAsUpdateV2(allowed),
+        await authoredChange(
+          target,
+          registration,
+          Y.encodeStateAsUpdateV2(allowed),
+          attacker,
+        ),
         attacker.privateKey,
       ),
     );
@@ -133,7 +141,12 @@ export async function authorization({ full, seed }) {
         target,
         await envelope(
           target,
-          Y.encodeStateAsUpdateV2(allowed),
+          await authoredChange(
+            target,
+            registration,
+            Y.encodeStateAsUpdateV2(allowed),
+            attacker,
+          ),
           attacker.privateKey,
         ),
       ),
@@ -257,7 +270,8 @@ export async function poisoning({ full }) {
     const initial = target.document.historySize();
     const timing = await measure(async () => {
       for (let i = 0; i < count; i++) {
-        const p = providerFor('yjs', 10000 + i);
+        const { registration, actor } = await actorRegistration(target);
+        const p = providerFor('yjs', Number(actor));
         let state = p.newDocument();
         let ancestor, orphan;
         [state, ancestor] = p.localChange(state, '', (doc) =>
@@ -266,6 +280,8 @@ export async function poisoning({ full }) {
         [state, orphan] = p.localChange(state, '', (doc) =>
           doc.getArray('poisoned').push([1]),
         );
+        ancestor = await authoredChange(target, registration, ancestor);
+        orphan = await authoredChange(target, registration, orphan);
         const parentId = await target.document._putBlock(ancestor);
         const orphanId = await target.document._putBlock(orphan);
         // A deferred parent references valid CID syntax but is absent from the
@@ -346,9 +362,10 @@ export async function poisoning({ full }) {
           let accepted = false;
           let bufferedBytes = 0;
           try {
+            const { registration, actor } = await actorRegistration(fixture);
             if (adapter === 'yjs') {
               const hostile = new Y.Doc();
-              hostile.clientID = 13000 + clockResults.length;
+              hostile.clientID = Number(actor);
               hostile.getMap('root').set('inflated', true);
               hostile.store.clients.get(hostile.clientID)[0].id.clock = clock;
               payload = Y.encodeStateAsUpdateV2(hostile);
@@ -360,7 +377,7 @@ export async function poisoning({ full }) {
               hostile.destroy();
             } else {
               const source = A.change(
-                A.init({ actor: 'f'.repeat(32) }),
+                A.init({ actor }),
                 (doc) => {
                   doc.inflated = true;
                 },
@@ -373,6 +390,7 @@ export async function poisoning({ full }) {
               A.free(source);
             }
             encoded = true;
+            payload = await authoredChange(fixture, registration, payload);
             accepted = await fixture.document.sync(
               await signedMessage(fixture, {
                 changeId: await fixture.document._putBlock(payload),

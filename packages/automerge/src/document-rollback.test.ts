@@ -11,7 +11,11 @@ import {
 } from '@automerge/automerge';
 import {
   ACLMergeRejectedError,
+  CRDTActorBindings,
   PeerborneDocument,
+  createCRDTActorNonce,
+  deriveCRDTActorDigest,
+  encodeCRDTChangeAuthor,
   mergeCompactionConfig,
 } from '@peerborne/core';
 import {
@@ -25,6 +29,24 @@ const KEY_ID_BYTES = 32;
 const NONCE_BYTES = 12;
 const provider = new AutomergeProvider<Log>();
 const genesis = from<Log>({ log: [] }, { actor: '01' });
+const PATH = '/automerge-rollback';
+const bare = (changes: Change[]) => provider.actorBinding.detach(changes)[1];
+
+async function authoredRemote(entry: string): Promise<Change[]> {
+  const registration = { signer: 'remote', nonce: createCRDTActorNonce() };
+  const actor = provider.actorBinding.actorFromDigest(
+    await deriveCRDTActorDigest(PATH, registration),
+  );
+  const remote = change(clone(genesis, { actor }), push(entry));
+  return provider.actorBinding.attach(
+    getChanges(genesis, remote),
+    encodeCRDTChangeAuthor({
+      ...registration,
+      registrationSignature: new Uint8Array(),
+      signature: new Uint8Array(),
+    }),
+  );
+}
 
 function automergeDocument(): any {
   const serializer = new AutomergeJSONSerializer();
@@ -32,8 +54,12 @@ function automergeDocument(): any {
   const document: any = Object.assign(
     Object.create(PeerborneDocument.prototype),
     {
-      documentPath: '/automerge-rollback',
+      documentPath: PATH,
       _userPublicKey: 'writer',
+      _actorBindings: new CRDTActorBindings(),
+      _changeAuthorKeys: new Map(),
+      _reservedActors: new Map(),
+      _changesSerializer: serializer,
       _document: clone(genesis, { actor: '02' }),
       _crdtProvider: provider,
       _syncMessageSerializer: serializer,
@@ -61,6 +87,7 @@ function automergeDocument(): any {
         ]),
       },
       _authProvider: {
+        serializePublicKey: async () => 'writer',
         encrypt: jest.fn(async (plaintext: Uint8Array) => ({
           nonce: new Uint8Array(NONCE_BYTES),
           data: plaintext,
@@ -68,6 +95,7 @@ function automergeDocument(): any {
       },
       _topic: '/topic',
       swarm: {
+        config: { enableSigning: false },
         unregisterDocument: jest.fn(),
         heliaNode: {
           libp2p: {
@@ -100,7 +128,7 @@ function publishedMessage(document: any, index: number): any {
 }
 
 function publishedChange(document: any, index: number): Change[] {
-  return publishedMessage(document, index).changes.change;
+  return bare(publishedMessage(document, index).changes.change);
 }
 
 function push(entry: string) {
@@ -174,7 +202,7 @@ describe('an Automerge change that fails', () => {
       failingStep(document).mockRejectedValueOnce(failure);
 
       await expect(commit(document, 'lost')).rejects.toBe(failure);
-      const discarded: Change[] = document._putBlock.mock.calls[0][0];
+      const discarded = bare(document._putBlock.mock.calls[0][0]);
       expect(document._document.log).toEqual([]);
       expect(document._hashes.size).toBe(0);
       expect(document._recentTips).toEqual([]);
@@ -233,8 +261,8 @@ describe('an Automerge change that fails', () => {
       expect(Object.keys(next.changes.children)).toEqual([keptId]);
       let peer = clone(genesis, { actor: '06' });
       for (const changes of [
-        next.changes.children[keptId].change,
-        next.changes.change,
+        bare(next.changes.children[keptId].change),
+        bare(next.changes.change),
         publishedChange(document, 1),
       ])
         peer = provider.remoteChange(peer, changes);
@@ -291,14 +319,13 @@ describe('an Automerge change that fails', () => {
 });
 
 describe('a remote sync whose ACL entry throws after a document entry', () => {
-  const remote = change(clone(genesis, { actor: '03' }), push('remote'));
-  const tree = {
+  const remoteTree = async () => ({
     kind: 'document' as const,
-    change: getChanges(genesis, remote),
+    change: await authoredRemote('remote'),
     children: {
       'writer-cid': { kind: 'writer' as const, change: [] as Change[] },
     },
-  };
+  });
 
   test.each([
     [
@@ -331,6 +358,7 @@ describe('a remote sync whose ACL entry throws after a document entry', () => {
     async (_case, prepare, expected) => {
       const document = automergeDocument();
       const options = prepare(document);
+      const tree = await remoteTree();
 
       await expect(
         document._syncDocumentChanges('remote-cid', tree, options),
@@ -401,12 +429,10 @@ describe('a rollback while Automerge holds changes waiting for dependencies', ()
     document._mergeWriters = jest.fn(async () => {
       throw new ACLMergeRejectedError(new Error('rejected'));
     });
-    const remote = change(clone(genesis, { actor: '03' }), push('remote'));
-
     await expect(
       document._syncDocumentChanges('remote-cid', {
         kind: 'document',
-        change: getChanges(genesis, remote),
+        change: await authoredRemote('remote'),
         children: { 'writer-cid': { kind: 'writer', change: [] } },
       }),
     ).rejects.toBeInstanceOf(ACLMergeRejectedError);

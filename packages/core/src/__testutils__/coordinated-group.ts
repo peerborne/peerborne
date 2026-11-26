@@ -194,7 +194,13 @@ export interface CoordinatedGroupOptions {
   readonly journal?: boolean;
   /** Requires a CRDT session with detached snapshot merges. */
   readonly catchUp?: boolean;
+  /** Give each member a libp2p PeerId, which enables redelivery requests. */
+  readonly peers?: boolean;
 }
+
+/** The base58 libp2p PeerId of a fixture member. */
+export const groupPeer = (index: number) =>
+  `12D3KooWTestPeer${'ABCDEFGHJKMNPQRS'[index]}`;
 
 /**
  * Members of one strict coordinated document opened through `Peerborne.doc`,
@@ -203,7 +209,12 @@ export interface CoordinatedGroupOptions {
 export async function coordinatedGroupFixture<Document, Changes, Change>(
   crdt: CRDTProvider<Document, Changes, Change>,
   serializer: ChangesSerializer<Changes>,
-  { members: size, journal = true, catchUp = false }: CoordinatedGroupOptions,
+  {
+    members: size,
+    journal = true,
+    catchUp = false,
+    peers = false,
+  }: CoordinatedGroupOptions,
 ) {
   const path = '/coordinated-group';
   const members = Array.from({ length: size }, (_, index) => {
@@ -320,7 +331,12 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       legacy,
     );
     Object.assign(swarm, {
-      _heliaNode: { libp2p: { services: { pubsub: pubsubs[index] } } },
+      _heliaNode: {
+        libp2p: {
+          services: { pubsub: pubsubs[index] },
+          ...(peers ? { peerId: { toString: () => groupPeer(index) } } : {}),
+        },
+      },
       _config: { enableSigning: false },
     });
     return swarm;
@@ -477,9 +493,18 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
   };
 
   /** Run the real pubsub handler for one publication at `recipient`. */
-  const dispatch = (publication: GroupPublication, recipient: number) => {
+  const dispatch = (
+    publication: GroupPublication,
+    recipient: number,
+    from = groupPeer(publication.sender),
+  ) => {
     const event = new CustomEvent('message', {
-      detail: { topic: publication.topic, data: publication.data.slice() },
+      detail: {
+        topic: publication.topic,
+        data: publication.data.slice(),
+        type: 'signed',
+        from: { toString: () => from },
+      },
     });
     pubsubs[recipient].dispatchEvent(event);
   };
@@ -499,6 +524,12 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       }
     }
     return errors;
+  };
+
+  /** Give a member an empty journal, store and rollback anchor for its next open. */
+  const resetJournal = (index: number) => {
+    journalStores[index] = new InMemoryDocumentJournalStore();
+    journalAnchors[index] = new InMemoryDocumentJournalRollbackAnchor();
   };
 
   const take = () => publications.splice(0);
@@ -524,6 +555,9 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     take,
     signRoster,
     nextId,
+    resetJournal,
+    journalStores,
+    journalAnchors,
     async close() {
       await Promise.all(docs.map((document) => document?.close()));
     },

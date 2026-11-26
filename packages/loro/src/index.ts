@@ -9,6 +9,7 @@ import {
   type VersionVector,
 } from 'loro-crdt';
 import { PartialLocalChangeError, type CRDTProvider } from '@peerborne/core';
+import { loroActorBinding } from './actor-binding.js';
 
 export type LoroChange = (document: LoroDoc) => void;
 
@@ -514,6 +515,8 @@ export class LoroProvider implements CRDTProvider<
   Uint8Array,
   LoroChange
 > {
+  readonly actorBinding = loroActorBinding;
+
   newDocument(): LoroDoc {
     return new LoroDoc();
   }

@@ -4,7 +4,11 @@ import {
   AutomergeJSONSerializer,
   AutomergeProvider,
 } from './peerborne-automerge.js';
-import { missedTailCatchUpScenario } from '../../core/src/__testutils__/coordinated-scenarios.js';
+import {
+  lostFrameRedeliveryScenario,
+  missedTailCatchUpScenario,
+  retiredEpochScenario,
+} from '../../core/src/__testutils__/coordinated-scenarios.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
 
@@ -23,4 +27,28 @@ test('resumes an Automerge member that missed a writer’s tail through the cont
   expect(errors).toEqual([]);
   for (const view of views)
     expect(view).toEqual({ ctl: 3, four: 4, one: 3, three: 5, two: 3 });
+}, 30_000);
+
+test('recovers a lost Automerge frame from a causal chain through redelivery', async () => {
+  const { errors, held, views } = await lostFrameRedeliveryScenario(adapter);
+  expect(errors).toEqual([]);
+  expect(held).toEqual({});
+  for (const view of views)
+    expect(view).toEqual({ c0: 2, c1: 2, c2: 2, c3: 2 });
+}, 30_000);
+
+test('re-signs an Automerge edit written offline across an epoch change', async () => {
+  const result = await retiredEpochScenario(adapter);
+  expect(result.offline).toContain('Document change committed');
+  expect(result.update).toEqual({
+    resent: 1,
+    waiting: 0,
+    skipped: 1,
+    dropped: 0,
+    diverged: false,
+  });
+  expect(result.errors).toEqual([]);
+  expect(result.leftover).toBe(0);
+  for (const view of result.views)
+    expect(view).toEqual({ afterReturn: 11, c0: 2, m1a: 3, offlineEdit: 11 });
 }, 30_000);

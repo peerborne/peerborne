@@ -4,6 +4,7 @@ export {
   ACLOperationInProgressError,
 } from './acl.js';
 export { PartialLocalChangeError } from './crdt-provider.js';
+export * from './crdt-actor-binding.js';
 export {
   describeValue,
   serializeChangeNodeForJSON,

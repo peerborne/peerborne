@@ -233,6 +233,31 @@ describe('YjsProvider', () => {
 });
 
 describe('YjsProvider delta encoding', () => {
+  test("localChange carries only its own operations while a peer's are pending", () => {
+    const provider = new YjsProvider();
+    const peer = provider.newDocument();
+    peer.clientID = 2;
+    peer.getMap('m').set('first', 1);
+    const before = encodeStateVector(peer);
+    peer.getMap('m').set('second', 2);
+    const orphan = encodeStateAsUpdateV2(peer, before);
+    const doc = provider.newDocument();
+    doc.clientID = 1;
+    provider.remoteChange(doc, orphan);
+    expect(doc.store.pendingStructs).not.toBeNull();
+
+    const [, changes] = provider.localChange(doc, '', (current) => {
+      current.getMap('m').set('a', 1);
+      current.getMap('m').set('b', 2);
+    });
+    expect(
+      new Set(decodeUpdateV2(changes).structs.map(({ id }) => id.client)),
+    ).toEqual(new Set([1]));
+    expect(provider.actorBinding.changeActors(changes)).toEqual(new Set(['1']));
+    const [, nothing] = provider.localChange(doc, '', () => {});
+    expect(decodeUpdateV2(nothing).structs).toHaveLength(0);
+  });
+
   test('localChange returns delta smaller than full state after first change', () => {
     const provider = new YjsProvider();
     const doc = provider.newDocument();
