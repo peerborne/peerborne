@@ -112,8 +112,12 @@ for (const adapter of ['yjs', 'automerge']) {
         'deriveBits',
       ]);
       await founder.document.setKemKeyPair(founderKem);
+      await writer.document._bindACLActor('reader');
       await writer.document._makeChangeOnce(
-        await writer.document._readers.add(founderId.publicKey),
+        await writer.document._authorACLChange(
+          'reader',
+          await writer.document._readers.add(founderId.publicKey),
+        ),
         'reader',
       );
       assert.equal(
