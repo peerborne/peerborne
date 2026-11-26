@@ -20,5 +20,5 @@ browser. This repository tests Vue server rendering and a Vue browser example;
 a complete Nuxt application is not an acceptance target yet.
 
 See the [framework guide](https://peerborne.io/cookbook/framework-integrations/)
-and [runnable example](../../examples/integrations/src/vue.ts). MIT licensed;
+and [runnable example](https://github.com/peerborne/peerborne/blob/main/examples/integrations/src/vue.ts). MIT licensed;
 not production-ready.

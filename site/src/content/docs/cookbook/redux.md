@@ -25,8 +25,8 @@ import {
   YjsKeychainProvider,
   YjsProvider,
 } from '@peerborne/yjs';
+import type { PeerborneState } from '@peerborne/redux';
 import {
-  PeerborneState,
   closeDocumentAsync,
   peerborneReducer,
   initializeAsync,
@@ -61,9 +61,13 @@ function createSwarmStore(identity: CryptoKeyPair) {
       new YjsKeychainProvider(),
     ),
   });
-  return createStore(reducer, applyMiddleware(thunk));
+  return createStore(reducer, undefined, applyMiddleware(thunk));
 }
 ```
+
+Pass `undefined` as the preloaded state. With Redux 5, `combineReducers` cannot
+infer a preloaded-state type for `peerborneReducer`, so the two-argument
+`createStore(reducer, enhancer)` call does not typecheck.
 
 Persist `identity`; regenerating it changes ACL identity. The store intentionally contains non-serializable live node, document-ref, and Yjs values.
 
@@ -87,7 +91,7 @@ async function openNote(identity: CryptoKeyPair) {
 }
 ```
 
-The third argument explicitly creates a new document. Omit it to open existing authenticated state; a failed open never creates a replacement.
+The third argument explicitly creates a new document. Omitting it loads the path from peers, which requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in `config`; without `resolveLoadSecurityCommitments` the thunk rejects with `TrustedLoadSecurityCommitmentsError`. See [Open existing documents](../../concepts/documents/#open-existing-documents). A failed open never creates a replacement.
 
 Initialize the node once at application startup. `initializeAsync` installs peer listeners and has no matching Redux shutdown action; repeated component effects can duplicate initialization/listeners. `openDocumentAsync` subscribes with the `'remote'` filter and dispatches `SYNC_DOCUMENT` for subsequent remote events. Always pass the selector when the slice is nested.
 

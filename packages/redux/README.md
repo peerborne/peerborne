@@ -6,10 +6,10 @@ Redux bindings for Peerborne — actions, thunks, and reducers that manage node 
 
 ## What you get
 
-- **Async thunks** — `initializeAsync`, `openDocumentAsync`, `connectAsync`, `changeDocumentAsync` — for every Peerborne lifecycle operation
+- **Async thunks** — `initializeAsync`, `connectAsync`, `openDocumentAsync`, `closeDocumentAsync`, and `changeDocumentAsync`
 - **Synchronous actions** — `CHANGE_DOCUMENT`, `SYNC_DOCUMENT`, `PEER_CONNECT`, etc. for direct Redux dispatching
-- **`peerborneReducer`** — handles document cache, peer state, readers/writers, and change subscriptions
-- **Selector helpers** — typed access to `state.peerborne.documents[id]` with TypeScript inference
+- **`peerborneReducer`** — holds the node, each open document's reference and latest state, and connected peer addresses
+- **`PeerborneState`** — the reducer's state type, for typing your own selector
 
 ## Choose this package
 
@@ -29,4 +29,16 @@ The current local-change thunk has a documented ordering limitation; review the 
 - [Current limitations](https://peerborne.io/concepts/limitations/)
 - [Documentation index for coding agents](https://peerborne.io/llms.txt)
 
-Use `openDocumentAsync(path, selector, 'create')` to explicitly create a new document. The default opens existing authenticated state and propagates load failures without creating a replacement.
+## Configure the node
+
+`initializeAsync(config, selector)` passes `config` to the node. Without a config it uses the browser-only `defaultConfig`, which needs IndexedDB. In Node.js, pass a configuration built with `defaultNodeConfig` from `@peerborne/core/node`.
+
+## Selecting the Peerborne state
+
+Every async thunk takes a selector that returns the `PeerborneState` from the root state. The default selector expects `peerborneReducer(...)` to be the root reducer. When you mount it under a key, such as `combineReducers({ peerborne: peerborneReducer(...) })`, pass `(state) => state.peerborne` to each thunk. A thunk whose selector does not return Peerborne state rejects with a `TypeError` before it touches the node.
+
+The package does not provide reader or writer selectors; read ACL state from the open document reference.
+
+## Opening documents
+
+Use `openDocumentAsync(path, selector, 'create')` to explicitly create a new document. The default `'open'` mode loads existing state from peers and propagates load failures without creating a replacement. That load requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the node configuration; without `resolveLoadSecurityCommitments` the thunk rejects with `TrustedLoadSecurityCommitmentsError`. To share a document with another identity, use [invitations](https://peerborne.io/cookbook/invitations/). See [Open existing documents](https://peerborne.io/concepts/documents/#open-existing-documents).

@@ -146,7 +146,7 @@ system-level statuses below.
 
 
 The Automerge adapter accepts the append-only keychain encoding produced by
-`@automerge/automerge` **3.4.1**, pinned as both its dependency and peer dependency.
+`@automerge/automerge` **3.5.0**, pinned exactly as both its development and peer dependency.
 Changing that pin requires running the canonical keychain, malformed-change,
 replay, and invitation-history suites against the new encoding before release.
 Mixed Automerge encoding versions are not supported. Yjs keychain reads

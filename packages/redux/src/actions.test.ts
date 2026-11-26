@@ -82,6 +82,42 @@ describe('peerborne-redux async thunks', () => {
     getState = jest.fn();
   });
 
+  test('rejects a nested store when no selector is supplied', async () => {
+    getState.mockReturnValue({ peerborne: { node: mockNode, documents: {}, peers: [] } });
+    for (const thunk of [
+      actions.initializeAsync({}),
+      actions.connectAsync(['addr1']),
+      actions.openDocumentAsync('/doc'),
+      actions.closeDocumentAsync('/doc'),
+      actions.changeDocumentAsync('/doc', {}),
+    ]) {
+      await expect(thunk(dispatch, getState)).rejects.toThrow(
+        'Peerborne Redux state was not found. The default selector expects peerborneReducer at the root of the store; pass a selector such as (state) => state.peerborne when the reducer is nested.',
+      );
+    }
+    expect(mockNode.subscribeToPeerConnect).not.toHaveBeenCalled();
+    expect(mockNode.initialize).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test('rejects a selector that does not return Peerborne state', async () => {
+    getState.mockReturnValue({ peerborne: undefined });
+    await expect(
+      actions.initializeAsync({}, (state: any) => state.peerborne)(dispatch, getState),
+    ).rejects.toThrow(TypeError);
+    expect(mockNode.initialize).not.toHaveBeenCalled();
+  });
+
+  test('initializeAsync uses the selector for a nested store', async () => {
+    const config = {};
+    getState.mockReturnValue({ peerborne: { node: mockNode, documents: {}, peers: [] } });
+    await expect(
+      actions.initializeAsync(config, (state: any) => state.peerborne)(dispatch, getState),
+    ).resolves.toBe(mockNode);
+    expect(mockNode.initialize).toHaveBeenCalledWith(config);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'PEERBORNE_INITIALIZE' }));
+  });
+
   test('connectAsync warns when node not initialized', async () => {
     getState.mockReturnValue({ documents: {}, peers: [] });
     await expect(actions.connectAsync(['addr1'])(dispatch, getState)).resolves.toBeUndefined();

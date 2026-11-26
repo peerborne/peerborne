@@ -58,6 +58,9 @@ await store.stop();
 await document.close();
 ```
 
+`create()` founds the path. Opening an existing path from peers instead needs
+`resolveLoadSecurityCommitments`; see
+[Open existing documents](../../concepts/documents/#open-existing-documents).
 `subscribe` does not open anything. `connect` opens and retains the shared
 document until the last consumer releases it. Imperative applications can
 instead `await store.start()` and `await store.stop()`. Every mutation returns a

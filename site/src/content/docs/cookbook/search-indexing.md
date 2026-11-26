@@ -17,11 +17,8 @@ Define named physical keys, wait for storage readiness, update the projection, a
 
 ```ts
 import * as Y from 'yjs';
-import {
-  IndexDefinition,
-  IndexManager,
-  MemoryIndexStorage,
-} from '@peerborne/index';
+import type { IndexDefinition } from '@peerborne/index';
+import { IndexManager, MemoryIndexStorage } from '@peerborne/index';
 
 const definition: IndexDefinition = {
   version: 2,

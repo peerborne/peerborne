@@ -49,7 +49,7 @@ Otherwise one store must own each node/path: Peerborne does not support multiple
 independent document handles for the same path.
 
 - [Framework-free web guide](https://peerborne.io/getting-started/vanilla/)
-- [Runnable examples](../../examples/integrations/README.md)
+- [Runnable examples](https://github.com/peerborne/peerborne/blob/main/examples/integrations/README.md)
 - [Integration evidence and limits](https://peerborne.io/reference/integration-status/)
 
 Peerborne remains alpha software, not production-ready. Package license: MIT.

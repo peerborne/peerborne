@@ -69,6 +69,13 @@ Connecting does not onboard a new identity. Use the current
 [signed invitation flow](../../cookbook/invitations/) to share with one online
 collaborator, and review its membership and recovery limits.
 
+Opening the same path on another node is not onboarding either. The hook's
+default `'open'` mode loads from peers and requires
+`resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the
+node configuration; without `resolveLoadSecurityCommitments` it reports a
+`TrustedLoadSecurityCommitmentsError`. See
+[Open existing documents](../../concepts/documents/#open-existing-documents).
+
 The component, setup, and entry point are stored as source files and checked
 together against the workspace APIs:
 

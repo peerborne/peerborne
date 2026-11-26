@@ -114,6 +114,16 @@ function Note({ swarm }: { swarm: YjsSwarm }) {
 }
 ```
 
+The fourth argument, `'create'`, founds this path. The default `'open'` mode
+loads the path from peers. That needs `resolveLoadSecurityCommitments` and
+`resolveTrustedDocumentWriters` in the `usePeerborne` configuration; without
+`resolveLoadSecurityCommitments`, `activationError` is a
+`TrustedLoadSecurityCommitmentsError`. See
+[Open existing documents](../../concepts/documents/#open-existing-documents).
+For a document from [`acceptInvitation()`](../invitations/), pass the returned
+open document to `createDocumentStore(document, { manageLifecycle: false })`
+and `usePeerborneStore` from `@peerborne/react/store`.
+
 The tuple is `[document | undefined, changeDoc, aclControls, activationError]`; `originFilter` is optionally `'all'`, `'remote'`, or `'local'`. `activationError` is the `Error` from this hook's latest failed activation of the current path (opening or creating it, or reading its readers and writers). It is `undefined` until an activation fails, and it is cleared when an activation succeeds or the path, the `'open'` or `'create'` initialization mode, or `originFilter` changes. A hook whose activation failed retries only after another hook instance activates the same path, so render `activationError` to let users leave or correct a document that cannot be activated.
 
 `changeDoc` returns `void`. It fire-and-forgets `documentRef.change()` and does not return or catch its promise, so authorization, storage, encryption, or publication rejection is dropped by the wrapper. It is also a no-op before the document ref reaches the cache. Use the direct document API when the UI must await and report failures.

@@ -327,6 +327,7 @@ function isCanonicalAutomergeACLUsersRootSeed(
     decoded.startOp === 1 &&
     decoded.time === AUTOMERGE_ACL_STAGED_USERS_ROOT_TIME &&
     decoded.message === null &&
+    (decoded.author ?? null) === null &&
     decoded.deps.length === 0 &&
     decoded.ops.length === 1 &&
     operation?.action === 'makeMap' &&
@@ -1341,6 +1342,7 @@ function decodeCanonicalAutomergeAppend(
     structuralOperationCount + keyIdHexLength + keyBase64Length;
   if (
     decoded.message !== null ||
+    (decoded.author ?? null) !== null ||
     decoded.ops.length !== expectedOperationCount
   ) {
     throw new Error(

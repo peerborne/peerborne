@@ -15,8 +15,15 @@ Build collaborative applications with Automerge's JSON-like CRDT documents. This
 Use this adapter for Automerge-backed collaborative documents. It works with:
 
 - `@peerborne/core`, included as a package dependency
-- `@automerge/automerge`, required as a peer dependency
+- `@automerge/automerge` **3.5.0** exactly, required as a peer dependency
 - optional React or Redux bindings for application state
+
+The version is exact because the keychain validator compares a received seed
+change byte for byte with the one the local Automerge release produces, and
+accepts only the operation layout that release emits. Every peer must use the
+same Automerge release. Install it with
+`npm install --save-exact @automerge/automerge@3.5.0` so a later install does not
+resolve a newer release.
 
 ## Entry point
 

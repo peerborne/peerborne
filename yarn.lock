@@ -424,10 +424,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@automerge/automerge@npm:3.4.1":
-  version: 3.4.1
-  resolution: "@automerge/automerge@npm:3.4.1"
-  checksum: 10/836a05facefecfda8a3041d53733d277caafddb85e13f2147054982a2e82fde8f3d12ead0d40b94d9220eaf2d12dbd0989e15d885af89b302e72142c5101e4ff
+"@automerge/automerge@npm:3.5.0":
+  version: 3.5.0
+  resolution: "@automerge/automerge@npm:3.5.0"
+  checksum: 10/b3ac8d433359debfd7a5d6e26aa250d816b9d0515cccba0697ac66744df0e87dc49a1a0a0c3e8f68037c474514422df346fe9aa4cd851b5edca836a93f37b6dd
   languageName: node
   linkType: hard
 
@@ -4952,18 +4952,19 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/automerge@workspace:packages/automerge"
   dependencies:
-    "@automerge/automerge": "npm:3.4.1"
+    "@automerge/automerge": "npm:3.5.0"
     "@peculiar/webcrypto": "npm:^1.7.1"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.6"
     eslint: "npm:^10.12.0"
     fast-check: "npm:^4.10.2"
     jest: "npm:^30.5.2"
+    js-base64: "npm:^3.9.4"
     ts-jest: "npm:^29.4.14"
     ts-node: "npm:^10.1.0"
     typescript: "npm:^5.9.3"
   peerDependencies:
-    "@automerge/automerge": 3.4.1
+    "@automerge/automerge": 3.5.0
   bin:
     peerborne-automerge-d: dist/esm/bin/peerborne-automerge-d.js
   languageName: unknown
@@ -4973,7 +4974,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/browser-test@workspace:examples/browser-test"
   dependencies:
-    "@automerge/automerge": "npm:3.4.1"
+    "@automerge/automerge": "npm:3.5.0"
     "@chainsafe/libp2p-noise": "npm:^17.0.0"
     "@chainsafe/libp2p-yamux": "npm:^8.0.1"
     "@libp2p/autonat": "npm:^3.0.32"
@@ -5203,7 +5204,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/peerborne-note@workspace:examples/peerborne-note"
   dependencies:
-    "@automerge/automerge": "npm:3.4.1"
+    "@automerge/automerge": "npm:3.5.0"
     "@libp2p/peer-id": "npm:^6.0.14"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
@@ -5263,7 +5264,7 @@ __metadata:
   peerDependencies:
     "@peerborne/core": "workspace:^"
     redux: ^4.0.0 || ^5.0.0
-    redux-thunk: ^2.0.0 || ^3.0.0
+    redux-thunk: ^2.3.0 || ^3.0.0
   languageName: unknown
   linkType: soft
 
@@ -5307,7 +5308,7 @@ __metadata:
     ts-jest: "npm:^29.4.14"
     typescript: "npm:^5.9.3"
   peerDependencies:
-    svelte: ^5.57.3
+    svelte: ^4.0.0 || ^5.0.0
   languageName: unknown
   linkType: soft
 
@@ -5322,7 +5323,7 @@ __metadata:
     ts-jest: "npm:^29.4.14"
     typescript: "npm:^5.9.3"
   peerDependencies:
-    "@tanstack/db": 1.0.0-rc.1.1
+    "@tanstack/db": ^1.0.0-rc.1.1
   languageName: unknown
   linkType: soft
 
@@ -5362,7 +5363,7 @@ __metadata:
     typescript: "npm:^5.9.3"
     vue: "npm:^3.5.44"
   peerDependencies:
-    vue: ^3.5.44
+    vue: ^3.2.25
   languageName: unknown
   linkType: soft
 
@@ -5370,7 +5371,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/wiki-swarm@workspace:examples/wiki-swarm"
   dependencies:
-    "@automerge/automerge": "npm:3.4.1"
+    "@automerge/automerge": "npm:3.5.0"
     "@peerborne/automerge": "workspace:packages/automerge"
     "@peerborne/core": "workspace:packages/core"
     "@peerborne/redux": "workspace:packages/redux"
@@ -5412,6 +5413,7 @@ __metadata:
     eslint: "npm:^10.12.0"
     fast-check: "npm:^4.10.2"
     jest: "npm:^30.5.2"
+    js-base64: "npm:^3.9.4"
     ts-jest: "npm:^29.4.14"
     ts-node: "npm:^10.1.0"
     typescript: "npm:^5.9.3"

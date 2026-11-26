@@ -14,6 +14,7 @@ import {
   change as automergeChange,
   decodeChange,
   decodeChange as decodeAutomergeChange,
+  encodeChange as encodeAutomergeChange,
   from as automergeFrom,
   getAllChanges as getAllAutomergeChanges,
   getChanges as getAutomergeChanges,
@@ -655,10 +656,32 @@ describe('AutomergeACL', () => {
         (binaryChange) =>
           decodeAutomergeChange(binaryChange).actor === seed.actor,
       )!;
+      const authoredSeedChange = encodeAutomergeChange({
+        ...decodeAutomergeChange(
+          getAllAutomergeChanges(
+            automergeChange(
+              automergeInit<AutomergeACLShape>({ author: 'cdcd' }),
+              { time: seed.time },
+              (doc) => {
+                doc.users = {};
+              },
+            ),
+          )[0]!,
+        ),
+        actor: seed.actor,
+      });
+      const { author, hash, ...authoredSeed } =
+        decodeAutomergeChange(authoredSeedChange);
+      const { author: seedAuthor, hash: seedHash, ...canonicalSeed } = seed;
+      expect(author).toBe('cdcd');
+      expect(seedAuthor ?? null).toBeNull();
+      expect(hash).not.toBe(seedHash);
+      expect(authoredSeed).toMatchObject(canonicalSeed);
 
       for (const nearSeed of [
         getAllAutomergeChanges(malformedSeed)[0]!,
         dependentSeedChange,
+        authoredSeedChange,
       ]) {
         const oversizedNearSeedHistory = [
           nearSeed,
@@ -2980,6 +3003,17 @@ describe('AutomergeKeychain', () => {
     );
     expect(() =>
       new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(metadata)),
+    ).toThrow('Keychain history contains unrelated metadata');
+
+    const authored = appendTestKeychainEntry(
+      automergeClone(newTestKeychainDoc(), { author: 'cdcd' }),
+      firstEntry,
+    );
+    expect(
+      decodeAutomergeChange(getAllAutomergeChanges(authored)[1]).author,
+    ).toBe('cdcd');
+    expect(() =>
+      new AutomergeKeychain().prepareMerge(getAllAutomergeChanges(authored)),
     ).toThrow('Keychain history contains unrelated metadata');
 
     const concurrent = automergeMerge(
