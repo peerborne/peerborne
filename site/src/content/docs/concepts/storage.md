@@ -301,8 +301,13 @@ fetched from peers, other documents' blocks and application data stay in the
 blockstore. The document remembers at most 32,768 stored blocks; when that
 record is full, it forgets the oldest one, which then stays in the blockstore.
 
-Deletion pauses whenever the retained tree changes, so a writer that keeps
-editing can leave pruned blocks waiting; `document.collectGarbage()` retries
+When the retained tree changes during a collection, the remaining blocks are
+checked again against the new tree and the collection continues, so a writer
+that keeps editing does not fall behind. A block that is still referenced or
+pinned, or that failed to delete, waits for the next prune or
+`document.collectGarbage()`; the first failure of each collection is logged
+with its cause. A node without a content router, such as a DHT, deletes blocks
+too: Helia refuses to cancel reproviding them, but such a node never provided
 them. The next checkpoint export records the stored blocks and the blocks
 still waiting, and an instance restored from that checkpoint deletes them at
 its next collection. Restoration refuses a checkpoint that lists a waiting

@@ -44,6 +44,16 @@ export function rememberOwnBlock(
     ownBlocks.add(cid);
 }
 
+/** Name and message of a GC failure; a value that throws when read is not inspected further. */
+export function describeGcFailure(error: unknown): string {
+  try {
+    if (error instanceof Error) return `${error.name}: ${error.message}`;
+  } catch {
+    return 'unreadable error';
+  }
+  return 'non-Error failure';
+}
+
 export interface BlockGcLease {
   readonly candidates: ReadonlySet<string>;
   isCurrent(): boolean;
@@ -56,44 +66,65 @@ export interface LiveBlockGcHooks {
   remove(cid: string): Promise<void>;
   completed(cid: string, outcome: 'deleted' | 'pinned'): void;
   yield(): Promise<void>;
-  failed(): void;
+  failed(error: unknown): void;
 }
 
-/** A deletion slot owns the document mutation queue until its I/O settles. */
+/**
+ * A deletion slot owns the document mutation queue until its I/O settles.
+ * Each candidate is tried at most once per pass. When the retained state
+ * changes between slots, the lease is captured again and the pass continues
+ * with the candidates that are still deletable; it ends when none is left or
+ * a fresh lease is not current, as after close.
+ */
 export async function collectLiveBlocks(
   hooks: LiveBlockGcHooks,
 ): Promise<void> {
-  const lease = await hooks.exclusive(async () => hooks.capture());
-  for (const cid of lease.candidates) {
-    const current = await hooks.exclusive(async () => {
+  const tried = new Set<string>();
+  let lease: BlockGcLease | undefined;
+  let pending: Iterator<string> = [][Symbol.iterator]();
+  for (;;) {
+    const proceed = await hooks.exclusive(async () => {
+      if (lease === undefined || lease.isCurrent() !== true) {
+        const captured = hooks.capture();
+        for (const cid of tried)
+          if (!captured.candidates.has(cid)) tried.delete(cid);
+        lease = captured;
+        pending = captured.candidates[Symbol.iterator]();
+      }
+      const current = lease;
+      let next = pending.next();
+      while (next.done !== true && tried.has(next.value)) next = pending.next();
+      if (next.done === true) return false;
+      const cid = next.value;
       let phase: BlockGcPhase = advanceBlockGc(
         'ready',
         'check',
-        lease.isCurrent() === true,
+        current.isCurrent() === true,
         false,
       );
       if (phase !== 'checking') return false;
+      tried.add(cid);
       try {
         const pinned = await hooks.isPinned(cid);
         if (typeof pinned !== 'boolean')
           throw new TypeError('Invalid pin observation');
-        const leaseCurrent = lease.isCurrent() === true;
+        const leaseCurrent = current.isCurrent() === true;
         phase = advanceBlockGc(phase, 'delete', leaseCurrent, pinned === false);
         if (phase !== 'deleting') {
           if (leaseCurrent && pinned) hooks.completed(cid, 'pinned');
-          return leaseCurrent;
+          return true;
         }
         await hooks.remove(cid);
         phase = advanceBlockGc(phase, 'settle', false, false);
         hooks.completed(cid, 'deleted');
         return phase === 'settled';
-      } catch {
+      } catch (error) {
         phase = advanceBlockGc(phase, 'abort', false, false);
-        hooks.failed();
-        return lease.isCurrent() === true;
+        hooks.failed(error);
+        return true;
       }
     });
-    if (!current) break;
+    if (!proceed) break;
     await hooks.yield();
   }
 }

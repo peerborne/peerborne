@@ -260,6 +260,7 @@ import type { CompactionConfig } from './compaction-config.js';
 import { mergeCompactionConfig } from './compaction-config.js';
 import {
   collectLiveBlocks,
+  describeGcFailure,
   filterDeletableCIDs,
   loadChangeBlock as lazyLoadChangeBlock,
   rememberOwnBlock,
@@ -5911,6 +5912,7 @@ export class PeerborneDocument<
       for (let pass = 0; pass < 2; pass++) {
         if (this._gcClosed || lifecycle !== this._gcLifecycle) break;
         this._gcRequested = false;
+        let reported = false;
         await collectLiveBlocks({
           exclusive: (operation) => this._mutationQueue.run(operation),
           capture: () => {
@@ -5965,8 +5967,12 @@ export class PeerborneDocument<
             this._ownBlocks.delete(cid);
           },
           yield: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
-          failed: () => {
-            console.error('Document block garbage collection failed');
+          failed: (error) => {
+            if (reported) return;
+            reported = true;
+            console.error(
+              `Document block garbage collection failed: ${describeGcFailure(error)}`,
+            );
           },
         });
         if (!this._gcRequested || this._gcCandidates.size === 0) break;
@@ -7819,6 +7825,7 @@ export class PeerborneDocument<
 
     this._beekemForkGuard?.assertAcceptsWork();
     const session = await this._captureLoadSession();
+    throwIfLoadAborted(signal);
 
     const orderedPeers = [...shuffledPeers];
 
@@ -8045,14 +8052,19 @@ export class PeerborneDocument<
   public async open(): Promise<boolean> {
     if (this._activationInProgress) throw new Error('Document activation is in progress');
     this._activationInProgress = true;
+    const lifecycle = this._closeLifecycle;
     try {
       if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
-      return this._coordinated ? await this._openCoordinated() : await this._open();
+      return this._coordinated
+        ? await this._openCoordinated()
+        : await this._open(undefined, false, lifecycle);
     }
     finally { this._activationInProgress = false; }
   }
 
   private _activationInProgress = false;
+  private _closeLifecycle: object = {};
+  private _openingLoad?: AbortController;
   private _foundingPublication = false;
   private _preOpenAuthorityPathReserved = false;
   private _localCheckpointReady = false;
@@ -8943,9 +8955,12 @@ export class PeerborneDocument<
       throw new Error('Cannot create a document with existing local state');
     }
     this._activationInProgress = true;
+    const lifecycle = this._closeLifecycle;
     try {
       if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
-      return this._coordinated ? await this._openCoordinated() : await this._open(undefined, true);
+      return this._coordinated
+        ? await this._openCoordinated()
+        : await this._open(undefined, true, lifecycle);
     }
     finally { this._activationInProgress = false; }
   }
@@ -9599,11 +9614,17 @@ export class PeerborneDocument<
   private async _open(
     bootstrapContinuation?: InvitationBootstrapContinuation,
     createLocally = false,
+    lifecycle = this._closeLifecycle,
   ): Promise<boolean> {
     if (this._subscribed) throw new Error('Document is already open');
     const continuingInvitationBootstrap =
       this._isActiveInvitationBootstrapContinuation(bootstrapContinuation);
+    const assertNotClosed = (): void => {
+      if (this._closeLifecycle !== lifecycle)
+        throw this._closedWhileOpening();
+    };
     const assertCanOpen = (): void => {
+      assertNotClosed();
       this._beekemForkGuard?.assertAcceptsWork();
       if (continuingInvitationBootstrap) {
         if (this._bootstrapLoadApplicationState !== 'pending') {
@@ -9636,7 +9657,7 @@ export class PeerborneDocument<
     this._localCheckpointReady = false;
     const loadedFromPeer = bootstrappedFromInvitation || restoredLocally
       ? true
-      : createLocally ? false : await this.load();
+      : createLocally ? false : await this._loadWhileOpening();
     assertCanOpen();
     const isExisting = loadedFromPeer || this._hashes.size > 0;
 
@@ -9881,6 +9902,7 @@ export class PeerborneDocument<
 
       if (!isExisting) {
         await this._runStateMutation(async () => {
+          assertNotClosed();
           if (
             this._bootstrapLoadApplicationState !== 'pristine' ||
             this._hashes.size > 0 ||
@@ -9901,6 +9923,7 @@ export class PeerborneDocument<
           // Add initial document key.
           console.log(`Adding a key to ${this.documentPath}`);
           await this._keychain.add();
+          assertNotClosed();
 
           // The founder ACL must be part of the replicated change DAG. Keeping
           // it only in the creator's in-memory ACL lets first-load peers decrypt
@@ -9917,6 +9940,7 @@ export class PeerborneDocument<
           }
         });
       }
+      assertNotClosed();
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
       // subscriptions, or registry entries.
@@ -9927,6 +9951,20 @@ export class PeerborneDocument<
     this._beekemForkGuard?.assertAcceptsWork();
     this._startAntiEntropy(pubsub);
     return isExisting;
+  }
+
+  private _closedWhileOpening(): Error {
+    return new Error(`Document ${this.documentPath} was closed while opening`);
+  }
+
+  private async _loadWhileOpening(): Promise<boolean> {
+    const opening = new AbortController();
+    this._openingLoad = opening;
+    try {
+      return await awaitLoadWork(this.load(undefined, opening.signal), opening.signal);
+    } finally {
+      if (this._openingLoad === opening) this._openingLoad = undefined;
+    }
   }
 
   private async _cleanupFailedOpen(insideInvitationQueue: boolean): Promise<void> {
@@ -9971,6 +10009,9 @@ export class PeerborneDocument<
   }
 
   private async _closeResources(): Promise<void> {
+    this._closeLifecycle = {};
+    this._openingLoad?.abort(this._closedWhileOpening());
+    this._openingLoad = undefined;
     this._antiEntropy?.close();
     this._antiEntropy = undefined;
     this._gossipReceiveAdmission?.close();
@@ -12095,8 +12136,10 @@ export class PeerborneDocument<
         this._lastSyncMessage?.changes &&
         this._lastSyncMessage.changeId
       ) {
-        this._gcPrunedBlocks(prunedCIDs, gcLifecycle).catch(() => {
-          console.error('Document block garbage collection failed');
+        this._gcPrunedBlocks(prunedCIDs, gcLifecycle).catch((error) => {
+          console.error(
+            `Document block garbage collection failed: ${describeGcFailure(error)}`,
+          );
         });
       }
     }
