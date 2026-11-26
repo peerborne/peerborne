@@ -128,6 +128,18 @@ interface OwnFrame {
   /** Operation paths inspected when it was written, when the author was restricted. */
   readonly paths?: DocumentWritePaths;
   readonly frame?: Uint8Array;
+  /** Still in the outbox when queued: no peer can have received it. */
+  readonly unsent?: boolean;
+}
+
+/** The author's replica holds edits its current grants deny; rebuild it from a checkpoint. */
+export class DocumentDivergedError extends Error {
+  constructor() {
+    super(
+      'Coordinated document diverged from its current grants; rebuild it from a checkpoint',
+    );
+    this.name = 'DocumentDivergedError';
+  }
 }
 
 const MAX_OWN_FRAMES = 64;
@@ -285,7 +297,10 @@ export class CoordinatedDocument<
     readonly context: GroupSecurityDocumentContext;
     readonly frames: OwnFrame[];
     bytes: number;
+    /** Write order at the last frame accepted from a peer in this context. */
+    remoteMark: number;
   };
+  private diverged = false;
   private resendQueue: OwnFrame[] = [];
   private ownOrder = 0;
   private retained?: {
@@ -417,6 +432,7 @@ export class CoordinatedDocument<
   }
 
   private assertUsable(): void {
+    if (this.diverged) throw new DocumentDivergedError();
     if (this.closed || this.failed)
       throw new Error('Coordinated document must be reopened');
   }
@@ -532,8 +548,14 @@ export class CoordinatedDocument<
   change(change: Change, message = ''): Promise<Uint8Array> {
     if (typeof message !== 'string' || message.length > 4096)
       return Promise.reject(new TypeError('Invalid change message'));
-    return this.enqueue(MAX_DOCUMENT_CONTENT_BYTES, () => () => {
+    return this.enqueue(MAX_DOCUMENT_CONTENT_BYTES, () => async () => {
       this.assertActivated();
+      // A new edit depends natively on every waiting re-sign, so those go first.
+      if (this.resendQueue.length > 0) {
+        await this.drainResend();
+        if (this.resendQueue.length > 0)
+          throw new Error('Document publication queue is full');
+      }
       return this.apply(undefined, change, message);
     });
   }
@@ -1720,6 +1742,7 @@ export class CoordinatedDocument<
                   signed: signedContent,
                   frame: input === undefined ? result.slice() : owned,
                 });
+                if (input !== undefined) this.markRemote(captured);
                 if (input === undefined)
                   this.recordOwn(captured, {
                     order: resend?.order ?? ++this.ownOrder,
@@ -1810,6 +1833,11 @@ export class CoordinatedDocument<
               sequence: receipt.sequence,
               hash: receipt.hash,
             });
+            if (
+              !record.checkpoint &&
+              id !== documentBytesId(this.options.coordinator.localMemberId)
+            )
+              this.markRemote(record.context);
             if (
               !record.checkpoint &&
               id === documentBytesId(this.options.coordinator.localMemberId)
@@ -2027,7 +2055,7 @@ export class CoordinatedDocument<
     frame: OwnFrame,
   ): void {
     if (!this.own || !documentContextsMatch(this.own.context, context))
-      this.own = { context, frames: [], bytes: 0 };
+      this.own = { context, frames: [], bytes: 0, remoteMark: -1 };
     const own = this.own;
     own.frames.push(frame);
     own.bytes += frame.changes.length + (frame.frame?.length ?? 0);
@@ -2035,6 +2063,52 @@ export class CoordinatedDocument<
       const [oldest] = own.frames.splice(0, 1);
       own.bytes -= oldest.changes.length + (oldest.frame?.length ?? 0);
     }
+  }
+
+  private markRemote(context: GroupSecurityDocumentContext): void {
+    if (this.own && documentContextsMatch(this.own.context, context))
+      this.own.remoteMark = this.ownOrder;
+  }
+
+  /**
+   * Own frames of a retired context that peers may lack: those still in the
+   * outbox, and those written after the last frame accepted from a peer there.
+   */
+  private carriedRetired(
+    retired: CoordinatedDocument<
+      Document,
+      Changes,
+      Change,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >['own'],
+    pending: readonly Uint8Array[],
+  ): { carried: OwnFrame[]; skipped: number } | undefined {
+    if (
+      !this.options.persistPublications ||
+      !retired ||
+      retired.frames.length === 0 ||
+      documentContextsMatch(
+        retired.context,
+        this.options.coordinator.documentContext,
+      )
+    )
+      return undefined;
+    const carried = retired.frames.flatMap((frame) => {
+      const outbox = frame.frame;
+      const unsent =
+        outbox !== undefined &&
+        pending.some((value) => documentBytesEqual(value, outbox));
+      return unsent || frame.order > retired.remoteMark
+        ? [{ ...frame, unsent }]
+        : [];
+    });
+    return {
+      carried,
+      skipped:
+        retired.frames[0].sequence - 1 + retired.frames.length - carried.length,
+    };
   }
 
   /** Queue a retired context's own frames, in order, behind any still waiting. */
@@ -2047,23 +2121,16 @@ export class CoordinatedDocument<
       PublicKey,
       DocumentKey
     >['own'],
+    pending: readonly Uint8Array[] = [],
   ): number {
     // Without an outbox, nothing could publish a re-signed frame.
-    if (
-      !this.options.persistPublications ||
-      !retired ||
-      retired.frames.length === 0 ||
-      documentContextsMatch(
-        retired.context,
-        this.options.coordinator.documentContext,
-      )
-    )
-      return 0;
+    const selection = this.carriedRetired(retired, pending);
+    if (!selection) return 0;
     const queued = new Map(
-      [...this.resendQueue, ...retired.frames].map((frame) => [frame.order, frame]),
+      [...this.resendQueue, ...selection.carried].map((frame) => [frame.order, frame]),
     );
     this.resendQueue = [...queued.values()].sort((a, b) => a.order - b.order);
-    return retired.frames[0].sequence - 1;
+    return selection.skipped;
   }
 
   /** Re-sign this author's frames from the context an update retired. */
@@ -2077,9 +2144,11 @@ export class CoordinatedDocument<
       DocumentKey
     >['own'],
   ): Promise<CoordinatedAuthorityUpdateResult> {
-    const skipped = this.queueRetired(retired);
+    let skipped = 0;
     try {
-      return { ...(await this.drainResend()), skipped };
+      skipped = this.queueRetired(retired, await this.outboxFrames());
+      const drained = await this.drainResend();
+      return { ...drained, skipped: skipped + drained.skipped };
     } catch {
       // The roles are installed; frames that could not be resolved stay queued.
       return {
@@ -2097,17 +2166,27 @@ export class CoordinatedDocument<
    * leaves the rest queued. A denial drops that frame and every later one,
    * which natively depends on it; a writer whose grants narrowed has diverged.
    */
-  private async drainResend(): Promise<
-    Omit<CoordinatedAuthorityUpdateResult, 'skipped'>
-  > {
+  private async outboxFrames(): Promise<readonly Uint8Array[]> {
+    return this.options.journal
+      ? this.options.journal.pendingPublications()
+      : this.publications.map((frame) => frame.slice());
+  }
+
+  /**
+   * Re-sign queued frames in order. Outbox capacity or a transient failure
+   * leaves the rest queued. A published frame the current grants deny is
+   * skipped. A denied frame still in the outbox reached no one, and every
+   * later frame depends on it: they are dropped, and a writer whose grants
+   * narrowed has diverged.
+   */
+  private async drainResend(): Promise<CoordinatedAuthorityUpdateResult> {
     let resent = 0,
       dropped = 0,
+      skipped = 0,
       diverged = false;
     if (this.resendQueue.length === 0)
-      return { resent, waiting: 0, dropped, diverged };
-    const pending = this.options.journal
-      ? await this.options.journal.pendingPublications()
-      : this.publications.map((frame) => frame.slice());
+      return { resent, waiting: 0, skipped, dropped, diverged };
+    const pending = await this.outboxFrames();
     const superseded = async (entry: OwnFrame) => {
       const frame = entry.frame;
       if (!frame || !pending.some((value) => documentBytesEqual(value, frame)))
@@ -2124,19 +2203,26 @@ export class CoordinatedDocument<
         await this.apply(undefined, undefined, '', entry);
       } catch (error) {
         if (!(error instanceof ResendDeniedError)) break;
+        if (!entry.unsent) {
+          this.resendQueue.shift();
+          skipped++;
+          continue;
+        }
         const denied = this.resendQueue;
         this.resendQueue = [];
         dropped = denied.length;
         for (const later of denied) await superseded(later);
-        diverged = this.localMemberWrites();
-        if (diverged) this.failed = true;
+        if (this.localMemberWrites()) {
+          diverged = true;
+          this.diverged = true;
+        }
         break;
       }
       this.resendQueue.shift();
       resent++;
       await superseded(entry);
     }
-    return { resent, waiting: this.resendQueue.length, dropped, diverged };
+    return { resent, waiting: this.resendQueue.length, skipped, dropped, diverged };
   }
 
   private localMemberWrites(): boolean {

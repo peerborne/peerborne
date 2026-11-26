@@ -7540,7 +7540,7 @@ export class PeerborneDocument<
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
     const result = await this._coordinated.applyAuthorityUpdate(encoded);
-    if (result.resent > 0)
+    if (result.resent > 0 || result.waiting > 0)
       void this.retrySecurityPublications().catch(() => {});
     return result;
   }

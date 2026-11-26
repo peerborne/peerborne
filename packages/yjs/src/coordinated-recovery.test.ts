@@ -30,9 +30,9 @@ test('re-signs a Yjs edit written offline across an epoch change', async () => {
   const result = await retiredEpochScenario(adapter);
   expect(result.offline).toContain('Document change committed');
   expect(result.update).toEqual({
-    resent: 2,
+    resent: 1,
     waiting: 0,
-    skipped: 0,
+    skipped: 1,
     dropped: 0,
     diverged: false,
   });

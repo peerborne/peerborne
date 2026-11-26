@@ -1,5 +1,8 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import type { DocumentMemberAuthority } from './coordinated-document.js';
+import {
+  DocumentDivergedError,
+  type DocumentMemberAuthority,
+} from './coordinated-document.js';
 import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from './group-security-coordinator.js';
 import { documentBytesId } from './internal/document-binary.js';
@@ -169,10 +172,10 @@ describe('coordinated frames from a retired epoch', () => {
         dropped: 2,
         diverged: true,
       });
-      expect(retry).toContain('reopened');
+      expect(retry).toContain('diverged');
       expect(published).toEqual([]);
       expect(g.doc(0).document).toEqual([]);
-      await expect(g.doc(1).change(push(3))).rejects.toThrow('reopened');
+      await expect(g.doc(1).change(push(3))).rejects.toThrow(DocumentDivergedError);
     } finally {
       await g.close();
     }

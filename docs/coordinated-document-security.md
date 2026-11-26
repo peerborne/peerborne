@@ -75,33 +75,40 @@ transition.
 
 Peers in a new group context cannot decrypt a frame from the retired one, even
 one the author already published there. When `applySecurityAuthorityUpdate`
-installs a new context, the author re-signs every frame it wrote in the
-retired context, in its original write order, as a new frame in the new
-context with the same native delta. Duplicates are harmless because native
-CRDT changes are idempotent. Re-signed frames count as frames of the new
-context, so they are re-signed again if that context is retired too. The
-document keeps each author's latest 64 own frames, up to 32 MiB, apart from
-the shared retention pool, and rebuilds them after a restart from the journal
-entries since its last checkpoint.
+installs a new context, the author re-signs its frames from the retired
+context that peers may lack, in original write order, as new frames in the new
+context with the same native delta. Peers may lack a frame that is still in
+the outbox, or one written after the last frame the author accepted from a
+peer in that context. Earlier frames reached a reachable group and are not
+re-sent, so re-signing does not repeat every epoch. Duplicates are harmless
+because native CRDT changes are idempotent. The document keeps each author's
+latest 64 own frames, up to 32 MiB, apart from the shared retention pool. After
+a restart it rebuilds them from the journal entries since its last checkpoint.
 
 A frame needs an outbox slot until it is published. When the outbox is full,
 the remaining frames wait and are re-signed as publication frees space. A
 retired frame in the outbox is removed only after its re-signed copy is
-accepted. A failure other than a denial leaves the remaining frames queued.
-A re-sign failure never fails the role update itself, which resolves with
-`{ resent, waiting, skipped, dropped, diverged }`:
+accepted. A new local edit natively depends on every waiting frame, so it
+first re-signs them, and fails with `Document publication queue is full` if it
+cannot. Any other failure leaves the queue in place. A re-sign failure never
+fails the role update itself, which resolves with
+`{ resent, waiting, skipped, dropped, diverged }`.
 
-- `skipped` counts earlier frames of the retired context that are no longer
-  kept.
-- A restricted author's frame is checked against its current grants using the
-  operation paths inspected when it was written. A frame without recorded paths
-  is checked as denied.
-- When the current roles or grants deny a frame, that frame and every later
-  one, which depends on it natively, are dropped from the outbox and counted.
+A restricted author's frame is checked against its current grants, using the
+operation paths inspected when it was written. A frame without recorded paths
+is checked as denied; this covers frames rebuilt after a restart and frames
+written before the author was restricted.
+
+- A denied frame that was already published is skipped. Peers have it, or the
+  author's later frames are held until a catch-up.
+- A denied frame still in the outbox reached no one. It and every later frame,
+  which depends on it natively, are dropped and counted.
 - A reader or removed member keeps its replica readable.
-- An author that can still write but whose narrowed grants deny its own edits
-  has `diverged`. Its replica holds content the group cannot accept, so the
-  document closes and must be rebuilt from a controller checkpoint.
+- An author that can still write in that case has `diverged`. Its replica holds
+  content the group cannot accept. The live document then rejects every
+  operation with `DocumentDivergedError` and must be rebuilt from a controller
+  checkpoint. The marker is not persisted, so a reopened document does not
+  report it.
 
 Receivers admit re-signed frames through normal admission, including their
 own field-scope checks. A document opened without a publication outbox does

@@ -97,7 +97,7 @@ test('A: closes a writer whose narrowed grants deny an unsent edit instead of re
       dropped: 1,
       diverged: true,
     });
-    await expect(g.doc(1).change(set('a'))).rejects.toThrow('reopened');
+    await expect(g.doc(1).change(set('a'))).rejects.toThrow('diverged');
     expect(keys(g)).toEqual([]);
   } finally {
     await g.close();
@@ -232,5 +232,103 @@ test('G: frames already published into the retired epoch are re-signed after the
     expect(keys(g)).toEqual(['after', 'v1', 'v2']);
   } finally {
     await g.close();
+  }
+}, 30_000);
+
+const restrict = (g: any, paths: string[][]) =>
+  rotate(g, { role: 2, writePaths: paths });
+async function applyAt1(
+  g: any,
+  step: { delivery: GroupSecurityDelivery; record: Uint8Array },
+) {
+  await g.coordinators[1].applyCommit(step.delivery.commit!, step.delivery.controlRecord, []);
+  return g.doc(1).applySecurityAuthorityUpdate(step.record);
+}
+
+test('T1: narrowing grants after a delivered edit skips it and keeps the writer open', async () => {
+  const { g, online } = await setup([]);
+  online();
+  try {
+    const errors: string[] = [];
+    await applyAt1(g, await restrict(g, [['a'], ['b']]));
+    await g.doc(1).change(set('b'));
+    await flush(g, errors);
+    const update = await applyAt1(g, await restrict(g, [['a']]));
+    expect(update).toMatchObject({ dropped: 0, diverged: false });
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(['a', 'b']);
+  } finally {
+    await g.close();
+  }
+}, 30_000);
+
+test('T1b: restricting a writer whose allowed edits were delivered keeps it open', async () => {
+  const { g, online } = await setup([]);
+  online();
+  try {
+    const errors: string[] = [];
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    const update = await applyAt1(g, await restrict(g, [['a']]));
+    expect(update).toMatchObject({ dropped: 0, diverged: false });
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+  } finally {
+    await g.close();
+  }
+}, 30_000);
+
+test.each([false, true])(
+  'T2: re-signs waiting for outbox space go before a new local edit (local edit: %s)',
+  async (interleave) => {
+    const { g, online } = await setup(Array.from({ length: 16 }, (_, index) => `k${index}`));
+    try {
+      const update = await applyAt1(g, await rotate(g, { role: 2 }));
+      online();
+      expect(update).toMatchObject({ waiting: 16 });
+      const publish = g.pubsubs[1].publish;
+      let calls = 0;
+      g.pubsubs[1].publish = async (...args: any[]) => {
+        if (calls++ >= 1) throw new Error('offline again');
+        return publish(...args);
+      };
+      await g.doc(1).retrySecurityPublications().catch(() => {});
+      g.pubsubs[1].publish = publish;
+      if (interleave) await g.doc(1).change(set('L')).catch(() => {});
+      await g.doc(1).retrySecurityPublications().catch(() => {});
+      await g.doc(1).retrySecurityPublications().catch(() => {});
+      const errors: string[] = [];
+      await flush(g, errors);
+      await g.doc(1).change(set('after'));
+      await flush(g, errors);
+      const expected = Array.from({ length: 16 }, (_, index) => `k${index}`);
+      expect(keys(g)).toEqual(expect.arrayContaining([...expected, 'after']));
+    } finally {
+      await g.close();
+    }
+  },
+  60_000,
+);
+
+test('T4: a restricted writer that restarted keeps writing when its grants are unchanged', async () => {
+  const { g, online } = await setup([]);
+  online();
+  try {
+    const errors: string[] = [];
+    await applyAt1(g, await restrict(g, [['a']]));
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    await g.doc(1).close();
+    await g.open(1);
+    const update = await applyAt1(g, await restrict(g, [['a']]));
+    expect(update).toMatchObject({ dropped: 0, diverged: false });
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+  } finally {
+    await g.close().catch(() => {});
   }
 }, 30_000);
