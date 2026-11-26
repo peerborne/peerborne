@@ -299,12 +299,12 @@ behind in the same way.
 - Responders keep the existing limits: one reply per document every 2 s, a
   60 s freshness window and a 128-entry replay ledger, however many members
   ask.
-- Ordinary sync waits at most 10 s for the change blocks a frame names but
-  does not carry, so a block no connected peer serves cannot hold the
-  document's state queue. Changes still missing are reported to catch-up. A
-  cross-linked change whose inline copy sits below a change the replica
-  already holds, such as a snapshot boundary, is taken from the frame instead
-  of being fetched.
+- Change blocks a frame cites without carrying are fetched within that
+  frame's bounded fetches; the ones left unfetched, failed or waiting out a
+  retry delay are reported to catch-up as missing changes. A cross-linked
+  change whose inline copy sits below a change the replica already holds,
+  such as a snapshot boundary, is taken from the frame instead of being
+  fetched.
 
 ### Large catch-up
 

@@ -63,11 +63,6 @@ export const defaultAntiEntropyConfig: Readonly<AntiEntropyConfig> =
 
 const MIN_REQUEST_INTERVAL_MS = 2_000;
 
-/**
- * How long ordinary sync waits for the change blocks a frame names but does
- * not carry. Changes still missing then are reported to catch-up.
- */
-export const MISSING_CHANGE_FETCH_TIMEOUT_MS = 10_000;
 const MAX_DELAY_MS = 24 * 60 * 60 * 1000;
 
 /**

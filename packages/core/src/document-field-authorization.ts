@@ -111,9 +111,20 @@ export class DocumentOperationTargets {
     const [owned] = copyDocumentFieldPaths([path], 1);
     const key = JSON.stringify(owned),
       known = this.paths.has(key);
-    const added = known
-      ? 0
-      : owned.reduce((sum, segment) => sum + segment.length, 0);
+    this.charge(
+      work,
+      known,
+      known ? 0 : owned.reduce((sum, segment) => sum + segment.length, 0),
+    );
+    if (!known) this.paths.set(key, owned);
+  }
+
+  /** Charge work for an operation that no longer reaches any target, such as Yjs content collected under an accepted deletion. */
+  addInert(work: number): void {
+    this.charge(work, true, 0);
+  }
+
+  private charge(work: number, known: boolean, added: number): void {
     if (
       !Number.isSafeInteger(work) ||
       work < 0 ||
@@ -129,7 +140,6 @@ export class DocumentOperationTargets {
       throw new RangeError('Document operation inspection exceeds bounds');
     this.scanned += work;
     this.units += added;
-    if (!known) this.paths.set(key, owned);
   }
 
   snapshot(): DocumentWritePaths {

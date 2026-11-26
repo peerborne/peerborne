@@ -55,6 +55,7 @@ import {
   getState,
   mergeDeleteSets,
   tryGc,
+  GC,
   ID,
   Item,
   ContentType,
@@ -580,6 +581,43 @@ export class YjsProvider
         if (constructor) target.get(name, constructor);
       }
     };
+    // The mirror collects with the default policy, but the document can keep
+    // deleted items through a gcFilter, undo-manager kept items or a later gc
+    // change. An item the mirror collected could then integrate live there, so
+    // inspect the update again against an uncollected copy of the document.
+    const inspectAgainstDocument = (
+      mirror: Doc,
+      structs: readonly unknown[],
+      update: Uint8Array,
+    ) => {
+      if (structs.some((struct) => struct instanceof GC))
+        throw new Error('Yjs document operation inspection failed');
+      const exact = new Doc({ gc: false });
+      try {
+        copyRootTypes(mirror, exact);
+        applyUpdateV2(exact, this.getSnapshot(document));
+        const targets = new DocumentOperationTargets();
+        let failed = false;
+        const inspect = (transaction: Transaction) => {
+          try {
+            recordYjsOperationTargets(transaction, targets);
+          } catch {
+            failed = true;
+          }
+        };
+        exact.on('beforeObserverCalls', inspect);
+        try {
+          applyUpdateV2(exact, update);
+        } finally {
+          exact.off('beforeObserverCalls', inspect);
+        }
+        if (failed || hasPending(exact))
+          throw new Error('Yjs document operation inspection failed');
+        return targets;
+      } finally {
+        exact.destroy();
+      }
+    };
     const stage = (
       prepare: (value: Doc) => Uint8Array,
       options?: DocumentPreparationOptions,
@@ -615,7 +653,7 @@ export class YjsProvider
         }
         const baseRevision = revision;
         let stable: Uint8Array;
-        const targets =
+        let targets =
           options?.inspectOperations === true
             ? new DocumentOperationTargets()
             : undefined;
@@ -623,9 +661,11 @@ export class YjsProvider
         const collectGarbage = preparingDocument.gc;
         const deletions: Transaction['deleteSet'][] = [];
         let inspectionFailed = false;
+        let collected = false;
         const inspect = (transaction: Transaction) => {
           try {
-            recordYjsOperationTargets(transaction, targets!);
+            if (recordYjsOperationTargets(transaction, targets!))
+              collected = true;
             if (preserveEncoding && transaction.deleteSet.clients.size > 0)
               deletions.push(transaction.deleteSet);
           } catch {
@@ -665,12 +705,20 @@ export class YjsProvider
             !compatibleRoots(shadow, document)
           )
             throw new Error('Document root type changed during preparation');
-          assertStagedYjsValues(decodeUpdateV2(stable).structs);
+          const { structs } = decodeUpdateV2(stable);
+          if (targets && collected)
+            targets = inspectAgainstDocument(
+              preparingDocument,
+              structs,
+              stable,
+            );
+          assertStagedYjsValues(structs);
           complete(shadow);
         } catch (error) {
           discardShadow();
           throw error;
         }
+        const operationTargets = targets;
         const stagedVersion = shadowVersion;
         const stagedRoots = captureRoots(shadow);
         const plan: PreparedDocumentChange<Uint8Array> = preparedDocumentChange(
@@ -744,7 +792,7 @@ export class YjsProvider
             active = undefined;
           },
           () => this.getSnapshot(shadow!),
-          targets ? () => targets.snapshot() : undefined,
+          operationTargets ? () => operationTargets.snapshot() : undefined,
         );
         active = plan;
         return plan;
