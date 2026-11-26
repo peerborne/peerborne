@@ -105,6 +105,22 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   hasIntegrated?(document: DocType, changes: ChangesType): boolean;
 
   /**
+   * Report whether `document` no longer holds `changes`, which
+   * `remoteChange()` buffered while a dependency was missing, and will never
+   * integrate them. A provider that validates buffered changes once their
+   * dependencies arrive, or evicts them, implements this. Peerborne then stops
+   * waiting for the change, as when it evicts a waiting change itself, so a
+   * later delivery passes it to `remoteChange()` again. It runs for a waiting
+   * change when it is delivered again and, after a change integrates, for each
+   * change still waiting. When not implemented, a buffered change waits until
+   * it integrates or Peerborne evicts it.
+   *
+   * @param document CRDT document returned by `remoteChange()`.
+   * @param changes Changes previously passed to `remoteChange()`.
+   */
+  hasDiscarded?(document: DocType, changes: ChangesType): boolean;
+
+  /**
    * Gets all changes for the document.
    *
    * @param document CRDT document to inspect.

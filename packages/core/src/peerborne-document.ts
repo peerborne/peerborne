@@ -2574,6 +2574,25 @@ export class PeerborneDocument<
     return this._waiting?.entries.has(cid) === true;
   }
 
+  private _hasDiscarded(document: DocType, changes: ChangesType): boolean {
+    return this._crdtProvider.hasDiscarded?.(document, changes) === true;
+  }
+
+  /**
+   * Whether the CRDT still holds the waiting document change `cid`. A change
+   * the CRDT discarded stops waiting, so the caller applies it again.
+   */
+  private _holdsWaitingChange(
+    document: DocType,
+    cid: string,
+    changes: ChangesType,
+  ): boolean {
+    if (!this._isWaiting(cid)) return false;
+    if (!this._hasDiscarded(document, changes)) return true;
+    this._waiting!.entries.delete(cid);
+    return false;
+  }
+
   private _isDelivered(cid: string): boolean {
     return this._hashes.has(cid) || this._isWaiting(cid);
   }
@@ -2610,17 +2629,21 @@ export class PeerborneDocument<
 
   /**
    * Record the waiting document changes the CRDT has integrated since they
-   * were applied, whichever message supplied the dependency. Each waiting
-   * change is checked once.
+   * were applied, whichever message supplied the dependency, and stop waiting
+   * for those it discarded. Each waiting change is checked once.
    */
   private _recordIntegratedWaitingChanges(): string[] {
     const entries = this._waiting?.entries;
     if (!entries?.size) return [];
     const recorded: string[] = [];
     for (const [cid, { kind, changes }] of entries) {
-      if (changes === undefined || !this._hasIntegrated(changes)) continue;
-      this._recordRemoteChange(cid, kind);
-      recorded.push(cid);
+      if (changes === undefined) continue;
+      if (this._hasIntegrated(changes)) {
+        this._recordRemoteChange(cid, kind);
+        recorded.push(cid);
+      } else if (this._hasDiscarded(this._document, changes)) {
+        entries.delete(cid);
+      }
     }
     for (let i = recorded.length - 1; i >= 0; i--) {
       this._trackTip(recorded[i]!, crdtDocumentChangeNode);
@@ -2893,8 +2916,10 @@ export class PeerborneDocument<
             case crdtDocumentChangeNode: {
               // Apply the changes that were sent directly. The CRDT already
               // holds a change that is waiting for a dependency, so that
-              // change is only checked again.
-              if (!this._isWaiting(sentHash)) {
+              // change is only checked again unless the CRDT discarded it.
+              if (
+                !this._holdsWaitingChange(newDocument, sentHash, sentChanges)
+              ) {
                 newDocument = this._crdtProvider.remoteChange(
                   newDocument,
                   sentChanges,
@@ -3106,7 +3131,13 @@ export class PeerborneDocument<
             }
             switch (missingHashKind) {
               case crdtDocumentChangeNode: {
-                if (!this._isWaiting(missingHash)) {
+                if (
+                  !this._holdsWaitingChange(
+                    this._document,
+                    missingHash,
+                    missingChanges,
+                  )
+                ) {
                   this._document = this._crdtProvider.remoteChange(
                     this._document,
                     missingChanges,

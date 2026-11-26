@@ -33,7 +33,7 @@ describe('experimental Loro provider', () => {
     expect(alice.getText('body').toString()).toContain('Alice');
     expect(alice.getText('body').toString()).toContain('Bob');
     const restored = provider.newDocument();
-    provider.applySnapshot(restored, provider.getHistory(alice));
+    provider.remoteChange(restored, provider.getHistory(alice));
     expect(restored.toJSON()).toEqual(alice.toJSON());
   });
 
