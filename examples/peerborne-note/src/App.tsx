@@ -24,6 +24,7 @@ import {
   type NoteMembership,
   type NoteSyncStatus,
   type NoteVersion,
+  type StorageStatus,
   type TextSelection,
 } from './peerborne-note.js';
 import type { SavedDocument } from './note-store.js';
@@ -31,7 +32,6 @@ import { acquireSingleTabLease, type SingleTabLease } from './single-tab.js';
 import { NoteSharingError } from './sharing-error.js';
 
 type Screen = 'booting' | 'blocked' | 'ready' | 'review' | 'note' | 'fatal';
-type StorageState = 'saving' | 'saved' | 'error';
 
 interface EditorSelection extends TextSelection {
   readonly direction: 'forward' | 'backward' | 'none';
@@ -53,6 +53,13 @@ const INTERRUPTED_ACCEPTANCE_NOTICE =
   'An invitation accepted in this browser was interrupted before its note was saved here. Ask the person who shared it to remove the collaborator from their note, then send you a new link.';
 const INTERRUPTED_ACCEPTANCE_ERROR =
   'This browser already accepted this invitation, but the note was not saved here before the tab closed. Ask the person who shared it to remove the collaborator from their note, then send you a new link.';
+const IDENTITY_MARKER_KEY = 'peerborne-note-identity';
+const IDENTITY_REPLACED_NOTICE =
+  'This browser deleted Peerborne Note’s saved data, so it started with a new browser identity. Notes saved here before are no longer available in this browser.';
+const PERSISTENCE_DENIED_NOTICE =
+  'This browser did not grant persistent storage, so it may delete your saved notes and this browser identity when storage runs low.';
+const EVICTED_MESSAGE =
+  'This browser deleted Peerborne Note’s saved data, including this note and this browser identity. New edits cannot be saved here. Copy the note text before you leave this page.';
 
 function interruptedAcceptance(): string | undefined {
   try {
@@ -72,6 +79,27 @@ function forgetAcceptance(): void {
   try {
     localStorage.removeItem(INTERRUPTED_ACCEPTANCE_KEY);
   } catch {}
+}
+
+/** Record this identity's fingerprint, and report whether it replaced another. */
+function identityReplaced(fingerprint: string): boolean {
+  try {
+    const previous = localStorage.getItem(IDENTITY_MARKER_KEY);
+    localStorage.setItem(IDENTITY_MARKER_KEY, fingerprint);
+    return previous !== null && previous !== fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+async function persistentStorageGranted(): Promise<boolean> {
+  const storage = navigator.storage;
+  if (!storage?.persist) return false;
+  try {
+    return (await storage.persisted()) || (await storage.persist());
+  } catch {
+    return false;
+  }
 }
 
 function syncLabel(status: NoteSyncStatus): string {
@@ -143,6 +171,8 @@ export default function App({ initialFragment }: AppProps) {
   );
   const [errorMessage, setErrorMessage] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [storageNotices, setStorageNotices] = useState<string[]>([]);
+  const persistenceRequestedRef = useRef(false);
   const [identityId, setIdentityId] = useState<string>();
   const [session, setSession] = useState<PeerborneNoteSession>();
   const [savedNotes, setSavedNotes] = useState<SavedDocument[]>([]);
@@ -159,7 +189,7 @@ export default function App({ initialFragment }: AppProps) {
   const pendingSelectionRef = useRef<EditorSelection | undefined>(undefined);
   const [localPending, setLocalPending] = useState(false);
   const [editFailed, setEditFailed] = useState(false);
-  const [storageState, setStorageState] = useState<StorageState>('saved');
+  const [storageState, setStorageState] = useState<StorageStatus>('saved');
   const saveTimerRef = useRef<number | undefined>(undefined);
   const committingRef = useRef(false);
   const commitAgainRef = useRef(false);
@@ -226,6 +256,8 @@ export default function App({ initialFragment }: AppProps) {
         ]);
         if (cancelled) return;
         setIdentityId(fingerprint);
+        if (identityReplaced(fingerprint))
+          setStorageNotices([IDENTITY_REPLACED_NOTICE]);
 
         setBootMessage('Starting encrypted local storage and peer networking…');
         createdSession = await PeerborneNoteSession.initialize(
@@ -395,16 +427,17 @@ export default function App({ initialFragment }: AppProps) {
         staleRetriesRef.current = 0;
         if (update.version) baseRef.current = update.version;
         setEditFailed(update.kind === 'failed');
-        if (update.kind === 'failed')
+        if (update.kind === 'failed' && session.storageStatus !== 'evicted')
           setErrorMessage(
             'The latest edit could not be saved. Keep this tab open and try again.',
           );
       }
     } catch {
       setEditFailed(true);
-      setErrorMessage(
-        'The latest edit could not be saved. Keep this tab open and try again.',
-      );
+      if (session.storageStatus !== 'evicted')
+        setErrorMessage(
+          'The latest edit could not be saved. Keep this tab open and try again.',
+        );
     } finally {
       committingRef.current = false;
       reconcile();
@@ -423,6 +456,20 @@ export default function App({ initialFragment }: AppProps) {
       setStorageError(state === 'error');
     });
   }, [session]);
+
+  useEffect(() => {
+    if (
+      screen !== 'note' ||
+      storageState !== 'saved' ||
+      persistenceRequestedRef.current
+    )
+      return;
+    persistenceRequestedRef.current = true;
+    void persistentStorageGranted().then((granted) => {
+      if (!granted)
+        setStorageNotices((notices) => [...notices, PERSISTENCE_DENIED_NOTICE]);
+    });
+  }, [screen, storageState]);
 
   useEffect(() => {
     if (!session) return;
@@ -712,7 +759,7 @@ export default function App({ initialFragment }: AppProps) {
     : 0;
   const role = session?.role;
   const saveLabel =
-    editFailed || storageState === 'error'
+    editFailed || storageState === 'error' || storageState === 'evicted'
       ? 'Unsaved changes'
       : localPending || storageState === 'saving'
         ? 'Saving…'
@@ -727,7 +774,11 @@ export default function App({ initialFragment }: AppProps) {
             {errorMessage}
           </div>
         ) : null}
-        {storageError ? (
+        {storageState === 'evicted' ? (
+          <div className="message error" role="alert">
+            {EVICTED_MESSAGE}
+          </div>
+        ) : storageError ? (
           <div className="message error" role="alert">
             This note could not be saved. Keep this tab open.{' '}
             <button
@@ -745,6 +796,16 @@ export default function App({ initialFragment }: AppProps) {
             {notice}
           </div>
         ) : null}
+        {storageNotices.map((storageNotice) => (
+          <div
+            key={storageNotice}
+            className="message notice"
+            role="status"
+            aria-live="polite"
+          >
+            {storageNotice}
+          </div>
+        ))}
 
         {screen === 'booting' ? (
           <section className="panel centered" aria-live="polite">

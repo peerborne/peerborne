@@ -147,6 +147,23 @@ test('lists a note whose creation time is malformed and records one on the next 
   ]);
 });
 
+test('reports a saved note as missing after the browser deletes its database', async () => {
+  const identity = await getNoteIdentity(await getOrCreateIdentity());
+  const store = new NoteStore(identity, 'owner');
+  const checkpoint = {
+    payload: new Uint8Array([1, 2]),
+    signature: new Uint8Array([3]),
+  };
+  expect(await store.has('/notes/fixture')).toBe(false);
+  const revision = await store.save('/notes/fixture', true, checkpoint, 0);
+  expect(await store.has('/notes/fixture')).toBe(true);
+  await removeDatabase(NOTE_DATABASE);
+  expect(await store.has('/notes/fixture')).toBe(false);
+  await expect(
+    store.save('/notes/fixture', true, checkpoint, revision),
+  ).rejects.toThrow();
+});
+
 test('the application authentication domain is bound to the ciphertext', async () => {
   const identity = await getNoteIdentity(await getOrCreateIdentity());
   const store = new NoteStore(identity, 'owner');

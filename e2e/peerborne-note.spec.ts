@@ -279,6 +279,107 @@ test('reports a failed note write and saves it after retry', async ({
   await expect(editor).toHaveValue('Retry storage fixture');
 });
 
+test('reports evicted storage and a replaced identity instead of retry advice', async ({
+  baseURL,
+  context,
+  page,
+}) => {
+  const errors = failOnRuntimeErrors(page);
+  page.on('dialog', (dialog) => void dialog.accept());
+  const evicted =
+    'This browser deleted Peerborne Note’s saved data, including this note and this browser identity. New edits cannot be saved here. Copy the note text before you leave this page.';
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Create a note', exact: true })
+    .click();
+  const editor = page.getByRole('textbox', { name: 'Note text' });
+  await editor.fill('before eviction');
+  await expect(
+    page.getByText('Saved in this browser', { exact: true }),
+  ).toBeVisible();
+  const original = await page.locator('.identity-chip code').textContent();
+
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Storage.clearDataForOrigin', {
+    origin: new URL(baseURL!).origin,
+    storageTypes: 'indexeddb',
+  });
+  await editor.pressSequentially(' after', { delay: 20 });
+  await expect(page.getByRole('alert')).toHaveText(evicted);
+  await expect(
+    page.getByText('Unsaved changes', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Retry saving', exact: true }),
+  ).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByRole('status')).toHaveText(
+    'This browser deleted Peerborne Note’s saved data, so it started with a new browser identity. Notes saved here before are no longer available in this browser.',
+    { timeout: 30_000 },
+  );
+  await expect(page.locator('.identity-chip code')).not.toHaveText(original!);
+  await expect(
+    page.getByRole('button', { name: /^Open note added /u }),
+  ).toHaveCount(0);
+  await page.reload();
+  await expect(
+    page.getByRole('button', { name: 'Create a note', exact: true }),
+  ).toBeEnabled({ timeout: 30_000 });
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(errors, 'application runtime errors').toEqual([]);
+});
+
+for (const granted of [false, true]) {
+  test(`requests persistent storage after the first save when the browser ${granted ? 'grants' : 'refuses'} it`, async ({
+    page,
+  }) => {
+    await page.addInitScript((grant) => {
+      const requests = window as unknown as { persistRequests: number };
+      requests.persistRequests = 0;
+      Object.defineProperties(StorageManager.prototype, {
+        persisted: { value: async () => false },
+        persist: {
+          value: async () => {
+            requests.persistRequests++;
+            return grant;
+          },
+        },
+      });
+    }, granted);
+    const requests = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { persistRequests: number }).persistRequests,
+      );
+    await page.goto('/');
+    await expect(
+      page.getByRole('button', { name: 'Create a note', exact: true }),
+    ).toBeEnabled({ timeout: 30_000 });
+    expect(await requests()).toBe(0);
+    await page
+      .getByRole('button', { name: 'Create a note', exact: true })
+      .click();
+    await expect(
+      page.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    await expect.poll(requests).toBe(1);
+    const notice = page.getByRole('status');
+    if (granted) await expect(notice).toHaveCount(0);
+    else
+      await expect(notice).toHaveText(
+        'This browser did not grant persistent storage, so it may delete your saved notes and this browser identity when storage runs low.',
+      );
+    await page
+      .getByRole('textbox', { name: 'Note text' })
+      .fill('Another saved edit');
+    await expect(
+      page.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    expect(await requests()).toBe(1);
+  });
+}
+
 test('saves a pending edit and warns before the page unloads', async ({
   page,
 }) => {
