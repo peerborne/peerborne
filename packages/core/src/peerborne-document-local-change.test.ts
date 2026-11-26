@@ -76,7 +76,19 @@ function fakeDocument(): any {
 const KEY_ID_BYTES = 32;
 const NONCE_BYTES = 12;
 
-function publishingDocument(): any {
+const copyingProvider = {
+  localChange(
+    document: string[],
+    _message: string,
+    edit: Edit,
+  ): [string[], string[]] {
+    const next = [...document];
+    edit(next);
+    return [next, next.slice(document.length)];
+  },
+};
+
+function publishingDocument(crdtProvider: object = inPlaceProvider): any {
   const serializer = new JSONSerializer<string[]>();
   let blocks = 0;
   const document: any = Object.assign(
@@ -85,7 +97,7 @@ function publishingDocument(): any {
       documentPath: '/local-change',
       _userPublicKey: 'writer',
       _document: [] as string[],
-      _crdtProvider: inPlaceProvider,
+      _crdtProvider: crdtProvider,
       _mutationQueue: {
         run: (operation: () => Promise<unknown>) => operation(),
       },
@@ -132,6 +144,7 @@ function publishingDocument(): any {
       },
       getReaders: async () => [],
       getWriters: async () => [],
+      _closeDocument: jest.fn(async () => undefined),
       handled: [] as string[][],
       frames: [] as Uint8Array[],
     },
@@ -246,7 +259,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document._documentChangeCount).toBe(2);
   });
 
-  test('change() rejects with both errors when publishing the partial edit fails', async () => {
+  test('change() retires the instance, with both errors as the cause, when publishing the partial edit fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -260,12 +273,15 @@ describe('committing the partial edit of a throwing change function', () => {
         throw failure;
       }),
     );
-    expect(error).toBeInstanceOf(AggregateError);
-    expect(error.errors).toHaveLength(2);
-    expect(error.errors[0]).toBe(failure);
-    expect(error.errors[1]).toBe(offline);
+    expect(error.message).toMatch(/could not be rolled back/);
+    expect(error.cause).toBeInstanceOf(AggregateError);
+    expect([...error.cause.errors]).toEqual([failure, offline]);
     expect(document.handled).toEqual([]);
     expect(document._documentChangeCount).toBe(0);
+    expect(document._hashes.size).toBe(0);
+    await expect(
+      document.change((doc: string[]) => doc.push('next')),
+    ).rejects.toThrow(/could not be rolled back/);
   });
 
   test('change() rejects with both errors when a local handler fails after publication', async () => {
@@ -287,7 +303,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document.frames).toHaveLength(1);
   });
 
-  test('endChange() rejects with both errors, rolls back and ends the transaction when publishing fails', async () => {
+  test('endChange() retires the instance, with both errors as the cause, and ends the transaction when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -301,12 +317,108 @@ describe('committing the partial edit of a throwing change function', () => {
     });
 
     const error = await rejection(document.endChange());
-    expect(error).toBeInstanceOf(AggregateError);
-    expect(error.errors[0]).toBe(failure);
-    expect(error.errors[1]).toBe(offline);
+    expect(error.message).toMatch(/could not be rolled back/);
+    expect([...error.cause.errors]).toEqual([failure, offline]);
     expect(document._hashes.size).toBe(0);
     expect(document._lastSyncMessage).toBeUndefined();
     expect(document._inTransaction).toBe(false);
     expect(document._committing).toBe(false);
   });
+});
+
+describe('a local change that fails before publication', () => {
+  const steps: [string, (document: any) => any][] = [
+    ['storing the block', (document) => document._putBlock],
+    ['signing the frame', (document) => document._signAsWriter],
+    ['encrypting the frame', (document) => document._authProvider.encrypt],
+    [
+      'publishing the frame',
+      (document) => document.swarm.heliaNode.libp2p.services.pubsub.publish,
+    ],
+  ];
+  const entries: [string, (document: any, edit: Edit) => Promise<void>][] = [
+    ['change()', (document, edit) => document.change(edit)],
+    [
+      'endChange()',
+      (document, edit) => {
+        document.startChange();
+        document.addChange(edit);
+        return document.endChange();
+      },
+    ],
+  ];
+  const cases = entries.flatMap(([entry, commit]) =>
+    steps.map(
+      ([step, failingStep]) => [entry, step, commit, failingStep] as const,
+    ),
+  );
+
+  async function committedOnce(provider: object) {
+    const document = publishingDocument(provider);
+    await document.change((doc: string[]) => doc.push('accepted'));
+    return {
+      document,
+      hashes: [...document._hashes],
+      tree: document._lastSyncMessage,
+      tips: [...document._recentTips],
+      ancestors: [...document._referencedAncestors],
+    };
+  }
+
+  test.each(cases)(
+    'in %s while %s, an in-place provider retires the instance',
+    async (_entry, _step, commit, failingStep) => {
+      const { document, hashes, tree, tips, ancestors } =
+        await committedOnce(inPlaceProvider);
+      const failure = new Error('commit failed');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      const error = await rejection(
+        commit(document, (doc: string[]) => doc.push('lost')),
+      );
+      expect(error.message).toMatch(/could not be rolled back/);
+      expect(error.cause).toBe(failure);
+      expect([...document._hashes]).toEqual(hashes);
+      expect(document._lastSyncMessage).toBe(tree);
+      expect(document._recentTips).toEqual(tips);
+      expect([...document._referencedAncestors]).toEqual(ancestors);
+      expect(document._documentChangeCount).toBe(1);
+      expect(document._inTransaction).toBe(false);
+      expect(document.handled).toEqual([['accepted']]);
+      expect(document._closeDocument).toHaveBeenCalledTimes(1);
+      await expect(
+        document.change((doc: string[]) => doc.push('next')),
+      ).rejects.toThrow(/could not be rolled back/);
+      expect(() => document.startChange()).toThrow(/could not be rolled back/);
+    },
+  );
+
+  test.each(cases)(
+    'in %s while %s, a provider that returns a new document restores the earlier one',
+    async (_entry, _step, commit, failingStep) => {
+      const { document, hashes, tree, tips } =
+        await committedOnce(copyingProvider);
+      const accepted = document._document;
+      const failure = new Error('commit failed');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await expect(
+        commit(document, (doc: string[]) => doc.push('lost')),
+      ).rejects.toBe(failure);
+      expect(document._document).toBe(accepted);
+      expect([...document._hashes]).toEqual(hashes);
+      expect(document._lastSyncMessage).toBe(tree);
+      expect(document._recentTips).toEqual(tips);
+      expect(document._closeDocument).not.toHaveBeenCalled();
+
+      await commit(document, (doc: string[]) => doc.push('next'));
+      expect(document._document).toEqual(['accepted', 'next']);
+      expect(publishedChange(document, document.frames.length - 1)).toEqual([
+        'next',
+      ]);
+      expect(Object.keys(document._lastSyncMessage.changes.children)).toEqual([
+        tree.changeId,
+      ]);
+    },
+  );
 });

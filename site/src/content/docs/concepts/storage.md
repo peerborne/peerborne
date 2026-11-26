@@ -227,6 +227,14 @@ snapshot boundary, but deletion is **destructive for that local copy**:
 - Recovery then depends on another reachable provider still holding the bytes
 - GC is disabled by default
 
+Deletion pauses whenever the retained tree changes, so a writer that keeps
+editing can leave pruned blocks waiting; `document.collectGarbage()` retries
+them. Blocks still waiting are recorded in the next `exportCheckpoint()`, and
+an instance restored from that checkpoint deletes them at its next collection.
+Blocks pruned after the last export are recorded nowhere else and stay in the
+blockstore. Peerborne does not sweep the blockstore for them, because it is
+shared by every document on the node.
+
 ## CI-backed evidence
 
 Verified in CI:

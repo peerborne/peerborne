@@ -45,13 +45,15 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * `undefined` when no faithful copy exists.
    *
    * Implement this when those methods leave their input unusable, as
-   * Automerge marks it outdated. A transaction that fails before publication
+   * Automerge marks it outdated. A local change that fails before publication
    * rolls back to this copy. The copy must make its next local change under a
    * new replica identity, so the discarded change's position is never reused.
    * Return `undefined` when the copy would lose state, such as remote changes
-   * still waiting for their dependencies: the transaction then retires the
-   * document instance instead. When not implemented, a transaction rolls back
-   * to `document` itself.
+   * still waiting for their dependencies: the document instance is then
+   * retired instead. When not implemented, a failed change rolls back to
+   * `document` itself if `localChange()` returned a new document. A provider
+   * whose `localChange()` returns the document it was given edits in place
+   * and cannot roll back, so the instance is retired.
    *
    * @param document A document this provider returned before the failed change.
    */
