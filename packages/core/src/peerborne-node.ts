@@ -139,6 +139,7 @@ export const defaultNodeConfig = (
             emitSelf: false,
             canRelayMessage: true,
             globalSignaturePolicy: 'StrictSign',
+            scoreParams: { IPColocationFactorWeight: 0 },
           }),
           dht: kadDHT({
             clientMode: true,
