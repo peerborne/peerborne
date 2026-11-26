@@ -4057,3 +4057,32 @@ describe('YjsJSONSerializer', () => {
     expect((deserialized as Record<string, unknown>).__evilNonProtoKey).toBeUndefined();
   });
 });
+
+describe('YjsProvider pending changes', () => {
+  test('reports pending structs and deletions until their dependencies arrive', () => {
+    const provider = new YjsProvider();
+    const alice = provider.newDocument();
+    const [, insert] = provider.localChange(alice, 'insert', (doc) => {
+      doc.getArray('items').insert(0, ['a', 'b']);
+    });
+    const [, append] = provider.localChange(alice, 'append', (doc) => {
+      doc.getArray('items').insert(2, ['c']);
+    });
+    const [, remove] = provider.localChange(alice, 'remove', (doc) => {
+      doc.getArray('items').delete(0, 1);
+    });
+    const bob = provider.newDocument();
+    expect(provider.hasPendingChanges(bob)).toBe(false);
+    provider.remoteChange(bob, append);
+    expect(provider.hasPendingChanges(bob)).toBe(true);
+    provider.remoteChange(bob, insert);
+    expect(provider.hasPendingChanges(bob)).toBe(false);
+    const carol = provider.newDocument();
+    provider.remoteChange(carol, remove);
+    expect(provider.hasPendingChanges(carol)).toBe(true);
+    provider.remoteChange(carol, insert);
+    provider.remoteChange(carol, append);
+    expect(provider.hasPendingChanges(carol)).toBe(false);
+    expect(carol.getArray('items').toJSON()).toEqual(['b', 'c']);
+  });
+});

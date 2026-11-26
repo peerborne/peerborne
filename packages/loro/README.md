@@ -25,6 +25,11 @@ convert Yjs or Automerge documents. Full-history snapshots retain Loro's
 application operation history; they do not provide content-history redaction,
 including when an application selects current-only key delivery.
 
+Loro holds an imported change whose causal dependencies are missing outside its
+oplog, and snapshot exports omit that change. `hasIntegrated` reports it as not
+yet integrated, so Peerborne keeps it eligible for redelivery instead of
+recording it as applied.
+
 Focused tests cover concurrent edits, out-of-order delivery, replay, snapshot
 merging, and malformed payloads. The browser example exercises a local encrypted
 document mutation. These do not establish live multi-peer Loro convergence,

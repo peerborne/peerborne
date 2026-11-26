@@ -9,6 +9,7 @@ import {
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
+  DocumentCausalDependencyError,
   PreparedDocumentChange,
   PartialLocalChangeError,
   DocumentOperationTargets,
@@ -570,7 +571,7 @@ export class YjsProvider
     };
     const complete = (value: Doc) => {
       if (value.store.pendingStructs !== null || value.store.pendingDs !== null)
-        throw new Error('Document change has missing causal dependencies');
+        throw new DocumentCausalDependencyError();
     };
     const idle = (value: Doc) =>
       value._transaction === null && value._transactionCleanups.length === 0;
@@ -925,6 +926,12 @@ export class YjsProvider
   }
   getSnapshot(document: Doc): Uint8Array {
     return encodeStateAsUpdateV2(document);
+  }
+  hasPendingChanges(document: Doc): boolean {
+    return (
+      document.store.pendingStructs !== null ||
+      document.store.pendingDs !== null
+    );
   }
 }
 

@@ -93,6 +93,24 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
   remoteChange(document: DocType, changes: ChangesType): DocType;
 
   /**
+   * Report whether `document` has integrated every change in `changes`.
+   *
+   * Implement this when `remoteChange()` can buffer changes until their
+   * causal dependencies arrive and buffered changes are missing from
+   * `getHistory()`. Peerborne records a remote change as applied only after
+   * this returns true, so a buffered change stays eligible for redelivery.
+   * It runs for every delivered change and, after a change integrates, for
+   * each change still waiting, of which Peerborne keeps at most 4,096 per
+   * document. Those checks pass the same
+   * `changes` object, so cache per-change decoding by it. When not
+   * implemented, every applied change counts as integrated.
+   *
+   * @param document CRDT document returned by `remoteChange()`.
+   * @param changes Changes previously passed to `remoteChange()`.
+   */
+  hasIntegrated?(document: DocType, changes: ChangesType): boolean;
+
+  /**
    * Gets all changes for the document.
    *
    * @param document CRDT document to inspect.
@@ -125,4 +143,15 @@ export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
    * @returns The updated document with the snapshot state merged in.
    */
   applySnapshot?(document: DocType, snapshot: ChangesType): DocType;
+
+  /**
+   * Report whether `document` holds remote changes that wait for missing
+   * causal dependencies, such as Automerge's queued changes or Yjs pending
+   * structs and deletions. Automatic catch-up asks peers for missed updates
+   * while this is true. When not implemented, only failed block fetches and
+   * advertised heads reveal a gap.
+   *
+   * @param document CRDT document to inspect.
+   */
+  hasPendingChanges?(document: DocType): boolean;
 }

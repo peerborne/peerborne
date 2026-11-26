@@ -13,6 +13,7 @@ export {
   attachCRDTActorPrefix,
   detachCRDTActorPrefix,
   isCRDTActorPrefix,
+  DocumentCausalDependencyError,
   canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,

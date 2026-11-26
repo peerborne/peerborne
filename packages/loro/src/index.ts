@@ -1,8 +1,28 @@
-import { LoroDoc } from 'loro-crdt';
+import { LoroDoc, decodeImportBlobMeta, type PeerID } from 'loro-crdt';
 import { PartialLocalChangeError, type CRDTProvider } from '@peerborne/core';
 import { loroActorBinding } from './actor-binding.js';
 
 export type LoroChange = (document: LoroDoc) => void;
+
+// Peerborne checks a waiting change again with the same bytes, so decode each
+// update's version range once.
+const loroEndVersions = new WeakMap<
+  Uint8Array,
+  ReadonlyArray<readonly [PeerID, number]>
+>();
+
+function loroEndVersion(
+  changes: Uint8Array,
+): ReadonlyArray<readonly [PeerID, number]> {
+  let end = loroEndVersions.get(changes);
+  if (end === undefined) {
+    end = [
+      ...decodeImportBlobMeta(changes, false).partialEndVersionVector.toJSON(),
+    ];
+    loroEndVersions.set(changes, end);
+  }
+  return end;
+}
 
 /**
  * Experimental document provider. Snapshots retain history so offline replicas
@@ -42,6 +62,18 @@ export class LoroProvider
   remoteChange(document: LoroDoc, changes: Uint8Array): LoroDoc {
     document.import(changes);
     return document;
+  }
+
+  /**
+   * Loro holds an imported change whose dependencies are missing outside the
+   * oplog, and snapshot exports omit it. A change is integrated once the oplog
+   * covers the end of every peer range it carries.
+   */
+  hasIntegrated(document: LoroDoc, changes: Uint8Array): boolean {
+    const integrated = document.oplogVersion();
+    for (const [peer, end] of loroEndVersion(changes))
+      if ((integrated.get(peer) ?? 0) < end) return false;
+    return true;
   }
 
   getHistory(document: LoroDoc): Uint8Array {
