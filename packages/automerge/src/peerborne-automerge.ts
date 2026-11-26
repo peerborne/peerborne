@@ -280,6 +280,18 @@ function automergeACLMergeState(doc: AutomergeACLDoc): string {
   ]);
 }
 
+// A local change depends on every applied change, so its write to a member
+// supersedes that member's whole causal frontier.
+function withoutMember(
+  members: ReadonlySet<string>,
+  member: string,
+): ReadonlySet<string> {
+  if (!members.has(member)) return members;
+  const remaining = new Set(members);
+  remaining.delete(member);
+  return remaining;
+}
+
 // Bound full-history replay below the shared 10 MiB transport ceiling, leaving
 // room for base64 expansion, encryption, and the surrounding sync envelope.
 export const MAX_AUTOMERGE_ACL_CHANGE_BYTES = 1024 * 1024;
@@ -438,6 +450,9 @@ function assertAutomergeACLResourceLimits(
 export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   // The first staged addition installs the canonical users root.
   private _acl: AutomergeACLDoc = init();
+  // Members whose causal frontier holds a removal concurrent with an addition.
+  // Automerge keeps the addition the removal did not observe; the removal wins.
+  private _revokedConcurrently: ReadonlySet<string> = new Set();
   private _revision = 0;
   private _retainedChanges = new Map<
     string,
@@ -565,10 +580,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
-  private _assertValidUsersHistory(
+  /** Validate the users history and return the members revoked concurrently. */
+  private _validateUsersHistory(
     acl: AutomergeACLDoc,
     operation: string,
-  ): void {
+  ): ReadonlySet<string> {
     this._assertSingleUsersRoot(acl, operation);
     const users = acl.users as unknown;
     if (
@@ -647,22 +663,23 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         `Cannot ${operation}: Automerge ACL history contains conflicting users roots`,
       );
     }
-    if (users === undefined) return;
+    const revoked = new Set<string>();
+    if (users === undefined) return revoked;
     if (!canonicalUsersRoot) {
       throw new Error(
         `Cannot ${operation}: Automerge ACL history requires the canonical users root`,
       );
     }
 
+    // Homogeneous additions and removals are idempotent. In a mixed frontier
+    // the removal wins, so a concurrent or retried addition it did not observe
+    // cannot undo a revocation. The frontier depends only on causal history.
     for (const [key, frontier] of writesByKey) {
-      // Homogeneous additions and removals are idempotent. A mixed frontier
-      // can make authorization depend on Automerge's winning value.
-      const firstEffect = frontier[0]?.effect;
-      if (frontier.some(({ effect }) => effect !== firstEffect)) {
-        throw new Error(
-          `Cannot ${operation}: Automerge ACL history contains conflicting membership for ${key}`,
-        );
-      }
+      if (
+        frontier.some(({ effect }) => effect === 'remove') &&
+        frontier.some(({ effect }) => effect === 'add')
+      )
+        revoked.add(key);
     }
     for (const [key, value] of Object.entries(users)) {
       assertCanonicalP384PublicKeyEncoding(key);
@@ -672,6 +689,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         );
       }
     }
+    return revoked;
   }
 
   private _assertValidMembershipOperation(
@@ -912,7 +930,8 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const baseRevision = this._revision;
     const base = this._acl;
     assertAutomergeACLResourceLimits(base, 'stage an ACL addition');
-    const hadMember = base.users?.[hash] !== undefined;
+    const revoked = this._revokedConcurrently;
+    const hadMember = base.users?.[hash] !== undefined && !revoked.has(hash);
     const stagingBase = hadMember ? undefined : this._stagedAdditionBase(base);
     let actorReservation: AutomergeACLAdditionActorReservation | undefined;
     try {
@@ -926,9 +945,12 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
               }),
               { time: undefined },
               (doc) => {
+                // Replace a concurrently revoked assignment with a new one.
+                if (doc.users![hash] !== undefined) delete doc.users![hash];
                 doc.users![hash] = true;
               },
             );
+      const stagedRevoked = withoutMember(revoked, hash);
       const privateChanges = getChanges(base, staged);
       const accounting = this._prepareChangeAccounting(privateChanges);
       assertAutomergeACLResourceLimits(staged, 'stage an ACL addition');
@@ -962,6 +984,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
             if (state === 'committed') return;
             if (committedAccounting !== undefined) {
               this._acl = staged;
+              this._revokedConcurrently = stagedRevoked;
               this._retainedChanges = committedAccounting.retainedChanges;
               this._retainedChangeBytes =
                 committedAccounting.retainedChangeBytes;
@@ -1011,6 +1034,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         delete doc.users[hash];
       }
     });
+    const stagedRevoked = withoutMember(this._revokedConcurrently, hash);
     const privateChanges = getChanges(base, staged);
     const accounting = this._prepareChangeAccounting(privateChanges);
     assertAutomergeACLResourceLimits(staged, 'stage an ACL removal');
@@ -1044,6 +1068,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
           if (state === 'committed') return;
           if (committedAccounting !== undefined) {
             this._acl = staged;
+            this._revokedConcurrently = stagedRevoked;
             this._retainedChanges = committedAccounting.retainedChanges;
             this._retainedChangeBytes =
               committedAccounting.retainedChangeBytes;
@@ -1098,7 +1123,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     const accounting = this._prepareChangeAccounting(stableChanges);
     const before = automergeACLMergeState(base);
     const [doc] = applyChanges(clone(base), stableChanges);
-    this._assertValidUsersHistory(doc, 'merge ACL changes');
+    const revoked = this._validateUsersHistory(doc, 'merge ACL changes');
     this._assertValidIncomingUsersOperations(
       doc,
       stableChanges,
@@ -1115,6 +1140,7 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
     if (accounting.length === 0) return false;
     this._acl = doc;
+    this._revokedConcurrently = revoked;
     this._pendingChanges = pendingChanges;
     this._commitChangeAccounting(accounting);
     this._revision++;
@@ -1127,7 +1153,10 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('check ACL membership');
     const hash = await serializeKey(publicKey);
     this._assertComplete('check ACL membership');
-    return this._acl.users?.[hash] !== undefined;
+    return (
+      this._acl.users?.[hash] !== undefined &&
+      !this._revokedConcurrently.has(hash)
+    );
   }
   // The ACL interface passes a capability, but it is ignored here;
   // capability-based filtering is handled at the UCANACL wrapper level.
@@ -1135,13 +1164,16 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     this._assertComplete('list ACL members');
     const baseRevision = this._revision;
     const base = this._acl;
+    const revoked = this._revokedConcurrently;
     // Parallel deserialization for cold cache performance.
     // Create importer once to avoid per-miss closure allocation.
     const importKey = deserializeKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
       ['verify'],
     );
-    const entries = Object.keys(base.users ?? {});
+    const entries = Object.keys(base.users ?? {}).filter(
+      (serializedKey) => !revoked.has(serializedKey),
+    );
     const users = await Promise.all(
       entries.map(async (serializedKey) => {
         let key = this._keyCache.get(serializedKey);
