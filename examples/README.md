@@ -6,7 +6,7 @@ source checkout. Use the smallest example that matches what you want to inspect:
 | Example                                   | Stack               | Best starting point for                                               | Automated evidence                                        |
 | ----------------------------------------- | ------------------- | --------------------------------------------------------------------- | --------------------------------------------------------- |
 | [`browser-test`](./browser-test/)         | Automerge and Redux | Core node setup, document controls, peer controls, and ACL inspection | Opens one real encrypted document in one Chromium process |
-| [`wiki-swarm`](./wiki-swarm/)             | Automerge and Redux | A larger editor and routing pattern                                   | Builds and renders the wiki interface in Chromium         |
+| [`wiki-swarm`](./wiki-swarm/)             | Automerge and Redux | A larger editor and routing pattern                                   | Creates, reloads, and reopens an article in one Chromium page |
 | [`password-manager`](./password-manager/) | Yjs and React       | React hooks and item-specific access-control UI                       | Builds and renders the login interface in Chromium        |
 | [`peerborne-note`](./peerborne-note/)     | Automerge and React | Bounded founder-plus-one invitation UX                                | Unit coverage and a strict Chromium startup smoke test    |
 | [`integrations`](./integrations/) | Plain DOM and optional bindings | Framework-free integration examples | Local document mutation acceptance |

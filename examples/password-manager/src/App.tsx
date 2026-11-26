@@ -33,7 +33,7 @@ function SignedIn({ session }: { session: VaultSession }) {
   return (
     <>
       <p role="status" className="mt-3">
-        {session.error
+        {session.unsaved
           ? 'Vault changes have not been saved.'
           : session.saving
             ? 'Saving…'
@@ -41,15 +41,21 @@ function SignedIn({ session }: { session: VaultSession }) {
       </p>
       {session.error && (
         <Alert variant="danger">
-          {session.error.message}{' '}
-          <Button
-            size="sm"
-            onClick={() => {
-              void session.retry().catch(() => undefined);
-            }}
-          >
-            Retry saving
-          </Button>
+          {session.error}{' '}
+          {session.canRetry ? (
+            <Button
+              size="sm"
+              onClick={() => {
+                void session.retry().catch(() => undefined);
+              }}
+            >
+              Retry saving
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => session.dismiss()}>
+              Dismiss
+            </Button>
+          )}
         </Alert>
       )}
       <PasswordVault

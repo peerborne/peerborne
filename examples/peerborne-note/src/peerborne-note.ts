@@ -72,6 +72,8 @@ export interface NoteSyncStatus {
   readonly undelivered: boolean;
 }
 
+export type StorageStatus = 'saving' | 'saved' | 'error' | 'evicted';
+
 export type BodyUpdate =
   | { readonly kind: 'stale' }
   | { readonly kind: 'saved'; readonly version: NoteVersion }
@@ -160,9 +162,7 @@ export class PeerborneNoteSession {
   private readonly membershipListeners = new Set<
     (membership: NoteMembership) => void
   >();
-  private readonly storageListeners = new Set<
-    (state: 'saving' | 'saved' | 'error') => void
-  >();
+  private readonly storageListeners = new Set<(state: StorageStatus) => void>();
   private readonly store: NoteStore;
   private readonly relayPeerId?: string;
   private revision = 0;
@@ -170,6 +170,7 @@ export class PeerborneNoteSession {
   private pendingSaves = 0;
   private pendingChanges = 0;
   private storageFailed = false;
+  private storageEvicted = false;
   private deliveryFailures = 0;
   private undelivered = false;
   private sharingActive = false;
@@ -242,7 +243,7 @@ export class PeerborneNoteSession {
     return this.documentRole;
   }
 
-  get storageStatus(): 'saving' | 'saved' | 'error' {
+  get storageStatus(): StorageStatus {
     return this.storageState();
   }
 
@@ -269,9 +270,7 @@ export class PeerborneNoteSession {
     return () => this.membershipListeners.delete(listener);
   }
 
-  onStorage(
-    listener: (state: 'saving' | 'saved' | 'error') => void,
-  ): () => void {
+  onStorage(listener: (state: StorageStatus) => void): () => void {
     this.storageListeners.add(listener);
     listener(this.storageState());
     return () => {
@@ -526,7 +525,10 @@ export class PeerborneNoteSession {
         noteBody(view(document.document, [latest.hash])) === body
           ? { body, heads: [latest.hash] }
           : undefined;
-      if (failure || !version) return { kind: 'failed', version };
+      if (failure || !version) {
+        await this.detectEviction();
+        return { kind: 'failed', version };
+      }
       if (this.undelivered && this.deliveryFailures === failures) {
         this.undelivered = false;
         this.emitNetwork();
@@ -543,12 +545,32 @@ export class PeerborneNoteSession {
     await this.persistDocument();
   }
 
-  private storageState(): 'saving' | 'saved' | 'error' {
-    return this.storageFailed
-      ? 'error'
-      : this.pendingSaves + this.pendingChanges > 0
-        ? 'saving'
-        : 'saved';
+  private storageState(): StorageStatus {
+    return this.storageEvicted
+      ? 'evicted'
+      : this.storageFailed
+        ? 'error'
+        : this.pendingSaves + this.pendingChanges > 0
+          ? 'saving'
+          : 'saved';
+  }
+
+  /**
+   * A saved note whose record is gone was removed by the browser, as when it
+   * evicts or clears site data, which also removes the browser identity.
+   */
+  private async detectEviction(): Promise<void> {
+    const document = this.document;
+    if (!document || this.revision < 1 || this.storageEvicted) return;
+    let stored: boolean;
+    try {
+      stored = await this.store.has(document.documentPath);
+    } catch {
+      return;
+    }
+    if (stored) return;
+    this.storageEvicted = true;
+    this.emitStorage();
   }
 
   private emitStorage(): void {
@@ -581,8 +603,9 @@ export class PeerborneNoteSession {
         () => {
           this.storageFailed = false;
         },
-        (error) => {
+        async (error) => {
           this.storageFailed = true;
+          await this.detectEviction();
           throw error;
         },
       )

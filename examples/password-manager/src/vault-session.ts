@@ -1,6 +1,9 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import type * as Y from 'yjs';
-import type { RemoveWriterOptions } from '@peerborne/core';
+import {
+  GossipFrameLimitError,
+  type RemoveWriterOptions,
+} from '@peerborne/core';
 import { VaultStore, type BrowserIdentity } from './vault-store';
 import type { YjsPeerborne, YjsPeerborneDocument } from './utils';
 
@@ -9,18 +12,44 @@ interface OpenDocument {
   revision: number;
   isVault: boolean;
   writes: Promise<void>;
+  reopening?: Promise<void>;
 }
+
+type SavedDocument = NonNullable<Awaited<ReturnType<VaultStore['load']>>>;
 
 const sessions = new WeakMap<YjsPeerborne, VaultSession>();
 const emptyKeys: readonly CryptoKey[] = Object.freeze([]);
 
+/** A failed Yjs change stays in the in-place document, so core retires it. */
+function retiredBy(error: unknown): boolean {
+  return (
+    (error instanceof GossipFrameLimitError && error.retired) ||
+    (error instanceof Error && /\bwas retired\b/u.test(error.message))
+  );
+}
+
+async function restore(
+  doc: YjsPeerborneDocument,
+  saved: SavedDocument,
+): Promise<void> {
+  try {
+    await doc.restorePlaintextCheckpoint(saved.checkpoint);
+  } finally {
+    saved.checkpoint.payload.fill(0);
+    saved.checkpoint.signature.fill(0);
+  }
+  await doc.open();
+}
+
 export class VaultSession {
   private readonly tasks = new Map<string, Promise<OpenDocument>>();
   private readonly documents = new Map<string, OpenDocument>();
+  private readonly generations = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private pendingWrites = 0;
   private readonly failedWrites = new Set<OpenDocument>();
-  error: Error | undefined;
+  private readonly retired = new Set<OpenDocument>();
+  private discardedEdit = false;
   vaults: string[] = [];
 
   constructor(
@@ -37,6 +66,30 @@ export class VaultSession {
   get saving(): boolean {
     return this.pendingWrites > 0;
   }
+  /** Whether an edit is unsaved or was discarded since the user last dismissed it. */
+  get unsaved(): boolean {
+    return (
+      this.retired.size > 0 || this.failedWrites.size > 0 || this.discardedEdit
+    );
+  }
+  private get reopenFailed(): boolean {
+    return [...this.retired].some((entry) => !entry.reopening);
+  }
+  get canRetry(): boolean {
+    return this.reopenFailed || this.failedWrites.size > 0;
+  }
+  get error(): string | undefined {
+    if (this.reopenFailed)
+      return 'An edit could not be saved, and this tab could not reopen the vault from its last saved state. Retry, or reload the page.';
+    if (this.failedWrites.size > 0)
+      return 'Could not save the vault in this browser. Keep this tab open and retry.';
+    if (this.discardedEdit)
+      return 'An edit could not be saved and was discarded. The vault shows its last saved state.';
+    return undefined;
+  }
+  generation(path: string): number {
+    return this.generations.get(path) ?? 0;
+  }
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => {
@@ -46,15 +99,8 @@ export class VaultSession {
   private notify(): void {
     for (const listener of this.listeners) listener();
   }
-  report(error: unknown): void {
-    this.error =
-      this.failedWrites.size > 0
-        ? new Error(
-            'Could not save the vault in this browser. Keep this tab open and retry.',
-          )
-        : error instanceof Error
-          ? error
-          : new Error('The vault operation failed');
+  dismiss(): void {
+    this.discardedEdit = false;
     this.notify();
   }
   async initialize(): Promise<void> {
@@ -73,6 +119,13 @@ export class VaultSession {
     return task;
   }
 
+  private install(entry: OpenDocument): void {
+    this.documents.set(entry.doc.documentPath, entry);
+    entry.doc.subscribe('browser-vault-persistence', () => {
+      void this.save(entry).catch(() => undefined);
+    });
+  }
+
   private async activate(
     path: string,
     mode: 'open' | 'create',
@@ -83,13 +136,7 @@ export class VaultSession {
       const saved = await this.store.load(path);
       if (saved) {
         if (mode === 'create') throw new Error('This vault already exists');
-        try {
-          await doc.restorePlaintextCheckpoint(saved.checkpoint);
-        } finally {
-          saved.checkpoint.payload.fill(0);
-          saved.checkpoint.signature.fill(0);
-        }
-        await doc.open();
+        await restore(doc, saved);
       } else {
         if (mode !== 'create')
           throw new Error('No saved document is available in this browser');
@@ -101,22 +148,59 @@ export class VaultSession {
         isVault: saved?.isVault ?? path.includes('/vaults/'),
         writes: Promise.resolve(),
       };
-      this.documents.set(path, entry);
-      doc.subscribe('browser-vault-persistence', () => {
-        void this.save(entry).catch(() => undefined);
-      });
+      this.install(entry);
       if (!saved) await this.save(entry);
       this.vaults = await this.store.listVaults();
       this.notify();
       return entry;
     } catch (error) {
       const entry = this.documents.get(path);
-      if (entry) this.failedWrites.delete(entry);
-      if (this.failedWrites.size === 0) this.error = undefined;
-      this.documents.delete(path);
+      if (entry?.doc === doc) {
+        this.failedWrites.delete(entry);
+        this.documents.delete(path);
+      }
       this.notify();
       await doc.close().catch(() => undefined);
       throw error;
+    }
+  }
+
+  private reopen(entry: OpenDocument): Promise<void> {
+    entry.reopening ??= Promise.resolve().then(() => this.replace(entry));
+    return entry.reopening;
+  }
+
+  /** Discard a retired instance's unsaved edit by reopening its last checkpoint. */
+  private async replace(entry: OpenDocument): Promise<void> {
+    const path = entry.doc.documentPath;
+    this.retired.add(entry);
+    this.failedWrites.delete(entry);
+    this.notify();
+    await entry.writes.catch(() => undefined);
+    entry.doc.unsubscribe('browser-vault-persistence');
+    await entry.doc.close().catch(() => undefined);
+    const doc = this.peerborne.doc(path);
+    try {
+      await doc.setKemKeyPair(this.identity.kem);
+      const saved = await this.store.load(path);
+      if (!saved) throw new Error('No saved document is available');
+      await restore(doc, saved);
+      const next: OpenDocument = {
+        doc,
+        revision: saved.revision,
+        isVault: entry.isVault,
+        writes: Promise.resolve(),
+      };
+      this.install(next);
+      this.tasks.set(path, Promise.resolve(next));
+      this.generations.set(path, this.generation(path) + 1);
+      this.retired.delete(entry);
+      this.discardedEdit = true;
+    } catch {
+      await doc.close().catch(() => undefined);
+      entry.reopening = undefined;
+    } finally {
+      this.notify();
     }
   }
 
@@ -144,11 +228,14 @@ export class VaultSession {
       .then(
         () => {
           this.failedWrites.delete(entry);
-          if (this.failedWrites.size === 0) this.error = undefined;
         },
         (error) => {
-          this.failedWrites.add(entry);
-          this.report(error);
+          if (retiredBy(error)) void this.reopen(entry);
+          else if (
+            !this.retired.has(entry) &&
+            this.documents.get(entry.doc.documentPath) === entry
+          )
+            this.failedWrites.add(entry);
           throw error;
         },
       )
@@ -159,18 +246,40 @@ export class VaultSession {
   }
 
   async retry(): Promise<void> {
-    await Promise.all(
-      [...this.documents.values()].map((entry) => this.save(entry)),
-    );
+    await Promise.all([
+      ...[...this.retired].map((entry) => this.reopen(entry)),
+      ...[...this.documents.values()]
+        .filter((entry) => !this.retired.has(entry))
+        .map((entry) => this.save(entry)),
+    ]);
   }
+
+  /**
+   * Apply `operation` to the current instance of `path` and save it. An
+   * operation that retires the instance discards its edit by reopening the
+   * last checkpoint; a failed edit stays reported until dismissed.
+   */
   async mutate(
-    entry: OpenDocument,
-    operation: () => Promise<unknown>,
+    path: string,
+    operation: (doc: YjsPeerborneDocument) => Promise<unknown>,
+    edit = false,
   ): Promise<void> {
+    await this.documents.get(path)?.reopening;
+    const entry = this.documents.get(path);
+    if (!entry) throw new Error('The vault document is not ready');
     this.pendingWrites++;
     this.notify();
     try {
-      await operation();
+      try {
+        await operation(entry.doc);
+      } catch (error) {
+        if (retiredBy(error)) await this.reopen(entry);
+        else {
+          if (edit) this.discardedEdit = true;
+          await this.save(entry).catch(() => undefined);
+        }
+        throw error;
+      }
       await this.save(entry);
     } finally {
       this.pendingWrites--;
@@ -196,9 +305,12 @@ export function useVaultDocumentState(
   const session = sessions.get(peerborne);
   if (!session) throw new Error('The browser vault session is unavailable');
   const id = useId();
+  const generation = useSyncExternalStore(session.subscribe, () =>
+    session.generation(path),
+  );
   const [state, setState] = useState<{
     path: string;
-    entry: OpenDocument;
+    doc: YjsPeerborneDocument;
     document: Y.Doc;
     readers: CryptoKey[];
     writers: CryptoKey[];
@@ -210,28 +322,28 @@ export function useVaultDocumentState(
     setFailure(undefined);
     void session
       .open(path, mode)
-      .then(async (entry) => {
-        const readers = await entry.doc.getReaders();
-        const writers = await entry.doc.getWriters();
+      .then(async ({ doc }) => {
+        const readers = await doc.getReaders();
+        const writers = await doc.getWriters();
         if (!active) return;
         setState({
           path,
-          entry,
-          document: entry.doc.document,
+          doc,
+          document: doc.document,
           readers,
           writers,
         });
-        entry.doc.subscribe(id, (document, nextReaders, nextWriters) => {
+        doc.subscribe(id, (document, nextReaders, nextWriters) => {
           if (active)
             setState({
               path,
-              entry,
+              doc,
               document,
               readers: nextReaders,
               writers: nextWriters,
             });
         });
-        subscribed = entry.doc;
+        subscribed = doc;
       })
       .catch((error) => {
         if (active)
@@ -245,23 +357,24 @@ export function useVaultDocumentState(
       active = false;
       subscribed?.unsubscribe(id);
     };
-  }, [session, path, mode, id]);
+  }, [session, path, mode, id, generation]);
   const current = state?.path === path ? state : undefined;
   const mutate = async (
     operation: (doc: YjsPeerborneDocument) => Promise<unknown>,
   ) => {
     if (!current) throw new Error('The vault document is not ready');
-    return session.mutate(current.entry, () => operation(current.entry.doc));
+    return session.mutate(path, operation);
   };
   return [
     current?.document,
     (change: (doc: Y.Doc) => void) => {
-      void mutate((doc) => doc.change(change)).catch((error) =>
-        session.report(error),
-      );
+      if (!current) return;
+      void session
+        .mutate(path, (doc) => doc.change(change), true)
+        .catch(() => undefined);
     },
     {
-      docRef: current?.entry.doc,
+      docRef: current?.doc,
       readers: current?.readers ?? emptyKeys,
       writers: current?.writers ?? emptyKeys,
       removeReader: (key: CryptoKey) => mutate((doc) => doc.removeReader(key)),

@@ -235,7 +235,8 @@ CI evidence exists at different scopes:
   Chromium process with a separate signing identity accepts it through Circuit
   Relay, loads existing history, and exchanges live bidirectional mutations.
 - **Browser smoke:** browser-test opens a document in one Chromium process; the
-  wiki, password-manager, and Peerborne Note suites assert startup and rendering.
+  wiki, password-manager, and Peerborne Note suites assert startup, rendering,
+  and single-browser local storage behavior.
 - **Focused component suites:** cover individual invitation, protocol,
   authorization, encryption, and transport behaviors.
 - **Transport integration:** exercises NAT and relay topologies independently of
