@@ -67,7 +67,7 @@ What needs to happen:
 
 **Status: First release pending.** The eleven `@peerborne/*` packages are prepared
 as `0.1.0` source workspaces and remain unpublished. Packed-package validation
-covers ESM and native CommonJS loading on Node.js 22.19.0, TypeScript NodeNext
+covers ESM and native CommonJS loading on Node.js 26.13.1, TypeScript NodeNext
 declarations, and a Vite build. The release workflow validates artifacts before
 the protected `npm-publish` job. See the
 [release guide](https://github.com/Peerborne/peerborne/blob/main/RELEASING.md)

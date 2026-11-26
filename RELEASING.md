@@ -2,7 +2,7 @@
 
 The initial release is `0.1.0`, promoted to `latest`. It remains alpha software, not production-ready. The eleven `@peerborne/*` library packages are not yet published to npm. The first release is a bootstrap operation; a successful artifact-validation run does not prove npm authorization or provenance will succeed.
 
-Packages ship one ESM build. Both `import` and CommonJS `require()` resolve to it through Node.js 22.19.0 or newer's native ESM interoperability. There is no separate CommonJS compilation or compatibility bundle.
+Packages ship one ESM build. Both `import` and CommonJS `require()` resolve to it through Node.js 26.13.1 or newer's native ESM interoperability. There is no separate CommonJS compilation or compatibility bundle.
 
 ## Release allowlist and versioning
 
@@ -23,6 +23,7 @@ Releases contain exactly these packages, in dependency-first order:
 Set one strict SemVer across the allowlist and update the Yarn lockfile:
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn version:set 0.1.0

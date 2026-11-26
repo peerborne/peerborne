@@ -184,7 +184,7 @@ A candidate must provide or permit the adapter to provide:
   operation/request binding for ambiguous-write retry and an atomic
   irreversible consumed-reference transition;
 - clone/checkpoint or prepare/apply semantics compatible with atomic rollback;
-- Web Crypto operation in Node.js 22 and current Chromium without secret export
+- Web Crypto operation in Node.js 26 and current Chromium without secret export
   through JavaScript-facing diagnostics; and
 - versioned wire inputs that can be strictly decoded before invoking expensive
   cryptography.
@@ -208,7 +208,7 @@ these gates:
 6. Malformed encodings, invalid confirmations/signatures, replay, reordering,
    duplicate proposals, conflicting Commits, and removed-member traffic fail
    closed within explicit CPU, memory, and input-size limits.
-7. The same adapter passes under native Web Crypto in Node.js 22 and Chromium;
+7. The same adapter passes under native Web Crypto in Node.js 26 and Chromium;
    it does not silently substitute an unrelated crypto implementation.
 8. An IndexedDB-backed crash/restart test covers transactional state, pending
    and consumed KeyPackages, replay metadata, a durable outbox, a persistent

@@ -21,17 +21,17 @@
     "sync:generate": "node scripts/generate-sync-assets.mjs --gif"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.9",
+    "@astrojs/starlight": "^0.43.1",
     "@peerborne/core": "workspace:*",
     "@peerborne/yjs": "workspace:*",
-    "astro": "^7.4.7",
+    "astro": "^7.4.13",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
-    "@astrojs/markdown-remark": "^7.3.5",
-    "starlight-typedoc": "^0.23.0",
+    "@astrojs/markdown-remark": "^7.3.10",
+    "starlight-typedoc": "^0.23.3",
     "typedoc": "^0.28.20",
-    "typedoc-plugin-markdown": "^4.13.1",
-    "typescript": "^5.9.3"
+    "typedoc-plugin-markdown": "^4.14.1",
+    "typescript": "^6.0.3"
   }
 }

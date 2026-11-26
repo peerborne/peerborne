@@ -8,9 +8,9 @@ Use `docs/feature-audit.md` and `site/src/content/docs/concepts/` for architectu
 
 ## Toolchain and setup
 
-- Node.js 22.19.0 at the repository root
-- Node.js 22.23.5 for the documentation build, as pinned in `site/.tool-versions`
-- Yarn 4.5.0 through Corepack
+- Node.js 26.13.1, as pinned in `.tool-versions`, for the repository and the documentation build
+- Yarn 4.19.0 through Corepack
+- Corepack 0.36.0, which Node.js 26 no longer bundles: `npm install --global corepack@0.36.0`
 - `corepack enable`
 - `yarn install --immutable`
 - Playwright Chromium: `yarn exec playwright install chromium`
@@ -52,7 +52,7 @@ Do not describe `yarn benchmark:all` as working until its runner module mismatch
 
 ## Documentation
 
-Select the Node runtime pinned in `site/.tool-versions` and run `(cd site && yarn build)`.
+Run `(cd site && yarn build)`.
 
 The Site build generates API Markdown with Starlight TypeDoc under `site/src/content/docs/reference/api/`. That directory is ignored. Never edit generated API Markdown; change source comments or `site/astro.config.mjs` and rebuild the site. Starlight TypeDoc is the only API reference workflow.
 

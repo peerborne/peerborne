@@ -83,9 +83,10 @@ availability are not established.
 ## Run the source workspace
 
 The eleven `@peerborne/*` libraries remain unpublished, so use the repository
-workspace with Node.js 22.19.0 and Yarn 4.5.0:
+workspace with Node.js 26.13.1 and Yarn 4.19.0:
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build

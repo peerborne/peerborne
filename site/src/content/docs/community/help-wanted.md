@@ -44,7 +44,7 @@ evidence.
 
 ### External package publication
 
-The six `@peerborne/*` workspaces build, but they are unpublished. Prepare publication only with clean tarball inspection, external-consumer ESM and declaration tests on Node 22.19.0 and browsers, dependency/export verification, and reviewed release automation.
+The six `@peerborne/*` workspaces build, but they are unpublished. Prepare publication only with clean tarball inspection, external-consumer ESM and declaration tests on Node 26.13.1 and browsers, dependency/export verification, and reviewed release automation.
 
 ### Documentation and snippet tests
 

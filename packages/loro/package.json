@@ -38,20 +38,20 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.1"
   },
   "dependencies": {
     "@peerborne/core": "workspace:^"
   },
   "peerDependencies": {
-    "loro-crdt": "^1.17.1"
+    "loro-crdt": "^1.19.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
+    "@types/node": "^26.6.7",
     "jest": "^30.5.2",
-    "loro-crdt": "^1.17.1",
-    "ts-jest": "^29.4.14",
-    "typescript": "^5.9.3"
+    "loro-crdt": "^1.19.1",
+    "ts-jest": "^29.4.15",
+    "typescript": "^6.0.3"
   },
   "publishConfig": {
     "access": "public"

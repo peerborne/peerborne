@@ -38,20 +38,20 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.13.1"
   },
   "dependencies": {
     "@peerborne/store": "workspace:^"
   },
   "peerDependencies": {
-    "@tanstack/db": "1.0.0-rc.1.1"
+    "@tanstack/db": "1.0.0-rc.1.5"
   },
   "devDependencies": {
-    "@tanstack/db": "1.0.0-rc.1.1",
-    "@types/node": "^26.6.6",
+    "@tanstack/db": "1.0.0-rc.1.5",
+    "@types/node": "^26.6.7",
     "jest": "^30.5.2",
-    "ts-jest": "^29.4.14",
-    "typescript": "^5.9.3"
+    "ts-jest": "^29.4.15",
+    "typescript": "^6.0.3"
   },
   "publishConfig": {
     "access": "public"

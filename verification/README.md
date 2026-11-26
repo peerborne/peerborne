@@ -9,9 +9,10 @@ capability boundaries.
 
 ## Run
 
-Use Node **22.19.0**, Corepack, and Yarn **4.5.0**:
+Use Node **26.13.1**, Corepack **0.36.0**, and Yarn **4.19.0**:
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn verify:technical

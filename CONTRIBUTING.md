@@ -14,9 +14,11 @@ Discuss architecture-changing, format-changing, or security-sensitive work befor
 
 ## Development baseline
 
-Use Node.js 22.19.0 and Yarn 4.5.0 through Corepack.
+Use Node.js 26.13.1 and Yarn 4.19.0 through Corepack. Node.js 26 no longer bundles
+Corepack, so install it first.
 
 ```sh
+npm install --global corepack@0.36.0
 corepack enable
 yarn install --immutable
 yarn build
@@ -24,9 +26,7 @@ yarn test
 yarn test:relay
 ```
 
-For the site build, use the Node.js 22.23.5 runtime pinned in
-[`site/.tool-versions`](site/.tool-versions). Run the build from that directory
-after selecting the site runtime.
+Build the site from its directory with the same runtime.
 
 ```sh
 (cd site && yarn build)
