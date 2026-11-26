@@ -68,6 +68,46 @@ CRDT state, and membership before opening locally. Retaining blocks alone does
 not restore those things; other applications and peer-assisted recovery remain
 unverified.
 
+### Several tabs of one origin
+
+`defaultConfig()` opens the same IndexedDB blockstore (`/peerborne-blocks`) and
+datastore (`/peerborne-data`) in every tab of a browser origin. The datastore
+holds Helia pins, the libp2p peer store and one persisted libp2p key. Unless
+`config.helia.libp2p.privateKey` is set, the first running instance takes a
+Web Lock named after the datastore and uses that key, so a single tab keeps
+its PeerId across reloads. Any other instance running at the same time gets a
+new Ed25519 key for that session, so tabs are separate peers that can dial
+each other. Stopping the Helia node releases the lock. Where the Web Locks API
+is unavailable, every instance uses a new key. Other datastores, such as the
+in-memory default of `defaultNodeConfig()`, give the persisted key to one
+instance at a time within a JavaScript realm.
+
+A PeerId only addresses a node. Document access is bound to signing keys, and
+online invitations already end when their creator restarts. Set a fixed key
+only when a specific PeerId is required, and never in two instances that run
+at the same time.
+
+Sharing the stores leaves these caveats:
+
+- Each additional tab reserves its own relay slot, under a new PeerId on every
+  load. A relay frees a reservation only when its TTL expires, so reloading
+  additional tabs repeatedly can fill a relay with a small
+  `RELAY_MAX_RESERVATIONS`.
+- Garbage collection (`gcAfterPrune`, off by default) protects only the
+  retained history of the tab that runs it. It can delete blocks that another
+  tab still needs for the same document.
+- Peerborne does not coordinate application storage between tabs. Two tabs
+  that restore one signing identity are two peers of the same member, and the
+  application must coordinate any checkpoints they both save. Peerborne Note
+  and the password manager keep a same-profile Web Lock for this reason: their
+  encrypted checkpoint store accepts a save only at the expected revision, so
+  a second tab's saves would be rejected as stale.
+
+**Evidence boundary:** a Node test with an IndexedDB shim and Node's Web Locks
+checks that one default-config instance keeps the persisted PeerId across
+restarts while concurrent instances get their own. Two tabs of one profile
+synchronizing in a real browser is not covered by CI.
+
 ### No automatic replication factor
 
 Peerborne does not replicate blocks automatically. If you have 3 peers and one stores a block, the other 2 may fetch it on demand (bitswap) or may not. There is no "store on at least N peers" guarantee.

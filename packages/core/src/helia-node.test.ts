@@ -5,6 +5,7 @@ import { withLibp2pLight } from '@helia/libp2p';
 import { isLibp2p } from 'libp2p';
 import type { PeerborneConfig } from './peerborne-config.js';
 import { createAndStartHeliaNode } from './helia-node.js';
+import { acquirePeerIdentity } from './peer-identity.js';
 
 jest.mock(
   'helia',
@@ -24,6 +25,7 @@ jest.mock(
   () => ({ withLibp2pLight: jest.fn() }),
   { virtual: true },
 );
+jest.mock('./peer-identity.js', () => ({ acquirePeerIdentity: jest.fn() }));
 jest.mock('@ipld/dag-cbor', () => ({}), { virtual: true });
 jest.mock('@ipld/dag-json', () => ({}), { virtual: true });
 jest.mock('multiformats/codecs/json', () => ({}), { virtual: true });
@@ -37,10 +39,14 @@ const mockCreateHeliaLight = jest.mocked(createHeliaLight);
 const mockWithBitswap = jest.mocked(withBitswap);
 const mockWithLibp2pLight = jest.mocked(withLibp2pLight);
 const mockIsLibp2p = jest.mocked(isLibp2p);
+const mockAcquirePeerIdentity = jest.mocked(acquirePeerIdentity);
+const generatedKey = { type: 'Ed25519' } as never;
+const release = jest.fn();
 
 interface FakeHeliaNode {
   start: jest.Mock<() => Promise<void>>;
   stop: jest.Mock<() => Promise<void>>;
+  addMixin: jest.Mock;
   libp2p: { services: { pubsub?: object } };
 }
 
@@ -72,6 +78,10 @@ describe('Helia node startup cleanup', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockIsLibp2p.mockReturnValue(false);
+    mockAcquirePeerIdentity.mockResolvedValue({
+      privateKey: generatedKey,
+      release,
+    });
   });
 
   test('stops the node and closes stores when startup fails', async () => {
@@ -81,6 +91,7 @@ describe('Helia node startup cleanup', () => {
         throw failure;
       }),
       stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia, datastore, blockstore } = createConfig();
@@ -92,6 +103,7 @@ describe('Helia node startup cleanup', () => {
     expect(lightOptions?.codecs).toHaveLength(3);
     expect(lightOptions?.hashers).toHaveLength(1);
     expect(node.stop).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalled();
     expect(blockstore.close).toHaveBeenCalledTimes(1);
     expect(datastore.close).toHaveBeenCalledTimes(1);
   });
@@ -100,6 +112,7 @@ describe('Helia node startup cleanup', () => {
     const node: FakeHeliaNode = {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
       libp2p: { services: {} },
     };
     const { helia, datastore, blockstore } = createConfig();
@@ -118,6 +131,7 @@ describe('Helia node startup cleanup', () => {
     const node: FakeHeliaNode = {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
       libp2p: { services: { pubsub: {} } },
     };
     const bitswap = {};
@@ -128,6 +142,7 @@ describe('Helia node startup cleanup', () => {
     } as NonNullable<PeerborneConfig['helia']>);
 
     expect(mockCreateHelia).toHaveBeenCalledWith({
+      libp2p: { privateKey: generatedKey },
       bitswap: { runOnLimitedConnections: true },
     });
     expect(result.heliaNode).toBe(node);
@@ -138,6 +153,7 @@ describe('Helia node startup cleanup', () => {
     const node: FakeHeliaNode = {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
       libp2p: { services: { pubsub: {} } },
     };
     mockCreateHelia.mockReturnValue(node as never);
@@ -147,8 +163,68 @@ describe('Helia node startup cleanup', () => {
     } as NonNullable<PeerborneConfig['helia']>);
 
     expect(mockCreateHelia).toHaveBeenCalledWith({
+      libp2p: { privateKey: generatedKey },
       bitswap: { runOnLimitedConnections: false },
     });
+  });
+
+  test('loads the persisted key while holding the datastore identity', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
+      libp2p: { services: { pubsub: {} } },
+    };
+    const { helia, datastore } = createConfig();
+    mockAcquirePeerIdentity.mockResolvedValue({ release });
+    arrangeNode(node);
+
+    await createAndStartHeliaNode(helia);
+
+    expect(mockAcquirePeerIdentity).toHaveBeenCalledWith(datastore);
+    expect(mockWithLibp2pLight.mock.calls[0]?.[1]?.privateKey).toBeUndefined();
+    expect(node.addMixin).toHaveBeenCalledWith({
+      name: 'peerborne-peer-identity',
+      stop: release,
+    });
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  test('starts libp2p with a fresh key when another instance holds the identity', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
+      libp2p: { services: { pubsub: {} } },
+    };
+    const { helia } = createConfig();
+    arrangeNode(node);
+
+    await createAndStartHeliaNode(helia);
+
+    expect(mockWithLibp2pLight.mock.calls[0]?.[1]).toEqual({
+      privateKey: generatedKey,
+    });
+    expect(helia.libp2p).toEqual({});
+  });
+
+  test('keeps a configured libp2p private key', async () => {
+    const node: FakeHeliaNode = {
+      start: jest.fn(async () => undefined),
+      stop: jest.fn(async () => undefined),
+      addMixin: jest.fn(),
+      libp2p: { services: { pubsub: {} } },
+    };
+    const { helia } = createConfig();
+    const privateKey = { type: 'Ed25519' } as never;
+    helia.libp2p = { privateKey };
+    arrangeNode(node);
+
+    await createAndStartHeliaNode(helia);
+
+    expect(mockAcquirePeerIdentity).not.toHaveBeenCalled();
+    expect(mockWithLibp2pLight.mock.calls[0]?.[1]?.privateKey).toBe(privateKey);
+    expect(node.addMixin).not.toHaveBeenCalled();
   });
 
   test('rejects an already-created libp2p node explicitly', async () => {
