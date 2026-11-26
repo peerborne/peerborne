@@ -191,6 +191,36 @@ describe('coordinated document held frames', () => {
     for (const document of [a, twin, b]) await document.close();
   });
 
+  test('reports a different frame at the accepted sequence and drops copies of a held frame before verification', async () => {
+    const f = await documentFixture(),
+      a = create(f),
+      twin = create(f),
+      b = create(f);
+    for (const document of [a, twin, b]) await document.activate();
+    const frames = await writes(a, [1, 2, 3]);
+    const [forked] = await writes(twin, [100]);
+    expect(await b.receive(frames[0])).toBe(true);
+    await expect(b.receive(forked)).rejects.toThrow('equivocated');
+    expect(await b.receive(frames[2])).toBe(false);
+    const verify = f.auth.verify;
+    let verifications = 0;
+    f.auth.verify = async (...args) => {
+      verifications++;
+      return verify(...args);
+    };
+    try {
+      for (let copy = 0; copy < 10; copy++)
+        expect(await b.receive(frames[2])).toBe(false);
+      expect(await b.receive(frames[0])).toBe(false);
+      expect(verifications).toBe(0);
+      expect(await b.receive(frames[1])).toBe(true);
+    } finally {
+      f.auth.verify = verify;
+    }
+    expect(b.document).toEqual([1, 2, 3]);
+    for (const document of [a, twin, b]) await document.close();
+  });
+
   test('drops held frames at a new group context', async () => {
     const f = await documentFixture(),
       a = create(f),

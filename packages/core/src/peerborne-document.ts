@@ -361,6 +361,26 @@ function gossipSender(message: Message): string {
   return message.type === 'signed' ? message.from.toString() : '';
 }
 
+/** Outcome of one coordinated publication pass. */
+export interface SecurityPublicationReport {
+  /** Publications that reached at least one topic peer. */
+  readonly sent: number;
+  /**
+   * Whether publications stay queued until a topic peer receives them, or
+   * until their frames are re-signed into the current group context.
+   */
+  readonly pending: boolean;
+  /** Frames removed because they were sealed for an earlier context or authority. */
+  readonly dropped: number;
+}
+
+/** A publish allowed with zero topic peers reports an empty recipient list. */
+function securityPublicationReachedPeers(result: unknown): boolean {
+  if (typeof result !== 'object' || result === null) return true;
+  const recipients: unknown = Reflect.get(result, 'recipients');
+  return !Array.isArray(recipients) || recipients.length > 0;
+}
+
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error
@@ -1712,7 +1732,7 @@ export class PeerborneDocument<
   // Handler for listening for sync messages on the document topic. Is `undefined` until
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
-  private _redeliverySubscriptionHandler:
+  private _securitySubscriptionHandler:
     | EventHandler<CustomEvent<SubscriptionChangeData>>
     | undefined;
   private _redeliveryTimer?: ReturnType<typeof setTimeout>;
@@ -1885,7 +1905,11 @@ export class PeerborneDocument<
       this._coordinated = new CoordinatedDocument(
         documentPath, this._document, _crdtProvider, _changesSerializer,
         _authProvider, _userKey, _userPublicKey,
-        { ...options.security, persistPublications: true },
+        {
+          ...options.security,
+          persistPublications: true,
+          joinPublications: true,
+        },
       );
       this._topic = `peerborne/coordinated/v1/${this._coordinated.routingId}`;
     } else if (this.swarm.beekemForkStore) {
@@ -8767,16 +8791,21 @@ export class PeerborneDocument<
           ).catch(() => {});
           return;
         }
-        void this.receiveSecurityFrame(event.detail.data).catch(() => {});
+        void this._receiveSecurityFrame(
+          event.detail.data,
+          gossipSender(event.detail),
+        ).catch(() => {});
       };
-      this._redeliverySubscriptionHandler = (event) => {
+      this._securitySubscriptionHandler = (event) => {
         if (
+          !this._subscribed ||
           !event.detail?.subscriptions?.some(
             (subscription) =>
               subscription.subscribe && subscription.topic === this._topic,
           )
         )
           return;
+        void this.retrySecurityPublications().catch(() => {});
         const peer = String(event.detail.peerId);
         const now = Date.now();
         if (now - (this._redeliveryPeers.get(peer) ?? -Infinity) < REDELIVERY_PEER_DEBOUNCE_MS)
@@ -8790,10 +8819,13 @@ export class PeerborneDocument<
       pubsub.addEventListener('message', this._pubsubHandler as EventListener);
       pubsub.addEventListener(
         'subscription-change',
-        this._redeliverySubscriptionHandler as EventListener,
+        this._securitySubscriptionHandler as EventListener,
       );
       pubsub.subscribe(this._topic);
       this._subscribed = true;
+      // Peers connected before open announced their subscriptions already, so
+      // restored publications cannot wait for a subscription change.
+      void this.retrySecurityPublications().catch(() => {});
       this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
       return true;
     } catch (error) {
@@ -8805,16 +8837,27 @@ export class PeerborneDocument<
 
   /** Accept only the encrypted, signed coordinator document format. */
   public async receiveSecurityFrame(frame: Uint8Array): Promise<boolean> {
+    return this._receiveSecurityFrame(frame);
+  }
+
+  private async _receiveSecurityFrame(
+    frame: Uint8Array,
+    sender?: string,
+  ): Promise<boolean> {
     const engine = this._coordinated;
     if (!engine)
       throw new Error('Document does not use coordinated security');
     if (!this._subscribed) throw new Error('Coordinated document is not open');
-    const applied = await engine.receive(frame);
-    // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
-    if (engine.heldGeneration !== this._redeliveryHeldSeen) {
-      this._redeliveryHeldSeen = engine.heldGeneration;
-      this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
-      this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+    let applied: boolean;
+    try {
+      applied = await engine.receive(frame, sender);
+    } finally {
+      // Ask soon only when a frame newly starts waiting; repeats follow the backoff.
+      if (engine.heldGeneration !== this._redeliveryHeldSeen) {
+        this._redeliveryHeldSeen = engine.heldGeneration;
+        this._redeliveryBackoff = REDELIVERY_MIN_SPACING_MS;
+        this._scheduleSecurityRedelivery(jitter(REDELIVERY_SETTLE_MS));
+      }
     }
     if (applied) {
       const rosterIsCurrent = engine.captureStrictNotificationGuard();
@@ -8965,8 +9008,9 @@ export class PeerborneDocument<
    * bound to this node's libp2p PeerId, which GossipSub signs as its sender.
    */
   /**
-   * Redelivery requests from members ignored because their issue time was more
-   * than 60 s from this node's clock. Redelivery needs clocks within that range.
+   * Redelivery requests sealed under the current epoch key and ignored because
+   * their issue time was more than 60 s from this node's clock. Redelivery
+   * needs clocks within that range.
    */
   public get securityRedeliveryStaleRequests(): number {
     return this._coordinated?.staleRedeliveryRequests ?? 0;
@@ -9045,33 +9089,65 @@ export class PeerborneDocument<
       await publish(engine.unansweredRedeliveries(answer));
   }
 
-  private _securityPublicationTask?: Promise<void>;
-  private _securityPublicationQueued?: Promise<void>;
+  private _securityPublicationTask?: Promise<SecurityPublicationReport>;
+  private _securityPublicationQueued?: Promise<SecurityPublicationReport>;
 
 
-  /** Retry durable encrypted publications without running local change callbacks again. */
-  public async retrySecurityPublications(): Promise<void> {
+  /**
+   * Retry durable encrypted publications without running local change
+   * callbacks again. Publications that reach no topic peer stay queued, and
+   * later local changes join the last of them. A publication sealed for an
+   * earlier group context or authority head is never sent, since no current
+   * member can accept it. It stays queued while its author can still re-sign
+   * its frames into the current context, and is otherwise dropped and
+   * counted; the security option `onPublicationsDropped` hears about every
+   * drop, including those of background retries.
+   */
+  public async retrySecurityPublications(): Promise<SecurityPublicationReport> {
     const engine = this._coordinated;
     if (!engine || !this._subscribed)
       throw new Error('Coordinated document is not open');
     if (this._securityPublicationQueued) return this._securityPublicationQueued;
     const previous = this._securityPublicationTask ?? Promise.resolve();
-    const task: Promise<void> = previous
+    const task: Promise<SecurityPublicationReport> = previous
       .catch(() => {})
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
+        const pubsub = this.swarm.heliaNode.libp2p.services.pubsub;
+        // Without topic peers a publish reaches nobody; skip reading the outbox.
+        const unreachable =
+          typeof pubsub.getSubscribers === 'function' &&
+          pubsub.getSubscribers(this._topic).length === 0;
+        if (unreachable) {
+          const pending = await engine.hasQueuedPublications();
+          if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
+        }
+        let sent = 0,
+          dropped = 0,
+          waiting = false;
         do {
-          for (const frame of await engine.pendingPublications()) {
+          const batch = await engine.dispatchablePublications();
+          dropped += batch.dropped;
+          waiting = batch.waiting;
+          if (unreachable)
+            return {
+              sent,
+              pending: batch.frames.length !== 0 || waiting,
+              dropped,
+            };
+          for (const frame of batch.frames) {
             engine.assertPublicationDispatchAllowed();
-            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-              this._topic,
-              frame,
-            );
+            const result: unknown = await pubsub.publish(this._topic, frame);
+            // Keep this frame and its successors until a topic peer receives them.
+            if (!securityPublicationReachedPeers(result))
+              return { sent, pending: true, dropped };
             await engine.publicationSent(frame);
+            sent++;
           }
           // Re-signed retired frames that waited for outbox space follow.
         } while (await engine.continueResend());
+        return { sent, pending: waiting, dropped };
       })
       .finally(() => {
         if (this._securityPublicationTask === task)
@@ -9532,12 +9608,12 @@ export class PeerborneDocument<
 
       // Cast required: see addEventListener comment above
       pubsub.removeEventListener('message', this._pubsubHandler as EventListener);
-      if (this._redeliverySubscriptionHandler)
+      if (this._securitySubscriptionHandler)
         pubsub.removeEventListener(
           'subscription-change',
-          this._redeliverySubscriptionHandler as EventListener,
+          this._securitySubscriptionHandler as EventListener,
         );
-      this._redeliverySubscriptionHandler = undefined;
+      this._securitySubscriptionHandler = undefined;
 
       if (
         this._topicValidator &&

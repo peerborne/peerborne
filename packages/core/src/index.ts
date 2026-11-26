@@ -306,7 +306,10 @@ export {
 export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { ConnectOptions, ConnectionProgress, ConnectionErrorType } from './connection.js';
 export type { CreateInvitationOptions } from './peerborne.js';
-export type { InvitationBootstrapBundle } from './peerborne-document.js';
+export type {
+  InvitationBootstrapBundle,
+  SecurityPublicationReport,
+} from './peerborne-document.js';
 export type {
   PeerLoadQuorumVote,
   LoadQuorumDecision,
