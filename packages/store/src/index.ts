@@ -1,5 +1,12 @@
 export type DocumentStatus = 'idle' | 'opening' | 'ready' | 'error' | 'closed';
 
+/** A local change that was committed but whose frame could not be published. */
+export interface DocumentDeliveryFailure {
+  readonly documentPath: string;
+  readonly changeId: string;
+  readonly error: unknown;
+}
+
 /** The document surface needed by UI integrations. No networking code is imported. */
 export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
   readonly document: Doc;
@@ -19,6 +26,11 @@ export interface DocumentHandle<Doc, Change, PublicKey = unknown> {
     originFilter?: 'all' | 'local' | 'remote',
   ): void;
   unsubscribe(id: string): void;
+  subscribeDeliveryFailures?(
+    id: string,
+    handler: (failure: DocumentDeliveryFailure) => void,
+  ): void;
+  unsubscribeDeliveryFailures?(id: string): void;
 }
 
 /** A new snapshot is published even when the underlying CRDT mutates in place. */
@@ -29,6 +41,13 @@ export interface DocumentSnapshot<Doc, PublicKey = unknown> {
   readonly writers: readonly PublicKey[];
   readonly revision: number;
   readonly error: unknown;
+  /**
+   * The latest change made on this device that is committed locally but was
+   * not delivered, because its frame could not be published. A later change
+   * through this store whose frame is published clears it, since that frame
+   * carries the earlier change.
+   */
+  readonly deliveryFailure: DocumentDeliveryFailure | undefined;
 }
 
 export interface DocumentStore<Doc, Change, PublicKey = unknown> {
@@ -93,10 +112,12 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     writers: Object.freeze([]),
     revision: 0,
     error: undefined,
+    deliveryFailure: undefined,
   });
   let snapshot = initial;
   let opened = false;
   let connected = 0;
+  let deliveryFailures = 0;
   let tail = Promise.resolve();
   const listeners = new Set<() => void>();
 
@@ -126,6 +147,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
     if (current) {
       try {
         current.unsubscribe(id);
+        current.unsubscribeDeliveryFailures?.(id);
       } catch (error) {
         errors.push(error);
       }
@@ -162,8 +184,14 @@ export function createDocumentStore<Doc, Change, PublicKey>(
               readers,
               writers,
               error: undefined,
+              deliveryFailure: snapshot.deliveryFailure,
             });
           }
+        });
+        current.subscribeDeliveryFailures?.(id, (failure) => {
+          deliveryFailures++;
+          if (opened && document === current)
+            publish({ ...snapshot, deliveryFailure: failure });
         });
         if (manageLifecycle) await current.open();
         const [readers, writers] = await Promise.all([
@@ -177,6 +205,7 @@ export function createDocumentStore<Doc, Change, PublicKey>(
           readers: latest?.readers ?? readers,
           writers: latest?.writers ?? writers,
           error: undefined,
+          deliveryFailure: undefined,
         });
       } catch (cause) {
         opened = false;
@@ -227,10 +256,19 @@ export function createDocumentStore<Doc, Change, PublicKey>(
         await opening;
         const current = document;
         if (!opened || !current) throw new Error('Document store is closed');
+        const reported = deliveryFailures;
         try {
           await current.change(change, message);
-          if (snapshot.error !== undefined) {
-            publish({ ...snapshot, error: undefined });
+          const delivered = deliveryFailures === reported;
+          if (
+            snapshot.error !== undefined ||
+            (delivered && snapshot.deliveryFailure !== undefined)
+          ) {
+            publish({
+              ...snapshot,
+              error: undefined,
+              deliveryFailure: delivered ? undefined : snapshot.deliveryFailure,
+            });
           }
         } catch (error) {
           publish({ ...snapshot, error });

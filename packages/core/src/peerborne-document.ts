@@ -803,6 +803,26 @@ export type PeerborneDocumentChangeHandler<DocType, PublicKey> = (
   hashes: string[],
 ) => void;
 
+/**
+ * A local change that was committed locally, stored and recorded in the
+ * retained change tree, but whose frame could not be encrypted or published.
+ * The next change's frame carries it inline, and sync and load responses
+ * serve it.
+ */
+export interface ChangeDeliveryFailure {
+  /** Path of the document that holds the change. */
+  readonly documentPath: string;
+  /** CID of the change that was not delivered. */
+  readonly changeId: string;
+  /** The encryption or publication error. */
+  readonly error: unknown;
+}
+
+/** Handler for {@link PeerborneDocument.subscribeDeliveryFailures}. */
+export type PeerborneDocumentDeliveryFailureHandler = (
+  failure: ChangeDeliveryFailure,
+) => void;
+
 /** Options for {@link PeerborneDocument.removeWriter}. */
 export interface RemoveWriterOptions {
   /**
@@ -1052,6 +1072,15 @@ function partialChangeCommitFailure(
     [changeError, commitError],
     'Change function failed, and committing its partial edit also failed',
   );
+}
+
+/** Delete the entries added to `set` after it held `size` entries. */
+function deleteEntriesAfter(set: Set<string>, size: number): void {
+  if (set.size <= size) return;
+  const added: string[] = [];
+  let index = 0;
+  for (const entry of set) if (index++ >= size) added.push(entry);
+  for (const entry of added) set.delete(entry);
 }
 
 export class PeerborneDocument<
@@ -1618,9 +1647,10 @@ export class PeerborneDocument<
   private _pendingChangeFns: ChangeFnType[] = [];
   private _inTransaction = false;
   private _committing = false;
-  // CID of the last local change whose frame publication resolved. A failed
-  // transaction compares it to tell a published change from one to roll back.
-  private _lastPublishedChange?: string;
+
+  private _deliveryFailureHandlers: {
+    [id: string]: PeerborneDocumentDeliveryFailureHandler;
+  } = {};
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -2377,31 +2407,40 @@ export class PeerborneDocument<
     ]);
   }
 
+  /** Run every local handler, then throw the first failure or all of them. */
   private async _fireLocalUpdateHandlers(
     hashes: string[],
     postPublishOperation?: string,
   ) {
+    const errors: unknown[] = [];
     for (const handler of Object.values(this._localHandlers)) {
-      const result = (handler as (
-        current: DocType,
-        readers: PublicKey[],
-        writers: PublicKey[],
-        hashes: string[],
-      ) => unknown)(
-        this._document,
-        await this.getReaders(),
-        await this.getWriters(),
-        hashes,
-      );
-      if (result !== undefined) {
-        void Promise.resolve(result).catch(() => {
-          this._reportLocalUpdateHandlerFailure(
-            postPublishOperation,
-            true,
-          );
-        });
+      try {
+        const result = (handler as (
+          current: DocType,
+          readers: PublicKey[],
+          writers: PublicKey[],
+          hashes: string[],
+        ) => unknown)(
+          this._document,
+          await this.getReaders(),
+          await this.getWriters(),
+          hashes,
+        );
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => {
+            this._reportLocalUpdateHandlerFailure(
+              postPublishOperation,
+              true,
+            );
+          });
+        }
+      } catch (error) {
+        errors.push(error);
       }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(errors, 'Local update handlers failed');
   }
 
   private _reportLocalUpdateHandlerFailure(
@@ -4816,7 +4855,6 @@ export class PeerborneDocument<
         this._topic,
         concatUint8Arrays(documentKeyID, nonce, data),
       );
-      this._lastPublishedChange = hash;
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -4848,20 +4886,29 @@ export class PeerborneDocument<
         this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
-      throw error;
+      // A document change already in the retained tree is committed locally
+      // when encryption or publication fails: the next frame carries it
+      // inline, and sync and load responses serve it.
+      if (postPublishCommit || this._lastSyncMessage === lastSyncMessageBefore)
+        throw error;
+      this._reportDeliveryFailure(hash, error);
     }
 
     // Fire change handlers. Once the staged commit above succeeds, handler
     // failures are observer failures rather than retryable ACL publication
     // failures. Report them, but preserve the successful membership result.
+    // A document change is still counted and compacted before its handler
+    // failure is thrown, so a failing handler cannot grow the retained tree.
+    let handlerFailure: { error: unknown } | undefined;
     try {
       await this._fireLocalUpdateHandlers(
         [hash],
         postPublishCommit?.operation,
       );
     } catch (error) {
-      if (!postPublishCommit) throw error;
-      this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      if (postPublishCommit)
+        this._reportLocalUpdateHandlerFailure(postPublishCommit.operation);
+      else handlerFailure = { error };
     }
 
     // Track document changes for compaction. Membership nodes deepen the
@@ -4870,7 +4917,35 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact(undefined, publishedBytes);
+    try {
+      await this._maybeCompact(undefined, publishedBytes);
+    } catch (error) {
+      throw handlerFailure
+        ? new AggregateError(
+            [handlerFailure.error, error],
+            'A local update handler and compaction failed after the change was committed',
+          )
+        : error;
+    }
+    if (handlerFailure) throw handlerFailure.error;
+  }
+
+  private _reportDeliveryFailure(changeId: string, error: unknown): void {
+    const failure: ChangeDeliveryFailure = Object.freeze({
+      documentPath: this.documentPath,
+      changeId,
+      error,
+    });
+    const report = () =>
+      console.error(`[${this.documentPath}] a delivery failure handler failed.`);
+    for (const handler of Object.values(this._deliveryFailureHandlers)) {
+      try {
+        const result: unknown = handler(failure);
+        if (result !== undefined) void Promise.resolve(result).catch(report);
+      } catch {
+        report();
+      }
+    }
   }
 
   /**
@@ -7976,6 +8051,7 @@ export class PeerborneDocument<
         hashes: [...this._hashes],
         ancestors: [...this._referencedAncestors],
         recentTips: this._recentTips.map(({ cid, kind }) => [cid, kind]),
+        gcCandidates: [...this._gcCandidates],
         documentChangeCount: this._documentChangeCount,
         changesSinceSnapshot: this._changesSinceSnapshot,
         historyVisibility: this._historyVisibility,
@@ -8203,6 +8279,7 @@ export class PeerborneDocument<
       this._hashes = hashes;
       this._referencedAncestors = ancestors;
       this._recentTips = recentTips;
+      this._gcCandidates = new Set(state.gcCandidates);
       this._latestSnapshot = message.snapshot;
       this._documentChangeCount = state.documentChangeCount;
       this._changesSinceSnapshot = state.changesSinceSnapshot;
@@ -9663,6 +9740,41 @@ export class PeerborneDocument<
   }
 
   /**
+   * Subscribe to local changes that were committed but not delivered, because
+   * encrypting or publishing their frame failed, for example when GossipSub
+   * has no topic peers and does not allow publishing to none. `change()` and
+   * `endChange()` still resolve for such a change: it stays in the document,
+   * and it reaches peers with the next change's frame or a sync or load
+   * response. Do not repeat the edit. A coordinated document reports a
+   * delivery failure by rejecting instead, and does not call these handlers.
+   *
+   * Until a later frame is published, the change exists only on this device.
+   * Export a checkpoint after a delivery failure: if the instance is later
+   * retired, it is reopened from the last checkpoint, and an undelivered
+   * change made after that checkpoint is lost.
+   *
+   * @param id An id to remove the handler with `unsubscribeDeliveryFailures(id)`.
+   * @param handler Called synchronously with each delivery failure. A thrown
+   *   error or rejected promise is logged and does not affect the change.
+   */
+  public subscribeDeliveryFailures(
+    id: string,
+    handler: PeerborneDocumentDeliveryFailureHandler,
+  ) {
+    this._assertNoIncompleteBootstrapLoad(true);
+    this._deliveryFailureHandlers[id] = handler;
+  }
+
+  /**
+   * Remove a handler added with `subscribeDeliveryFailures()`.
+   *
+   * @param id The id the handler was subscribed with.
+   */
+  public unsubscribeDeliveryFailures(id: string) {
+    delete this._deliveryFailureHandlers[id];
+  }
+
+  /**
    * Unsubscribes a change handler from the document.
    *
    * @param id The id of the handler to unsubscribe.
@@ -9711,19 +9823,11 @@ export class PeerborneDocument<
    * End the transaction and apply all queued changes atomically.
    * This sends a single sync message for all batched changes.
    *
-   * A failure before the change is published (write check, CRDT apply,
-   * block storage, signing, encryption or the publish call) aborts the
-   * transaction and rolls it back: the document returns to its state when
-   * `endChange()` was called, and the attempt's history bookkeeping is
-   * removed. Automerge outdates the document a change consumes, so the
-   * rollback restores a writable copy from `CRDTProvider.cloneDocument()`,
-   * which makes later changes under a new actor. While Automerge holds remote
-   * changes waiting for missing dependencies, a copy would lose them, so the
-   * call instead retires the instance and rejects with an error whose `cause`
-   * is the failure; reopen it from accepted state. A failure after
-   * publication, from a local update handler or compaction, keeps the
-   * published change and its bookkeeping, ends the transaction and rejects
-   * with that error, as `change()` does.
+   * A failure is handled as in `change()`: once the batch is stored and in
+   * the retained change tree it is kept, and an encryption or publication
+   * failure is reported to `subscribeDeliveryFailures()` handlers instead of
+   * rejecting. A batch that fails before that point is discarded. Either way
+   * the transaction ends, and a new one must be started.
    *
    * A queued change function that throws is handled as in `change()`: a
    * coordinated document stages the batch on a private copy and leaves the
@@ -9731,37 +9835,7 @@ export class PeerborneDocument<
    * in-place provider (Yjs, Loro) publishes the edits made before the throw
    * as this transaction's change and then rethrows the original error, so no
    * later change depends on an unpublished edit. If committing that partial
-   * edit fails too, the call rejects with an `AggregateError` whose `errors`
-   * are the change function's error and the commit error.
-   *
-   * **Known limitation -- in-place mutating providers:** For CRDT providers
-   * that mutate in place (e.g. Yjs), rollback of a publish failure does NOT
-   * undo mutations.
-   * Yjs's `localChange()` mutates the document object directly and returns
-   * the same reference, so restoring the saved reference after failure has
-   * no effect -- the mutations have already been applied to the shared
-   * Y.Doc. Callers using Yjs should treat a failed transaction as leaving
-   * the local document in a potentially inconsistent state and consider
-   * re-syncing from peers.
-   * An oversized encrypted block retires the instance before publication.
-   * Reopen from accepted state before retrying the edit in smaller changes.
-   *
-   * **Known limitation -- ambiguous publication:** A publish call that
-   * rejects after the transport accepted the frame is rolled back like an
-   * unpublished change, so a peer may hold a change this replica discarded.
-   * For Automerge, the copy's new actor keeps later local changes from
-   * colliding with it.
-   *
-   * **Internal metadata rollback:** On a rollback, `_lastSyncMessage`,
-   * `_documentChangeCount`, `_changesSinceSnapshot`, and `_recentTips`
-   * are restored from snapshots captured before `_makeChange()`.
-   * (`_recentTips` is bounded to `MAX_RECENT_TIPS` entries so the snapshot
-   * is a cheap shallow array copy.) For `_hashes` and
-   * `_referencedAncestors`, all entries added to each Set after its
-   * pre-attempt size are removed. The document's state queue keeps remote
-   * syncs out of the transaction, so those entries are the attempt's own.
-   * The approach is O(n) iteration but O(delta) memory. A new transaction
-   * must be started after a failure.
+   * edit fails too, the call rejects as `change()` does.
    *
    * @throws {Error} If any step in the commit pipeline fails.
    */
@@ -9807,21 +9881,6 @@ export class PeerborneDocument<
       return;
     }
 
-    const originalDocument = this._document;
-    const lastPublishedBefore = this._lastPublishedChange;
-    // Snapshot internal metadata so we can restore on failure.
-    // Only track the Set size (O(1)) instead of cloning the entire Set (O(n)):
-    // _makeChange adds at most one CID, and JS Sets iterate in insertion order,
-    // so on rollback we remove only entries appended after this point.
-    const hashSizeBefore = this._hashes.size;
-    const referencedAncestorsSizeBefore = this._referencedAncestors.size;
-    const lastSyncSnapshot = this._lastSyncMessage;
-    const changeCountSnapshot = this._documentChangeCount;
-    const compactionCountSnapshot = this._changesSinceSnapshot;
-    // Bounded copy (max MAX_RECENT_TIPS entries) -- cheap to snapshot.
-    const recentTipsSnapshot = [...this._recentTips];
-
-    let failure: { error: unknown } | undefined;
     this._committing = true;
     try {
       await this._ensureCurrentUserCanWrite();
@@ -9834,109 +9893,48 @@ export class PeerborneDocument<
           (fn as any)(doc);
         }
       }) as ChangeFnType;
-
-      await this._prepareLocalActor();
-      const before = this._document;
-      const applied = this._applyLocalChange(composedFn, message);
-      failure = applied.failure;
-      const authored = await this._authorOrDiscardLocalChange(
-        applied.changes,
-        before,
-      );
-      try {
-        await this._makeChange(authored);
-      } catch (error) {
-        throw error instanceof GossipFrameLimitError
-          ? this._retireAfterOversizedLocalChange(error)
-          : error;
-      }
-
-      // The published change, partial or not, ends the transaction.
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-    } catch (err) {
-      // Abort transaction on ANY error (ensureWrite, localChange, or makeChange).
-      this._inTransaction = false;
-      this._pendingChangeFns = [];
-      const thrown = failure
-        ? partialChangeCommitFailure(failure.error, err)
-        : err;
-      // A local update handler or compaction failed after publication. Peers
-      // hold the change, so it and its bookkeeping stay, as for `change()`.
-      if (this._lastPublishedChange !== lastPublishedBefore) throw thrown;
-      // Roll back document and internal metadata (best-effort for in-place
-      // mutating providers like Yjs). Automerge outdated `originalDocument`
-      // when it made the change, so restore a writable copy of it instead.
-      // A retired instance is closed and keeps its document.
-      if (this._document !== originalDocument && !this._oversizedEditClose) {
-        const restored = this._crdtProvider.cloneDocument
-          ? this._crdtProvider.cloneDocument(originalDocument)
-          : originalDocument;
-        if (restored === undefined)
-          throw this._retireAfterUnrecoverableRollback(thrown);
-        this._document = restored;
-      }
-      // Remove only the CIDs appended by _makeChange instead of clearing and
-      // re-populating the entire Set. This avoids mutating the Set during
-      // concurrent sync (clear() would disrupt any in-progress iteration)
-      // and is O(delta) instead of O(n).
-      // Iterate the Set (O(n)) but only collect entries past the snapshot
-      // threshold into a small buffer (O(delta) memory) -- avoids cloning
-      // the entire Set into an array via spread.
-      if (this._hashes.size > hashSizeBefore) {
-        const toRemove: string[] = [];
-        let i = 0;
-        for (const hash of this._hashes) {
-          if (i >= hashSizeBefore) {
-            toRemove.push(hash);
-          }
-          i++;
-        }
-        for (const hash of toRemove) {
-          this._hashes.delete(hash);
-        }
-      }
-      // Mirror the `_hashes` rollback for `_referencedAncestors`: remove
-      // only entries appended past the pre-attempt size. Same rationale --
-      // insertion-ordered Set iteration plus O(delta) memory -- and same
-      // best-effort caveat for concurrent sync that may have inserted into
-      // either set in parallel.
-      if (this._referencedAncestors.size > referencedAncestorsSizeBefore) {
-        const toRemoveRefs: string[] = [];
-        let j = 0;
-        for (const cid of this._referencedAncestors) {
-          if (j >= referencedAncestorsSizeBefore) {
-            toRemoveRefs.push(cid);
-          }
-          j++;
-        }
-        for (const cid of toRemoveRefs) {
-          this._referencedAncestors.delete(cid);
-        }
-      }
-      this._lastSyncMessage = lastSyncSnapshot;
-      this._documentChangeCount = changeCountSnapshot;
-      this._changesSinceSnapshot = compactionCountSnapshot;
-      this._recentTips = recentTipsSnapshot;
-      throw thrown;
+      await this._commitLocalChange(composedFn, message);
     } finally {
+      this._inTransaction = false;
+      this._pendingChangeFns = [];
       this._committing = false;
     }
-    if (failure) throw failure.error;
   }
 
   /**
    * Applies a new local change (defined by `changeFn`) to the peerborne document and updates
    * all peers.
-   * An oversized encrypted block retires the legacy instance before publication.
    * If `changeFn` throws, the call rejects. A coordinated document
    * (`peerborne.doc(path, { security })`) stages the edit on a private copy,
    * so the document is unchanged and nothing is published. Otherwise
    * Automerge discards the edit, and an in-place provider (Yjs, Loro)
    * publishes the edits made before the throw and then rethrows the original
-   * error. If committing that partial edit fails too (publication, a local
-   * handler or compaction), the call rejects with an `AggregateError` whose
-   * `errors` are the change function's error and the commit error.
+   * error. If committing that partial edit fails too, an `AggregateError`
+   * holds the change function's error and the commit error. The call rejects
+   * with it when the partial edit was kept, as described below, and otherwise
+   * retires the instance with it as the cause.
+   *
+   * The change is committed locally once its block is stored and it is in the
+   * retained change tree. When encrypting or publishing its frame then fails,
+   * for example because GossipSub has no topic peers, the call still
+   * resolves: the change stays in the document, the next change's frame
+   * carries it inline, and sync and load responses serve it. The failure is
+   * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
+   * update handler or compaction rejects the call but also keeps the change.
+   *
+   * A failure before that point (block storage, signing or the frame size
+   * check) discards the change, so no later change depends on an edit peers
+   * never received. The attempt's history bookkeeping is removed. Automerge
+   * outdates the document a change consumes, so the document before the call
+   * is restored as a writable copy from `CRDTProvider.cloneDocument()`, which
+   * makes later changes under a new actor. An in-place provider (Yjs, Loro)
+   * cannot undo its edit, and Automerge cannot copy a document that holds
+   * remote changes waiting for missing dependencies. In those cases the
+   * instance is retired: the call rejects with an error whose `cause` is the
+   * failure, and the instance refuses further work until it is reopened from
+   * accepted state, such as the last checkpoint exported before the failure.
+   * A change too large for one frame retires the instance with a
+   * `GossipFrameLimitError` instead.
    *
    * @param changeFn A function that makes changes to the current CRDT document.
    * @param message An optional change message/description to include.
@@ -9957,29 +9955,81 @@ export class PeerborneDocument<
       throw new Error('Cannot call change() during an active transaction. Use addChange() instead.');
     }
     await this._ensureCurrentUserCanWrite();
+    await this._commitLocalChange(changeFn, message);
+  }
+
+  /**
+   * Apply and publish a local change, discarding it when it fails before it
+   * reaches the retained tree. The state queue keeps remote syncs out of the
+   * attempt, and Sets iterate in insertion order, so the CIDs past each Set's
+   * earlier size are the attempt's own.
+   */
+  private async _commitLocalChange(changeFn: ChangeFnType, message?: string) {
     await this._prepareLocalActor();
-    const before = this._document;
+    const originalDocument = this._document;
+    const hashSizeBefore = this._hashes.size;
+    const referencedAncestorsSizeBefore = this._referencedAncestors.size;
+    const lastSyncSnapshot = this._lastSyncMessage;
+    const changeCountSnapshot = this._documentChangeCount;
+    const compactionCountSnapshot = this._changesSinceSnapshot;
+    const recentTipsSnapshot = [...this._recentTips];
 
     const { changes, failure } = this._applyLocalChange(changeFn, message);
     try {
-      await this._makeChange(
-        await this._authorOrDiscardLocalChange(changes, before),
-      );
+      await this._makeChange(await this._authorLocalChange(changes));
     } catch (error) {
-      const thrown =
+      const commitError =
         error instanceof GossipFrameLimitError
           ? this._retireAfterOversizedLocalChange(error)
           : error;
-      throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
+      const thrown = failure
+        ? partialChangeCommitFailure(failure.error, commitError)
+        : commitError;
+      if (this._lastSyncMessage !== lastSyncSnapshot) throw thrown;
+      deleteEntriesAfter(this._hashes, hashSizeBefore);
+      deleteEntriesAfter(
+        this._referencedAncestors,
+        referencedAncestorsSizeBefore,
+      );
+      this._lastSyncMessage = lastSyncSnapshot;
+      this._documentChangeCount = changeCountSnapshot;
+      this._changesSinceSnapshot = compactionCountSnapshot;
+      this._recentTips = recentTipsSnapshot;
+      throw this._restoreDocumentBeforeChange(originalDocument, thrown);
     }
     if (failure) throw failure.error;
   }
 
   /**
-   * A failed local change that the provider cannot roll back without losing
-   * state, such as Automerge changes waiting for missing dependencies, stays
-   * in the document unpublished. A later change would depend on it, so the
-   * instance is retired and must be reopened from accepted state.
+   * Return to `original` after a discarded local change, or retire the
+   * instance when no faithful copy exists. Returns the error to throw.
+   */
+  private _restoreDocumentBeforeChange(
+    original: DocType,
+    thrown: unknown,
+  ): unknown {
+    // A retired instance is closed and keeps its document.
+    if (this._oversizedEditClose) return thrown;
+    const copies = this._crdtProvider.cloneDocument !== undefined;
+    // A provider that copies returns its input only for an empty change. One
+    // that does not copy returned the document it edited in place.
+    if (this._document === original)
+      return copies ? thrown : this._retireAfterUnrecoverableRollback(thrown);
+    const restored = this._crdtProvider.cloneDocument
+      ? this._crdtProvider.cloneDocument(original)
+      : original;
+    if (restored === undefined)
+      return this._retireAfterUnrecoverableRollback(thrown);
+    this._document = restored;
+    return thrown;
+  }
+
+  /**
+   * A failed local change that the provider cannot roll back, because it
+   * edits in place (Yjs, Loro) or a copy would lose Automerge changes waiting
+   * for missing dependencies, stays in the document unpublished. A later
+   * change would depend on it, so the instance is retired and must be
+   * reopened from accepted state.
    */
   private _retireAfterUnrecoverableRollback(cause: unknown): Error {
     this._retirementReason =
@@ -10122,34 +10172,6 @@ export class PeerborneDocument<
       changes,
       encodeCRDTChangeAuthor({ ...registration, signature }),
     );
-  }
-
-  /**
-   * Author a local change, or discard it when it cannot be authored, such as a
-   * change function that applied operations made under another actor. Nothing
-   * was published, so a document the provider replaced returns to a writable
-   * copy of `before` under a new actor. A document edited in place cannot be
-   * restored, and the instance is retired, because later changes would build
-   * on an edit no peer can accept.
-   */
-  private async _authorOrDiscardLocalChange(
-    changes: ChangesType,
-    before: DocType,
-  ): Promise<ChangesType> {
-    try {
-      return await this._authorLocalChange(changes);
-    } catch (error) {
-      if (this._document !== before) {
-        const restored = this._crdtProvider.cloneDocument
-          ? this._crdtProvider.cloneDocument(before)
-          : before;
-        if (restored !== undefined) {
-          this._document = restored;
-          throw error;
-        }
-      }
-      throw this._retireAfterUnrecoverableRollback(error);
-    }
   }
 
   /** The current writers' signer authorities, whose bindings are kept longest. */

@@ -13,8 +13,10 @@ import {
   getDefaultConfig,
 } from './peerborne-config.js';
 import {
+  ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
+  PeerborneDocumentDeliveryFailureHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -188,8 +190,10 @@ export {
   PeerbornePeersHandler,
   DEFAULT_INVITATION_TTL_MS,
   PeerborneConfig,
+  ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
+  PeerborneDocumentDeliveryFailureHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,

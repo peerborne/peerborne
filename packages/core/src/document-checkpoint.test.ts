@@ -1,4 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
 import {
   assertCheckpointChangeHistory,
@@ -20,6 +22,7 @@ jest.mock(
 );
 
 const LIMIT = 100_000;
+const GC_CANDIDATE_LIMIT = 32_768;
 const cids = (count: number, prefix = 'cid-') =>
   Array.from({ length: count }, (_, index) => `${prefix}${index}`);
 
@@ -40,6 +43,7 @@ function state(
     hashes: ['cid-root'],
     ancestors: [],
     recentTips: [['cid-root', 'document']],
+    gcCandidates: [],
     documentChangeCount: 1,
     changesSinceSnapshot: 1,
     historyVisibility: 'full_history',
@@ -58,6 +62,7 @@ describe('document checkpoint state', () => {
       hashes: cids(LIMIT),
       ancestors: cids(LIMIT),
       recentTips: [['cid-1', 'document']],
+      gcCandidates: cids(GC_CANDIDATE_LIMIT, 'cid-pruned-'),
     });
     expect(decodeCheckpointState(encodeCheckpointState(value))).toEqual(value);
   });
@@ -78,6 +83,31 @@ describe('document checkpoint state', () => {
       { recentTips: [['cid-forgotten', 'document']] as [string, string][] },
       /Invalid checkpoint tip/,
     ],
+    [
+      'too many garbage collection candidates',
+      { gcCandidates: cids(GC_CANDIDATE_LIMIT + 1) },
+      /garbage collection candidate/,
+    ],
+    [
+      'a duplicate garbage collection candidate',
+      { gcCandidates: ['cid-pruned', 'cid-pruned'] },
+      /garbage collection candidate/,
+    ],
+    [
+      'a non-canonical garbage collection candidate',
+      { gcCandidates: ['cid-NotCanonical'] },
+      /Invalid checkpoint CID/,
+    ],
+    [
+      'a garbage collection candidate that is not a CID string',
+      { gcCandidates: [7] as unknown as string[] },
+      /Invalid checkpoint CID/,
+    ],
+    [
+      'no garbage collection candidates',
+      { gcCandidates: undefined },
+      /Invalid document checkpoint/,
+    ],
   ])('refuses to encode a state with %s', (_name, overrides, error) => {
     const value = state(overrides as Partial<DocumentCheckpointState>);
     expect(() => encodeCheckpointState(value)).toThrow(error);
@@ -85,6 +115,14 @@ describe('document checkpoint state', () => {
       decodeCheckpointState(new TextEncoder().encode(JSON.stringify(value))),
     ).toThrow(error);
   });
+
+  test('a restored checkpoint deletes blocks pruned before it was exported', async () => {
+    await promisify(execFile)(
+      process.execPath,
+      ['--test', `${__dirname}/document-checkpoint-gc.fixture.mjs`],
+      { timeout: 60_000 },
+    );
+  }, 70_000);
 
   test('round-trips a document field near the checkpoint size limit', () => {
     const documentBytes = new Uint8Array(4 * 1024 * 1024).map(

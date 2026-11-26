@@ -12,6 +12,7 @@ import {
   MAX_RECENT_TIPS,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
+import { canRetainGcCandidate } from './policy/retention.js';
 
 export const MAX_DOCUMENT_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const MAX_CHECKPOINT_CIDS = 100_000;
@@ -82,6 +83,7 @@ export interface DocumentCheckpointState {
   hashes: string[];
   ancestors: string[];
   recentTips: [string, string][];
+  gcCandidates: string[];
   documentChangeCount: number;
   changesSinceSnapshot: number;
   historyVisibility: 'full_history' | 'current_only' | 'since_invited';
@@ -181,6 +183,7 @@ export function decodeCheckpointState(
     'hashes',
     'ancestors',
     'recentTips',
+    'gcCandidates',
     'documentChangeCount',
     'changesSinceSnapshot',
     'historyVisibility',
@@ -259,6 +262,17 @@ export function decodeCheckpointState(
     }
     cid(entry[0]);
   });
+  array(state.gcCandidates);
+  const gcCandidates = new Set<string>();
+  for (const candidate of state.gcCandidates) {
+    cid(candidate);
+    if (
+      gcCandidates.has(candidate) ||
+      !canRetainGcCandidate(false, gcCandidates.size, candidate.length)
+    )
+      throw new TypeError('Invalid checkpoint garbage collection candidate');
+    gcCandidates.add(candidate);
+  }
   if (
     state.invitationEpoch !== null &&
     checkpointDecode(state.invitationEpoch).length !== 32
