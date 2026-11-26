@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
 import {
   assertCheckpointChangeHistory,
+  checkpointDecode,
   checkpointEncode,
   decodeCheckpointState,
   encodeCheckpointState,
@@ -121,6 +122,27 @@ describe('document checkpoint state', () => {
       { timeout: 60_000 },
     );
   }, 70_000);
+
+  test('round-trips a document field near the checkpoint size limit', () => {
+    const documentBytes = new Uint8Array(4 * 1024 * 1024).map(
+      (_, index) => index % 251,
+    );
+    const value = state({ document: checkpointEncode(documentBytes) });
+    const decoded = decodeCheckpointState(encodeCheckpointState(value));
+    expect(checkpointDecode(decoded.document)).toEqual(documentBytes);
+  });
+
+  test.each([
+    ['a misplaced padding character', 'AA=A'],
+    ['too much padding', 'A==='],
+    ['a character outside the alphabet', 'AA-A'],
+    ['non-canonical trailing bits', 'AB=='],
+    ['a length that is not a multiple of four', 'AAAAA'],
+  ])('rejects checkpoint bytes with %s', (_name, encoded) => {
+    expect(() => checkpointDecode(encoded)).toThrow(
+      'Invalid checkpoint byte encoding',
+    );
+  });
 });
 
 describe('checkpoint change history', () => {
