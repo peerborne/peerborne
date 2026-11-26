@@ -6,6 +6,7 @@ import {
   encodeEncryptedDocumentContent,
   splitDocumentPublication,
 } from './document-security-wire.js';
+import * as wire from './document-security-wire.js';
 import { testCRDT, testChanges } from './__testutils__/coordinated-document.js';
 import {
   coordinatedGroupFixture,
@@ -52,6 +53,12 @@ async function group(
   for (let index = 1; index < members; index++) await g.addMember(index);
   for (let index = 0; index < members; index++) await g.open(index);
   return g;
+}
+
+async function eventually(condition: () => boolean, ms = 30_000) {
+  for (const end = Date.now() + ms; !condition() && Date.now() < end; )
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  return condition();
 }
 
 async function settled(condition: () => boolean) {
@@ -516,13 +523,26 @@ describe('coordinated document delivery', () => {
       g.offline.delete(1);
       const frames = splitDocumentPublication(publication.data);
       const receiver = engine(g.doc(0));
+      const waiting = () =>
+        (receiver as unknown as { admittedFrames: Map<string, unknown> })
+          .admittedFrames.size;
       // A slice without the first frame overruns the author's held frames.
-      const slice = receiver.receive(concat(frames.slice(1)), 'outsider');
-      const genuine = receiver.receive(publication.data, 'writer');
+      const resume = blockVerification(g.auth);
+      let slice: Promise<boolean>, genuine: Promise<boolean>;
+      try {
+        slice = receiver.receive(concat(frames.slice(1)), 'outsider');
+        expect(await settled(() => waiting() === 99)).toBe(true);
+        genuine = receiver.receive(publication.data, 'writer');
+        expect(await settled(() => waiting() === 100)).toBe(true);
+      } finally {
+        resume();
+      }
       await expect(slice).rejects.toThrow('exceed their bound');
       await expect(genuine).resolves.toBe(true);
       const values = Array.from({ length: 100 }, (_, value) => value);
-      expect(await settled(() => g.doc(0).document.length === 100)).toBe(true);
+      expect(
+        await eventually(() => g.doc(0).document.length === 100),
+      ).toBe(true);
       expect(g.doc(0).document).toEqual(values);
       await g.doc(1).change(push(100));
       await expect(
@@ -579,18 +599,77 @@ describe('coordinated document delivery', () => {
       g.offline.delete(1);
       expect(await g.deliver(publication, [0])).toEqual([]);
       const receiver = engine(g.doc(0));
-      const start = performance.now();
-      const copies = Array.from({ length: 16 }, (_, index) =>
-        receiver.receive(publication.data, `r${index % 2}`),
-      );
-      expect(await Promise.all(copies)).toEqual(Array(16).fill(false));
-      // Under a second locally; comparing contexts for every frame took nine.
-      expect(performance.now() - start).toBeLessThan(5_000);
+      const retained = () =>
+        [
+          ...(
+            receiver as unknown as {
+              retained: { authors: Map<string, { observedAt: number }[]> };
+            }
+          ).retained.authors.values(),
+        ].flat();
+      const before = Date.now();
+      for (const frame of retained()) frame.observedAt = before - 1;
+      const contexts = jest.spyOn(wire, 'documentContextsMatch');
+      try {
+        const copies = Array.from({ length: 16 }, (_, index) =>
+          receiver.receive(publication.data, `r${index % 2}`),
+        );
+        expect(await Promise.all(copies)).toEqual(Array(16).fill(false));
+        // Contexts are compared a few times per copy, never per frame.
+        expect(contexts.mock.calls.length).toBeLessThanOrEqual(16 * 8);
+      } finally {
+        contexts.mockRestore();
+      }
+      // Each exact copy still refreshes redelivery suppression.
+      expect(retained().length).toBeGreaterThan(0);
+      for (const frame of retained())
+        expect(frame.observedAt).toBeGreaterThanOrEqual(before);
       expect(queued(g.doc(0))).toBe(0);
     } finally {
       await g.close();
     }
   }, 60_000);
+
+  test('serves a local edit between the frames of a received backlog', async () => {
+    const g = await group(2);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 1024; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      g.dispatch(publication, 0, 'writer');
+      await g.doc(0).change(push(-1));
+      // The edit did not wait for the backlog to drain.
+      expect(queued(g.doc(0))).toBeGreaterThan(0);
+      expect(g.doc(0).document.length).toBeLessThan(1025);
+      expect(
+        await eventually(() => g.doc(0).document.length === 1025),
+      ).toBe(true);
+      expect(g.doc(0).document.filter((value) => value !== -1)).toEqual(
+        Array.from({ length: 1024 }, (_, value) => value),
+      );
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('keeps junk redelivery requests off the local edit budgets', async () => {
+    const g = await group(2);
+    try {
+      await g.doc(1).change(push(0));
+      const [publication] = g.take();
+      const junk = Uint8Array.of(0x50, 0x42, 0x44, 2, 1, 2, 3);
+      // More than one document's local slots and the process's.
+      for (let index = 0; index < 80; index++)
+        g.dispatch({ topic: publication.topic, data: junk }, 0, `junk-${index}`);
+      await expect(g.doc(0).change(push(1))).resolves.toBeUndefined();
+      await expect(g.doc(1).change(push(2))).resolves.toBeUndefined();
+      expect(queued(g.doc(0))).toBe(0);
+    } finally {
+      await g.close();
+    }
+  });
 
   test('applies live edits sent while a reconnect backlog drains and keeps the author live', async () => {
     const g = await group(2, { subscribers: true });

@@ -225,7 +225,39 @@ function ownStagedPublication(
   return {
     id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
     bytes,
+    ...(value.replaces === undefined
+      ? {}
+      : {
+          replaces: copyUnsharedUint8Array(
+            value.replaces,
+            32,
+            32,
+            'replaced publication id',
+          ),
+        }),
   };
+}
+
+/**
+ * The queue a staged publication joins: without the publication it replaces,
+ * which must still be queued.
+ */
+function publicationBase(
+  publications: readonly JournalPublicationIndex[],
+  publication: DocumentJournalStagedPublication,
+): readonly JournalPublicationIndex[] {
+  if (publication.replaces === undefined) return publications;
+  const plan = requirePublicationPlan(
+    planJournalPublication(
+      publications,
+      publicationId(publication.replaces),
+      0,
+      false,
+    ),
+  );
+  if (plan.publications.length === publications.length)
+    throw new Error('Replaced document publication is not queued');
+  return plan.publications;
 }
 
 function staged(
@@ -250,7 +282,7 @@ function staged(
   if (publication)
     requirePublicationPlan(
       planJournalPublication(
-        publicationIndex(current.publications ?? []),
+        publicationBase(publicationIndex(current.publications ?? []), publication),
         publicationId(publication.id),
         publication.bytes,
         true,
@@ -310,7 +342,16 @@ function committed(
       MAX_DOCUMENT_JOURNAL_BYTES
   )
     throw new Error('Journal storage bound exceeded');
-  const before = current.publications ?? [];
+  const replaces = current.pending.publication?.replaces;
+  const before = (current.publications ?? []).filter(
+    (publication) =>
+      replaces === undefined || !documentBytesEqual(publication.id, replaces),
+  );
+  if (
+    replaces !== undefined &&
+    before.length === (current.publications ?? []).length
+  )
+    throw new Error('Replaced document publication is not queued');
   const publications = acceptedPublication
     ? [
         ...requirePublicationPlan(
@@ -323,7 +364,7 @@ function committed(
         ).retained.map((index) => before[index]),
         acceptedPublication,
       ]
-    : before;
+    : current.publications ?? [];
   return {
     revision: revision + 1,
     entries,
@@ -849,7 +890,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       if (ownedPublication)
         requirePublicationPlan(
           planJournalPublication(
-            head.publications,
+            publicationBase(head.publications, ownedPublication),
             publicationId(ownedPublication.id),
             ownedPublication.bytes,
             true,
@@ -938,7 +979,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             const publications = publication
               ? requirePublicationPlan(
                   planJournalPublication(
-                    head.publications,
+                    publicationBase(head.publications, reservation!),
                     publicationId(publication.id),
                     publication.frame.length,
                     true,
@@ -950,6 +991,10 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             if (checkpoint)
               for (const old of head.revisions)
                 transaction.objectStore('entries').delete([key, old]);
+            if (reservation?.replaces)
+              transaction
+                .objectStore('publications')
+                .delete([key, publicationId(reservation.replaces)]);
             if (publication)
               transaction
                 .objectStore('publications')

@@ -9,6 +9,7 @@ import { createGroupSecurityDurableAcceptance } from '../../core/src/group-secur
 import type { GroupSecurityDelivery } from '../../core/src/group-security-coordinator.js';
 import {
   DocumentDivergedError,
+  DocumentPublicationBacklogError,
   type DocumentMemberAuthority,
 } from '../../core/src/coordinated-document.js';
 import { documentBytesId } from '../../core/src/internal/document-binary.js';
@@ -771,3 +772,131 @@ test.each([false, true])(
   },
   30_000,
 );
+
+test('T7: a re-sign interrupted while it drains a full outbox loses no edit across a restart', async () => {
+  const { g, online } = await setup([]);
+  try {
+    // Two large edits fill each of the 15 rows local edits may use.
+    for (let index = 0; index < 30; index++) {
+      const payload = blob(380_000);
+      await expect(
+        g.doc(1).change((draft: any) => {
+          draft[`big${index}`] = payload;
+        }),
+      ).rejects.toThrow('Document change committed');
+    }
+    const engine = g.doc(1)._coordinated;
+    const journal = engine.options.journal;
+    expect(await journal.pendingPublications()).toHaveLength(15);
+    const step = await rotate(g, { role: 2 });
+    online();
+    await g.coordinators[1].applyCommit(step.delivery.commit!, step.delivery.controlRecord, []);
+    const original = engine.apply;
+    const document = g.doc(1);
+    let resigns = 0;
+    let closing: Promise<void> | undefined;
+    engine.apply = async function (...args: unknown[]) {
+      if (args[4] !== undefined && ++resigns === 5) closing = document.close();
+      return original.apply(this, args);
+    };
+    await document.applySecurityAuthorityUpdate(step.record).catch(() => {});
+    await closing;
+    // No retired frame left the outbox before its re-signed copy was durable.
+    const frames = (await journal.pendingPublications()).flatMap(
+      splitDocumentPublication,
+    );
+    expect(frames.length).toBeGreaterThanOrEqual(30);
+    await g.open(1);
+    await g.doc(1).retrySecurityPublications();
+    const errors: string[] = [];
+    await flush(g, errors);
+    await g.doc(1).change(set('after'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(
+      [...Array.from({ length: 30 }, (_, index) => `big${index}`), 'after'].sort(),
+    );
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 120_000);
+
+test('T8: a restricted writer re-signs a large offline backlog after a restart with unchanged grants', async () => {
+  const { g, online } = await setup([]);
+  try {
+    const errors: string[] = [];
+    await applyAt1(g, await restrict(g, [['a']]));
+    await g.doc(0).change((draft: any) => {
+      draft.a = {};
+    });
+    for (const publication of g.take())
+      errors.push(...(await g.deliver(publication, [1])));
+    for (let frame = 0; frame < 260; frame++)
+      await expect(
+        g.doc(1).change((draft: any) => {
+          for (let key = 0; key < 200; key++) draft.a[`k${frame}_${key}`] = key;
+        }),
+      ).rejects.toThrow('Document change committed');
+    await g.doc(1).close();
+    await g.open(1);
+    const own = g.doc(1)._coordinated.own.frames;
+    expect(own).toHaveLength(260);
+    expect(
+      own.filter((frame: any) =>
+        frame.paths.some((path: string[]) => path.length === 0),
+      ),
+    ).toEqual([]);
+    const step = await restrict(g, [['a']]);
+    online();
+    expect(await applyAt1(g, step)).toEqual({
+      resent: 260,
+      waiting: 0,
+      skipped: 0,
+      dropped: 0,
+      diverged: false,
+    });
+    await g.doc(1).retrySecurityPublications();
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(Object.keys(read(g.doc(0).document).a)).toHaveLength(260 * 200);
+    await g.doc(1).close();
+    await g.open(1);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 180_000);
+
+test('refuses an offline edit whose paths no checkpoint could carry exactly, and resumes after delivery', async () => {
+  const { g, online } = await setup([]);
+  try {
+    const wide = (prefix: string) => (draft: any) => {
+      for (let key = 0; key < 1000; key++)
+        draft[`${prefix}${key}${'x'.repeat(300)}`] = 1;
+    };
+    let accepted = 0,
+      refusal: unknown;
+    for (let round = 0; round < 20 && refusal === undefined; round++) {
+      try {
+        await g.doc(1).change(wide(`r${round}_`));
+      } catch (error) {
+        if ((error as Error).message.startsWith('Document change committed'))
+          accepted++;
+        else refusal = error;
+      }
+    }
+    // Each edit records about 300 KiB of paths against the 4 MiB budget.
+    expect(accepted).toBe(13);
+    expect(refusal).toBeInstanceOf(DocumentPublicationBacklogError);
+    online();
+    await g.doc(1).retrySecurityPublications();
+    const errors: string[] = [];
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    await g.doc(1).change(wide('later_'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toHaveLength(14_000);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 120_000);

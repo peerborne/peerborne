@@ -85,26 +85,29 @@ retired context commits its successor itself, so it published all its frames
 there while that context was current for every member. It carries only the
 frames still in its outbox, and a member that missed one catches up from the
 controller's checkpoint. Duplicates are harmless
-because native CRDT changes are idempotent. The document keeps its author's
-latest 16,448 own frames, enough for a full outbox of 16 publications of 1,024
-frames, within 32 MiB of deltas and recorded paths and apart from the shared
-retention pool. Each own frame is found inside a coalesced publication by its
-encryption nonce, which its journal entry records. After a restart the document
-rebuilds its own frames from the journal entries since its last checkpoint and
-from the checkpoint itself, which carries every unsent own frame whose entry
-it folds: its context, sequence, nonce, native delta and recorded paths. The
-first 4 MiB of carried paths are exact; later frames carry the whole document.
+because native CRDT changes are idempotent. The document keeps every unsent own
+frame, and beside them its author's latest sent frames, up to 16,448 frames and
+32 MiB of deltas and recorded paths, apart from the shared retention pool. Each
+own frame is found inside a coalesced publication by its encryption nonce,
+which its journal entry records. After a restart the document rebuilds its own
+frames from the journal entries since its last checkpoint and from the
+checkpoint itself, which carries every unsent own frame whose entry it folds:
+its context, sequence, nonce, native delta and exact recorded paths. The paths
+of unsent frames count against 4 MiB as the journal encodes them, so a local
+edit that would exceed it fails before commit with
+`DocumentPublicationBacklogError`, as a full outbox does.
 
 Re-signed frames join the outbox's tail publication like local edits. A
 retired frame leaves the outbox only after its re-signed copy is accepted: its
 publication is rewritten in place without it, and removed once it holds no
 frame. A retry never sends a retired publication. It keeps it queued while it
 holds a frame that can still be re-signed, including before the new roles
-arrive, and otherwise drops it and reports its frames. When the outbox has no
-room for a re-signed frame, the retired publication holding the next frames is
-removed first if every frame in it is queued, and they are re-signed from
-memory. Other frames wait and are re-signed as publication frees space. After a
-restart, frames whose retired publication is still queued are queued again. A
+arrive, and otherwise drops it and reports its frames. Local edits leave one
+of the journal's 16 rows free, and re-signs may use it, so a full retired
+outbox drains in order: each re-signed frame joins the new tail publication in
+the commit that replaces it, and the retired publication it came from then
+shrinks. A frame whose re-sign fails transiently waits. After a restart,
+frames whose retired publication is still queued are queued again. A
 new local edit natively depends on every waiting frame, so it first re-signs
 them, and fails with `DocumentPublicationBacklogError` if it cannot. Any other
 failure leaves the queue in place. A re-sign failure never
@@ -162,9 +165,9 @@ denied under any grants. An unrestricted author re-signs it unchecked.
 
 Receivers admit re-signed frames through normal admission, including their
 own field-scope checks. A document opened without a publication outbox does
-not re-sign. Waiting frames whose retired publication was removed for room are
-kept only in memory, and a restart before they are re-signed can lose their
-delivery. A member that joins in the
+not re-sign. A document without a journal has no row to spare, so when its
+process-local outbox is full a retired publication whose frames are all queued
+is removed first and re-signed from memory. A member that joins in the
 new context gets earlier content from the controller checkpoint.
 
 ## Resume with a controller checkpoint
@@ -224,7 +227,7 @@ and merge costs still depend on the document and adapter.
 
 The application relays the messages and retains identity, trust roots and the
 independent rollback anchor across restart. This profile leaves peer discovery,
-control-message delivery, re-signs whose retired publication was removed for room at a restart, and recovery
+control-message delivery and recovery
 after key or anchor loss to the application.
 
 ## Native field write scopes
@@ -378,9 +381,11 @@ document author at a time; independent offline branches using the same member
 ID are detected as conflicting prefixes rather than merged.
 
 Received publications wait in their own queue, separate from the 16 local
-operations and 16 MiB a document admits, and every frame they carry is charged
-twice its ciphertext size, covering the plaintext that pre-authentication keeps
-for its turn. A document queues at most 49,152 frames and 96 MiB of charged
+operations and 16 MiB a document admits. Received work runs the document's
+waiting local edits and publication bookkeeping before each frame from another
+author, so a received backlog never delays them. Every frame they carry is
+charged twice its ciphertext size, covering the plaintext that
+pre-authentication keeps for its turn. A document queues at most 49,152 frames and 96 MiB of charged
 bytes, and all coordinated documents in a process at most 131,072 frames and
 192 MiB. One GossipSub sender may hold 20,480 frames and 40 MiB of a document's
 queue, which covers one full outbox backlog plus live edits sent while it
@@ -454,6 +459,11 @@ newly starts waiting. While frames stay held, requests back off from 5 s to
 30 s. Otherwise one goes out every 30-60 s. `requestSecurityRedelivery()`
 sends one at once. A document sends at most one request every 2.5 s.
 
+A request is authenticated outside the document queue and charged against the
+received bounds and its sender's share, never the local operation budget, so
+requests from outsiders cannot hold up local edits. A fresh request no newer
+than the member's last is refused before its signature is checked.
+
 A current member that authenticates the request resends, on the topic, the
 exact encrypted frames it retains after each of the requester's heads. It
 does so only when it holds the complete suffix, its own frame at that head has
@@ -503,11 +513,10 @@ removes it from the outbox; this is transport handoff, **not** a durable peer
 receipt. A publication that reports no topic recipients, as GossipSub does
 while no peer has joined the topic, stays in the outbox with every later one.
 Each new local frame is appended to the last queued publication while it fits
-in a replacement publication, and the superseded one is removed after the
-replacement commits; a copy left by a crash only repeats accepted frames, which
-receivers drop before any signature check. The journal stages a replacement
-beside the row it replaces, so one of its 16 rows stays free for that staging.
-Offline editing therefore continues until 15 publications, about 15 MiB of
+in a replacement publication, which replaces the superseded one in the commit
+that accepts the frame. Local edits leave one of the journal's 16 rows free for
+re-signing a retired outbox, so offline editing continues until 15
+publications, about 15 MiB of
 unsent ciphertext, are queued. Whether a frame fits is decided by its actual
 size, and the outbox is read only when its tail is unknown, such as after a
 restart or a delivery. Beyond that bound, a change fails before visible commit
@@ -577,9 +586,8 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Redelivery beyond the retained window, re-signs whose retired publication was
-removed for room across a restart, and epoch-fork reconciliation remain future
-work. The controller
+Redelivery beyond the retained window and epoch-fork reconciliation remain
+future work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

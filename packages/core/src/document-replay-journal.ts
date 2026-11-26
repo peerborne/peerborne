@@ -53,6 +53,8 @@ export interface DocumentJournalPublication {
 export interface DocumentJournalStagedPublication {
   readonly id: Uint8Array;
   readonly bytes: number;
+  /** A queued publication the accepted one replaces in the same commit. */
+  readonly replaces?: Uint8Array;
 }
 export interface DocumentJournalRecoverySnapshot {
   readonly revision: number;
@@ -131,6 +133,11 @@ export interface DocumentJournalItem {
   readonly frameNonce?: Uint8Array;
   /** Only on checkpoints: the unsent local frames whose entries they fold. */
   readonly carriedFrames?: ReadonlyArray<DocumentJournalCarriedFrame>;
+  /**
+   * A queued publication that `outboundFrame` replaces when the entry is
+   * accepted. It is not stored with the entry.
+   */
+  readonly replacesPublication?: Uint8Array;
 }
 /** An unsent local frame a checkpoint keeps re-signable after folding its entry. */
 export interface DocumentJournalCarriedFrame {
@@ -151,8 +158,12 @@ const DOMAIN = Uint8Array.from(
 );
 /** Frames a checkpoint carries: a full outbox of 16 publications of 1,024 frames, and its own. */
 export const MAX_DOCUMENT_JOURNAL_CARRIED_FRAMES = 16 * 1024 + 1;
-/** Encoded bound of carried frames: an outbox of changes, 4 MiB of paths and framing. */
-const MAX_CARRIED_BYTES = 24 * 1024 * 1024;
+/**
+ * Encoded bound of carried frames: an outbox of changes and the frame being
+ * written, twice the 4 MiB of unsent paths for a re-sign in progress, and
+ * framing.
+ */
+const MAX_CARRIED_BYTES = 26 * 1024 * 1024;
 const MAX_SNAPSHOT = 64 * 1024 * 1024,
   MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024 + MAX_CARRIED_BYTES;
 export const DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD = 32;
@@ -752,6 +763,21 @@ export class DocumentReplayJournal {
             1024 * 1024,
             'outbound document frame',
           );
+    const replaced =
+      item.replacesPublication === undefined
+        ? undefined
+        : await digest(
+            copyUnsharedUint8Array(
+              item.replacesPublication,
+              1,
+              1024 * 1024,
+              'replaced document frame',
+            ),
+          );
+    const replacedBinding =
+      replaced && this.pendingPublicationBindings.get(documentBytesId(replaced));
+    if (replaced && (!outboundFrame || !replacedBinding))
+      throw new Error('Replaced document publication is not queued');
     if (
       !this.opened ||
       this.failed ||
@@ -775,18 +801,16 @@ export class DocumentReplayJournal {
         outboundFrame === undefined
           ? undefined
           : { token: crypto.getRandomValues(new Uint8Array(32)), revision };
+      const kept = [...this.pendingPublicationBindings.values()].filter(
+        (value) => value !== replacedBinding,
+      );
       const bindings = checkpoint
-        ? [
-            ...this.pendingPublicationBindings.values(),
-            ...(binding ? [binding] : []),
-          ]
+        ? [...kept, ...(binding ? [binding] : [])]
         : binding
           ? [binding]
           : [];
       if (checkpoint) {
-        const pending = [...this.pendingPublicationBindings.values()].map(
-          (value) => documentBytesId(value.token),
-        );
+        const pending = kept.map((value) => documentBytesId(value.token));
         if (!canRetainDocumentPublicationBindings(beforeBindings, pending, 16))
           throw new Error('Invalid pending publication bindings');
         candidateBindings = retainDocumentPublicationBindings(
@@ -843,6 +867,7 @@ export class DocumentReplayJournal {
         publication && {
           id: publication.id.slice(),
           bytes: publication.bytes,
+          ...(replaced ? { replaces: replaced.slice() } : {}),
         },
         checkpoint,
       );
@@ -875,6 +900,8 @@ export class DocumentReplayJournal {
                 candidateBindings,
                 true,
               );
+            if (replaced)
+              this.pendingPublicationBindings.delete(documentBytesId(replaced));
             if (publication && binding)
               this.pendingPublicationBindings.set(
                 documentBytesId(publication.id),
