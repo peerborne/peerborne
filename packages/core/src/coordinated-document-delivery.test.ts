@@ -466,6 +466,69 @@ describe('coordinated document delivery', () => {
     }
   }, 60_000);
 
+  test('gives a dropped copy another turn when the waiting frame it matched is neither applied nor held', async () => {
+    const g = await group(2);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 100; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      const frames = splitDocumentPublication(publication.data);
+      const receiver = engine(g.doc(0));
+      // A slice without the first frame overruns the author's held frames.
+      const slice = receiver.receive(concat(frames.slice(1)), 'outsider');
+      const genuine = receiver.receive(publication.data, 'writer');
+      await expect(slice).rejects.toThrow('exceed their bound');
+      await expect(genuine).resolves.toBe(true);
+      const values = Array.from({ length: 100 }, (_, value) => value);
+      expect(await settled(() => g.doc(0).document.length === 100)).toBe(true);
+      expect(g.doc(0).document).toEqual(values);
+      await g.doc(1).change(push(100));
+      await expect(
+        receiver.receive(g.take().at(-1)!.data, 'writer'),
+      ).resolves.toBe(true);
+      expect(g.doc(0).document).toEqual([...values, 100]);
+    } finally {
+      await g.close();
+    }
+  }, 60_000);
+
+  test('releases each copy’s charge as soon as admission recognizes it', async () => {
+    const g = await group(3);
+    try {
+      g.offline.add(1);
+      for (let value = 0; value < 1024; value++)
+        await g.doc(1).change(push(value));
+      const publication = g.take().at(-1)!;
+      g.offline.delete(1);
+      expect(await g.deliver(publication, [0])).toEqual([]);
+      await g.doc(2).change(push(-2));
+      const [other] = g.take();
+      const receiver = engine(g.doc(0));
+      const copies: Promise<unknown>[] = [];
+      for (let index = 0; index < 48; index++)
+        copies.push(
+          receiver.receive(publication.data, `r${index % 3}`).catch((e) => e),
+        );
+      expect(queued(g.doc(0))).toBe(48 * 1024);
+      // Charges come back frame by frame, not a whole publication at a time.
+      expect(
+        await settled(() => {
+          const frames = queued(g.doc(0));
+          return frames > 0 && frames % 1024 !== 0;
+        }),
+      ).toBe(true);
+      await expect(receiver.receive(other.data, 'member-2')).resolves.toBe(
+        true,
+      );
+      expect(await Promise.all(copies)).toEqual(Array(48).fill(false));
+      expect(queued(g.doc(0))).toBe(0);
+    } finally {
+      await g.close();
+    }
+  }, 110_000);
+
   test('applies live edits sent while a reconnect backlog drains and keeps the author live', async () => {
     const g = await group(2, { subscribers: true });
     try {

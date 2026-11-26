@@ -269,10 +269,13 @@ the current document key and authority head, and all of them must come from one
 author with consecutive sequences, so input from a non-member is released
 within one decryption per frame. Frames below the author's accepted sequence,
 the accepted frame itself, and copies of a frame that is already waiting or
-held are dropped then, without a signature check. Copies are matched by author,
-sequence and content hash, so a member's forged frame cannot shadow the genuine
-one, and a different frame at the accepted sequence is still verified and
-reported as equivocation. The decrypted plaintext of the remaining frames is
+held are dropped then, without a signature check, and each releases its charge
+as soon as it is recognized. Copies are matched by author, sequence and content
+hash, so a member's forged frame cannot shadow the genuine one, and a different
+frame at the accepted sequence is still verified and reported as equivocation.
+If a waiting frame whose copy was dropped is then neither applied nor held, for
+example because it arrived in a slice without its predecessor, it is charged
+again and takes another turn after the publications already queued. The decrypted plaintext of the remaining frames is
 reused. A refused publication is not retained: the author's later frames wait
 as held frames until the missing ones are delivered again.
 

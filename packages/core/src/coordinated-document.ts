@@ -235,7 +235,19 @@ interface AdmittedFrame {
   readonly plaintext: Uint8Array;
   readonly context: GroupSecurityDocumentContext;
   readonly aad: Uint8Array;
-  release(): void;
+  readonly author: string;
+  readonly sequence: number;
+  readonly hash: Uint8Array;
+  /**
+   * Release the frame's charge. A frame that was not applied or held, whose
+   * copies admission dropped while it waited, is returned for another turn.
+   */
+  release(processed: boolean): boolean;
+}
+
+interface WaitingFrame {
+  // A copy was dropped because this frame was already waiting.
+  copied: boolean;
 }
 
 // A replacement publication must still fit beside 15 full ones in the
@@ -329,7 +341,7 @@ export class CoordinatedDocument<
   );
   private readonly senders = new Map<string, ReceivedFrameBudget>();
   // Admitted frames waiting for their turn, by author, sequence and hash.
-  private readonly admittedFrames = new Map<string, number>();
+  private readonly admittedFrames = new Map<string, WaitingFrame>();
   // The last queued publication; null when the outbox is known to be empty.
   private outboxTail: OutboxTail | null | undefined;
   private deriving?: {
@@ -661,24 +673,42 @@ export class CoordinatedDocument<
         const accepted = await admitted;
         this.assertUsable();
         this.assertActivated();
-        let applied = false;
-        for (const value of accepted) {
+        let applied = false,
+          failed = false,
+          failure: unknown,
+          stopped = accepted.length;
+        const retry: AdmittedFrame[] = [];
+        for (const [index, value] of accepted.entries()) {
+          let processed = false;
           try {
-            if (await this.receiveOwned(value.frame, value)) applied = true;
+            if (
+              !this.delivered(value) &&
+              (await this.receiveOwned(value.frame, value))
+            )
+              applied = true;
+            processed = true;
           } catch (error) {
-            if (!applied) throw error;
-            break;
+            failed = true;
+            failure = error;
+            stopped = index + 1;
           } finally {
-            value.release();
+            if (value.release(processed)) retry.push(value);
           }
+          if (failed) break;
         }
+        for (const value of accepted.slice(stopped))
+          if (value.release(false)) retry.push(value);
+        // A copy that admission dropped behind one of these frames gets the
+        // turn this one lost, after the publications that carried it.
+        if (retry.length !== 0) this.retryFrames(retry);
+        if (failed && !applied) throw failure;
         return applied;
       });
       const settled = result.finally(() => {
         release();
         void admitted.then(
           (values) => {
-            for (const value of values) value.release();
+            for (const value of values) value.release(false);
           },
           () => {},
         );
@@ -764,13 +794,14 @@ export class CoordinatedDocument<
   /**
    * Pre-authenticate a publication before it waits for its turn: every frame
    * must decrypt under the current epoch and binding, and all of them must
-   * come from one author with consecutive sequences. Frames below the
-   * author's accepted sequence, the accepted frame itself, and copies of a
-   * frame already waiting or held are released and dropped without a
-   * signature check. Copies are matched by author, sequence and content
-   * hash, so a forged frame cannot shadow the genuine one, and a different
-   * frame at the accepted sequence still goes on to be reported as
-   * equivocation.
+   * come from one author with consecutive sequences. A frame the author
+   * already delivered, a held frame, or a copy of a frame already waiting is
+   * released as soon as it is identified and dropped without a signature
+   * check. Copies are matched by author, sequence and content hash, so a
+   * forged frame cannot shadow the genuine one, and a different frame at the
+   * accepted sequence still goes on to be reported as equivocation. A dropped
+   * copy of a waiting frame is not lost: if that frame is then neither
+   * applied nor held, it takes another turn.
    */
   private async admitFrames(
     frames: readonly Uint8Array[],
@@ -783,7 +814,12 @@ export class CoordinatedDocument<
       author: string;
       sequence: number;
       hash: Uint8Array;
+      id: string;
+      released: boolean;
     }> = [];
+    const covered = (value: (typeof decoded)[number]) =>
+      this.delivered({ ...value, context }) ||
+      this.admittedFrames.has(value.id);
     for (const [index, frame] of frames.entries()) {
       const envelope = decodeEncryptedDocumentContent(frame);
       if (!documentBytesEqual(envelope.epochTag, key.material.epochTag))
@@ -817,54 +853,121 @@ export class CoordinatedDocument<
         throw new Error(
           'Document publication frames must be one author’s consecutive sequences',
         );
-      decoded.push({
+      const hash = new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          unsigned as Uint8Array<ArrayBuffer>,
+        ),
+      );
+      const value = {
         plaintext,
         author,
         sequence: content.sequence,
-        hash: new Uint8Array(
-          await crypto.subtle.digest(
-            'SHA-256',
-            unsigned as Uint8Array<ArrayBuffer>,
-          ),
-        ),
-      });
+        hash,
+        id: `${author}:${content.sequence}:${documentBytesId(hash)}`,
+        released: false,
+      };
+      // A copy stops holding queue capacity as soon as it is recognized.
+      if (covered(value)) {
+        releaser(index)();
+        value.released = true;
+      }
+      decoded.push(value);
     }
     // Decide and register synchronously, so concurrent copies of one
     // publication keep exactly one whole instance.
-    const accepted = this.receiptsAt(context).get(decoded[0].author);
     const admitted: AdmittedFrame[] = [];
     for (const [index, value] of decoded.entries()) {
       const release = releaser(index);
-      const id = `${value.author}:${value.sequence}:${documentBytesId(value.hash)}`;
-      const acceptedSequence = accepted?.sequence ?? 0;
-      if (
-        value.sequence < acceptedSequence ||
-        (value.sequence === acceptedSequence &&
-          documentBytesEqual(value.hash, accepted!.hash)) ||
-        this.admittedFrames.has(id) ||
-        this.isHeld(value.author, value.sequence, value.hash)
-      ) {
+      const waiting = this.admittedFrames.get(value.id);
+      if (waiting || this.delivered({ ...value, context })) {
+        if (waiting) waiting.copied = true;
         release();
         continue;
       }
-      this.admittedFrames.set(id, (this.admittedFrames.get(id) ?? 0) + 1);
+      const entry: WaitingFrame = { copied: false };
+      this.admittedFrames.set(value.id, entry);
       let done = false;
       admitted.push({
         frame: frames[index],
         plaintext: value.plaintext,
         context,
         aad: key.aad,
-        release: () => {
-          if (done) return;
+        author: value.author,
+        sequence: value.sequence,
+        hash: value.hash,
+        release: (processed) => {
+          if (done) return false;
           done = true;
           release();
-          const count = (this.admittedFrames.get(id) ?? 1) - 1;
-          if (count === 0) this.admittedFrames.delete(id);
-          else this.admittedFrames.set(id, count);
+          if (this.admittedFrames.get(value.id) === entry)
+            this.admittedFrames.delete(value.id);
+          return !processed && entry.copied;
         },
       });
     }
     return admitted;
+  }
+
+  /** Whether a frame was already accepted, or is held, at its context. */
+  private delivered(value: {
+    context: GroupSecurityDocumentContext;
+    author: string;
+    sequence: number;
+    hash: Uint8Array;
+  }): boolean {
+    if (
+      !documentContextsMatch(
+        value.context,
+        this.options.coordinator.documentContext,
+      )
+    )
+      return false;
+    const accepted = this.receiptsAt(value.context).get(value.author);
+    const sequence = accepted?.sequence ?? 0;
+    return (
+      value.sequence < sequence ||
+      (value.sequence === sequence &&
+        documentBytesEqual(value.hash, accepted!.hash)) ||
+      this.isHeld(value.author, value.sequence, value.hash)
+    );
+  }
+
+  /**
+   * Give frames another turn at the end of the queue. They are charged again;
+   * frames that find no capacity are dropped.
+   */
+  private retryFrames(frames: readonly AdmittedFrame[]): void {
+    const releases: Array<() => void> = [];
+    const release = () => {
+      for (const value of releases.splice(0).reverse()) value();
+    };
+    try {
+      for (const value of frames) {
+        releases.push(aggregateInbound.reserve(2 * value.frame.length));
+        releases.push(this.inbound.reserve(2 * value.frame.length));
+      }
+    } catch {
+      release();
+      return;
+    }
+    const result = this.tail
+      .then(async () => {
+        for (const value of frames) {
+          this.assertUsable();
+          if (this.delivered(value)) continue;
+          try {
+            await this.receiveOwned(value.frame, value);
+          } catch {
+            // Its later frames are still tried and may be held as gaps.
+          }
+        }
+      })
+      .finally(release);
+    this.tail = result.then(
+      () => {},
+      () => {},
+    );
   }
 
   private isHeld(author: string, sequence: number, hash: Uint8Array): boolean {
