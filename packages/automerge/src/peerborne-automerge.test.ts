@@ -2,8 +2,10 @@ import { describe, expect, test, beforeAll, jest } from '@jest/globals';
 import { createECDH } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
+  mergeACLChanges,
   retryACLConflict,
   snapshotDeepEnumerableData,
 } from '@peerborne/core';
@@ -1437,7 +1439,7 @@ describe('AutomergeACL', () => {
     ]) {
       const replica = new AutomergeACL();
       replica.merge(base);
-      for (const changes of order) replica.merge(changes);
+      expect(mergeACLChanges(replica, order)).toEqual([]);
       expect(await replica.check(key2)).toBe(false);
       expect(await replica.check(key1)).toBe(true);
       replica.merge(next);
@@ -1480,7 +1482,7 @@ describe('AutomergeACL', () => {
       [history, removal],
     ].map((deliveries) => {
       const acl = new AutomergeACL();
-      for (const changes of deliveries) acl.merge(changes);
+      expect(mergeACLChanges(acl, deliveries)).toEqual([]);
       return acl;
     });
     for (const acl of replicas) {
@@ -1563,8 +1565,12 @@ describe('AutomergeACL', () => {
       expect(await acl.check(key1)).toBe(true);
     }
     const reversed = new AutomergeACL();
-    for (const change of [...founder.current()].reverse())
-      reversed.merge([change]);
+    expect(
+      mergeACLChanges(
+        reversed,
+        [...founder.current()].reverse().map((change) => [change]),
+      ),
+    ).toEqual([]);
     expect([...reversed.current()].sort()).toEqual(history);
     expect(await reversed.check(key2)).toBe(false);
     expect(await reversed.check(key1)).toBe(true);
@@ -1878,11 +1884,12 @@ describe('AutomergeACL', () => {
     const additionChild = await additionSender.prepareAdd(key2);
     const additionReceiver = new AutomergeACL();
 
-    additionReceiver.merge(additionChild.changes);
-    await expect(additionReceiver.check(key2)).rejects.toThrow(
-      /unresolved change dependencies/i,
+    expect(() => additionReceiver.merge(additionChild.changes)).toThrow(
+      ACLMergeDependencyError,
     );
+    expect(await additionReceiver.check(key2)).toBe(false);
     additionReceiver.merge(additionParent);
+    additionReceiver.merge(additionChild.changes);
     expect(await additionReceiver.check(key1)).toBe(true);
     expect(await additionReceiver.check(key2)).toBe(true);
 
@@ -1891,11 +1898,9 @@ describe('AutomergeACL', () => {
     const removalChild = await removalSender.prepareRemove(key1);
     const removalReceiver = new AutomergeACL();
 
-    removalReceiver.merge(removalChild.changes);
-    await expect(removalReceiver.check(key1)).rejects.toThrow(
-      /unresolved change dependencies/i,
-    );
-    removalReceiver.merge(removalParent);
+    expect(
+      mergeACLChanges(removalReceiver, [removalChild.changes, removalParent]),
+    ).toEqual([]);
     expect(await removalReceiver.check(key1)).toBe(false);
   });
 
@@ -2005,12 +2010,14 @@ describe('AutomergeACL', () => {
     });
     const receiver = new AutomergeACL();
 
-    receiver.merge(getAutomergeChanges(noncanonicalBase, noncanonicalWithMember));
+    expect(() =>
+      receiver.merge(
+        getAutomergeChanges(noncanonicalBase, noncanonicalWithMember),
+      ),
+    ).toThrow(ACLMergeDependencyError);
 
-    await expect(receiver.check(key1)).rejects.toThrow(
-      /unresolved change dependencies.*complete ACL history/i,
-    );
-    expect(() => receiver.current()).toThrow(/unresolved change dependencies/i);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(receiver.current()).toEqual([]);
   });
 
   test('allows valid child-before-parent delivery once dependencies arrive', async () => {
@@ -2019,12 +2026,20 @@ describe('AutomergeACL', () => {
     const collaboratorChanges = await sender.add(key2);
     const receiver = new AutomergeACL();
 
-    receiver.merge(collaboratorChanges);
-    await expect(receiver.users()).rejects.toThrow(
-      /unresolved change dependencies/i,
-    );
+    let refusal: unknown;
+    try {
+      receiver.merge(collaboratorChanges);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(ACLMergeDependencyError);
+    const { ready } = refusal as ACLMergeDependencyError;
+    expect(ready?.()).toBe(false);
+    expect(await receiver.users()).toEqual([]);
 
     receiver.merge(founderChanges);
+    expect(ready?.()).toBe(true);
+    receiver.merge(collaboratorChanges);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
@@ -2057,19 +2072,20 @@ describe('AutomergeACL', () => {
     expect(acl.merge(acl.current())).toBe(false);
   });
 
-  test('merge() reports queued changes that leave the ACL incomplete', async () => {
+  test('merge() refuses changes that would leave the ACL incomplete', async () => {
     const sender = new AutomergeACL();
     const founderChanges = await sender.add(key1);
     const collaboratorChanges = await sender.add(key2);
     const receiver = new AutomergeACL();
 
-    expect(receiver.merge(collaboratorChanges)).toBe(true);
-    expect(receiver.merge(collaboratorChanges)).toBe(false);
-    await expect(receiver.users()).rejects.toThrow(
-      /unresolved change dependencies/i,
+    expect(() => receiver.merge(collaboratorChanges)).toThrow(
+      ACLMergeDependencyError,
     );
+    expect(receiver.current()).toEqual([]);
 
     expect(receiver.merge(founderChanges)).toBe(true);
+    expect(receiver.merge(collaboratorChanges)).toBe(true);
+    expect(receiver.merge(collaboratorChanges)).toBe(false);
     expect(await receiver.check(key2)).toBe(true);
   });
 
@@ -2118,11 +2134,11 @@ describe('AutomergeACL', () => {
     const valid = automergeChange(automergeClone(predecessor), (doc) => {
       delete doc.users[serialized1];
     });
-    receiver.merge(getAutomergeChanges(predecessor, valid));
-    await expect(receiver.check(key1)).rejects.toThrow(
-      /unresolved change dependencies/,
-    );
+    const removal = getAutomergeChanges(predecessor, valid);
+    expect(() => receiver.merge(removal)).toThrow(ACLMergeDependencyError);
+    expect(receiver.current()).toEqual(before);
     receiver.merge(getAllAutomergeChanges(predecessor));
+    receiver.merge(removal);
     expect(await receiver.check(key1)).toBe(false);
     expect(await receiver.check(key2)).toBe(true);
   });
@@ -2158,12 +2174,14 @@ describe('AutomergeACL', () => {
     expect(receiver.current()).toEqual(before);
 
     const half = MAX_AUTOMERGE_ACL_MEMBERS / 2;
-    receiver.merge(addKeys(extraKeys.slice(0, half)));
+    const firstHalf = addKeys(extraKeys.slice(0, half));
+    expect(() => receiver.merge(firstHalf)).toThrow(ACLMergeDependencyError);
+    receiver.merge(getAllAutomergeChanges(predecessor));
+    receiver.merge(firstHalf);
     expect(() => receiver.merge(addKeys(extraKeys.slice(half)))).toThrow(
       `${MAX_AUTOMERGE_ACL_MEMBERS}-member limit`,
     );
 
-    receiver.merge(getAllAutomergeChanges(predecessor));
     expect(await receiver.check(key2)).toBe(true);
     expect(receiver.current()).toHaveLength(4);
   });
@@ -2195,11 +2213,11 @@ describe('AutomergeACL', () => {
       receiver.merge(getAutomergeChanges(founder, invalidValue)),
     ).toThrow(/membership values must be true/);
 
-    receiver.merge(getAutomergeChanges(founder, valid));
-    await expect(receiver.check(key1)).rejects.toThrow(
-      /unresolved change dependencies/,
-    );
+    const addition = getAutomergeChanges(founder, valid);
+    expect(() => receiver.merge(addition)).toThrow(ACLMergeDependencyError);
+    expect(await receiver.check(key2)).toBe(false);
     receiver.merge(founderChanges);
+    receiver.merge(addition);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
@@ -2244,20 +2262,17 @@ describe('AutomergeACL', () => {
     expect(batched.current()).toEqual([]);
 
     const receiver = new AutomergeACL();
-    expect(receiver.merge(first.creation)).toBe(true);
-    expect(receiver.merge(first.creation)).toBe(false);
-    expect(() => receiver.merge(second.creation)).toThrow(
-      /conflicting users roots/,
+    expect(() => receiver.merge(first.creation)).toThrow(
+      ACLMergeDependencyError,
     );
-    expect(() => receiver.merge(first.predecessor)).toThrow(
-      /requires the canonical users root/,
-    );
-    await expect(receiver.check(key1)).rejects.toThrow(
-      /unresolved change dependencies/,
-    );
+    expect(() =>
+      receiver.merge([...first.predecessor, ...first.creation]),
+    ).toThrow(/requires the canonical users root/);
+    expect(receiver.current()).toEqual([]);
+    expect(await receiver.check(key1)).toBe(false);
   });
 
-  test('a new dependency-incomplete change still stales prepared removal', async () => {
+  test('a refused dependency-incomplete change leaves a prepared removal current', async () => {
     const receiver = new AutomergeACL();
     await receiver.add(key1);
     const prepared = await receiver.prepareRemove(key1);
@@ -2265,17 +2280,13 @@ describe('AutomergeACL', () => {
     await sender.add(key2);
     const dependent = await sender.add(key1);
 
-    receiver.merge(dependent);
+    expect(() => receiver.merge(dependent)).toThrow(ACLMergeDependencyError);
 
-    expect(() => prepared.commit()).toThrow(
-      'ACL changed while removal was staged',
-    );
-    expect(() => receiver.current()).toThrow(
-      /unresolved change dependencies/,
-    );
+    prepared.commit();
+    expect(await receiver.check(key1)).toBe(false);
   });
 
-  test('does not authorize across a merge that introduces missing dependencies', async () => {
+  test('authorizes against the complete ACL while a dependency-incomplete change is refused', async () => {
     const receiver = new AutomergeACL();
     await receiver.add(key1);
     const sender = new AutomergeACL();
@@ -2301,12 +2312,12 @@ describe('AutomergeACL', () => {
     try {
       const authorization = receiver.check(key1);
       await started;
-      receiver.merge(dependentChanges);
+      expect(() => receiver.merge(dependentChanges)).toThrow(
+        ACLMergeDependencyError,
+      );
       releaseExport();
 
-      await expect(authorization).rejects.toThrow(
-        /unresolved change dependencies/,
-      );
+      await expect(authorization).resolves.toBe(true);
     } finally {
       exportSpy.mockRestore();
     }
