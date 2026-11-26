@@ -1,5 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
+import { BeeKEM } from './beekem/beekem.js';
 import type { BeeKEMWelcomeV2 } from './beekem/types.js';
+import { assertInitialInvitationBeeKEMWelcomeShape } from './invitation-capacity.js';
 import { PeerborneDocument } from './peerborne-document.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -129,6 +131,7 @@ describe('reader membership preflight', () => {
         { reader: true },
         JSON.stringify({ reader: true }),
         await validKemPublicKey(),
+        false,
       );
 
       if (rejects) {
@@ -143,7 +146,7 @@ describe('reader membership preflight', () => {
     },
   );
 
-  test('key projection failure precedes ACL and BeeKEM mutation', async () => {
+  test('key projection failure precedes a Welcome resend', async () => {
     const readerKemPublicKey = await validKemPublicKey();
     const prepareAdd = jest.fn();
     const makeChange = jest.fn();
@@ -153,11 +156,11 @@ describe('reader membership preflight', () => {
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
       _beekem: {
-        memberCount: 1,
+        memberCount: 2,
         hasLiveLeafWithPublicKey: jest.fn(async () => false),
       },
       _readers: {
-        check: jest.fn(async () => false),
+        check: jest.fn(async () => true),
         users: jest.fn(async () => []),
         prepareAdd,
       },
@@ -185,34 +188,26 @@ describe('reader membership preflight', () => {
     const welcome = { generation: 1 };
     const keychainChangesForWelcome = jest.fn(async () => ({ key: true }));
     const sendBeeKEMWelcome = jest.fn(async () => undefined);
+    const install = jest.fn();
+    const makeChange = jest.fn();
     const document = fakeDocument({
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
-      _beekem: {
-        memberCount: 1,
-        hasLiveLeafWithPublicKey: jest.fn(async () => false),
-      },
+      _beekem: { memberCount: 2 },
       _readers: {
-        check: jest.fn(async () => false),
-        users: jest.fn(async () => []),
-        prepareAdd: jest.fn(async () => ({
-          changes: { acl: true },
-          claimCommit: () => ({ finalize: () => undefined }),
-          commit: jest.fn(),
-        })),
+        check: jest.fn(async () => true),
+        users: jest.fn(async () => [reader]),
+        prepareAdd: jest.fn(),
       },
       _changesSerializer: {
         serializeChanges: jest.fn(() => serializedProjection),
       },
       _keychainChangesForWelcome: keychainChangesForWelcome,
-      _makeChange: jest.fn(async () => {
+      _makeChange: makeChange,
+      _prepareBeeKEMReaderRegistration: jest.fn(async () => {
         serializedProjection.fill(9);
+        return { welcome, install };
       }),
-      _readerPublicationsInFlight: 0,
-      _prepareBeeKEMReaderRegistration: jest.fn(async () => ({
-        welcome,
-        install: () => undefined,
-      })),
       _sendBeeKEMWelcome: sendBeeKEMWelcome,
     });
 
@@ -220,6 +215,9 @@ describe('reader membership preflight', () => {
       welcome,
     );
     expect(keychainChangesForWelcome).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(makeChange).not.toHaveBeenCalled();
+    expect(document._readers.prepareAdd).not.toHaveBeenCalled();
     expect(sendBeeKEMWelcome).toHaveBeenCalledWith(
       reader,
       readerKemPublicKey,
@@ -228,7 +226,7 @@ describe('reader membership preflight', () => {
     );
   });
 
-  test('rejects base64-expanded Welcome capacity before mutation', async () => {
+  test('rejects base64-expanded Welcome capacity before a resend', async () => {
     const readerKemPublicKey = await validKemPublicKey();
     const prepareAdd = jest.fn();
     const makeChange = jest.fn();
@@ -238,11 +236,11 @@ describe('reader membership preflight', () => {
       _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
       _beekemInitialized: true,
       _beekem: {
-        memberCount: 1,
+        memberCount: 2,
         hasLiveLeafWithPublicKey: jest.fn(async () => false),
       },
       _readers: {
-        check: jest.fn(async () => false),
+        check: jest.fn(async () => true),
         users: jest.fn(async () => []),
         prepareAdd,
       },
@@ -287,8 +285,13 @@ describe('reader membership preflight', () => {
     });
 
     await expect(
-      document.addReader({ replacement: true }, readerKemPublicKey),
-    ).rejects.toThrow(/replacement readers are not supported/);
+      document._addReaderUnlocked(
+        { replacement: true },
+        JSON.stringify({ replacement: true }),
+        readerKemPublicKey,
+        false,
+      ),
+    ).rejects.toThrow(/replacement reader can join only after the founder/);
     expect(keychainChangesForWelcome).not.toHaveBeenCalled();
     expect(prepareAdd).not.toHaveBeenCalled();
     expect(makeChange).not.toHaveBeenCalled();
@@ -319,7 +322,12 @@ describe('reader membership preflight', () => {
     });
 
     await expect(
-      document.addReader({ reader: true }, readerKemPublicKey),
+      document._addReaderUnlocked(
+        { reader: true },
+        JSON.stringify({ reader: true }),
+        readerKemPublicKey,
+        false,
+      ),
     ).rejects.toThrow(/already owned by a live BeeKEM leaf/);
 
     expect(hasLiveLeafWithPublicKey).toHaveBeenCalledWith(
@@ -355,7 +363,12 @@ describe('reader membership preflight', () => {
     });
 
     await expect(
-      document.addReader({ reader: true }, founderKemPublicKey),
+      document._addReaderUnlocked(
+        { reader: true },
+        JSON.stringify({ reader: true }),
+        founderKemPublicKey,
+        false,
+      ),
     ).rejects.toThrow(/matches the founder's BeeKEM leaf/);
 
     expect(prepareAdd).not.toHaveBeenCalled();
@@ -544,5 +557,149 @@ describe('reader membership preflight', () => {
     expect(document._readerKemPublicKeys.get('reader')).toEqual(
       readerKemPublicKey,
     );
+  });
+});
+
+describe('direct reader onboarding', () => {
+  test('addReader rejects an identity that is not already a reader before any onboarding work', async () => {
+    const readersUsers = jest.fn(async () => []);
+    const prepareAdd = jest.fn();
+    const keychainChangesForWelcome = jest.fn();
+    const prepareBeeKEMReaderRegistration = jest.fn();
+    const sendBeeKEMWelcome = jest.fn();
+    const document = fakeDocument({
+      _ensureCurrentUserCanWrite: jest.fn(async () => undefined),
+      _beekemInitialized: false,
+      _beekem: null,
+      _createdLocally: true,
+      _kemKeyPair: undefined,
+      _readers: {
+        check: jest.fn(async () => false),
+        users: readersUsers,
+        prepareAdd,
+      },
+      _keychainChangesForWelcome: keychainChangesForWelcome,
+      _prepareBeeKEMReaderRegistration: prepareBeeKEMReaderRegistration,
+      _sendBeeKEMWelcome: sendBeeKEMWelcome,
+    });
+
+    await expect(
+      document.addReader({ reader: true }, await validKemPublicKey()),
+    ).rejects.toThrow(
+      /cannot onboard a new identity.*createInvitation\(\).*acceptInvitation\(\)/,
+    );
+    expect(readersUsers).not.toHaveBeenCalled();
+    expect(prepareAdd).not.toHaveBeenCalled();
+    expect(keychainChangesForWelcome).not.toHaveBeenCalled();
+    expect(prepareBeeKEMReaderRegistration).not.toHaveBeenCalled();
+    expect(sendBeeKEMWelcome).not.toHaveBeenCalled();
+  });
+});
+
+describe('revoked founder tree replacement', () => {
+  async function kemKeyPair(): Promise<CryptoKeyPair> {
+    return (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+  }
+
+  async function revokedTree(founder: CryptoKeyPair): Promise<BeeKEM> {
+    const tree = new BeeKEM();
+    await tree.initialize(founder.privateKey, founder.publicKey);
+    const { welcome } = await tree.addMember((await kemKeyPair()).publicKey);
+    await tree.removeMember(welcome.leafIndex);
+    return tree;
+  }
+
+  async function founderDocument(fields: Record<string, unknown> = {}) {
+    const founder = await kemKeyPair();
+    const tree = await revokedTree(founder);
+    const document = fakeDocument({
+      _createdLocally: true,
+      _beekemInitialized: true,
+      _beekem: tree,
+      _kemKeyPair: founder,
+      _kemPublicKeyRaw: new Uint8Array(
+        await crypto.subtle.exportKey('raw', founder.publicKey),
+      ),
+      _readerKemPublicKeys: new Map(),
+      _readerLeafIndices: new Map(),
+      _beekemWelcomeByLeaf: new Map(),
+      ...fields,
+    });
+    return { document, tree };
+  }
+
+  test('starts a fresh founder-plus-one tree once every remote leaf is revoked', async () => {
+    const { document, tree } = await founderDocument();
+    expect(tree.memberCount).toBe(2);
+    expect(tree.hasOnlyLocalLiveLeaf()).toBe(true);
+    expect(document._invitationBeeKEMMemberCount()).toBe(1);
+
+    const replacementKem = await validKemPublicKey();
+    const prepared = await document._prepareBeeKEMReaderRegistration(
+      'replacement',
+      replacementKem,
+    );
+    const welcome = prepared.welcome as BeeKEMWelcomeV2;
+    expect(() =>
+      assertInitialInvitationBeeKEMWelcomeShape(welcome),
+    ).not.toThrow();
+    expect(document._beekem).toBe(tree);
+
+    prepared.install();
+    expect(document._beekem).not.toBe(tree);
+    expect(document._beekem.memberCount).toBe(2);
+    expect(document._beekem.hasOnlyLocalLiveLeaf()).toBe(false);
+    expect(await document._beekem.findLeafByPublicKey(replacementKem)).toBe(2);
+    expect(document._readerLeafIndices.get('replacement')).toBe(2);
+    expect(tree.hasOnlyLocalLiveLeaf()).toBe(true);
+  });
+
+  test('rejects the founder KEM key for the replacement leaf', async () => {
+    const { document, tree } = await founderDocument();
+
+    await expect(
+      document._prepareBeeKEMReaderRegistration(
+        'replacement',
+        new Uint8Array(document._kemPublicKeyRaw),
+      ),
+    ).rejects.toThrow(/matches the founder's BeeKEM leaf/);
+    expect(document._beekem).toBe(tree);
+  });
+
+  test.each([
+    ['a replica that did not found the document', { _createdLocally: false }],
+    [
+      'a retained identity binding',
+      { _readerKemPublicKeys: new Map([['removed', new Uint8Array(65)]]) },
+    ],
+    [
+      'a retained leaf binding',
+      { _readerLeafIndices: new Map([['removed', 2]]) },
+    ],
+  ] as const)('keeps the revoked tree for %s', async (_label, fields) => {
+    const { document } = await founderDocument(fields);
+    expect(document._canReplaceRevokedFounderTree()).toBe(false);
+    expect(document._invitationBeeKEMMemberCount()).toBe(2);
+  });
+
+  test('keeps a tree whose remote leaf is still live', async () => {
+    const founder = await kemKeyPair();
+    const tree = new BeeKEM();
+    await tree.initialize(founder.privateKey, founder.publicKey);
+    await tree.addMember((await kemKeyPair()).publicKey);
+    const document = fakeDocument({
+      _createdLocally: true,
+      _beekemInitialized: true,
+      _beekem: tree,
+      _readerKemPublicKeys: new Map(),
+      _readerLeafIndices: new Map(),
+      _beekemWelcomeByLeaf: new Map(),
+    });
+    expect(document._canReplaceRevokedFounderTree()).toBe(false);
+    expect(document._invitationBeeKEMMemberCount()).toBe(2);
   });
 });

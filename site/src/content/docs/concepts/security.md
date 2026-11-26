@@ -97,26 +97,26 @@ or separately verify the issuer fingerprint.
 
 ### Reader/writer ACL
 
-Each document has an access control list with two roles:
+Each document has an access control list with two roles, reader and writer.
+Grant a role to another identity with a
+[signed invitation](../../cookbook/invitations/). The founder installs its KEM
+key pair and creates the offer; the recipient accepts it with its own signing
+identity and KEM key pair:
 
 ```ts
-// Grant read access (the second argument is the reader's raw
-// SEC1-uncompressed P-256 ECDH public key bytes)
-await document.addReader(peerSigningPublicKey, readerKemPublicKeyBytes);
+await document.setKemKeyPair(kemKeyPair);
+const offer = await document.createInvitation({
+  role: 'reader',
+  rendezvous: [founderCircuitAddress],
+});
 
 // Promote an existing explicit reader to write access
 await document.addWriter(peerSigningPublicKey);
 ```
 
-Before calling `addReader`, a founder node must set its KEM key pair:
-
-```ts
-await document.setKemKeyPair(kemKeyPair);
-```
-
-- **Readers** receive recipient-sealed keychain material through Welcome onboarding and decrypt content for epochs whose keys they hold. `addReader()` requires the recipient's KEM public key and rejects a call without it before changing the ACL.
-- **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so onboard it with `addReader(peerSigningPublicKey, readerKemPublicKeyBytes)` before promotion. The identity-to-KEM binding is held in memory by the document instance that added the reader, so readers added before a restart cannot currently be promoted. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
-- Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas. A retried ACL change can leave two additions of the same identity in the history, because a publication rejected after delivery is rolled back only locally. When a removal observes only one of them, the Automerge ACL applies the removal on every replica, and a later addition that observes the removal restores the identity.
+- **Readers** receive recipient-sealed keychain material through the Welcome in a signed invitation acceptance and decrypt content for epochs whose keys they hold. `addReader()` cannot onboard a new identity: a recipient with only a KEM key pair cannot authenticate a broadcast Welcome or decrypt the reader ACL row that admits it, so it could never open the document. It rejects any identity that is not already a reader before changing the ACL, and only resends the Welcome to an existing reader.
+- **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so invite it as a `reader` before promotion, or invite it as an `editor`. The identity-to-KEM binding is kept by the founder document instance and its checkpoints. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
+- Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas. The roles converge, but the content need not: edits made concurrently with your own demotion remain only on your replica. Every replica that applied the demotion rejects them, the demoted replica keeps them permanently, and nothing signals the divergence. A retried ACL change can leave two additions of the same identity in the history, because a publication rejected after delivery is rolled back only locally. When a removal observes only one of them, the Automerge ACL applies the removal on every replica, and a later addition that observes the removal restores the identity.
 - **Ordinary document sync signing is configurable.** Initial loads, security advertisements, and BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 Where the receiving operation verifies a sync-message signature, that
@@ -320,6 +320,12 @@ What exists:
 ```ts
 await document.removeReader(revokedPeerSigningPublicKey);
 ```
+Once the founder has removed its only collaborator, it can invite a
+replacement. The replacement joins a fresh founder-plus-one tree, because no
+remaining member depends on the revoked one. The removal already rotated the
+document key, so the removed member cannot read anything written after it.
+Each completed `removeReader()` also invalidates every offer issued before it.
+
 `removeReader` generates and distributes BeeKEM PathUpdates internally as part
 of the operation. This key-rotation delivery is best-effort; an update may not
 reach every surviving member. Receivers reject skipped generations, stale

@@ -139,6 +139,15 @@ export interface CreateInvitationOptions {
   rendezvous: readonly string[];
   /** Offer lifetime: 60 seconds to seven days; defaults to 15 minutes. */
   expiresInMs?: number;
+  /**
+   * Runs after the claimant's membership is committed locally and before the
+   * acceptance that delivers the document key is signed and returned. Persist
+   * a local checkpoint here: if the founder stops after the claimant has the
+   * key but before its membership is stored, a restored founder has no record
+   * of that collaborator and cannot revoke it. A rejection withholds the
+   * acceptance; the claimant's exact retry runs this again.
+   */
+  beforeAcceptance?: () => Promise<void>;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -551,6 +560,8 @@ export class Peerborne<
         PublicKey,
         DocumentKey
       >;
+      readerRevocationCount: number;
+      beforeAcceptance?: () => Promise<void>;
       replayGuard: InMemoryInvitationReplayGuard;
       acceptanceCoordinator:
         InMemoryInvitationAcceptanceCoordinator<InvitationAcceptanceV1>;
@@ -837,7 +848,9 @@ export class Peerborne<
       if (
         this._invitationRegistry.get(offerKey) !== registration ||
         this._documentRegistry.get(registration.document.documentPath) !==
-          registration.document
+          registration.document ||
+        registration.document.readerRevocationCount !==
+          registration.readerRevocationCount
       ) {
         if (this._invitationRegistry.get(offerKey) === registration) {
           this._invitationRegistry.delete(offerKey);
@@ -908,6 +921,11 @@ export class Peerborne<
             offer.role,
             assertCanMutate,
           );
+        const { beforeAcceptance } = registration;
+        if (beforeAcceptance) {
+          await beforeAcceptance();
+          assertRegistrationAvailable();
+        }
         const now = Date.now();
         const expiresAtMs = invitationAcceptanceExpiresAt(
           offer.expiresAtMs,
@@ -1407,6 +1425,13 @@ export class Peerborne<
     if (options.role !== 'reader' && options.role !== 'editor') {
       throw new Error('Invitation role must be "reader" or "editor"');
     }
+    const beforeAcceptance = options.beforeAcceptance;
+    if (
+      beforeAcceptance !== undefined &&
+      typeof beforeAcceptance !== 'function'
+    ) {
+      throw new TypeError('Invitation beforeAcceptance must be a function');
+    }
 
     const signatureProvider = this._invitationSignatureProvider();
     const serializePublicKey = signatureProvider.serializePublicKey;
@@ -1445,6 +1470,8 @@ export class Peerborne<
     this._invitationRegistry.set(offerKey, {
       offer: registeredOffer,
       document,
+      readerRevocationCount: document.readerRevocationCount,
+      beforeAcceptance,
       replayGuard: new InMemoryInvitationReplayGuard(),
       acceptanceCoordinator:
         new InMemoryInvitationAcceptanceCoordinator(),

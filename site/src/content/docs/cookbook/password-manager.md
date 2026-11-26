@@ -1,6 +1,6 @@
 ---
 title: Encrypted shared secrets store
-description: Assess the password-manager source example and the incomplete distinct-identity onboarding flow.
+description: Assess the password-manager source example and why it cannot share a vault with another identity.
 ---
 
 **Status: Browser-local vault recovery is tested; sharing and distributed revocation remain incomplete.**
@@ -58,35 +58,26 @@ A deployable application must generate, authenticate, persist, restore, and back
 - a stable **ECDH P-256** KEM key pair whose private key permits `deriveBits`, for encrypted BeeKEM Welcomes;
 - document epoch keys and membership state needed for recovery.
 
-The application, not Peerborne, owns identity binding and recovery. Exchange the recipient's signing public key and raw 65-byte SEC1-uncompressed KEM public key over an authenticated out-of-band channel. A pasted, unauthenticated key is vulnerable to substitution.
+The application, not Peerborne, owns identity binding and recovery. Bind the recipient's signing public key to the intended person over an authenticated out-of-band channel. A pasted, unauthenticated key is vulnerable to substitution.
 
-## Correct onboarding sequence
+## Sharing with another identity
 
-**Status: Illustrative core sequence; not an end-to-end application recipe.** The direct document API has the necessary shape:
-
-```ts
-const kemKeyPair = await crypto.subtle.generateKey(
-  { name: 'ECDH', namedCurve: 'P-256' },
-  true,
-  ['deriveBits'],
-);
-
-await recipientDocumentRef.setKemKeyPair(kemKeyPair);
-const recipientKemRaw = recipientDocumentRef.getKemPublicKeyRaw();
-
-await ownerDocumentRef.addReader(recipientIdentityPublicKey, recipientKemRaw);
-await ownerDocumentRef.addWriter(recipientIdentityPublicKey);
-```
-
-Each participant must call `setKemKeyPair` on the relevant document ref before receiving Welcomes or administering BeeKEM membership. Add the recipient as a reader with `addReader(identity, kemRaw)` before granting writer status; `addReader` requires the KEM bytes.
+**Status: Not supported by this example.** Peerborne shares a document with
+another identity only through a [signed invitation](../invitations/).
+`addReader(identity, kemRaw)` cannot onboard a new identity: a recipient that
+has only installed a KEM key pair cannot authenticate the broadcast Welcome or
+decrypt the reader ACL row that admits it, so it could never open the
+document, while that row would take the document's single collaborator slot.
+`addReader` therefore rejects any identity that is not already a reader before
+changing the ACL. Invitations require the attested Automerge capacity profile,
+which the bundled Yjs adapter does not declare, so this Yjs example cannot
+share a vault.
 
 The example restores its persistent KEM identity before opening each document
-and shows its public half on the Settings page. Its permissions table requires
-a new member's signing public key and raw KEM public key, both base64, before
-membership changes, so the owner sends a recipient-sealed Welcome. Its Chromium
-test promotes a reader to editor in one browser. The example has no recipient
-flow that opens the shared secret afterwards, so no two-browser test proves
-that a second identity receives the Welcome and decrypts the document.
+and shows its public half on the Settings page. Its permissions table lists
+the members and changes the role of an existing member; entering a key that is
+not already a member shows that the example cannot add one. Its Chromium tests
+cover that refusal and the last-editor guard.
 
 ## Safer implementation checklist
 
@@ -95,7 +86,7 @@ that a second identity receives the Welcome and decrypts the document.
 - Persist and restore signing keys and P-256 KEM keys without logging or exposing private material.
 - Bind both public keys to the intended human through an authenticated channel.
 - Install KEM state on every opened document before invitation handling.
-- Add a reader with signing identity plus raw KEM key; only then add writer rights if needed.
+- Share through an invitation on a provider profile that supports it, and store a checkpoint from `beforeAcceptance`.
 - Confirm the recipient decrypts and edits in a two-browser, two-identity test.
 - Test dropped, replayed, delayed, and out-of-order Welcome and PathUpdate messages.
 - Test restart before and after invitation, removal, and key rotation.

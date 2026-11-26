@@ -67,13 +67,42 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   document or stopping its node makes all of its offers unavailable.
 - **Reader onboarding supports founder plus one active collaborator.** A
   second active reader is rejected because add-side BeeKEM PathUpdate delivery
-  for larger groups is not implemented or verified. Both `addReader` and the
-  bounded invitation path support the first collaborator and exact retries for
-  that identity, not a replacement after revocation.
+  for larger groups is not implemented or verified. The bounded invitation path
+  supports the first collaborator, exact retries for that identity, and a
+  replacement once the founder has removed its only collaborator. The
+  replacement joins a fresh founder-plus-one BeeKEM tree; the removal already
+  rotated the document key, so the removed member cannot read anything written
+  after it. Every offer issued before a completed `removeReader()` becomes
+  unavailable, so a stale link cannot claim the freed slot.
+- **`addReader()` cannot onboard a new identity.** A recipient that has only a
+  KEM key pair cannot authenticate a broadcast Welcome or decrypt the reader
+  ACL row that would admit it, so it could never open the document. `addReader`
+  therefore rejects any identity that is not already a reader before changing
+  the ACL or BeeKEM state, and only resends the Welcome to an existing reader.
+  Share a document through an invitation. Invitations require the attested
+  Automerge capacity profile, which the bundled Yjs and Loro adapters do not
+  declare, so an application built on them, including the password-manager
+  example, has no supported way to share a document with another identity.
 - **Initial invitations require founder authority.** Note can restore its
-  founding browser from an encrypted local checkpoint and issue a fresh offer.
-  A collaborator that loaded the document cannot issue an offer, even if its
-  signing identity is a writer. Founder and recipient identities must be distinct.
+  founding browser from an encrypted local checkpoint and issue a fresh offer
+  while the note has no active collaborator, including after the founder
+  removed one. A founder restored from a checkpoint that still records a
+  collaborator can remove it but cannot invite until it restores a checkpoint
+  taken after that removal. A collaborator that loaded the document cannot
+  issue an offer, even if its signing identity is a writer. Founder and
+  recipient identities must be distinct.
+- **A founder that stops during acceptance can lose its record of the
+  collaborator.** If the founder process stops after an acceptance delivers the
+  document key but before the application stores a checkpoint that records the
+  new member, a founder restored from its earlier checkpoint has no record of
+  that collaborator. The collaborator keeps the current document key and can
+  read every later founder edit; the founder cannot list or remove it, and the
+  founder rejects the collaborator's edits. A checkpoint commitment pin does
+  not help, because the last pinned checkpoint predates the acceptance. Store a
+  checkpoint from `createInvitation({ beforeAcceptance })`, which runs before
+  the acceptance is signed; Note does. A founder restored from that checkpoint
+  can remove the collaborator. Without it, only a later key rotation, such as
+  removing another member, excludes the collaborator.
 - **Invitation bootstraps are bounded to one attested provider profile.** The
   bundled Automerge JSON CRDT, ACL, and keychain adapters with P-384/SHA-384
   SubtleCrypto declare the profile that Peerborne tests. Other providers reject
@@ -102,6 +131,13 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   rejected by the invitation path.
 - **Ordinary document signing is configurable.** With `enableSigning: false`, ordinary sync and snapshot signature gates are disabled for peers holding the needed document key. Initial loads, security advertisements, and BeeKEM membership-control messages remain writer-signed, and invitation creation and acceptance are rejected.
 - **Writer ACL admin is unguarded.** Any existing writer can add or remove other writers. There is no document owner concept or admin-only privilege.
+- **Edits made concurrently with your own demotion remain only on your
+  replica.** If an editor keeps editing while a partitioned writer removes its
+  writer role, every replica that has applied the removal rejects those edits.
+  After the partition heals the replicas agree on the ACL, but the demoted
+  editor's own replica keeps the rejected edits permanently. Nothing signals
+  the divergence and nothing repairs it; the replicas show different content
+  from then on.
 - **The ACL chain is not wired into document synchronization.** The standalone
   `ACLChain` implementation has focused tests, but `PeerborneDocument` still
   authorizes an outer envelope against its current local writer set before

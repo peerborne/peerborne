@@ -376,6 +376,7 @@ export class PeerborneNoteSession {
       offer = await document.createInvitation({
         role,
         rendezvous: [rendezvous],
+        beforeAcceptance: () => this.persistDocument(),
       });
     } catch (error) {
       throw new NoteSharingError(
