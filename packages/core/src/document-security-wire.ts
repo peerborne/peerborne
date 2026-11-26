@@ -220,6 +220,22 @@ export function splitDocumentPublication(value: Uint8Array): Uint8Array[] {
   return frames;
 }
 
+/** The nonce of one encrypted frame, unique to it within its author's outbox. */
+export function documentFrameNonce(frame: Uint8Array): Uint8Array {
+  const header = copyUnsharedUint8Array(
+    frame.subarray(0, ENCRYPTED_HEADER_BYTES),
+    ENCRYPTED_HEADER_BYTES,
+    ENCRYPTED_HEADER_BYTES,
+    'document frame header',
+  );
+  if (!documentBytesEqual(header.subarray(0, 4), ENCRYPTED_MAGIC))
+    throw new TypeError('Invalid encrypted document domain');
+  return header.slice(
+    4 + DOCUMENT_SECURITY_EPOCH_TAG_BYTES,
+    ENCRYPTED_HEADER_BYTES - 4,
+  );
+}
+
 /** The routing epoch tag of a publication's first encrypted frame. */
 export function documentFrameEpochTag(publication: Uint8Array): Uint8Array {
   const header = copyUnsharedUint8Array(

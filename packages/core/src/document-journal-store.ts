@@ -53,6 +53,24 @@ function publicationIndex(
   }));
 }
 
+/** The queue with publication `id` replaced in its position by `next`. */
+function replacedPublicationIndex(
+  publications: readonly JournalPublicationIndex[],
+  id: string,
+  next: JournalPublicationIndex,
+): JournalPublicationIndex[] {
+  const position = publications.findIndex((value) => value.id === id);
+  if (position === -1) throw new Error('Document publication is not queued');
+  if (publications.some((value) => value.id === next.id && value.id !== id))
+    throw new Error('Document publication is already queued');
+  const result = publications.map((value, index) =>
+    index === position ? { id: next.id, bytes: next.bytes } : value,
+  );
+  if (result.reduce((sum, value) => sum + value.bytes, 0) > 16 * 1024 * 1024)
+    throw new DocumentJournalCapacityError();
+  return result;
+}
+
 function requirePublicationPlan(
   plan: JournalPublicationPlan,
 ): JournalPublicationPlan {
@@ -423,6 +441,27 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
   }
   async delete(key: string): Promise<void> {
     this.documents.delete(key);
+  }
+  async replacePublication(
+    key: string,
+    id: Uint8Array,
+    publication: DocumentJournalPublication,
+  ): Promise<void> {
+    const ownId = copyUnsharedUint8Array(id, 32, 32, 'publication id'),
+      next = ownPublication(publication),
+      current = cloneInMemory(this.documents.get(key)),
+      before = current.publications ?? [];
+    replacedPublicationIndex(
+      publicationIndex(before),
+      publicationId(ownId),
+      { id: publicationId(next.id), bytes: next.frame.length },
+    );
+    this.documents.set(key, {
+      ...current,
+      publications: before.map((value) =>
+        documentBytesEqual(value.id, ownId) ? next : value,
+      ),
+    });
   }
   async discard(key: string, token: Uint8Array): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
@@ -962,6 +1001,27 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         },
         key,
       );
+    });
+  }
+
+  replacePublication(
+    key: string,
+    id: Uint8Array,
+    publication: DocumentJournalPublication,
+  ): Promise<void> {
+    const owned = publicationId(
+        copyUnsharedUint8Array(id, 32, 32, 'publication id'),
+      ),
+      next = ownPublication(publication),
+      nextId = publicationId(next.id);
+    return this.update(key, ['publications'], (head, transaction) => {
+      const publications = replacedPublicationIndex(head.publications, owned, {
+        id: nextId,
+        bytes: next.frame.length,
+      });
+      transaction.objectStore('publications').delete([key, owned]);
+      transaction.objectStore('publications').put(next, [key, nextId]);
+      transaction.objectStore('heads').put({ ...head, publications }, key);
     });
   }
 

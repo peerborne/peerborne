@@ -335,7 +335,10 @@ function gossipSender(message: Message): string {
 export interface SecurityPublicationReport {
   /** Publications that reached at least one topic peer. */
   readonly sent: number;
-  /** Whether publications stay queued until a topic peer receives them. */
+  /**
+   * Whether publications stay queued until a topic peer receives them, or
+   * until their frames are re-signed into the current group context.
+   */
   readonly pending: boolean;
   /** Frames removed because they were sealed for an earlier context or authority. */
   readonly dropped: number;
@@ -8631,10 +8634,11 @@ export class PeerborneDocument<
    * Retry durable encrypted publications without running local change
    * callbacks again. Publications that reach no topic peer stay queued, and
    * later local changes join the last of them. A publication sealed for an
-   * earlier group context or authority head is dropped and counted, since no
-   * current member can accept it; the security option
-   * `onPublicationsDropped` hears about every drop, including those of
-   * background retries.
+   * earlier group context or authority head is never sent, since no current
+   * member can accept it. It stays queued while its author can still re-sign
+   * its frames into the current context, and is otherwise dropped and
+   * counted; the security option `onPublicationsDropped` hears about every
+   * drop, including those of background retries.
    */
   public async retrySecurityPublications(): Promise<SecurityPublicationReport> {
     const engine = this._coordinated;
@@ -8657,12 +8661,18 @@ export class PeerborneDocument<
           if (pending !== undefined) return { sent: 0, pending, dropped: 0 };
         }
         let sent = 0,
-          dropped = 0;
+          dropped = 0,
+          waiting = false;
         do {
           const batch = await engine.dispatchablePublications();
           dropped += batch.dropped;
+          waiting = batch.waiting;
           if (unreachable)
-            return { sent, pending: batch.frames.length !== 0, dropped };
+            return {
+              sent,
+              pending: batch.frames.length !== 0 || waiting,
+              dropped,
+            };
           for (const frame of batch.frames) {
             engine.assertPublicationDispatchAllowed();
             const result: unknown = await pubsub.publish(this._topic, frame);
@@ -8674,7 +8684,7 @@ export class PeerborneDocument<
           }
           // Re-signed retired frames that waited for outbox space follow.
         } while (await engine.continueResend());
-        return { sent, pending: false, dropped };
+        return { sent, pending: waiting, dropped };
       })
       .finally(() => {
         if (this._securityPublicationTask === task)

@@ -85,17 +85,29 @@ retired context commits its successor itself, so it published all its frames
 there while that context was current for every member. It carries only the
 frames still in its outbox, and a member that missed one catches up from the
 controller's checkpoint. Duplicates are harmless
-because native CRDT changes are idempotent. The document keeps each author's
-latest 64 own frames, up to 32 MiB, apart from the shared retention pool. After
-a restart it rebuilds them from the journal entries since its last checkpoint,
-together with each entry's publication while it is still in the outbox.
+because native CRDT changes are idempotent. The document keeps its author's
+latest 16,448 own frames, enough for a full outbox of 16 publications of 1,024
+frames, within 32 MiB of deltas and recorded paths and apart from the shared
+retention pool. Each own frame is found inside a coalesced publication by its
+encryption nonce, which its journal entry records. After a restart the document
+rebuilds its own frames from the journal entries since its last checkpoint and
+from the checkpoint itself, which carries every unsent own frame whose entry
+it folds: its context, sequence, nonce, native delta and recorded paths. The
+first 4 MiB of carried paths are exact; later frames carry the whole document.
 
-A frame needs an outbox slot until it is published. When the outbox is full,
-the remaining frames wait and are re-signed as publication frees space. A
-retired frame in the outbox is removed only after its re-signed copy is
-accepted. A new local edit natively depends on every waiting frame, so it
-first re-signs them, and fails with `Document publication queue is full` if it
-cannot. Any other failure leaves the queue in place. A re-sign failure never
+Re-signed frames join the outbox's tail publication like local edits. A
+retired frame leaves the outbox only after its re-signed copy is accepted: its
+publication is rewritten in place without it, and removed once it holds no
+frame. A retry never sends a retired publication. It keeps it queued while it
+holds a frame that can still be re-signed, including before the new roles
+arrive, and otherwise drops it and reports its frames. When the outbox has no
+room for a re-signed frame, the retired publication holding the next frames is
+removed first if every frame in it is queued, and they are re-signed from
+memory. Other frames wait and are re-signed as publication frees space. After a
+restart, frames whose retired publication is still queued are queued again. A
+new local edit natively depends on every waiting frame, so it first re-signs
+them, and fails with `DocumentPublicationBacklogError` if it cannot. Any other
+failure leaves the queue in place. A re-sign failure never
 fails the role update itself, which resolves with
 `{ resent, waiting, skipped, dropped, diverged }`.
 
@@ -120,7 +132,8 @@ denied under any grants. An unrestricted author re-signs it unchecked.
 - A denied frame that was already published is skipped. Peers have it, or the
   author's later frames are held until a catch-up.
 - A denied frame still in the outbox reached no one. It and every later frame,
-  which depends on it natively, are dropped and counted.
+  which depends on it natively, are dropped, counted and reported to
+  `onPublicationsDropped`.
 - A reader or removed member keeps its replica readable.
 - An author that can still write in that case has `diverged`. Its replica holds
   content the group cannot accept. Before the role update resolves, the
@@ -149,8 +162,9 @@ denied under any grants. An unrestricted author re-signs it unchecked.
 
 Receivers admit re-signed frames through normal admission, including their
 own field-scope checks. A document opened without a publication outbox does
-not re-sign. Frames still waiting for outbox space are kept in memory, and a
-restart after the role update loses their delivery. A member that joins in the
+not re-sign. Waiting frames whose retired publication was removed for room are
+kept only in memory, and a restart before they are re-signed can lose their
+delivery. A member that joins in the
 new context gets earlier content from the controller checkpoint.
 
 ## Resume with a controller checkpoint
@@ -210,7 +224,7 @@ and merge costs still depend on the document and adapter.
 
 The application relays the messages and retains identity, trust roots and the
 independent rollback anchor across restart. This profile leaves peer discovery,
-control-message delivery, re-signs still waiting for outbox space at a restart and recovery
+control-message delivery, re-signs whose retired publication was removed for room at a restart, and recovery
 after key or anchor loss to the application.
 
 ## Native field write scopes
@@ -504,9 +518,10 @@ to the topic, after the next change, or on `retrySecurityPublications()`, which
 reports how many publications it sent, whether any stay queued and how many
 frames it dropped. While GossipSub reports no topic subscriber, a retry does
 not read or send the outbox. A publication sealed for an earlier group context
-or authority head would be rejected by every current member, so a retry
-removes it and counts its frames as dropped instead of sending it; those
-changes stay local until a later delivery mechanism re-seals them. Every drop,
+or authority head would be rejected by every current member, so a retry never
+sends it. It stays queued while its author can still re-sign one of its frames
+into the current context; otherwise the retry removes it and counts its frames
+as dropped, and those changes stay local. Every drop,
 including one in a background retry after a change, at open or on a
 subscription, is passed to the `onPublicationsDropped` security option, or
 logged as a warning when the application sets none.
@@ -562,8 +577,9 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Redelivery beyond the retained window, re-signs waiting for outbox space
-across a restart, and epoch-fork reconciliation remain future work. The controller
+Redelivery beyond the retained window, re-signs whose retired publication was
+removed for room across a restart, and epoch-fork reconciliation remain future
+work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

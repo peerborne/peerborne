@@ -556,6 +556,8 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
   return {
     path,
     members,
+    /** The signed roles; `renew` signs them for its new epoch. */
+    roster,
     auth,
     coordinators,
     logs,

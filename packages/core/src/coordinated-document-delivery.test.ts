@@ -234,7 +234,7 @@ describe('coordinated document delivery', () => {
     }
   });
 
-  test('drops and reports unsent frames sealed for an earlier group epoch', async () => {
+  test('re-signs unsent frames sealed for an earlier group epoch instead of dropping them', async () => {
     const dropped: number[] = [];
     const g = await group(2, {
       security: { onPublicationsDropped: (frames) => dropped.push(frames) },
@@ -244,6 +244,37 @@ describe('coordinated document delivery', () => {
       await g.doc(1).change(push(1));
       await g.doc(1).change(push(2));
       g.take();
+      const renewal = await g.renew();
+      await g.applyRenewal(0, renewal);
+      await g.applyRenewal(1, renewal);
+      g.offline.delete(1);
+      await g.doc(1).change(push(3));
+      expect(dropped).toEqual([]);
+      for (const publication of g.take())
+        expect(await g.deliver(publication, [0])).toEqual([]);
+      expect(g.doc(0).document).toEqual([1, 2, 3]);
+      await expect(g.doc(1).retrySecurityPublications()).resolves.toEqual({
+        sent: 0,
+        pending: false,
+        dropped: 0,
+      });
+    } finally {
+      await g.close();
+    }
+  });
+
+  test('drops and reports retired frames its author can no longer re-sign', async () => {
+    const dropped: number[] = [];
+    const g = await group(2, {
+      security: { onPublicationsDropped: (frames) => dropped.push(frames) },
+    });
+    try {
+      g.offline.add(1);
+      await g.doc(1).change(push(1));
+      await g.doc(1).change(push(2));
+      g.take();
+      // As if the author's record of these frames had been evicted.
+      (engine(g.doc(1)) as unknown as { own: { frames: unknown[] } }).own.frames.splice(0);
       const renewal = await g.renew();
       await g.applyRenewal(0, renewal);
       await g.applyRenewal(1, renewal);
@@ -264,23 +295,32 @@ describe('coordinated document delivery', () => {
     }
   });
 
-  test('logs dropped frames when the application sets no handler', async () => {
+  test('logs unsent frames dropped because their author became a reader when the application sets no handler', async () => {
     const g = await group(2);
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       g.offline.add(1);
       await g.doc(1).change(push(1));
       g.take();
+      g.roster[1] = { ...g.roster[1], role: 1 };
       const renewal = await g.renew();
       await g.applyRenewal(0, renewal);
-      await g.applyRenewal(1, renewal);
+      await g.coordinators[1].applyCommit(
+        renewal.delivery.commit!,
+        renewal.delivery.controlRecord,
+        [],
+      );
+      await expect(
+        g.doc(1).applySecurityAuthorityUpdate(renewal.record),
+      ).resolves.toMatchObject({ resent: 0, dropped: 1, diverged: false });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 1'));
       g.offline.delete(1);
       await expect(g.doc(1).retrySecurityPublications()).resolves.toEqual({
         sent: 0,
         pending: false,
-        dropped: 1,
+        dropped: 0,
       });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 1'));
+      expect(g.take()).toEqual([]);
     } finally {
       warn.mockRestore();
       await g.close();

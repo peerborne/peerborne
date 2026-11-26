@@ -12,6 +12,7 @@ import {
   type DocumentMemberAuthority,
 } from '../../core/src/coordinated-document.js';
 import { documentBytesId } from '../../core/src/internal/document-binary.js';
+import { splitDocumentPublication } from '../../core/src/document-security-wire.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
 
@@ -119,7 +120,7 @@ test('C: a second epoch change during the re-sign loop keeps the remaining frame
     const original = engine.apply;
     let resends = 0;
     engine.apply = async function (...args: unknown[]) {
-      if (args[3] !== undefined && ++resends === 2)
+      if (args[4] !== undefined && ++resends === 2)
         await g.coordinators[1].applyCommit(
           second.delivery.commit!,
           second.delivery.controlRecord,
@@ -152,18 +153,21 @@ test('D: close() during the re-sign loop leaves the journal outbox intact', asyn
     await g.coordinators[1].applyCommit(first.delivery.commit!, first.delivery.controlRecord, []);
     const engine = g.doc(1)._coordinated;
     const journal = engine.options.journal;
-    const before = (await journal.pendingPublications()).length;
+    const frames = async () =>
+      (await journal.pendingPublications()).flatMap(splitDocumentPublication)
+        .length;
+    const before = await frames();
     const original = engine.apply;
     let resends = 0;
     let closing: Promise<void> | undefined;
     engine.apply = async function (...args: unknown[]) {
-      if (args[3] !== undefined && ++resends === 2) closing = engine.close();
+      if (args[4] !== undefined && ++resends === 2) closing = engine.close();
       return original.apply(this, args);
     };
     const update = await g.doc(1).applySecurityAuthorityUpdate(first.record);
     await closing;
     expect(update).toMatchObject({ resent: 1, dropped: 0, waiting: 2 });
-    expect((await journal.pendingPublications()).length).toBe(before);
+    expect(await frames()).toBe(before);
   } finally {
     await g.close().catch(() => {});
   }
@@ -330,11 +334,19 @@ test('T1b: restricting a writer whose allowed edits were delivered keeps it open
 }, 30_000);
 
 test.each([false, true])(
-  'T2: re-signs waiting for outbox space go before a new local edit (local edit: %s)',
+  'T2: re-signs still waiting go before a new local edit (local edit: %s)',
   async (interleave) => {
     const { g, online } = await setup(Array.from({ length: 16 }, (_, index) => `k${index}`));
     try {
+      // The offline edits share one publication; a failing re-sign keeps them waiting.
+      const engine = g.doc(1)._coordinated;
+      const original = engine.apply;
+      engine.apply = async function (...args: unknown[]) {
+        if (args[4] !== undefined) throw new Error('transient');
+        return original.apply(this, args);
+      };
       const update = await applyAt1(g, await rotate(g, { role: 2 }));
+      engine.apply = original;
       online();
       expect(update).toMatchObject({ waiting: 16 });
       const publish = g.pubsubs[1].publish;
@@ -573,6 +585,45 @@ test('edits re-signed before a denied unsent edit are still published by the div
     expect(keys(g)).toEqual(['a']);
     expect(await g.doc(1)._coordinated.pendingPublications()).toEqual([]);
     await expect(g.doc(1).change(set('a'))).rejects.toThrow(
+      DocumentDivergedError,
+    );
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 30_000);
+
+test('a diverged writer drains one coalesced publication of the edits re-signed before the denial', async () => {
+  const { g, online } = await setup(['a1', 'a2', 'a3', 'b']);
+  try {
+    const [retired] = await g.doc(1)._coordinated.pendingPublications();
+    expect(splitDocumentPublication(retired)).toHaveLength(4);
+    const step = await restrict(g, [['a1'], ['a2'], ['a3']]);
+    online();
+    expect(await applyAt1(g, step)).toEqual({
+      resent: 3,
+      waiting: 0,
+      skipped: 0,
+      dropped: 1,
+      diverged: true,
+    });
+    const queued = await g.doc(1)._coordinated.pendingPublications();
+    expect(queued).toHaveLength(1);
+    expect(splitDocumentPublication(queued[0])).toHaveLength(3);
+    await expect(g.doc(1).retrySecurityPublications()).resolves.toMatchObject({
+      pending: false,
+      dropped: 0,
+    });
+    const published = g.take();
+    expect(
+      published.map((publication: { data: Uint8Array }) => publication.data),
+    ).toContainEqual(queued[0]);
+    const errors: string[] = [];
+    for (const publication of published)
+      errors.push(...(await g.deliver(publication, [0])));
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(['a1', 'a2', 'a3']);
+    expect(await g.doc(1)._coordinated.pendingPublications()).toEqual([]);
+    await expect(g.doc(1).change(set('a1'))).rejects.toThrow(
       DocumentDivergedError,
     );
   } finally {
