@@ -160,8 +160,8 @@ function syntheticCid(index: number): string {
 
 // Record known, already-referenced changes as a long edit history leaves
 // them, without creating each change.
-function learnHistory(document: PeerborneDocument, from: number, count: number) {
-  const known = document as unknown as {
+function learnHistory(document: object, from: number, count: number) {
+  const known = document as {
     _hashes: Set<string>;
     _referencedAncestors: Set<string>;
   };
@@ -392,11 +392,12 @@ test('a document that adopts a tree naming forgotten ancestors still exports and
   learnHistory(created, 1_025, 1_025);
   await created.snapshot();
 
-  const cids = (node: { children?: Record<string, any> }): string[] =>
-    Object.entries(node.children ?? {}).flatMap(([cid, child]) => [
-      cid,
-      ...cids(child),
-    ]);
+  const cids = (node: { children?: unknown }): string[] =>
+    node.children && typeof node.children === 'object'
+      ? Object.entries(
+          node.children as Record<string, { children?: unknown }>,
+        ).flatMap(([cid, child]) => [cid, ...cids(child)])
+      : [];
   const known = messages.find(
     (message) =>
       created.hasChange(message.changeId!) &&
