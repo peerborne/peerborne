@@ -261,7 +261,7 @@ describe('GroupSecurityCoordinator forks', () => {
       control(0x51, 'update', id(0xd2)),
     );
     await failingStore.transactionEntered;
-    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeDefined();
+    expect(await winner.rollbackAnchor.loadIntents(storeKey)).toHaveLength(1);
     await createTransition(
       winnerCoordinator,
       control(0x52, 'update', id(0xd1)),
@@ -275,14 +275,14 @@ describe('GroupSecurityCoordinator forks', () => {
     const anchor = await winner.rollbackAnchor.load(storeKey);
     expect(anchor?.forkPoison).toBeUndefined();
     expect(anchor?.epoch).toBe(1n);
-    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await winner.rollbackAnchor.loadIntents(storeKey)).toEqual([]);
     const restarted = await GroupSecurityCoordinator.restore(
       config(cloneContextWithProvider(winner)),
     );
     expect(restarted.publicState.epoch).toBe(1n);
   });
 
-  test('durably poisons a competing writer that replaced the losing intent', async () => {
+  test('durably poisons a competing writer whose intent sat beside the losing intent', async () => {
     const delegate = new InMemoryGroupStateStore();
     const winner = await context(delegate);
     const winnerCoordinator = await bootstrap(winner);
@@ -301,13 +301,13 @@ describe('GroupSecurityCoordinator forks', () => {
       control(0x57, 'update', id(0xd6)),
     );
     await blockingStore.transactionEntered;
-    const losingIntent = await winner.rollbackAnchor.loadIntent(storeKey);
+    const losingIntents = await winner.rollbackAnchor.loadIntents(storeKey);
     await createTransition(
       winnerCoordinator,
       control(0x58, 'update', id(0xd7)),
     );
-    expect(losingIntent).toBeDefined();
-    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    expect(losingIntents).toHaveLength(1);
+    expect(await winner.rollbackAnchor.loadIntents(storeKey)).toEqual([]);
     blockingStore.release();
 
     await expect(losingTransition).rejects.toMatchObject({
@@ -350,7 +350,7 @@ describe('GroupSecurityCoordinator forks', () => {
     expect(
       (await winner.rollbackAnchor.load(storeKey))?.forkPoison,
     ).toBeUndefined();
-    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await winner.rollbackAnchor.loadIntents(storeKey)).toEqual([]);
     const restarted = await GroupSecurityCoordinator.restore(
       config(cloneContextWithProvider(winner)),
     );

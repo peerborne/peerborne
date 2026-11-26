@@ -882,7 +882,7 @@ describe('GroupSecurityCoordinator restore', () => {
     expect(snapshot.encryptedState?.state.epoch).toBe(1n);
     expect(await rollbackAnchor.load(storeKey)).toEqual(beforeAnchor);
     expect(
-      (await rollbackAnchor.loadIntent(storeKey))?.next.storeCommitment,
+      (await rollbackAnchor.loadIntents(storeKey))[0]?.next.storeCommitment,
     ).toEqual(await groupSecurityStoreSnapshotCommitment(snapshot, storeKey));
     expect(() => coordinator.publicState).toThrow(/poisoned/);
     expect((await value.provider.getPublicState()).epoch).toBe(1n);
@@ -895,7 +895,7 @@ describe('GroupSecurityCoordinator restore', () => {
       revision: snapshot.revision,
       epoch: 1n,
     });
-    expect(await rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await rollbackAnchor.loadIntents(storeKey)).toEqual([]);
   });
 
   test('rejects a truthy non-boolean rollback-anchor CAS result', async () => {
@@ -924,7 +924,7 @@ describe('GroupSecurityCoordinator restore', () => {
     const snapshot = (await value.store.load(storeKey))!;
     expect(snapshot.encryptedState).toBeDefined();
     expect(await rollbackAnchor.load(storeKey)).toBeUndefined();
-    expect(await rollbackAnchor.loadIntent(storeKey)).toMatchObject({
+    expect((await rollbackAnchor.loadIntents(storeKey))[0]).toMatchObject({
       baseRevision: 0,
       baseStoreCommitment: undefined,
       next: { revision: snapshot.revision, epoch: 0n },

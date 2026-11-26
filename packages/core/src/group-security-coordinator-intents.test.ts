@@ -1,8 +1,10 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   AdversarialStore,
+  AuthorizationPolicy,
   ContractTestProvider,
   ControlledRollbackAnchor,
+  ReconciliationLoadFailureStore,
   StaticSnapshotStore,
   TestContext,
   bootstrap,
@@ -18,7 +20,10 @@ import {
   storeKey,
 } from './__testutils__/group-security-coordinator.js';
 import { GroupSecurityCoordinator } from './group-security-coordinator.js';
-import type { GroupSecurityRollbackIntent } from './group-security-rollback-anchor.js';
+import {
+  GroupSecurityRollbackIntent,
+  InMemoryGroupSecurityRollbackAnchor,
+} from './group-security-rollback-anchor.js';
 import { groupSecurityStoreSnapshotCommitment } from './group-security-store-commitment.js';
 import {
   DurableGroupStateStore,
@@ -91,6 +96,21 @@ async function restoreFrom(
   );
 }
 
+async function pendingInvitation(setup: Fixture) {
+  const keyPackage = await GroupSecurityCoordinator.createPendingKeyPackage(
+    config(setup.value),
+    {
+      operationId: id(0xdb),
+      groupId,
+      memberId: setup.value.identities.actorId,
+      credential: setup.value.identities.actorId,
+    },
+  );
+  const pending = (await setup.delegate.load(storeKey))!;
+  const invitation = await createInvitation(setup.value, keyPackage);
+  return { keyPackage, pending, invitation };
+}
+
 async function interruptedTransition(): Promise<
   Fixture & {
     base: GroupStateStoreSnapshot;
@@ -133,18 +153,18 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     expect(() => coordinator.publicState).toThrow(/poisoned/);
     expect(await delegate.load(storeKey)).toEqual(before);
     expect(await value.rollbackAnchor.load(storeKey)).toEqual(beforeAnchor);
-    expect(
-      (await value.rollbackAnchor.loadIntent(storeKey))?.baseRevision,
-    ).toBe(before.revision);
+    const [intent] = await value.rollbackAnchor.loadIntents(storeKey);
+    expect(intent.baseRevision).toBe(before.revision);
 
     const restored = await GroupSecurityCoordinator.restore(
       config(cloneContextWithProvider(value)),
     );
     expect(restored.publicState.epoch).toBe(0n);
-    expect(await value.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await value.rollbackAnchor.loadIntents(storeKey)).toEqual([intent]);
     await expect(createTransition(restored, control(2))).resolves.toMatchObject(
       { status: 'committed' },
     );
+    expect(await value.rollbackAnchor.loadIntents(storeKey)).toEqual([]);
   });
 
   test('restores after a transient rollback-anchor failure following a committed transition', async () => {
@@ -246,13 +266,13 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     }
     const after = (await setup.delegate.load(storeKey))!;
     const anchor = (await setup.anchor.load(storeKey))!;
-    const intent = await setup.anchor.loadIntent(storeKey);
+    const intents = await setup.anchor.loadIntents(storeKey);
     expect(after.revision).toBe(
       before.revision + (crash.storeAdvanced ? 1 : 0),
     );
     if (!crash.storeAdvanced) expect(after).toEqual(before);
-    expect(intent !== undefined).toBe(crash.intentLeft);
-    if (intent !== undefined) {
+    expect(intents).toHaveLength(crash.intentLeft ? 1 : 0);
+    for (const intent of intents) {
       expect(intent.baseRevision).toBe(beforeAnchor.revision);
       expect(intent.baseStoreCommitment).toEqual(beforeAnchor.storeCommitment);
       expect(anchor).toEqual(beforeAnchor);
@@ -268,7 +288,9 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     const epoch = crash.storeAdvanced ? 1n : 0n;
     expect(restored.publicState.epoch).toBe(epoch);
     expect(provider.importCalls).toBe(1);
-    expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(
+      crash.intentLeft && !crash.storeAdvanced ? 1 : 0,
+    );
     const anchored = (await setup.anchor.load(storeKey))!;
     const current = (await setup.delegate.load(storeKey))!;
     expect(anchored.revision).toBe(current.revision);
@@ -281,9 +303,10 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
         state: { epoch: epoch + 1n },
       },
     );
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
   });
 
-  test('replaces a stale uncommitted intent on the next live commit', async () => {
+  test('clears a stale uncommitted intent with the next live commit', async () => {
     const setup = await fixture();
     const coordinator = await bootstrap(setup.value);
     await flushAndCollect(coordinator);
@@ -293,12 +316,12 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     await expect(createTransition(coordinator, control(2))).rejects.toThrow(
       /injected store failure/,
     );
-    const stale = (await setup.anchor.loadIntent(storeKey))!;
+    const [stale] = await setup.anchor.loadIntents(storeKey);
 
     await createTransition(coordinator, control(3));
     expect(setup.anchor.prepared).toHaveLength(4);
     expect(setup.anchor.prepared.at(-1)).not.toEqual(stale);
-    expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
     const restored = await restoreFrom(setup.value);
     expect(restored.currentControlRecord.operationId).toEqual(id(3));
   });
@@ -351,7 +374,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     if (crash.groupStored) {
       const restored = await restoreFrom(setup.value);
       expect(restored.publicState.epoch).toBe(0n);
-      expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
+      expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
       expect((await setup.anchor.load(storeKey))?.storeCommitment).toEqual(
         await groupSecurityStoreSnapshotCommitment(stored!, storeKey),
       );
@@ -361,9 +384,9 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       code: 'not-initialized',
     });
     expect(await setup.anchor.load(storeKey)).toBeUndefined();
-    expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
     const rebuilt = await bootstrap(cloneContextWithProvider(setup.value));
     expect(rebuilt.publicState.epoch).toBe(0n);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
   });
 
   test('completes interrupted outbox ACK and restore-pruning commits', async () => {
@@ -374,7 +397,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       code: 'rollback-failed',
     });
     expect((await ack.delegate.load(storeKey))!.outbox).toHaveLength(0);
-    expect(await ack.anchor.loadIntent(storeKey)).toBeDefined();
+    expect(await ack.anchor.loadIntents(storeKey)).toHaveLength(1);
     const ackRestored = await restoreFrom(ack.value);
     expect(await ackRestored.pendingOutboxCount()).toBe(0);
 
@@ -406,7 +429,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     expect((await pruning.anchor.load(storeKey))?.revision).toBe(
       pruned.revision,
     );
-    expect(await pruning.anchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await pruning.anchor.loadIntents(storeKey)).toEqual([]);
   });
 
   test('rejects stale and relabeled stores while an intent is pending', async () => {
@@ -423,7 +446,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       ).rejects.toMatchObject({ code: 'rollback-detected' });
       expect(provider.importCalls).toBe(0);
     }
-    expect(await setup.anchor.loadIntent(storeKey)).toBeDefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
     const restored = await restoreFrom(setup.value);
     expect(restored.publicState.epoch).toBe(2n);
   });
@@ -446,7 +469,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       expect((await setup.anchor.load(storeKey))?.revision).toBe(
         setup.base.revision,
       );
-      expect(await setup.anchor.loadIntent(storeKey)).toBeDefined();
+      expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
     }
     const restored = await restoreFrom(setup.value);
     expect(restored.publicState.epoch).toBe(2n);
@@ -455,22 +478,25 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     );
   });
 
-  test('never completes an intent after restore discards it for the base store', async () => {
+  test('keeps intents when restore accepts the base so a later commit still completes', async () => {
     const setup = await interruptedTransition();
     const atBase = await restoreFrom(setup.value, setup.base);
     expect(atBase.publicState.epoch).toBe(1n);
-    expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
 
+    const restored = await restoreFrom(setup.value, setup.committed);
+    expect(restored.publicState.epoch).toBe(2n);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
     const provider = new ContractTestProvider();
     await expect(
-      restoreFrom(setup.value, setup.committed, provider),
+      restoreFrom(setup.value, setup.base, provider),
     ).rejects.toMatchObject({ code: 'rollback-detected' });
     expect(provider.importCalls).toBe(0);
   });
 
   test('rejects replayed and tampered intents before provider import', async () => {
     const setup = await interruptedTransition();
-    const pending = (await setup.anchor.loadIntent(storeKey))!;
+    const [pending] = await setup.anchor.loadIntents(storeKey);
     const replayed: GroupSecurityRollbackIntent = setup.anchor.prepared.at(-2)!;
     expect(replayed.baseRevision).toBeLessThan(pending.baseRevision);
     const flipped = (bytes: Uint8Array) => {
@@ -479,48 +505,59 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       return copy;
     };
     const tampered: Array<[unknown, RegExp]> = [
-      [replayed, /does not extend/],
+      [[replayed], /does not extend/],
+      [[pending, replayed], /does not extend/],
       [
-        {
-          ...pending,
-          baseStoreCommitment: flipped(pending.baseStoreCommitment!),
-        },
+        [
+          {
+            ...pending,
+            baseStoreCommitment: flipped(pending.baseStoreCommitment!),
+          },
+        ],
         /does not extend/,
       ],
       [
-        {
-          ...pending,
-          next: { ...pending.next, epoch: pending.next.epoch + 1n },
-        },
+        [
+          {
+            ...pending,
+            next: { ...pending.next, epoch: pending.next.epoch + 1n },
+          },
+        ],
         /does not extend/,
       ],
       [
-        {
-          ...pending,
-          next: { ...pending.next, revision: pending.next.revision + 1 },
-        },
+        [
+          {
+            ...pending,
+            next: { ...pending.next, revision: pending.next.revision + 1 },
+          },
+        ],
         /malformed/,
       ],
-      [{ ...pending, extra: true }, /malformed/],
+      [[{ ...pending, extra: true }], /malformed/],
       [
-        {
-          ...pending,
-          next: {
-            ...pending.next,
-            forkPoison: {
-              epoch: pending.next.epoch,
-              parentRecordId: id(1),
-              firstRecordId: id(2),
-              secondRecordId: id(3),
-              evidenceHash: id(4),
+        [
+          {
+            ...pending,
+            next: {
+              ...pending.next,
+              forkPoison: {
+                epoch: pending.next.epoch,
+                parentRecordId: id(1),
+                firstRecordId: id(2),
+                secondRecordId: id(3),
+                evidenceHash: id(4),
+              },
             },
           },
-        },
+        ],
         /malformed/,
       ],
+      [pending, /malformed/],
+      [[pending, pending], /malformed/],
     ];
-    for (const [intent, message] of tampered) {
-      setup.anchor.malformedNextIntent = intent;
+    for (const [intents, message] of tampered) {
+      setup.anchor.malformedNextIntents = intents;
       const provider = new ContractTestProvider();
       await expect(
         restoreFrom(setup.value, undefined, provider),
@@ -531,45 +568,37 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       expect(provider.importCalls).toBe(0);
     }
 
-    setup.anchor.malformedNextIntent = {
-      ...pending,
-      next: {
-        ...pending.next,
-        storeCommitment: flipped(pending.next.storeCommitment),
+    setup.anchor.malformedNextIntents = [
+      {
+        ...pending,
+        next: {
+          ...pending.next,
+          storeCommitment: flipped(pending.next.storeCommitment),
+        },
       },
-    };
+    ];
     const provider = new ContractTestProvider();
     await expect(
       restoreFrom(setup.value, undefined, provider),
     ).rejects.toMatchObject({ code: 'rollback-detected' });
     expect(provider.importCalls).toBe(0);
-    expect(await setup.anchor.loadIntent(storeKey)).toEqual(pending);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([pending]);
 
     const restored = await restoreFrom(setup.value);
     expect(restored.publicState.epoch).toBe(2n);
   });
 
-  test('keeps restore retryable when resolving an intent fails', async () => {
+  test('keeps restore retryable when completing an intent fails', async () => {
     const completing = await interruptedTransition();
     completing.anchor.failNextAdvance = true;
     await expect(restoreFrom(completing.value)).rejects.toMatchObject({
       code: 'rollback-failed',
     });
-    expect(await completing.anchor.loadIntent(storeKey)).toBeDefined();
+    expect(await completing.anchor.loadIntents(storeKey)).toHaveLength(1);
     expect((await restoreFrom(completing.value)).publicState.epoch).toBe(2n);
-
-    const discarding = await interruptedTransition();
-    discarding.anchor.failNextDiscard = true;
-    await expect(
-      restoreFrom(discarding.value, discarding.base),
-    ).rejects.toMatchObject({ code: 'rollback-failed' });
-    expect(await discarding.anchor.loadIntent(storeKey)).toBeDefined();
-    expect(
-      (await restoreFrom(discarding.value, discarding.base)).publicState.epoch,
-    ).toBe(1n);
   });
 
-  test('keeps queued outbox entries when an interrupted ACK is discarded', async () => {
+  test('keeps queued outbox entries until an interrupted ACK completes', async () => {
     const setup = await fixture();
     const coordinator = await bootstrap(setup.value);
     const queued = (await setup.delegate.load(storeKey))!;
@@ -579,27 +608,17 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       code: 'rollback-failed',
     });
 
-    const restored = await restoreFrom(setup.value, queued);
-    expect(await restored.pendingOutboxCount()).toBe(1);
-    expect(await setup.anchor.loadIntent(storeKey)).toBeUndefined();
-    await expect(
-      restoreFrom(setup.value, (await setup.delegate.load(storeKey))!),
-    ).rejects.toMatchObject({ code: 'rollback-detected' });
+    const atBase = await restoreFrom(setup.value, queued);
+    expect(await atBase.pendingOutboxCount()).toBe(1);
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
+    const acknowledged = await restoreFrom(setup.value);
+    expect(await acknowledged.pendingOutboxCount()).toBe(0);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
   });
 
-  test('never makes a consumed KeyPackage pending again', async () => {
+  test('never makes a consumed KeyPackage pending again once its join is anchored', async () => {
     const setup = await fixture();
-    const keyPackage = await GroupSecurityCoordinator.createPendingKeyPackage(
-      config(setup.value),
-      {
-        operationId: id(0xdb),
-        groupId,
-        memberId: setup.value.identities.actorId,
-        credential: setup.value.identities.actorId,
-      },
-    );
-    const pending = (await setup.delegate.load(storeKey))!;
-    const invitation = await createInvitation(setup.value, keyPackage);
+    const { keyPackage, pending, invitation } = await pendingInvitation(setup);
     setup.anchor.failNextAdvance = true;
     await expect(
       GroupSecurityCoordinator.joinFromInvitation(
@@ -610,7 +629,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
     const joined = (await setup.delegate.load(storeKey))!;
     expect(joined.consumedKeyPackageRefs).toEqual([keyPackage.reference]);
     expect(await setup.anchor.load(storeKey)).toBeUndefined();
-    expect(await setup.anchor.loadIntent(storeKey)).toMatchObject({
+    expect((await setup.anchor.loadIntents(storeKey))[0]).toMatchObject({
       baseRevision: pending.revision,
       baseStoreCommitment: await groupSecurityStoreSnapshotCommitment(
         pending,
@@ -629,7 +648,7 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       restoreFrom(setup.value, resurrected, rejectedProvider),
     ).rejects.toMatchObject({ code: 'rollback-detected' });
     expect(rejectedProvider.importCalls).toBe(0);
-    expect(await setup.anchor.loadIntent(storeKey)).toBeDefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
 
     const restored = await restoreFrom(setup.value);
     expect(restored.publicState.epoch).toBe(1n);
@@ -645,5 +664,133 @@ describe('GroupSecurityCoordinator write-ahead rollback intents', () => {
       ),
     ).rejects.toMatchObject({ code: 'rollback-detected' });
     expect(rejoinProvider.importKeyPackageCalls).toBe(0);
+  });
+
+  test('keeps the pre-group KeyPackage limit before the first anchor exists', async () => {
+    const setup = await fixture();
+    const { keyPackage, pending, invitation } = await pendingInvitation(setup);
+    setup.anchor.failNextAdvance = true;
+    await expect(
+      GroupSecurityCoordinator.joinFromInvitation(
+        config(cloneContextWithProvider(setup.value)),
+        invitation,
+      ),
+    ).rejects.toMatchObject({ code: 'rollback-failed' });
+
+    const provider = new ContractTestProvider();
+    await expect(
+      restoreFrom(setup.value, pending, provider),
+    ).rejects.toMatchObject({ code: 'malformed-state' });
+    expect(provider.importCalls).toBe(0);
+    expect(await setup.anchor.load(storeKey)).toBeUndefined();
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
+    expect(
+      pending.pendingKeyPackages.map((state) => state.keyPackage.reference),
+    ).toEqual([keyPackage.reference]);
+
+    const restored = await restoreFrom(setup.value);
+    expect(restored.publicState.epoch).toBe(1n);
+  });
+
+  test('completes a committed transition after a concurrent coordinator recorded its own intent', async () => {
+    const setup = await fixture();
+    const source: TestContext = {
+      ...setup.value,
+      provider: new ContractTestProvider(),
+      store: new InMemoryGroupStateStore(),
+      rollbackAnchor: new InMemoryGroupSecurityRollbackAnchor(),
+      authorization: new AuthorizationPolicy(setup.value.identities.actorId),
+    };
+    const sourceCoordinator = await bootstrap(source);
+    await flushAndCollect(sourceCoordinator);
+    await createTransition(
+      sourceCoordinator,
+      control(0x61, 'update', id(0xd8)),
+    );
+    const [delivery] = await flushAndCollect(sourceCoordinator);
+    await flushAndCollect(await bootstrap(setup.value));
+    const base = (await setup.delegate.load(storeKey))!;
+    const gates = [
+      new ReconciliationLoadFailureStore(setup.delegate, 0),
+      new ReconciliationLoadFailureStore(setup.delegate, 0),
+    ];
+    const first = await restoreFrom({ ...setup.value, store: gates[0] });
+    const second = await restoreFrom({ ...setup.value, store: gates[1] });
+
+    const firstApply = first.applyCommit(
+      delivery.commit!,
+      delivery.controlRecord,
+      delivery.welcomes,
+    );
+    await gates[0].transactionEntered;
+    const secondApply = second.applyCommit(
+      delivery.commit!,
+      delivery.controlRecord,
+      delivery.welcomes,
+    );
+    await gates[1].transactionEntered;
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(2);
+    setup.anchor.failNextAdvance = true;
+    gates[0].release();
+    await expect(firstApply).rejects.toMatchObject({ code: 'rollback-failed' });
+    gates[1].release();
+    await expect(secondApply).rejects.toMatchObject({ code: 'store-conflict' });
+    expect((await setup.delegate.load(storeKey))!.revision).toBe(
+      base.revision + 1,
+    );
+    expect((await setup.anchor.load(storeKey))?.revision).toBe(base.revision);
+
+    const restored = await restoreFrom(setup.value);
+    expect(restored.publicState.epoch).toBe(1n);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
+  });
+
+  test('keeps an in-flight intent when a concurrent restore sees the base store', async () => {
+    const setup = await fixture();
+    await flushAndCollect(await bootstrap(setup.value));
+    const gate = new ReconciliationLoadFailureStore(setup.delegate, 0);
+    const writer = await restoreFrom({ ...setup.value, store: gate });
+    const writing = createTransition(writer, control(2));
+    await gate.transactionEntered;
+
+    const reader = await restoreFrom(setup.value);
+    expect(reader.publicState.epoch).toBe(0n);
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(1);
+    setup.anchor.failNextAdvance = true;
+    gate.release();
+    await expect(writing).rejects.toMatchObject({ code: 'rollback-failed' });
+
+    const restored = await restoreFrom(setup.value);
+    expect(restored.publicState.epoch).toBe(1n);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
+  });
+
+  test('completes a committed join after a concurrent join recorded its own intent', async () => {
+    const setup = await fixture();
+    const { invitation } = await pendingInvitation(setup);
+    const gates = [
+      new ReconciliationLoadFailureStore(setup.delegate, 0),
+      new ReconciliationLoadFailureStore(setup.delegate, 0),
+    ];
+    const join = (store: DurableGroupStateStore) =>
+      GroupSecurityCoordinator.joinFromInvitation(
+        config({ ...setup.value, provider: new ContractTestProvider(), store }),
+        invitation,
+      );
+    const firstJoin = join(gates[0]);
+    await gates[0].transactionEntered;
+    const secondJoin = join(gates[1]);
+    await gates[1].transactionEntered;
+    expect(await setup.anchor.loadIntents(storeKey)).toHaveLength(2);
+    setup.anchor.failNextAdvance = true;
+    gates[0].release();
+    await expect(firstJoin).rejects.toMatchObject({ code: 'rollback-failed' });
+    gates[1].release();
+    await expect(secondJoin).rejects.toMatchObject({ code: 'store-conflict' });
+    expect(await setup.anchor.load(storeKey)).toBeUndefined();
+
+    const restored = await restoreFrom(setup.value);
+    expect(restored.publicState.epoch).toBe(1n);
+    expect(await setup.anchor.loadIntents(storeKey)).toEqual([]);
   });
 });

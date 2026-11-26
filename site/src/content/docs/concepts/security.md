@@ -25,13 +25,17 @@ actual Automerge/Yjs document path uses staged admission; legacy load and ACL
 handlers cannot bypass it. A pinned authority root, a group-security provider,
 and an independent persistent rollback anchor remain application responsibilities.
 Before each group-state commit, the coordinator records a write-ahead intent in
-that anchor naming the exact next store snapshot. If the commit or the anchor
-update after it fails, the live coordinator stops. Restore then completes the
-intent when the store holds exactly that snapshot, discards it when the store
-still holds the previous one, and fails closed for anything else. A transient
-storage error therefore requires a restore rather than leaving the group
-unopenable on that device. Focused tests show this with in-memory stores and
-anchors only.
+that anchor naming the exact next store snapshot. Coordinators that share one
+store, such as several tabs, add their intents beside each other. The anchor
+keeps up to eight per anchored state and drops the oldest first. If a commit's
+outcome is unknown, or the anchor update after it fails, the live coordinator
+stops. Restore then completes the commit when the store holds exactly one of
+the recorded snapshots. It accepts a store that still holds the anchored
+snapshot and keeps the intents until the next commit clears them. Any other
+store fails closed. One interrupted commit therefore requires a restore rather
+than leaving the group unopenable on that device. More than eight commits
+racing from the same anchored state can still drop the intent of one that
+lands. Focused tests show this with in-memory stores and anchors only.
 Automatic content onboarding, anti-entropy, field permissions and device
 performance qualification are not supplied by this mode. The default BeeKEM
 workflow described below remains separate. See the repository

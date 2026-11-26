@@ -61,6 +61,7 @@ import {
   GroupSecurityRollbackIntent,
   cloneGroupSecurityRollbackAnchor,
   cloneGroupSecurityRollbackIntent,
+  cloneGroupSecurityRollbackIntents,
   groupSecurityRollbackAnchorsEqual,
   groupSecurityRollbackIntentExtends,
 } from './group-security-rollback-anchor.js';
@@ -1560,7 +1561,7 @@ export class GroupSecurityCoordinator {
   private async restoreInternal(): Promise<void> {
     const loadedAnchor = await this.loadRollbackAnchor();
     this.rejectRollbackTerminalState(loadedAnchor);
-    await this.resolveRollbackIntent(loadedAnchor);
+    await this.resolveRollbackIntents(loadedAnchor);
     const snapshot = await this.requireSnapshot();
     if (snapshot.encryptedState === undefined) {
       fail('malformed-state', 'stored group has no encrypted provider state');
@@ -2468,7 +2469,7 @@ export class GroupSecurityCoordinator {
     this.poisonedReason = reason;
     throw new GroupSecurityCoordinatorError(
       'rollback-failed',
-      'authenticated control reconciliation could not verify durable state; coordinator is poisoned and restore resolves the recorded rollback intent',
+      'authenticated control reconciliation could not verify durable state; coordinator is poisoned and restore resolves the recorded rollback intents',
       { cause: reason },
     );
   }
@@ -4274,26 +4275,23 @@ export class GroupSecurityCoordinator {
     return cloneGroupSecurityRollbackAnchor(actual);
   }
 
-  private async loadRollbackIntent(): Promise<
-    GroupSecurityRollbackIntent | undefined
-  > {
-    let value: GroupSecurityRollbackIntent | undefined;
+  private async loadRollbackIntents(): Promise<GroupSecurityRollbackIntent[]> {
+    let value: ReadonlyArray<GroupSecurityRollbackIntent>;
     try {
-      value = await this.rollbackAnchor.loadIntent(
+      value = await this.rollbackAnchor.loadIntents(
         cloneStoreKey(this.storeKey),
       );
     } catch (error) {
       fail(
         'rollback-failed',
-        'rollback anchor intent could not be loaded',
+        'rollback anchor intents could not be loaded',
         error,
       );
     }
-    if (value === undefined) return undefined;
     try {
-      return cloneGroupSecurityRollbackIntent(value);
+      return cloneGroupSecurityRollbackIntents(value);
     } catch (error) {
-      fail('rollback-detected', 'rollback anchor intent is malformed', error);
+      fail('rollback-detected', 'rollback anchor intents are malformed', error);
     }
   }
 
@@ -4345,73 +4343,62 @@ export class GroupSecurityCoordinator {
     }
   }
 
-  private async resolveRollbackIntent(
+  private async resolveRollbackIntents(
     active: GroupSecurityRollbackAnchorValue | undefined,
   ): Promise<void> {
-    const intent = await this.loadRollbackIntent();
-    if (intent === undefined) return;
-    if (!groupSecurityRollbackIntentExtends(active, intent)) {
+    const intents = await this.loadRollbackIntents();
+    if (intents.length === 0) return;
+    if (
+      intents.some(
+        (intent) => !groupSecurityRollbackIntentExtends(active, intent),
+      )
+    ) {
       fail(
         'rollback-detected',
         'rollback anchor intent does not extend its active value',
       );
     }
     const snapshot = await this.loadValidatedStoreSnapshot();
-    let storeCommitment: Uint8Array | undefined;
-    if (snapshot !== undefined) {
-      try {
-        storeCommitment = await groupSecurityStoreSnapshotCommitment(
-          snapshot,
-          this.storeKey,
-        );
-      } catch (error) {
-        fail(
-          'rollback-detected',
-          'durable group-state snapshot cannot be bound to its rollback intent',
-          error,
-        );
-      }
-    }
-    const complete =
-      snapshot !== undefined &&
-      snapshot.revision === intent.next.revision &&
-      equalBytes(storeCommitment!, intent.next.storeCommitment);
-    const unchanged =
-      snapshot === undefined
-        ? intent.baseRevision === 0
-        : snapshot.revision === intent.baseRevision &&
-          intent.baseStoreCommitment !== undefined &&
-          equalBytes(storeCommitment!, intent.baseStoreCommitment);
-    if (!complete && !unchanged) return;
-    const key = cloneStoreKey(this.storeKey);
-    const expected =
-      active === undefined
-        ? undefined
-        : cloneGroupSecurityRollbackAnchor(active);
-    let resolved: unknown = false;
+    if (snapshot === undefined) return;
+    let storeCommitment: Uint8Array;
     try {
-      resolved = complete
-        ? await this.rollbackAnchor.advance(
-            key,
-            expected,
-            cloneGroupSecurityRollbackAnchor(intent.next),
-          )
-        : await this.rollbackAnchor.discard(
-            key,
-            expected,
-            cloneGroupSecurityRollbackIntent(intent),
-          );
+      storeCommitment = await groupSecurityStoreSnapshotCommitment(
+        snapshot,
+        this.storeKey,
+      );
     } catch (error) {
       fail(
-        'rollback-failed',
-        'rollback anchor intent could not be resolved',
+        'rollback-detected',
+        'durable group-state snapshot cannot be bound to its rollback intents',
         error,
       );
     }
-    if (resolved !== true) {
+    const completed = intents.find(
+      (intent) =>
+        snapshot.revision === intent.next.revision &&
+        equalBytes(storeCommitment, intent.next.storeCommitment),
+    );
+    if (completed === undefined) return;
+    let advanced: unknown = false;
+    try {
+      advanced = await this.rollbackAnchor.advance(
+        cloneStoreKey(this.storeKey),
+        active === undefined
+          ? undefined
+          : cloneGroupSecurityRollbackAnchor(active),
+        cloneGroupSecurityRollbackAnchor(completed.next),
+      );
+    } catch (error) {
+      fail(
+        'rollback-failed',
+        'rollback anchor intent could not be completed',
+        error,
+      );
+    }
+    if (advanced !== true) {
       fail(
         'rollback-detected',
-        'rollback anchor changed while its intent was being resolved',
+        'rollback anchor changed while its intent was being completed',
       );
     }
   }
@@ -5275,10 +5262,9 @@ function validateCoordinatorConfig(config: GroupSecurityCoordinatorConfig): void
     config.rollbackAnchor === null ||
     typeof config.rollbackAnchor !== 'object' ||
     typeof config.rollbackAnchor.load !== 'function' ||
-    typeof config.rollbackAnchor.loadIntent !== 'function' ||
+    typeof config.rollbackAnchor.loadIntents !== 'function' ||
     typeof config.rollbackAnchor.prepare !== 'function' ||
     typeof config.rollbackAnchor.advance !== 'function' ||
-    typeof config.rollbackAnchor.discard !== 'function' ||
     typeof config.rollbackAnchor.poison !== 'function' ||
     typeof config.rollbackAnchor.retire !== 'function'
   ) {

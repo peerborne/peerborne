@@ -4,7 +4,9 @@ import { runInNewContext } from 'node:vm';
 import {
   InMemoryGroupSecurityRollbackAnchor,
   cloneGroupSecurityRollbackAnchor,
+  MAX_GROUP_SECURITY_ROLLBACK_INTENTS,
   cloneGroupSecurityRollbackIntent,
+  cloneGroupSecurityRollbackIntents,
   groupSecurityRollbackAnchorsEqual,
   groupSecurityRollbackIntentExtends,
 } from './group-security-rollback-anchor.js';
@@ -750,7 +752,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       next,
     });
 
-    test('records an intent beside the active value and replaces it', async () => {
+    test('records intents beside the active value without displacing earlier ones', async () => {
       const anchor = new InMemoryGroupSecurityRollbackAnchor();
       const base = active();
       await anchor.advance(key, undefined, base);
@@ -759,23 +761,43 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       first.next.storeCommitment[0] = 0xee;
       expect(await operation).toBe(true);
       expect(await anchor.load(key)).toEqual(base);
-      const loaded = (await anchor.loadIntent(key))!;
+      const [loaded] = await anchor.loadIntents(key);
       expect(loaded.next.storeCommitment).toEqual(commitment(2));
       loaded.next.storeCommitment[0] = 0xee;
-      expect((await anchor.loadIntent(key))!.next.storeCommitment).toEqual(
+      expect((await anchor.loadIntents(key))[0].next.storeCommitment).toEqual(
         commitment(2),
       );
 
-      const replacement = intentFrom(base, {
+      const recorded = intentFrom(base);
+      const concurrent = intentFrom(base, {
         ...successor(base),
         storeCommitment: commitment(9),
       });
-      expect(await anchor.prepare(key, base, replacement)).toBe(true);
-      expect(await anchor.loadIntent(key)).toEqual(replacement);
-      expect(groupSecurityRollbackIntentExtends(base, replacement)).toBe(true);
+      expect(await anchor.prepare(key, base, concurrent)).toBe(true);
+      expect(await anchor.prepare(key, base, intentFrom(base))).toBe(true);
+      expect(await anchor.loadIntents(key)).toEqual([recorded, concurrent]);
+      expect(groupSecurityRollbackIntentExtends(base, concurrent)).toBe(true);
     });
 
-    test('rejects a stale expected value without changing the intent', async () => {
+    test('keeps a bounded set of intents and drops the oldest first', async () => {
+      const anchor = new InMemoryGroupSecurityRollbackAnchor();
+      const base = active();
+      await anchor.advance(key, undefined, base);
+      const intents = Array.from(
+        { length: MAX_GROUP_SECURITY_ROLLBACK_INTENTS + 2 },
+        (_, index) =>
+          intentFrom(base, {
+            ...successor(base),
+            storeCommitment: commitment(0x40 + index),
+          }),
+      );
+      for (const intent of intents) {
+        expect(await anchor.prepare(key, base, intent)).toBe(true);
+      }
+      expect(await anchor.loadIntents(key)).toEqual(intents.slice(2));
+    });
+
+    test('rejects a stale expected value without changing the intents', async () => {
       const anchor = new InMemoryGroupSecurityRollbackAnchor();
       const base = active();
       await anchor.advance(key, undefined, base);
@@ -789,7 +811,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       expect(await anchor.prepare(key, undefined, intentFrom(base))).toBe(
         false,
       );
-      expect(await anchor.loadIntent(key)).toEqual(pending);
+      expect(await anchor.loadIntents(key)).toEqual([pending]);
     });
 
     test('rejects intents that do not extend the expected value by one step', async () => {
@@ -843,7 +865,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
           false,
         );
       }
-      expect(await anchor.loadIntent(key)).toBeUndefined();
+      expect(await anchor.loadIntents(key)).toEqual([]);
     });
 
     test('rejects malformed intent shapes', async () => {
@@ -891,14 +913,49 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         await expect(
           anchor.prepare(key, base, intent as never),
         ).rejects.toThrow(message);
-        await expect(
-          anchor.discard(key, base, intent as never),
-        ).rejects.toThrow(message);
         expect(() => cloneGroupSecurityRollbackIntent(intent as never)).toThrow(
           message,
         );
+        expect(() =>
+          cloneGroupSecurityRollbackIntents([intent] as never),
+        ).toThrow(message);
       }
-      expect(await anchor.loadIntent(key)).toBeUndefined();
+      expect(await anchor.loadIntents(key)).toEqual([]);
+    });
+
+    test('rejects malformed intent lists', () => {
+      const base = active();
+      const intent = intentFrom(base);
+      class IntentList extends Array {}
+      const accessor: unknown[] = [];
+      Object.defineProperty(accessor, 0, {
+        get: () => intent,
+        enumerable: true,
+      });
+      const cases: Array<[unknown, RegExp]> = [
+        [undefined, /plain array/],
+        [{ 0: intent, length: 1 }, /plain array/],
+        [IntentList.from([intent]), /plain array/],
+        [
+          Array.from(
+            { length: MAX_GROUP_SECURITY_ROLLBACK_INTENTS + 1 },
+            (_, index) =>
+              intentFrom(base, {
+                ...successor(base),
+                storeCommitment: commitment(0x60 + index),
+              }),
+          ),
+          /exceed their bound/,
+        ],
+        [accessor, /only data elements/],
+        [[intent, intentFrom(base)], /distinct/],
+      ];
+      for (const [intents, message] of cases) {
+        expect(() =>
+          cloneGroupSecurityRollbackIntents(intents as never),
+        ).toThrow(message);
+      }
+      expect(cloneGroupSecurityRollbackIntents([intent])).toEqual([intent]);
     });
 
     test('records first-anchor intents bound to the pre-group snapshot', async () => {
@@ -911,20 +968,20 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
       };
       expect(await anchor.prepare(key, undefined, empty)).toBe(true);
       expect(await anchor.load(key)).toBeUndefined();
-      expect(await anchor.loadIntent(key)).toEqual(empty);
+      expect(await anchor.loadIntents(key)).toEqual([empty]);
       const pending = {
         baseRevision: 4,
         baseStoreCommitment: commitment(4),
         next: { ...first, revision: 5 },
       };
       expect(await anchor.prepare(key, undefined, pending)).toBe(true);
-      expect(await anchor.loadIntent(key)).toEqual(pending);
+      expect(await anchor.loadIntents(key)).toEqual([empty, pending]);
       expect(await anchor.advance(key, undefined, pending.next)).toBe(true);
-      expect(await anchor.loadIntent(key)).toBeUndefined();
+      expect(await anchor.loadIntents(key)).toEqual([]);
       expect(await anchor.prepare(key, undefined, empty)).toBe(false);
     });
 
-    test('clears the intent on advance, poison and retirement', async () => {
+    test('clears every intent on advance, poison and retirement', async () => {
       const base = active();
       const advanced = new InMemoryGroupSecurityRollbackAnchor();
       await advanced.advance(key, undefined, base);
@@ -935,9 +992,9 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         storeCommitment: commitment(0x44),
       };
       expect(await advanced.advance(key, base, unrelated)).toBe(true);
-      expect(await advanced.loadIntent(key)).toBeUndefined();
+      expect(await advanced.loadIntents(key)).toEqual([]);
       expect(await advanced.prepare(key, base, pending)).toBe(false);
-      expect(await advanced.loadIntent(key)).toBeUndefined();
+      expect(await advanced.loadIntents(key)).toEqual([]);
 
       const poisoned = new InMemoryGroupSecurityRollbackAnchor();
       await poisoned.advance(key, undefined, base);
@@ -949,7 +1006,7 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         secondRecordId: head(3),
         evidenceHash: commitment(4),
       });
-      expect(await poisoned.loadIntent(key)).toBeUndefined();
+      expect(await poisoned.loadIntents(key)).toEqual([]);
 
       const initialized = new InMemoryGroupSecurityRollbackAnchor();
       await initialized.prepare(key, undefined, {
@@ -968,39 +1025,14 @@ describe('InMemoryGroupSecurityRollbackAnchor', () => {
         },
         base,
       );
-      expect(await initialized.loadIntent(key)).toBeUndefined();
+      expect(await initialized.loadIntents(key)).toEqual([]);
 
       const retired = new InMemoryGroupSecurityRollbackAnchor();
       await retired.advance(key, undefined, base);
       await retired.prepare(key, base, pending);
       expect(await retired.retire(key, base, removal())).toBe(true);
-      expect(await retired.loadIntent(key)).toBeUndefined();
+      expect(await retired.loadIntents(key)).toEqual([]);
       await expect(retired.prepare(key, base, pending)).resolves.toBe(false);
-    });
-
-    test('discards only the exact recorded intent', async () => {
-      const anchor = new InMemoryGroupSecurityRollbackAnchor();
-      const base = active();
-      await anchor.advance(key, undefined, base);
-      const pending = intentFrom(base);
-      await anchor.prepare(key, base, pending);
-      const different = intentFrom(base, {
-        ...successor(base),
-        storeCommitment: commitment(0x55),
-      });
-      expect(await anchor.discard(key, base, different)).toBe(false);
-      expect(
-        await anchor.discard(
-          key,
-          { ...base, storeCommitment: commitment(9) },
-          pending,
-        ),
-      ).toBe(false);
-      expect(await anchor.loadIntent(key)).toEqual(pending);
-      expect(await anchor.discard(key, base, pending)).toBe(true);
-      expect(await anchor.loadIntent(key)).toBeUndefined();
-      expect(await anchor.discard(key, base, pending)).toBe(true);
-      expect(await anchor.load(key)).toEqual(base);
     });
 
     test('rejects the retired ambiguity poison format', async () => {

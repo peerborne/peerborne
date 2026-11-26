@@ -77,6 +77,9 @@ export interface GroupSecurityRollbackForkPoison {
   readonly evidenceHash: Uint8Array;
 }
 
+/** Intents an anchor keeps beside one value; older ones are dropped first. */
+export const MAX_GROUP_SECURITY_ROLLBACK_INTENTS = 8;
+
 /**
  * Write-ahead record of the exact store snapshot that a commit is about to
  * produce, kept beside the current anchor value.
@@ -98,49 +101,44 @@ export interface GroupSecurityRollbackIntent {
  *
  * Every store commit is bracketed by two anchor writes. `prepare` records the
  * exact next value as an intent before the store commits, and `advance`
- * installs a value after it commits. If the second write never happens,
- * restore completes the intent when the store holds exactly the intended
- * snapshot and discards it when the store still holds the base snapshot. Any
- * other store state fails closed. Every mutating method must be durable before
- * it resolves and must leave state unchanged when it returns `false`.
+ * installs a value after it commits. Intents from several coordinators that
+ * share one store accumulate beside the same value, because the store's
+ * revision check lets at most one of them commit. If the second write never
+ * happens, restore completes whichever intent the store holds exactly. A store
+ * still at the base is accepted and keeps its intents until the next `advance`
+ * clears them. Any other store state fails closed. Every mutating method must
+ * be durable before it resolves and must leave state unchanged when it returns
+ * `false`.
  */
 export interface DurableGroupSecurityRollbackAnchor {
   load(
     key: GroupStateStoreKey,
   ): Promise<GroupSecurityRollbackAnchorValue | undefined>;
-  /** Return the intent recorded beside the current value, if any. */
-  loadIntent(
+  /** Return the intents recorded beside the current value, oldest first. */
+  loadIntents(
     key: GroupStateStoreKey,
-  ): Promise<GroupSecurityRollbackIntent | undefined>;
+  ): Promise<ReadonlyArray<GroupSecurityRollbackIntent>>;
   /**
-   * Record `intent` while `expected` is current (`undefined` before the first
-   * anchor), replacing any earlier intent. The intent must extend `expected`.
-   * Return false when `expected` is not current.
+   * Add `intent` beside the current value while `expected` is current
+   * (`undefined` before the first anchor). The intent must extend `expected`.
+   * An identical intent is kept once. Beyond
+   * `MAX_GROUP_SECURITY_ROLLBACK_INTENTS`, the oldest is dropped. Return false
+   * when `expected` is not current.
    */
   prepare(
     key: GroupStateStoreKey,
     expected: GroupSecurityRollbackAnchorValue | undefined,
     intent: GroupSecurityRollbackIntent,
   ): Promise<boolean>;
-  /** Install `next` while `expected` is current and clear any intent. */
+  /** Install `next` while `expected` is current and clear every intent. */
   advance(
     key: GroupStateStoreKey,
     expected: GroupSecurityRollbackAnchorValue | undefined,
     next: GroupSecurityRollbackAnchorValue,
   ): Promise<boolean>;
   /**
-   * Remove exactly `intent` while `expected` is current. Return true when it
-   * was removed or no intent remains, and false when `expected` is not current
-   * or a different intent is recorded.
-   */
-  discard(
-    key: GroupStateStoreKey,
-    expected: GroupSecurityRollbackAnchorValue | undefined,
-    intent: GroupSecurityRollbackIntent,
-  ): Promise<boolean>;
-  /**
    * Atomically and irreversibly poison whichever active value is current and
-   * clear any intent.
+   * clear every intent.
    */
   poison(
     key: GroupStateStoreKey,
@@ -153,7 +151,7 @@ export interface DurableGroupSecurityRollbackAnchor {
    * the identical expected position and marker is idempotent. A different
    * current position returns false without changing state. Once written, the
    * marker prevents every later active advance, including after store rollback,
-   * and any intent is cleared.
+   * and every intent is cleared.
    * Return true only after the exact terminal marker is durably retained.
    */
   retire(
@@ -171,7 +169,7 @@ export class InMemoryGroupSecurityRollbackAnchor
   implements DurableGroupSecurityRollbackAnchor
 {
   private readonly values = new Map<string, GroupSecurityRollbackAnchorValue>();
-  private readonly intents = new Map<string, GroupSecurityRollbackIntent>();
+  private readonly intents = new Map<string, GroupSecurityRollbackIntent[]>();
   private readonly tails = new Map<string, Promise<void>>();
 
   async load(
@@ -184,14 +182,13 @@ export class InMemoryGroupSecurityRollbackAnchor
     return current === undefined ? undefined : cloneAnchor(current);
   }
 
-  async loadIntent(
+  async loadIntents(
     keyValue: GroupStateStoreKey,
-  ): Promise<GroupSecurityRollbackIntent | undefined> {
+  ): Promise<ReadonlyArray<GroupSecurityRollbackIntent>> {
     const key = cloneAndValidateKey(keyValue);
     const encodedKey = encodeKey(key);
     await (this.tails.get(encodedKey) ?? Promise.resolve());
-    const intent = this.intents.get(encodedKey);
-    return intent === undefined ? undefined : cloneAndValidateIntent(intent);
+    return cloneAndValidateIntents(this.intents.get(encodedKey) ?? []);
   }
 
   async prepare(
@@ -212,7 +209,14 @@ export class InMemoryGroupSecurityRollbackAnchor
       if (!optionalAnchorEqual(this.values.get(encodedKey), expected)) {
         return false;
       }
-      this.intents.set(encodedKey, cloneAndValidateIntent(intent));
+      const intents = this.intents.get(encodedKey) ?? [];
+      if (intents.some((recorded) => intentEqual(recorded, intent))) {
+        return true;
+      }
+      this.intents.set(
+        encodedKey,
+        [...intents, intent].slice(-MAX_GROUP_SECURITY_ROLLBACK_INTENTS),
+      );
       return true;
     });
     return trackQueuedOperation(this.tails, encodedKey, run);
@@ -236,32 +240,6 @@ export class InMemoryGroupSecurityRollbackAnchor
       const current = this.values.get(encodedKey);
       if (!optionalAnchorEqual(current, expected)) return false;
       this.values.set(encodedKey, cloneAnchor(next));
-      this.intents.delete(encodedKey);
-      return true;
-    });
-    return trackQueuedOperation(this.tails, encodedKey, run);
-  }
-
-  async discard(
-    keyValue: GroupStateStoreKey,
-    expectedValue: GroupSecurityRollbackAnchorValue | undefined,
-    intentValue: GroupSecurityRollbackIntent,
-  ): Promise<boolean> {
-    const key = cloneAndValidateKey(keyValue);
-    const expected =
-      expectedValue === undefined
-        ? undefined
-        : cloneAndValidateAnchor(expectedValue);
-    const intent = cloneAndValidateIntent(intentValue);
-    const encodedKey = encodeKey(key);
-    const prior = this.tails.get(encodedKey) ?? Promise.resolve();
-    const run = prior.then(() => {
-      if (!optionalAnchorEqual(this.values.get(encodedKey), expected)) {
-        return false;
-      }
-      const current = this.intents.get(encodedKey);
-      if (current === undefined) return true;
-      if (!intentEqual(current, intent)) return false;
       this.intents.delete(encodedKey);
       return true;
     });
@@ -354,6 +332,12 @@ export function cloneGroupSecurityRollbackIntent(
   value: GroupSecurityRollbackIntent,
 ): GroupSecurityRollbackIntent {
   return cloneAndValidateIntent(value);
+}
+
+export function cloneGroupSecurityRollbackIntents(
+  value: ReadonlyArray<GroupSecurityRollbackIntent>,
+): GroupSecurityRollbackIntent[] {
+  return cloneAndValidateIntents(value);
 }
 
 /** Whether `intent` names a valid one-step successor of `expected`. */
@@ -471,6 +455,47 @@ function cloneAndValidateIntent(value: unknown): GroupSecurityRollbackIntent {
           ),
     next,
   };
+}
+
+function cloneAndValidateIntents(
+  value: unknown,
+): GroupSecurityRollbackIntent[] {
+  let length: unknown;
+  try {
+    if (
+      !Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype
+    ) {
+      throw new Error('not an array');
+    }
+    length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+  } catch {
+    throw new Error('rollback anchor intents must be a plain array');
+  }
+  if (
+    !Number.isSafeInteger(length) ||
+    (length as number) > MAX_GROUP_SECURITY_ROLLBACK_INTENTS
+  ) {
+    throw new Error('rollback anchor intents exceed their bound');
+  }
+  const intents: GroupSecurityRollbackIntent[] = [];
+  for (let index = 0; index < (length as number); index++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, index);
+    } catch {
+      descriptor = undefined;
+    }
+    if (descriptor === undefined || !('value' in descriptor)) {
+      throw new Error('rollback anchor intents must contain only data elements');
+    }
+    const intent = cloneAndValidateIntent(descriptor.value);
+    if (intents.some((recorded) => intentEqual(recorded, intent))) {
+      throw new Error('rollback anchor intents must be distinct');
+    }
+    intents.push(intent);
+  }
+  return intents;
 }
 
 function intentEqual(
