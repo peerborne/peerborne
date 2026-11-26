@@ -2,6 +2,7 @@ import { fixtureLoadChallenge, fixtureLoadResponder } from './__testutils__/load
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
 import { describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
+import { syncFrameTimeoutMs } from './gossip-frame.js';
 import { Peerborne } from './peerborne.js';
 import {
   beekemPathUpdateV2,
@@ -574,7 +575,9 @@ describe('shared protocol request boundaries', () => {
 
   test.each([
     ...jsonProtocols.map(([name, protocol]) => [name, protocol, 'json'] as const),
-    ...rawProtocols.map(([name, protocol]) => [name, protocol, 'raw'] as const),
+    ...rawProtocols
+      .filter(([, protocol]) => protocol !== syncFrameV1)
+      .map(([name, protocol]) => [name, protocol, 'raw'] as const),
   ])(
     'times out and fully aborts a partial half-open %s request',
     async (handlerName, protocol, framing) => {
@@ -613,6 +616,61 @@ describe('shared protocol request boundaries', () => {
       }
     },
   );
+
+  test('a slow sync-frame request outlives the shared deadline but not its own', async () => {
+    jest.useFakeTimers();
+    const { peerborne, handlers } = await registerHandlers(undefined, 25);
+    const documentHandler = jest.fn(async () => {});
+    (peerborne as any)._documentRegistry.set('/slow', {
+      handleSyncFrameData: documentHandler,
+    });
+    const message = pathPrefixedMessage('/slow', new Uint8Array([1, 2, 3]));
+    let release!: () => void;
+    const late = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chunks = [message.slice(0, 5), message.slice(5)];
+    let index = 0;
+    const stream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          if (index === 1) await late;
+          return index < chunks.length
+            ? { done: false as const, value: chunks[index++]! }
+            : { done: true as const, value: undefined };
+        },
+        return: async () => ({ done: true as const, value: undefined }),
+      }),
+      send: jest.fn(() => true),
+      onDrain: jest.fn(async () => undefined),
+      close: jest.fn(async () => undefined),
+      closeRead: jest.fn(async () => undefined),
+      abort: jest.fn(),
+    };
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = handlers.get(syncFrameV1)!(stream);
+      await jest.advanceTimersByTimeAsync(syncFrameTimeoutMs() - 1);
+      expect(stream.abort).not.toHaveBeenCalled();
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      await result;
+      expect(documentHandler).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+
+      const stalled = streamFromChunks([message.slice(0, 5)]).stream;
+      const timedOut = handlers.get(syncFrameV1)!(stalled);
+      await jest.advanceTimersByTimeAsync(syncFrameTimeoutMs());
+      await timedOut;
+      expect(stalled.abort).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'Shared sync-frame handler: request timed out, dropping',
+      );
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 
   test('bounds both graceful close fallbacks when full-stream abort throws', async () => {
     jest.useFakeTimers();

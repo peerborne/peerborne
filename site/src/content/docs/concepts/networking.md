@@ -70,31 +70,44 @@ with no recipients and no error. Peerborne therefore caps one serialized sync
 message on GossipSub at 3.5 MiB (`MAX_GOSSIP_SYNC_MESSAGE_BYTES`), leaving room
 for encryption, the GossipSub envelope and piggybacked control messages.
 
-Each update frame carries the signed change tree retained since the last
-compaction. When that tree would exceed the cap, the writer sends its oldest
-document changes by CID and keeps the newest inline. A single change larger
-than the cap is sent by CID as well. A receiver that lacks a change sent by
-CID fetches its block over Bitswap. A request that gets no answer within 15
-seconds is retried, and after four attempts the block is skipped with a logged
-failure, so an unreachable block cannot stall later frames for long. A later
-frame that names the block tries again. Peers that already applied the change
-fetch nothing.
+Each update frame carries every change in the writer's retained change tree
+inline. When a published frame grows past 2 MiB, the writer snapshots and
+prunes the tree to its newest changes, up to 1 MiB of payload, so the next
+frame stays within the cap. Peers that keep up already hold the pruned changes;
+a lagging peer recovers them with `requestSync()`. A peer that received a frame
+holds the same tree the writer published, so load digests agree. A change
+whose frame does not fit GossipSub is sent inline, directly, to the topic
+subscribers that advertise `/peerborne/sync-frame/1.0.0`, within the shared
+10 MiB request limit. Subscribers that are not directly connected miss it
+until they call `requestSync()`. A change larger than that is rejected:
+`change()` throws `GossipFrameLimitError` after the local commit, so other
+peers never receive it.
 
-A `requestSync()` response that does not fit, usually because of its
-snapshot, is sent directly to the requesting peer over
-`/peerborne/sync-frame/1.0.0`, within the shared 10 MiB request limit. The
-receiver admits and verifies it like a GossipSub frame and ignores a sync
-request sent this way. A response larger than 10 MiB, or one to a peer that
-cannot be dialed, is not delivered: the responder logs a warning and the
-requester must load the document.
+A `requestSync()` reply that does not fit GossipSub, usually because of its
+snapshot, goes the same way to the libp2p peer that signed the request. The
+request names that peer, so a copy republished by another peer is ignored and
+does not consume the original. Each requesting peer gets at most one direct
+reply every 10 seconds, and each document sends at most eight direct frames,
+20 MiB in all, at once. The receiver admits a direct frame like a GossipSub
+frame, ignores a sync request sent this way, and acknowledges receipt. Both
+sides allow 5 seconds plus the time to move the frame at 128 KiB/s. A reply
+over 10 MiB, an undialable requester, or a missing acknowledgement is logged
+by the sender; the requester must then load the document.
+
+A received frame can still name a block by CID, for example a cross-link to a
+concurrent tip. Such blocks are read before the frame enters the document's
+state queue: at most 16 per frame, under one 10-second deadline. A block that
+cannot be read is skipped and retried by later frames only after an
+exponential backoff from 30 seconds to 10 minutes.
 
 Each open document processes at most 16 frames and 16 MiB of ciphertext at a
 time, and all documents together at most 64 frames and 64 MiB. A frame that
 arrives while either budget is full is skipped, but the most recently arrived
-skipped frame is kept and processed once a credit frees. A writer's later
-frames carry its earlier changes inline, so this recovers the end of a burst
-from one writer. When several writers burst at once, an earlier writer's last
-changes can wait for its next frame or a `requestSync()`.
+skipped frame from each of up to eight senders is kept and processed once a
+credit frees. A writer's later frames carry its earlier changes inline, so
+this recovers the end of a burst, and a frame from another sender cannot
+displace it. Beyond eight concurrent senders, the oldest kept frame is
+dropped.
 
 ## Peer discovery
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
+import { tcp } from '@libp2p/tcp';
 import {
   circuitRelayServer,
   circuitRelayTransport,
@@ -26,7 +27,7 @@ import {
   AutomergeKeychainProvider,
   AutomergeProvider,
 } from '@peerborne/automerge';
-import { syntheticText } from '../../fixtures.mjs';
+import { documentFixture, replicaOf, syntheticText } from '../../fixtures.mjs';
 
 async function until(predicate, timeout = 90_000) {
   const end = performance.now() + timeout;
@@ -180,21 +181,18 @@ export async function oversizedFrames({ full }) {
       return result;
     };
 
-    // One change larger than a GossipSub frame travels by CID over Bitswap.
-    const big = syntheticText(MAX_GOSSIP_SYNC_MESSAGE_BYTES + 512 * 1024, 7);
-    await source.change((draft) => {
-      draft.big = big;
-    });
-    for (let i = 0; i < 3; i++)
-      await source.change((draft) => {
-        draft.body = `after big ${i}`;
-      });
-    const bigEditMs = await until(
-      () =>
-        text(target, 'big') === big && text(target, 'body') === 'after big 2',
-    );
-    assert(frames.every(({ recipients }) => recipients > 0));
-    assert(frames.every(({ bytes }) => bytes < 4 * 1024 * 1024));
+    let blockReads = 0;
+    const readBlock = target._readBlock.bind(target);
+    target._readBlock = (...args) => {
+      blockReads++;
+      return readBlock(...args);
+    };
+    let directFrames = 0;
+    const receiveDirect = target.handleSyncFrameData.bind(target);
+    target.handleSyncFrameData = (...args) => {
+      directFrames++;
+      return receiveDirect(...args);
+    };
 
     // A typing burst beyond the per-document receive limit converges.
     const burst = full ? 60 : 30;
@@ -223,14 +221,9 @@ export async function oversizedFrames({ full }) {
     await delay(2000);
     readerPubsub.addEventListener('message', target._pubsubHandler);
     assert(source.latestSnapshot !== undefined);
-    let directFrames = 0;
-    const receiveDirect = target.handleSyncFrameData.bind(target);
-    target.handleSyncFrameData = (...args) => {
-      directFrames++;
-      return receiveDirect(...args);
-    };
     await delay(2100);
     const beforeCatchUp = frames.length;
+    const directBeforeCatchUp = directFrames;
     await target.requestSync();
     const catchUpMs = await until(
       () =>
@@ -242,10 +235,37 @@ export async function oversizedFrames({ full }) {
       beforeCatchUp,
       'the oversized response must not be published on GossipSub',
     );
-    assert.equal(directFrames, 1, 'the response must arrive as one sync frame');
+    assert.equal(
+      directFrames - directBeforeCatchUp,
+      1,
+      'the response must arrive as one sync frame',
+    );
+
+    // One change larger than a GossipSub frame goes inline, directly, to the
+    // reader. Once it has arrived the author can go offline: nothing is left
+    // to fetch from it.
+    const big = syntheticText(MAX_GOSSIP_SYNC_MESSAGE_BYTES + 512 * 1024, 7);
+    const directBeforeBig = directFrames;
+    await source.change((draft) => {
+      draft.big = big;
+    });
+    for (let i = 0; i < 3; i++)
+      await source.change((draft) => {
+        draft.body = `after big ${i}`;
+      });
+    const bigEditMs = await until(
+      () =>
+        text(target, 'big') === big && text(target, 'body') === 'after big 2',
+    );
+    await founder.swarm.heliaNode.stop();
+    await delay(500);
+    assert(directFrames > directBeforeBig);
+    assert(frames.every(({ recipients }) => recipients > 0));
+    assert(frames.every(({ bytes }) => bytes < 4 * 1024 * 1024));
+    assert.equal(text(target, 'big'), big);
     return {
       scope:
-        'A WebSocket relay and two real Peerborne nodes joined by invitation over Circuit Relay, with production GossipSub, topic validators, Bitswap and the sync-frame protocol.',
+        'A WebSocket relay and two real Peerborne nodes joined by invitation over Circuit Relay, with production GossipSub, topic validators, Bitswap and the sync-frame protocol. The author stops after the last edit.',
       metrics: {
         bigChangeBytes: big.length,
         largestFrame: Math.max(...frames.map(({ bytes }) => bytes)),
@@ -254,13 +274,161 @@ export async function oversizedFrames({ full }) {
         burstMs,
         catchUpMs,
         directFrames,
+        blockReads,
         converged: true,
       },
       gaps: [
-        'Loopback only. Real relay data limits, browser transports, slow links and an unreachable block holder are not exercised.',
+        'Loopback only. Real relay data limits, browser transports and slow links are not exercised.',
       ],
     };
   } finally {
     for (const stop of stops.reverse()) await stop().catch(() => {});
   }
+}
+
+async function gossipNode() {
+  return createLibp2p({
+    addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: {
+      identify: identify(),
+      pubsub: gossipsub({
+        allowPublishToZeroTopicPeers: true,
+        emitSelf: false,
+        canRelayMessage: true,
+        globalSignaturePolicy: 'StrictSign',
+        heartbeatInterval: 200,
+      }),
+    },
+  });
+}
+
+async function authorOffline(values) {
+  const nodes = [];
+  const replicas = [];
+  try {
+    for (let i = 0; i < 3; i++) nodes.push(await gossipNode());
+    const topic = '/advanced/author-offline';
+    for (const node of nodes) node.services.pubsub.subscribe(topic);
+    await nodes[0].dial(nodes[1].getMultiaddrs()[0]);
+    await nodes[1].dial(nodes[2].getMultiaddrs()[0]);
+    await nodes[0].dial(nodes[2].getMultiaddrs()[0]);
+    await until(() =>
+      nodes.every(
+        (node) => node.services.pubsub.getSubscribers(topic).length >= 2,
+      ),
+    );
+    const a = await documentFixture({ adapter: 'yjs', index: 1 });
+    replicas.push(a);
+    await a.document.change((doc) => doc.getMap('root').set('start', 0));
+    const b = await replicaOf(a, 2, { adapter: 'yjs' });
+    const c = await replicaOf(a, 3, { adapter: 'yjs' });
+    replicas.push(b, c);
+    let cOnline = false;
+    for (const [index, fixture] of replicas.entries()) {
+      const node = nodes[index];
+      fixture.setPublish(async (_topic, bytes) => {
+        await node.services.pubsub.publish(topic, bytes);
+      });
+      node.services.pubsub.addEventListener('message', (event) => {
+        if (fixture === c && !cOnline) return;
+        fixture.helia.libp2p.services.pubsub.dispatchEvent(
+          new CustomEvent('message', {
+            detail: { topic: fixture.document._topic, data: event.detail.data },
+          }),
+        );
+      });
+    }
+    let blockReads = 0;
+    const readBlock = c.document._readBlock.bind(c.document);
+    c.document._readBlock = (...args) => {
+      blockReads++;
+      return readBlock(...args);
+    };
+    let slowestSyncMs = 0;
+    const sync = c.document._syncUnlocked.bind(c.document);
+    c.document._syncUnlocked = async (...args) => {
+      const started = performance.now();
+      try {
+        return await sync(...args);
+      } finally {
+        slowestSyncMs = Math.max(slowestSyncMs, performance.now() - started);
+      }
+    };
+    const root = (fixture) => fixture.document.document.getMap('root');
+    for (const [i, value] of values.entries())
+      await a.document.change((doc) =>
+        doc.getMap('root').set(`big${i}`, value),
+      );
+    for (let i = 0; i < 10; i++)
+      await a.document.change((doc) => doc.getMap('root').set(`a${i}`, i));
+    await until(() => root(b).get('a9') === 9);
+    const authorCompacted = a.document.latestSnapshot !== undefined;
+
+    await a.close();
+    replicas.shift();
+    await nodes[0].stop();
+    nodes.shift();
+    cOnline = true;
+
+    let slowestApplyMs = 0;
+    for (let i = 0; i < 5; i++) {
+      const before = performance.now();
+      await b.document.change((doc) => doc.getMap('root').set(`b${i}`, i));
+      await until(() => root(c).get(`b${i}`) === i, 30_000);
+      slowestApplyMs = Math.max(slowestApplyMs, performance.now() - before);
+    }
+    await delay(500);
+    const valuesApplied = values.filter(
+      (value, i) => root(c).get(`big${i}`) === value,
+    ).length;
+    assert(slowestApplyMs < 5_000, 'no frame may wait on the offline author');
+    assert(slowestSyncMs < 5_000, 'no sync may hold the state queue');
+    return {
+      largeValues: values.length,
+      largeValueBytes: values[0].length,
+      authorCompacted,
+      valuesApplied,
+      editsApplied: root(c).get('a9') === 9,
+      slowestApplyMs,
+      slowestSyncMs,
+      blockReads,
+    };
+  } finally {
+    for (const fixture of replicas) await fixture.close().catch(() => {});
+    await Promise.allSettled(nodes.map((node) => node.stop()));
+  }
+}
+
+/**
+ * Three replicas of one writer identity over real GossipSub. A writes large
+ * values while C drops its traffic, then A goes offline and C must take B's
+ * frames without waiting on A. Fixture replicas have no Bitswap, so any
+ * block a frame names by CID is unreachable.
+ */
+export async function authorOfflineFrames() {
+  // Within one compaction window every change travels inline in B's frames.
+  const withinWindow = await authorOffline(
+    Array.from({ length: 2 }, (_, i) => syntheticText(700_000, 40 + i)),
+  );
+  assert.equal(withinWindow.authorCompacted, false);
+  assert.equal(withinWindow.blockReads, 0, 'no change may be sent by CID');
+  assert.equal(withinWindow.valuesApplied, 2);
+  assert.equal(withinWindow.editsApplied, true);
+  // Beyond it A prunes, so C lacks A's older changes, yet B's frames still
+  // apply without stalling.
+  const beyondWindow = await authorOffline(
+    Array.from({ length: 3 }, (_, i) => syntheticText(900_000, 50 + i)),
+  );
+  assert.equal(beyondWindow.authorCompacted, true);
+  return {
+    scope:
+      'Three replicas of one writer identity over real libp2p TCP/Noise/Yamux/GossipSub with production document ciphertext and ingress. The author stops before the lagging replica reconnects; replicas cannot fetch blocks from one another.',
+    metrics: { withinWindow, beyondWindow, converged: true },
+    gaps: [
+      "Beyond one compaction window the lagging Yjs replica cannot apply the author's retained changes until it receives the pruned ones, which needs a requestSync() reply from a replica holding a snapshot.",
+    ],
+  };
 }

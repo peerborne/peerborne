@@ -1,5 +1,8 @@
 import { expect, test } from '@jest/globals';
-import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipReceiveAdmission,
+  MAX_KEPT_FRAME_SENDERS,
+} from './gossip-receive-admission.js';
 import { GroupDocumentOperationBudget } from './group-document-operation.js';
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -149,4 +152,44 @@ test('a frame skipped for shared capacity runs when another subscription frees i
   await work.settleAll();
   await Promise.all(pending);
   expect(aggregate.usage).toEqual({ operations: 0, bytes: 0 });
+});
+
+test('a frame from another sender does not displace a kept frame, and kept senders are bounded', async () => {
+  const local = new GroupDocumentOperationBudget(1, 1024);
+  const receive = new GossipReceiveAdmission(
+    local,
+    new GroupDocumentOperationBudget(8, 1024),
+  );
+  const work = blocking();
+  const retried: number[] = [];
+  const retry = async (frame: Uint8Array) => {
+    retried.push(frame[0]!);
+  };
+  const first = receive.run(Uint8Array.of(1), work.operation, retry, 'writer');
+  await receive.run(Uint8Array.of(2), work.operation, retry, 'writer');
+  await receive.run(Uint8Array.of(99), work.operation, retry, 'junk');
+  await receive.run(Uint8Array.of(98), work.operation, retry, 'junk');
+  expect(receive.deferredBytes).toBe(2);
+  work.gates[0]!.resolve();
+  await first;
+  for (let index = 0; index < 4; index++) await turn();
+  expect(retried.sort((a, b) => a - b)).toEqual([2, 98]);
+
+  retried.length = 0;
+  const busy = receive.run(Uint8Array.of(1), work.operation, retry, 'writer');
+  for (let sender = 0; sender < MAX_KEPT_FRAME_SENDERS + 3; sender++)
+    await receive.run(
+      Uint8Array.of(10 + sender),
+      work.operation,
+      retry,
+      `peer-${sender}`,
+    );
+  expect(receive.deferredBytes).toBe(MAX_KEPT_FRAME_SENDERS);
+  await work.settleAll();
+  await busy;
+  for (let index = 0; index < 4; index++) await turn();
+  expect(retried.sort((a, b) => a - b)).toEqual(
+    Array.from({ length: MAX_KEPT_FRAME_SENDERS }, (_, index) => 13 + index),
+  );
+  expect(local.usage).toEqual({ operations: 0, bytes: 0 });
 });

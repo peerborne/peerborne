@@ -40,13 +40,19 @@ dependency/ingress evidence, not default discovery or WebRTC routing evidence.
 
 `oversized-frames` joins a founder and an invited reader through a loopback
 WebSocket Circuit Relay with production GossipSub, topic validators, Bitswap
-and the sync-frame protocol. A change larger than one GossipSub frame must reach
-the reader by CID over Bitswap, while every published frame stays under the
-4 MiB RPC limit and reaches a peer. A burst of 30 (full: 60) concurrent edits
-must leave the reader on the final edit. A reader that drops megabyte edits
-must then converge through `requestSync()` without a GossipSub response,
-because the founder's snapshot no longer fits one frame. Slow links, relay data
-limits, browser transports and an offline block holder remain outside it.
+and the sync-frame protocol. A burst of 30 (full: 60) concurrent edits must
+leave the reader on the final edit. A reader that drops megabyte edits must
+converge through `requestSync()` with one acknowledged sync frame and no
+GossipSub response. A change larger than one GossipSub frame must reach the
+reader inline over a sync frame. Every published frame stays under the 4 MiB
+RPC limit, the reader never reads a block, and the founder then stops.
+
+`author-offline-frames` runs three replicas of one writer identity over real
+TCP GossipSub. Fixture replicas cannot fetch blocks from one another. A writes
+two 700 KB values and ten edits while C drops its traffic, then A stops. C
+must apply each of B's next frames within five seconds and converge on A's
+values from them, without reading a block. Slow links, relay data limits
+and browser transports remain outside both scenarios.
 
 `slow-peer` places one replica in a separate CDP target and makes the other
 three mutate concurrently over ordered SCTP channels. A no-loss baseline and

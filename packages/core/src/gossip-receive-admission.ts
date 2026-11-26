@@ -35,11 +35,15 @@ interface DeferredFrame {
   readonly operation: (frame: Uint8Array) => Promise<unknown>;
 }
 
+/** Senders whose latest skipped frame one subscription keeps. */
+export const MAX_KEPT_FRAME_SENDERS = 8;
+
 export class GossipReceiveAdmission {
   private open = true;
   private nextArrival = 0;
   private readonly arrivals = new WeakMap<Uint8Array, number>();
-  private deferred?: DeferredFrame;
+  // Latest skipped frame per sender, so one sender cannot displace another's.
+  private readonly deferred = new Map<string, DeferredFrame>();
 
   constructor(
     private readonly localBudget = new GroupDocumentOperationBudget(
@@ -53,30 +57,36 @@ export class GossipReceiveAdmission {
     return this.open;
   }
 
-  /** Ciphertext bytes retained for the deferred frame, if any. */
+  /** Ciphertext bytes retained in kept frames. */
   get deferredBytes(): number {
-    return this.deferred?.frame.byteLength ?? 0;
+    let bytes = 0;
+    for (const { frame } of this.deferred.values()) bytes += frame.byteLength;
+    return bytes;
   }
 
   close(): void {
     this.open = false;
-    this.deferred = undefined;
+    this.deferred.clear();
     waitingForCapacity.get(this.aggregateBudget)?.delete(this);
   }
 
   /**
    * Run `operation` on a detached copy of `input` under the shared budgets.
    * A frame that finds no capacity is skipped. With `retry`, the most recently
-   * arrived skipped frame is kept instead and passed to `retry` once capacity
-   * frees. Later frames carry earlier changes inline, so the latest one
-   * recovers a burst without an unbounded queue. Arrival order is fixed when a
-   * given `input` is first seen, so a frame reaching a second receive stage
-   * keeps its original position.
+   * arrived skipped frame from each `sender` is kept instead and passed to
+   * `retry` once capacity frees. A writer's later frames carry its earlier
+   * changes inline, so its latest one recovers a burst without an unbounded
+   * queue, and a frame from another sender cannot displace it. At most
+   * `MAX_KEPT_FRAME_SENDERS` senders and the local byte budget are kept; the
+   * oldest kept frame is dropped first. Arrival order is fixed when a given
+   * `input` is first seen, so a frame reaching a second receive stage keeps
+   * its original position.
    */
   async run<T>(
     input: Uint8Array,
     operation: (frame: Uint8Array) => Promise<T>,
     retry?: (frame: Uint8Array) => Promise<unknown>,
+    sender = '',
   ): Promise<T | undefined> {
     if (!this.open) return;
     let length: number;
@@ -93,7 +103,8 @@ export class GossipReceiveAdmission {
     const arrival = this.arrival(input);
     const release = this.reserve(length);
     if (release === undefined) {
-      if (retry !== undefined) this.defer(arrival, input, length, retry);
+      if (retry !== undefined)
+        this.defer(sender, arrival, input, length, retry);
       return undefined;
     }
     try {
@@ -146,12 +157,14 @@ export class GossipReceiveAdmission {
   }
 
   private defer(
+    sender: string,
     arrival: number,
     input: Uint8Array,
     length: number,
     operation: (frame: Uint8Array) => Promise<unknown>,
   ): void {
-    if (this.deferred !== undefined && this.deferred.arrival > arrival) return;
+    const kept = this.deferred.get(sender);
+    if (kept !== undefined && kept.arrival > arrival) return;
     let frame: Uint8Array;
     try {
       frame = copyUnsharedUint8Array(
@@ -163,28 +176,42 @@ export class GossipReceiveAdmission {
     } catch {
       return;
     }
-    this.deferred = { arrival, frame, operation };
+    this.deferred.delete(sender);
+    this.deferred.set(sender, { arrival, frame, operation });
+    while (
+      this.deferred.size > MAX_KEPT_FRAME_SENDERS ||
+      this.deferredBytes > this.localBudget.maxBytes
+    ) {
+      this.deferred.delete(this.oldestKept()!);
+    }
     waiters(this.aggregateBudget).add(this);
   }
 
+  private oldestKept(): string | undefined {
+    let oldest: [string, number] | undefined;
+    for (const [sender, { arrival }] of this.deferred)
+      if (oldest === undefined || arrival < oldest[1])
+        oldest = [sender, arrival];
+    return oldest?.[0];
+  }
+
   private drain(): void {
-    const deferred = this.deferred;
-    if (deferred === undefined || !this.open) {
-      waitingForCapacity.get(this.aggregateBudget)?.delete(this);
-      return;
+    while (this.open && this.deferred.size > 0) {
+      const sender = this.oldestKept()!;
+      const kept = this.deferred.get(sender)!;
+      const release = this.reserve(kept.frame.byteLength);
+      if (release === undefined) return;
+      this.deferred.delete(sender);
+      void (async () => {
+        try {
+          await kept.operation(kept.frame);
+        } catch {
+          // `retry` owns failure reporting, as the caller of `run` does.
+        } finally {
+          release();
+        }
+      })();
     }
-    const release = this.reserve(deferred.frame.byteLength);
-    if (release === undefined) return;
-    this.deferred = undefined;
     waitingForCapacity.get(this.aggregateBudget)?.delete(this);
-    void (async () => {
-      try {
-        await deferred.operation(deferred.frame);
-      } catch {
-        // `retry` owns failure reporting, as the caller of `run` does.
-      } finally {
-        release();
-      }
-    })();
   }
 }

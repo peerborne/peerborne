@@ -2,7 +2,7 @@ import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import { syncRequestTimeAllowed } from './policy/sync-request.js';
 
-const domain = '\u0000peerborne/sync-request/2\u0000';
+const domain = '\u0000peerborne/sync-request/3\u0000';
 const prefix = Uint8Array.from(domain, (character) => character.charCodeAt(0));
 export const MAX_SYNC_REQUEST_BYTES = 32 * 1024;
 export const SYNC_REQUEST_LIFETIME_MS = 60_000;
@@ -14,6 +14,8 @@ export interface SyncRequest {
   readonly issuedAtMs: number;
   readonly knownTips: readonly string[];
   readonly knownSnapshots: readonly string[];
+  /** libp2p PeerId that publishes the request and receives a direct reply. */
+  readonly peer: string;
   readonly signature: string;
 }
 
@@ -36,6 +38,7 @@ export function syncRequestSigningPayload(
         request.issuedAtMs,
         request.knownTips,
         request.knownSnapshots,
+        request.peer,
       ]),
   );
   if (bytes.length > MAX_SYNC_REQUEST_BYTES)
@@ -53,6 +56,7 @@ export function encodeSyncRequest(request: SyncRequest): Uint8Array {
         request.issuedAtMs,
         request.knownTips,
         request.knownSnapshots,
+        request.peer,
         request.signature,
       ]),
   );
@@ -68,7 +72,7 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
         bytes.subarray(prefix.length),
       ),
     );
-    if (!Array.isArray(fields) || fields.length !== 7) return;
+    if (!Array.isArray(fields) || fields.length !== 8) return;
     const [
       documentId,
       requester,
@@ -76,6 +80,7 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
       issuedAtMs,
       knownTips,
       knownSnapshots,
+      peer,
       signature,
     ] = fields;
     if (
@@ -100,6 +105,8 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
         (hint: unknown) =>
           typeof hint !== 'string' || !/^[0-9a-f]{64}$/u.test(hint),
       ) ||
+      typeof peer !== 'string' ||
+      !/^[0-9A-Za-z]{1,256}$/u.test(peer) ||
       typeof signature !== 'string' ||
       signature.length < 1 ||
       signature.length > 8192
@@ -126,6 +133,7 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
       issuedAtMs,
       knownTips: Object.freeze(knownTips),
       knownSnapshots: Object.freeze(knownSnapshots),
+      peer,
       signature,
     });
   } catch {

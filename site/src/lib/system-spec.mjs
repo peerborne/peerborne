@@ -30,11 +30,11 @@ export const claims = [
     id: 'gossip-receive',
     label: 'Inbound limits',
     title: 'Reserve capacity before handling a gossip frame',
-    rule: 'Share capacity between the ordinary listener and topic validator. Charge a work item and its ciphertext bytes before copying, decrypting, decoding, or queuing it. Keep only the most recently arrived skipped frame and process it when a credit frees.',
+    rule: 'Share capacity between the ordinary listener and topic validator. Charge a work item and its ciphertext bytes before copying, decrypting, decoding, or queuing it. Keep the most recently arrived skipped frame of each of up to eight senders and process it when a credit frees.',
     checked:
       'The budget policy preserves count and byte bounds across finite histories. Runtime tests check the shared budgets, cutoff on close, and batches of up to four signature checks per verification.',
     limit:
-      'Limits account for admitted frames; the one retained frame per subscription is outside the credits. Native heap and wall time need measurement. Other skipped frames rely on the retained frame carrying their changes, or on later synchronization.',
+      'Limits account for admitted frames; kept frames, bounded by sender count and the local byte budget, are outside the credits. Native heap and wall time need measurement. Other skipped frames rely on the retained frame carrying their changes, or on later synchronization.',
     proof: [
       'packages/core/src/policy/document-admission.ts',
       'documentAdmission_all_histories',

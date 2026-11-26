@@ -76,7 +76,8 @@ import type { PeerborneHeliaNode } from './helia-node.js';
 import type { HeliaWithLibp2p } from '@helia/libp2p';
 import { Libp2p } from 'libp2p';
 import { PeerId } from '@libp2p/interface';
-import type { ServiceMap, Stream } from '@libp2p/interface';
+import type { Connection, ServiceMap, Stream } from '@libp2p/interface';
+import { syncFrameTimeoutMs } from './gossip-frame.js';
 import type { GossipSub } from '@libp2p/gossipsub';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
@@ -1198,9 +1199,11 @@ export class Peerborne<
     };
 
     // Handler for sync frame V1: the path-prefix header, then one encrypted
-    // ordinary sync frame that was too large for GossipSub. The document
-    // admits and verifies it like a GossipSub frame.
-    const syncFrameHandler = (rawStream: Stream) => {
+    // ordinary sync frame that was too large for GossipSub. A frame can be
+    // up to the shared request limit, so reading it gets the deadline the
+    // sender is given for that size on a slow link. The document admits and
+    // verifies it like a GossipSub frame and acknowledges receipt.
+    const syncFrameHandler = (rawStream: Stream, connection?: Connection) => {
       const stream: ProtocolStream = rawStream;
       return pipe(
         stream,
@@ -1216,7 +1219,7 @@ export class Peerborne<
                   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
                   MAX_DOCUMENT_PATH_LENGTH,
                 ),
-              requestTimeoutMs,
+              syncFrameTimeoutMs(),
             );
           } catch (err) {
             const reason =
@@ -1236,7 +1239,12 @@ export class Peerborne<
             requestTimeoutMs,
             'sync-frame',
             (admission) =>
-              header.doc.handleSyncFrameData(header.payload, admission),
+              header.doc.handleSyncFrameData(
+                header.payload,
+                admission,
+                stream,
+                connection?.remotePeer,
+              ),
           );
           return [];
         },

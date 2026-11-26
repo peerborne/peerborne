@@ -194,7 +194,8 @@ test('a validated burst that exceeds the document limit still applies its final 
       undefined,
       {
         assertStillActive: expect.any(Function),
-        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+        prefetchedBlocks: expect.any(Map),
+        fetchMissingBlocks: false,
       },
     );
   } finally {
@@ -271,7 +272,8 @@ test('closing and reopening skips old queued receive work and applies fresh fram
       undefined,
       {
         assertStillActive: expect.any(Function),
-        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+        prefetchedBlocks: expect.any(Map),
+        fetchMissingBlocks: false,
       },
     );
   } finally {
@@ -340,6 +342,7 @@ test('a direct sync frame is applied like a GossipSub frame but never as a sync 
     issuedAtMs: Date.now(),
     knownTips: ['tip'],
     knownSnapshots: [],
+    peer: 'memberPeer',
     signature: 'AQ==',
   });
   const requestFrame = new Uint8Array([1, 2, ...request]);
@@ -372,7 +375,8 @@ test('a direct sync frame is applied like a GossipSub frame but never as a sync 
       undefined,
       {
         assertStillActive: expect.any(Function),
-        blockFetchAttempt: { timeoutMs: 15_000, attempts: 4 },
+        prefetchedBlocks: expect.any(Map),
+        fetchMissingBlocks: false,
       },
     );
 

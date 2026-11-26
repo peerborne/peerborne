@@ -1,9 +1,4 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import {
-  changeTreeDepth,
-  CHANGE_TREE_COMPACTION_KEEP,
-  MAX_CHANGE_TREE_DEPTH,
-} from './change-tree-walk.js';
 import { mergeCompactionConfig } from './compaction-config.js';
 import {
   crdtDocumentChangeNode,
@@ -11,10 +6,13 @@ import {
 } from './crdt-change-node.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import {
+  GOSSIP_RETAINED_TREE_HIGH_BYTES,
+  GossipFrameLimitError,
   MAX_DIRECT_SYNC_MESSAGE_BYTES,
   MAX_GOSSIP_SYNC_MESSAGE_BYTES,
 } from './gossip-frame.js';
 import { JSONSerializer } from './json-serializer.js';
+import { loadResponseManifestHash } from './load-response-manifest.js';
 import { PeerborneDocument } from './peerborne-document.js';
 import { syncFrameV1 } from './wire-protocols.js';
 
@@ -47,12 +45,46 @@ jest.mock('./peerborne.js', () => ({
 type Node = CRDTChangeNode<unknown>;
 const KEY_AND_NONCE = 44;
 const serializer = new JSONSerializer<unknown>();
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+const peer = (id: string) => ({ toString: () => id });
 
-function writerDocument() {
+interface DirectSend {
+  peer: string;
+  protocols: string[];
+  payload: Uint8Array;
+}
+
+function writerDocument(
+  options: { ack?: boolean; dial?: () => Promise<never> } = {},
+) {
   const published: Uint8Array[] = [];
-  const direct: { peer: unknown; protocols: string[]; payload: Uint8Array }[] =
-    [];
+  const direct: DirectSend[] = [];
+  const subscribers = [peer('member'), peer('relay')];
   let blocks = 0;
+  const dialProtocol = jest.fn(
+    async (target: { toString(): string }, protocols: string[]) => {
+      if (options.dial) return options.dial();
+      let payload: Uint8Array | undefined;
+      return {
+        send: (bytes: Uint8Array) => {
+          payload = bytes;
+          return true;
+        },
+        onDrain: async () => undefined,
+        close: async () => {
+          direct.push({
+            peer: target.toString(),
+            protocols,
+            payload: payload!,
+          });
+        },
+        abort: jest.fn(),
+        async *[Symbol.asyncIterator]() {
+          if (options.ack !== false) yield Uint8Array.of(1);
+        },
+      };
+    },
+  );
   const document = Object.assign(Object.create(PeerborneDocument.prototype), {
     documentPath: '/gossip-frame',
     _userPublicKey: 'writer',
@@ -66,6 +98,7 @@ function writerDocument() {
     _syncRequestsSeen: new Map(),
     _syncRequestClock: 0,
     _lastSyncResponseAt: 0,
+    _lastPublishedBytes: 0,
     _subscribed: true,
     _hashes: new Set<string>(),
     _referencedAncestors: new Set<string>(),
@@ -90,17 +123,15 @@ function writerDocument() {
       config: {},
       heliaNode: {
         libp2p: {
-          dialProtocol: jest.fn(async (peer: unknown, protocols: string[]) => ({
-            send: (payload: Uint8Array) => {
-              direct.push({ peer, protocols, payload });
-              return true;
-            },
-            onDrain: async () => undefined,
-            close: async () => undefined,
-            abort: () => undefined,
-          })),
+          dialProtocol,
+          peerStore: {
+            get: async (target: { toString(): string }) => ({
+              protocols: target.toString() === 'relay' ? [] : [syncFrameV1],
+            }),
+          },
           services: {
             pubsub: {
+              getSubscribers: () => subscribers,
               publish: jest.fn(async (_topic: string, bytes: Uint8Array) => {
                 published.push(bytes);
               }),
@@ -118,22 +149,40 @@ function writerDocument() {
     _changesSinceSnapshot: 0,
     _gcLifecycle: {},
   }) as any;
-  return { document, published, direct };
+  return { document, published, direct, dialProtocol };
 }
 
 const decode = (frame: Uint8Array) =>
   serializer.deserializeSyncMessage(frame.slice(KEY_AND_NONCE));
 
-function inlineIds(root: Node, rootId: string): Set<string> {
-  const ids = new Set<string>();
-  const pending: [string, Node][] = [[rootId, root]];
-  while (pending.length > 0) {
-    const [id, node] = pending.pop()!;
-    if (node.change !== undefined) ids.add(id);
-    if (node.children) pending.push(...Object.entries(node.children));
-  }
-  return ids;
+function decodeDirect(payload: Uint8Array) {
+  const pathLength = new DataView(payload.buffer, payload.byteOffset).getUint32(
+    0,
+  );
+  return {
+    path: new TextDecoder().decode(payload.slice(4, 4 + pathLength)),
+    message: decode(payload.slice(4 + pathLength)),
+  };
 }
+
+/** Nodes that name a change by CID while still carrying its ancestry. */
+function payloadsSentByCid(root: Node): number {
+  let count = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.change === undefined && node.children !== undefined) count++;
+    if (node.children) pending.push(...Object.values(node.children));
+  }
+  return count;
+}
+
+const manifest = (changeId: string, changes: Node) =>
+  loadResponseManifestHash({
+    changeId,
+    changes,
+    serializeChange: (change: unknown) => serializer.serializeChanges(change),
+  });
 
 let warn: ReturnType<typeof jest.spyOn>;
 let log: ReturnType<typeof jest.spyOn>;
@@ -146,74 +195,79 @@ afterEach(() => {
   log.mockRestore();
 });
 
-test('every published frame fits GossipSub while the retained history keeps its payloads', async () => {
-  const { document, published } = writerDocument();
-  const edits = 30;
-  for (let index = 0; index < edits; index++) {
+test('frames fit GossipSub with every payload inline, and receivers keep the author tree', async () => {
+  const { document, published, direct } = writerDocument();
+  for (let index = 0; index < 30; index++) {
     await document._makeChange(
       { index, text: 'x'.repeat(200_000) },
       crdtDocumentChangeNode,
     );
   }
-  expect(published).toHaveLength(edits);
+  for (let index = 0; index < 2; index++)
+    await document._makeChange({ small: index }, crdtDocumentChangeNode);
+  expect(published).toHaveLength(32);
+  expect(direct).toHaveLength(0);
+  expect(document._latestSnapshot).toBeDefined();
   for (const frame of published) {
     expect(frame.byteLength - KEY_AND_NONCE).toBeLessThanOrEqual(
-      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+      GOSSIP_RETAINED_TREE_HIGH_BYTES + 300_000,
     );
+    expect(payloadsSentByCid(decode(frame).changes!)).toBe(0);
   }
-  const last = decode(published.at(-1)!);
-  expect(last.changeId).toBe(`cid-${edits}`);
-  const sent = inlineIds(last.changes!, last.changeId!);
-  expect(sent.has(`cid-${edits}`)).toBe(true);
-  expect(sent.has('cid-1')).toBe(false);
-  expect(sent.size).toBeGreaterThan(10);
-  expect(
-    inlineIds(document._lastSyncMessage.changes, `cid-${edits}`).size,
-  ).toBe(edits);
+  // A receiver adopts the last frame's tree; it must hash like the author's.
+  const received = decode(published.at(-1)!);
+  expect(received.changeId).toBe(document._lastSyncMessage.changeId);
+  await expect(
+    manifest(received.changeId!, received.changes!),
+  ).resolves.toEqual(
+    await manifest(
+      document._lastSyncMessage.changeId,
+      document._lastSyncMessage.changes,
+    ),
+  );
 });
 
-test('a change larger than a GossipSub frame is published by CID and still committed', async () => {
-  const { document, published } = writerDocument();
+test('a change too large for GossipSub goes inline, directly, to subscribers that accept sync frames', async () => {
+  const { document, published, direct } = writerDocument();
   await document._makeChange({ small: true }, crdtDocumentChangeNode);
+  const big = { text: 'y'.repeat(MAX_GOSSIP_SYNC_MESSAGE_BYTES) };
+  await expect(
+    document._makeChange(big, crdtDocumentChangeNode),
+  ).resolves.toBeUndefined();
+  await turn();
+  expect(published).toHaveLength(1);
+  expect(direct.map(({ peer }) => peer)).toEqual(['member']);
+  expect(direct[0].protocols).toEqual([syncFrameV1]);
+  const sent = decodeDirect(direct[0].payload);
+  expect(sent.path).toBe('/gossip-frame');
+  expect(sent.message.changeId).toBe('cid-2');
+  expect(sent.message.changes!.change).toEqual(big);
+  expect(payloadsSentByCid(sent.message.changes!)).toBe(0);
+  expect(document._lastSyncMessage.changes.change).toEqual(big);
+
+  // The next frame still carries the big change, then compaction drops it.
+  await document._makeChange({ after: 1 }, crdtDocumentChangeNode);
+  await document._makeChange({ after: 2 }, crdtDocumentChangeNode);
+  await turn();
+  expect(direct).toHaveLength(2);
+  expect(published).toHaveLength(2);
+  expect(decode(published[1]).changeId).toBe('cid-4');
+});
+
+test('a change too large for a direct frame is rejected', async () => {
+  const { document, published, direct } = writerDocument();
   await expect(
     document._makeChange(
-      { text: 'y'.repeat(MAX_GOSSIP_SYNC_MESSAGE_BYTES) },
+      { text: 'z'.repeat(MAX_DIRECT_SYNC_MESSAGE_BYTES) },
       crdtDocumentChangeNode,
     ),
-  ).resolves.toBeUndefined();
-  const frame = decode(published.at(-1)!);
-  expect(frame.changeId).toBe('cid-2');
-  expect(frame.changes!.change).toBeUndefined();
-  expect(Object.keys(frame.changes!.children as object)).toEqual(['cid-1']);
-  expect(published.at(-1)!.byteLength).toBeLessThan(1024);
-  expect(document._lastSyncMessage.changes.change).toEqual({
-    text: 'y'.repeat(MAX_GOSSIP_SYNC_MESSAGE_BYTES),
-  });
+  ).rejects.toBeInstanceOf(GossipFrameLimitError);
+  await turn();
+  expect(published).toHaveLength(0);
+  expect(direct).toHaveLength(0);
 });
 
-test('a writer bounds the depth of an adopted tree whose payloads were sent by CID', async () => {
-  const { document } = writerDocument();
-  let changeId = 'remote-0';
-  let changes: Node = { kind: crdtDocumentChangeNode, change: { remote: 0 } };
-  for (let level = 1; level < MAX_CHANGE_TREE_DEPTH - 1; level++) {
-    const parent = changeId;
-    changeId = `remote-${level}`;
-    changes = {
-      kind: crdtDocumentChangeNode,
-      ...(level > MAX_CHANGE_TREE_DEPTH - 10
-        ? { change: { remote: level } }
-        : {}),
-      children: { [parent]: changes },
-    };
-  }
-  document._refreshLastSyncMessageFromSync(changeId, changes);
-  await document._maybeCompact();
-  expect(
-    changeTreeDepth(document._lastSyncMessage.changes),
-  ).toBeLessThanOrEqual(CHANGE_TREE_COMPACTION_KEEP + 1);
-});
-
-function syncRequest() {
+function syncRequest(fields: Record<string, unknown> = {}) {
   return {
     documentId: '/gossip-frame',
     requester: 'reader',
@@ -221,11 +275,13 @@ function syncRequest() {
     issuedAtMs: Date.now(),
     knownSnapshots: [],
     knownTips: [],
+    peer: 'reader-peer',
     signature: 'AQ==',
+    ...fields,
   };
 }
 
-function withLargeSnapshot(document: any, stateBytes: number) {
+function withSnapshot(document: any, stateBytes: number) {
   document._lastSyncMessage = {
     documentId: '/gossip-frame',
     signatureContext: 'ordinary-sync-v1',
@@ -241,97 +297,145 @@ function withLargeSnapshot(document: any, stateBytes: number) {
   };
 }
 
-test('a catch-up response too large for GossipSub is sent to the requesting peer', async () => {
+test('a catch-up response too large for GossipSub goes, acknowledged, to the peer that signed the request', async () => {
   const { document, published, direct } = writerDocument();
-  withLargeSnapshot(document, MAX_GOSSIP_SYNC_MESSAGE_BYTES);
-  const peer = { toString: () => 'requester-peer' };
-  await document._handleSyncRequest(syncRequest(), () => true, peer);
+  withSnapshot(document, MAX_GOSSIP_SYNC_MESSAGE_BYTES);
+  await document._handleSyncRequest(
+    syncRequest(),
+    () => true,
+    peer('reader-peer'),
+  );
+  await turn();
   expect(published).toHaveLength(0);
-  expect(direct).toHaveLength(1);
-  expect(direct[0].peer).toBe(peer);
-  expect(direct[0].protocols).toEqual([syncFrameV1]);
-  const payload = direct[0].payload;
-  const pathLength = new DataView(payload.buffer, payload.byteOffset).getUint32(
-    0,
-  );
-  expect(new TextDecoder().decode(payload.slice(4, 4 + pathLength))).toBe(
-    '/gossip-frame',
-  );
-  const response = decode(payload.slice(4 + pathLength));
+  expect(direct.map(({ peer }) => peer)).toEqual(['reader-peer']);
+  const response = decodeDirect(direct[0].payload).message;
   expect(response.changeId).toBe('cid-1');
   expect(response.snapshot?.lastChangeNodeCID).toBe('cid-0');
+  expect(warn).not.toHaveBeenCalled();
 });
 
-test('a catch-up response is reported, not sent, when it cannot reach the requester', async () => {
-  for (const [stateBytes, peer] of [
+test('a republished request is ignored without hiding the original, and direct replies are rate limited per peer', async () => {
+  const { document, direct } = writerDocument();
+  withSnapshot(document, MAX_GOSSIP_SYNC_MESSAGE_BYTES);
+  await document._handleSyncRequest(
+    syncRequest(),
+    () => true,
+    peer('someone-else'),
+  );
+  expect(document._syncRequestsSeen.size).toBe(0);
+  await document._handleSyncRequest(
+    syncRequest(),
+    () => true,
+    peer('reader-peer'),
+  );
+  document._lastSyncResponseAt = 0;
+  await document._handleSyncRequest(
+    syncRequest({ requestId: '01'.repeat(16) }),
+    () => true,
+    peer('reader-peer'),
+  );
+  await turn();
+  expect(direct.map(({ peer }) => peer)).toEqual(['reader-peer']);
+});
+
+test('a catch-up response that cannot be delivered is reported', async () => {
+  for (const [stateBytes, source] of [
     [MAX_GOSSIP_SYNC_MESSAGE_BYTES, undefined],
-    [MAX_DIRECT_SYNC_MESSAGE_BYTES, { toString: () => 'requester-peer' }],
+    [MAX_DIRECT_SYNC_MESSAGE_BYTES, peer('reader-peer')],
   ] as const) {
     const { document, published, direct } = writerDocument();
-    withLargeSnapshot(document, stateBytes);
+    withSnapshot(document, stateBytes);
     warn.mockClear();
-    await document._handleSyncRequest(syncRequest(), () => true, peer);
+    await document._handleSyncRequest(syncRequest(), () => true, source);
+    await turn();
     expect(published).toHaveLength(0);
     expect(direct).toHaveLength(0);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('the requester must load the document'),
     );
   }
+
+  const unacknowledged = writerDocument({ ack: false });
+  withSnapshot(unacknowledged.document, MAX_GOSSIP_SYNC_MESSAGE_BYTES);
+  warn.mockClear();
+  await unacknowledged.document._handleSyncRequest(
+    syncRequest(),
+    () => true,
+    peer('reader-peer'),
+  );
+  for (let index = 0; index < 5; index++) await turn();
+  expect(warn).toHaveBeenCalledWith(
+    'Sync response for /gossip-frame was not acknowledged by a peer',
+  );
+});
+
+test('direct frames in flight are bounded per document', async () => {
+  const { document } = writerDocument({ dial: () => new Promise(() => {}) });
+  const peers = Array.from({ length: 9 }, (_, index) => peer(`p${index}`));
+  document._sendDirectSyncFrames(peers, new Uint8Array(10), 'Test frame');
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn).toHaveBeenCalledWith(
+    'Test frame for /gossip-frame was not sent: too many direct frames in flight',
+  );
+  expect(document._directSendBudget.usage.operations).toBe(8);
 });
 
 test('a small catch-up response stays on GossipSub', async () => {
   const { document, published, direct } = writerDocument();
-  withLargeSnapshot(document, 1000);
-  await document._handleSyncRequest(syncRequest(), () => true, {
-    toString: () => 'requester-peer',
-  });
+  withSnapshot(document, 1000);
+  await document._handleSyncRequest(
+    syncRequest(),
+    () => true,
+    peer('reader-peer'),
+  );
   expect(published).toHaveLength(1);
   expect(direct).toHaveLength(0);
 });
 
-test('a block request with no answer is retried a bounded number of times', async () => {
+test('an unreachable block costs one bounded wait outside the state queue and is then backed off', async () => {
   const { document } = writerDocument();
-  const calls: AbortSignal[] = [];
-  const stalled = (signal: AbortSignal) =>
-    new Promise<never>((_, reject) => {
-      if (signal.aborted) reject(signal.reason);
-      signal.addEventListener('abort', () => reject(signal.reason), {
-        once: true,
+  const reads: string[] = [];
+  document._readBlock = jest.fn(
+    (cid: { toString(): string }, options: { signal: AbortSignal }) => {
+      reads.push(cid.toString());
+      return new Promise((_, reject) => {
+        if (options.signal.aborted) reject(options.signal.reason);
+        options.signal.addEventListener(
+          'abort',
+          () => reject(options.signal.reason),
+          { once: true },
+        );
       });
-    });
-  const bound = { timeoutMs: 20, attempts: 3 };
-  const attempt = (options: object = {}) =>
-    document._getBlockWithAttempts('cid', options, undefined, bound);
-
-  document._getBlock = jest.fn(async (_cid: unknown, options: any) => {
-    calls.push(options.signal);
-    if (calls.length < 3) return stalled(options.signal);
-    return { fetched: true };
-  });
-  await expect(attempt()).resolves.toEqual({ fetched: true });
-  expect(calls).toHaveLength(3);
-
-  calls.length = 0;
-  document._getBlock = jest.fn(async (_cid: unknown, options: any) => {
-    calls.push(options.signal);
-    return stalled(options.signal);
-  });
-  await expect(attempt()).rejects.toBeDefined();
-  expect(calls).toHaveLength(3);
-
-  calls.length = 0;
-  const caller = new AbortController();
-  caller.abort(new Error('caller cancelled'));
-  await expect(attempt({ signal: caller.signal })).rejects.toThrow(
-    'caller cancelled',
+    },
   );
-  expect(calls).toHaveLength(1);
+  const children: Record<string, Node> = {};
+  for (let index = 0; index < 40; index++)
+    children[`missing-${index}`] = { kind: crdtDocumentChangeNode };
+  const message = {
+    documentId: '/gossip-frame',
+    signatureContext: 'ordinary-sync-v1',
+    changeId: 'root',
+    changes: { kind: crdtDocumentChangeNode, change: { root: 1 }, children },
+  };
+  const started = Date.now();
+  const prefetch = document._prefetchMissingBlocks(message);
+  await expect(
+    document._mutationQueue.run(async () => 'state queue is free'),
+  ).resolves.toBe('state queue is free');
+  const fetched = await prefetch;
+  const elapsed = Date.now() - started;
+  expect(fetched.size).toBe(0);
+  expect(reads).toHaveLength(16);
+  expect(elapsed).toBeGreaterThanOrEqual(9_000);
+  expect(elapsed).toBeLessThan(15_000);
 
-  calls.length = 0;
-  document._getBlock = jest.fn(async (_cid: unknown, options: any) => {
-    calls.push(options.signal);
-    throw new Error('corrupt block');
+  const first = new Set(reads);
+  reads.length = 0;
+  document._readBlock = jest.fn(async (cid: { toString(): string }) => {
+    reads.push(cid.toString());
+    throw new Error('unreachable');
   });
-  await expect(attempt()).rejects.toThrow('corrupt block');
-  expect(calls).toHaveLength(1);
-});
+  await document._prefetchMissingBlocks(message);
+  expect(reads).toHaveLength(16);
+  expect(reads.some((cid) => first.has(cid))).toBe(false);
+}, 30_000);

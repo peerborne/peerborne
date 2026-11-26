@@ -86,6 +86,7 @@ function harness(identity = writer) {
       config: { enableSigning: true },
       heliaNode: {
         libp2p: {
+          peerId: { toString: () => 'readerPeer' },
           services: {
             pubsub: {
               publish: async (_topic, bytes) => {
@@ -116,6 +117,7 @@ async function request(identity = reader, overrides = {}) {
     issuedAtMs: Date.now(),
     knownTips: [otherRoot],
     knownSnapshots: [],
+    peer: 'readerPeer',
     ...overrides,
   };
   return {
@@ -181,6 +183,7 @@ test('a current reader requests updates using a signed, encrypted, detached fram
     await auth.serializePublicKey(reader.publicKey),
   );
   assert.deepEqual(decoded.knownTips, [root]);
+  assert.equal(decoded.peer, 'readerPeer');
   assert.equal(Object.isFrozen(decoded), true);
   assert.equal(Object.isFrozen(decoded.knownTips), true);
   assert.equal(
@@ -232,6 +235,41 @@ test('replays, requests for a known root, and bursts do not amplify responses', 
     await request(reader, { requestId: '14'.repeat(16) }),
   );
   assert.equal(published.length, 1);
+});
+
+test('a request republished by another libp2p peer is ignored without consuming the original', async () => {
+  const { document, published } = harness();
+  const signed = await request();
+  await document._handleSyncRequest(signed, undefined, {
+    toString: () => 'otherPeer',
+  });
+  assert.equal(published.length, 0);
+  assert.equal(document._syncRequestsSeen.size, 0);
+  await document._handleSyncRequest(signed, undefined, {
+    toString: () => 'readerPeer',
+  });
+  assert.equal(published.length, 1);
+  assert.equal(document._syncRequestsSeen.size, 1);
+});
+
+test('the registered validator rejects a request published by a peer it does not name', async () => {
+  const { document } = harness();
+  const validate = await registeredValidator(document);
+  const frame = await encryptedRequest(await request());
+  assert.equal(
+    await validate(
+      {},
+      { type: 'signed', from: { toString: () => 'otherPeer' }, data: frame },
+    ),
+    TopicValidatorResult.Reject,
+  );
+  assert.equal(
+    await validate(
+      {},
+      { type: 'signed', from: { toString: () => 'readerPeer' }, data: frame },
+    ),
+    TopicValidatorResult.Accept,
+  );
 });
 
 test('a known root does not suppress a missing snapshot, while known snapshots are omitted', async () => {
@@ -329,6 +367,10 @@ test('the codec rejects malformed framing and binds every request field to its o
     { signature: 'not base64!' },
     { knownSnapshots: ['invalid'] },
     { knownSnapshots: ['ab'.repeat(32), 'ab'.repeat(32)] },
+    { peer: '' },
+    { peer: 'reader peer' },
+    { peer: 'p'.repeat(257) },
+    { peer: undefined },
   ])
     assert.throws(() => encodeSyncRequest({ ...valid, ...change }));
   for (const change of [
@@ -338,6 +380,7 @@ test('the codec rejects malformed framing and binds every request field to its o
     { issuedAtMs: valid.issuedAtMs + 1 },
     { knownTips: [root] },
     { knownSnapshots: ['ab'.repeat(32)] },
+    { peer: 'otherPeer' },
   ])
     assert.equal(
       await auth.verify(

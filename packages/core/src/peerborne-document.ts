@@ -45,11 +45,14 @@ import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
 import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import { GroupDocumentOperationBudget } from './group-document-operation.js';
 import {
+  GOSSIP_RETAINED_TREE_HIGH_BYTES,
+  GOSSIP_RETAINED_TREE_KEEP_BYTES,
   GossipFrameLimitError,
   MAX_DIRECT_SYNC_MESSAGE_BYTES,
   MAX_GOSSIP_SYNC_MESSAGE_BYTES,
-  boundSyncMessage,
+  syncFrameTimeoutMs,
 } from './gossip-frame.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
@@ -267,11 +270,34 @@ export type { HistoryVisibility } from './invitation-policy.js';
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
 const loadCandidateResponders = new WeakMap<object, string>();
 
-const DIRECT_SYNC_FRAME_TIMEOUT_MS = 30_000;
-const GOSSIP_BLOCK_FETCH_ATTEMPT = { timeoutMs: 15_000, attempts: 4 };
+const SYNC_FRAME_ACK = 1;
+const DIRECT_REPLY_INTERVAL_MS = 10_000;
+const MAX_DIRECT_REPLY_PEERS = 64;
+const MAX_DIRECT_SENDS = 8;
+const MAX_DIRECT_SEND_BYTES = 2 * MAX_SHARED_PROTOCOL_REQUEST_BYTES;
+const MAX_PREFETCH_BLOCKS = 16;
+const PREFETCH_CONCURRENCY = 4;
+const PREFETCH_DEADLINE_MS = 10_000;
+const MAX_PREFETCH_BYTES = 16 * 1024 * 1024;
+const PREFETCH_BACKOFF_MS = 30_000;
+const MAX_PREFETCH_BACKOFF_MS = 10 * 60_000;
+const MAX_FAILED_PREFETCHES = 256;
+
+async function readFirstChunk(
+  source: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>,
+): Promise<Uint8Array | undefined> {
+  for await (const chunk of source) {
+    return chunk instanceof Uint8Array ? chunk : chunk.subarray();
+  }
+  return undefined;
+}
 
 function gossipSource(message: Message): PeerId | undefined {
   return message.type === 'signed' ? message.from : undefined;
+}
+
+function directSenderKey(peer: PeerId | undefined): string {
+  return `direct:${peer?.toString() ?? ''}`;
 }
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
@@ -787,11 +813,6 @@ interface DocumentUpdateNotification<DocType, PublicKey> {
   readonly canDispatch?: () => boolean;
 }
 
-interface BlockFetchAttempt {
-  readonly timeoutMs: number;
-  readonly attempts: number;
-}
-
 interface DocumentChangeFetchOptions<DocumentKey> {
   readonly signal?: AbortSignal;
   readonly maxBlockBytes?: number;
@@ -801,8 +822,11 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
-  /** Abandon each attempt to fetch one missing block after a bound. */
-  readonly blockFetchAttempt?: BlockFetchAttempt;
+  /**
+   * With `false`, a missing block that is not in `prefetchedBlocks` is skipped
+   * instead of fetched, so no network wait happens inside the state queue.
+   */
+  readonly fetchMissingBlocks?: boolean;
 }
 
 /**
@@ -1455,7 +1479,15 @@ export class PeerborneDocument<
   // the document is `.open()`-ed.
   private _pubsubHandler: EventHandler<CustomEvent<Message>> | undefined;
   private _gossipReceiveAdmission?: GossipReceiveAdmission;
-  private _receiveDirectSyncFrame?: (payload: Uint8Array) => Promise<void>;
+  private _receiveDirectSyncFrame?: (
+    payload: Uint8Array,
+    remotePeer?: PeerId,
+  ) => Promise<void>;
+  // Lazily created: test fixtures build documents without running initializers.
+  private _directSendBudget?: GroupDocumentOperationBudget;
+  private _directReplyAt?: Map<string, number>;
+  private _failedPrefetches?: Map<string, { failures: number; retryAt: number }>;
+  private _lastPublishedBytes = 0;
 
   // Whether this instance has successfully subscribed to the pubsub topic.
   // Used in close() to avoid unsubscribing when open() failed before subscribing,
@@ -2024,32 +2056,91 @@ export class PeerborneDocument<
   }
 
   /**
-   * A block request can stall without a holder ever answering it, while a
-   * fresh request for the same CID succeeds, so each attempt is bounded.
+   * Read the blocks a received message names by CID but this replica lacks,
+   * outside the state queue. At most `MAX_PREFETCH_BLOCKS` are read, all under
+   * one `PREFETCH_DEADLINE_MS` deadline. A CID that failed is skipped with
+   * exponential backoff, so an unreachable block does not cost every later
+   * frame the same wait. The queued sync applies only what was read here.
    */
-  private async _getBlockWithAttempts(
-    hash: CID,
-    options: DocumentBlockReadOptions,
-    getKey?: (keyID: Uint8Array) => DocumentKey | undefined,
-    bound?: BlockFetchAttempt,
-  ): Promise<ChangesType> {
-    if (bound === undefined) return this._getBlock(hash, options, getKey);
-    for (let attempt = 1; ; attempt++) {
-      const signal = AbortSignal.any([
-        ...(options.signal ? [options.signal] : []),
-        AbortSignal.timeout(bound.timeoutMs),
-      ]);
-      try {
-        return await this._getBlock(hash, { ...options, signal }, getKey);
-      } catch (error) {
-        if (
-          attempt >= bound.attempts ||
-          options.signal?.aborted ||
-          !signal.aborted
-        )
-          throw error;
-      }
+  private async _prefetchMissingBlocks(
+    message: CRDTSyncMessage<ChangesType>,
+  ): Promise<Map<string, Uint8Array>> {
+    const blocks = new Map<string, Uint8Array>();
+    if (message.changeId === undefined || message.changes === undefined)
+      return blocks;
+    let missing: string[];
+    try {
+      missing = this._missingPayloadCids(message.changeId, message.changes);
+    } catch {
+      return blocks;
     }
+    const failed = (this._failedPrefetches ??= new Map());
+    const now = Date.now();
+    const wanted = missing
+      .filter((cid) => (failed.get(cid)?.retryAt ?? 0) <= now)
+      .slice(0, MAX_PREFETCH_BLOCKS);
+    if (wanted.length === 0) return blocks;
+    const signal = AbortSignal.timeout(PREFETCH_DEADLINE_MS);
+    let readBytes = 0;
+    const consumeBytes = (byteLength: number) => {
+      readBytes += byteLength;
+      if (readBytes > MAX_PREFETCH_BYTES)
+        throw new RangeError('Prefetched blocks exceed their byte limit');
+    };
+    let next = 0;
+    const worker = async () => {
+      while (next < wanted.length) {
+        const cid = wanted[next++]!;
+        try {
+          blocks.set(
+            cid,
+            await this._readBlock(CID.parse(cid), {
+              signal,
+              maxBlockBytes: MAX_PREFETCH_BYTES,
+              consumeBytes,
+            }),
+          );
+          failed.delete(cid);
+        } catch {
+          const failures = (failed.get(cid)?.failures ?? 0) + 1;
+          failed.delete(cid);
+          failed.set(cid, {
+            failures,
+            retryAt:
+              Date.now() +
+              Math.min(
+                PREFETCH_BACKOFF_MS * 2 ** (failures - 1),
+                MAX_PREFETCH_BACKOFF_MS,
+              ),
+          });
+          while (failed.size > MAX_FAILED_PREFETCHES)
+            failed.delete(failed.keys().next().value!);
+          console.warn('Failed to fetch missing change from blockstore:', cid);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(PREFETCH_CONCURRENCY, wanted.length) },
+        worker,
+      ),
+    );
+    return blocks;
+  }
+
+  /** CIDs a received tree names without an inline payload and this replica lacks. */
+  private _missingPayloadCids(
+    changeId: string,
+    changes: CRDTChangeNode<ChangesType>,
+  ): string[] {
+    return mergeRemoteSyncTree<ChangesType>(
+      changeId,
+      changes,
+      this._lastSyncMessage?.changeId,
+      this._hashes,
+    )
+      .filter(([, , change]) => change === undefined)
+      .map(([cid]) => cid);
   }
 
   private async _putBlock(
@@ -2735,6 +2826,11 @@ export class PeerborneDocument<
           if (index >= missingDocumentHashes.length) return;
           const [missingHash, missingHashKind] =
             missingDocumentHashes[index]!;
+          if (
+            fetchOptions.fetchMissingBlocks === false &&
+            !fetchOptions.prefetchedBlocks?.has(missingHash)
+          )
+            continue;
           try {
             const cid = CID.parse(missingHash);
             const prefetched = fetchOptions.prefetchedBlocks;
@@ -2746,7 +2842,7 @@ export class PeerborneDocument<
                     fetchSignal,
                     fetchOptions.getKey,
                   )
-                : this._getBlockWithAttempts(
+                : this._getBlock(
                     cid,
                     {
                       signal: fetchSignal,
@@ -2754,7 +2850,6 @@ export class PeerborneDocument<
                       consumeBytes,
                     },
                     fetchOptions.getKey,
-                    fetchOptions.blockFetchAttempt,
                   ),
               fetchSignal,
             );
@@ -4176,7 +4271,10 @@ export class PeerborneDocument<
       if (!postPublishCommit) {
         this._lastSyncMessage = updateMessage;
       }
-      await this._publishSyncMessage(updateMessage);
+      this._lastPublishedBytes = await this._publishChangeMessage(
+        updateMessage,
+        postPublishCommit !== undefined,
+      );
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -4227,7 +4325,7 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact();
+    await this._maybeCompact(undefined, this._lastPublishedBytes);
   }
 
   /**
@@ -4308,20 +4406,29 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact(signal?: AbortSignal) {
+  private async _maybeCompact(signal?: AbortSignal, publishedBytes = 0) {
     // Each local change nests the retained tree one level deeper, so a writer
     // must compact before the tree reaches the serialization depth limit even
     // when periodic compaction is disabled.
-    const depthBound =
+    const canBound =
       !this._snapshotUnsupported &&
       !this._compactionInProgress &&
-      this._lastSyncMessage?.changes !== undefined &&
+      this._lastSyncMessage?.changes !== undefined;
+    const depthBound =
+      canBound &&
       changeTreeDepth(
-        this._lastSyncMessage.changes,
+        this._lastSyncMessage!.changes!,
         CHANGE_TREE_COMPACTION_DEPTH,
       ) >= CHANGE_TREE_COMPACTION_DEPTH;
+    // A writer whose last frame grew past the high mark compacts so its next
+    // frame, which carries the retained tree inline, still fits GossipSub.
+    const byteBound =
+      canBound &&
+      !depthBound &&
+      publishedBytes > GOSSIP_RETAINED_TREE_HIGH_BYTES;
     if (
       !depthBound &&
+      !byteBound &&
       !shouldCompact(
         this._compactionConfig.enabled,
         this._snapshotUnsupported,
@@ -4346,15 +4453,44 @@ export class PeerborneDocument<
     throwIfLoadAborted(signal);
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked(signal, depthBound);
+      await this._snapshotUnlocked(
+        signal,
+        depthBound || byteBound,
+        byteBound ? this._byteBoundKeepCount() : undefined,
+      );
     } catch (error) {
-      // The triggering change is already published. A failed depth-bound
+      // The triggering change is already published. A failed bounded
       // snapshot is retried by the next change instead of rolling it back.
-      if (!depthBound || signal?.aborted) throw error;
-      console.warn(`Depth-bound compaction failed for ${this.documentPath}`);
+      if (!(depthBound || byteBound) || signal?.aborted) throw error;
+      console.warn(
+        `${depthBound ? 'Depth' : 'Size'}-bound compaction failed for ${this.documentPath}`,
+      );
     } finally {
       this._compactionInProgress = false;
     }
+  }
+
+  /**
+   * How many inline changes, counted in `_pruneChanges` depth-bound order,
+   * fit `GOSSIP_RETAINED_TREE_KEEP_BYTES`. The newest change is always kept.
+   */
+  private _byteBoundKeepCount(): number {
+    const root = this._lastSyncMessage?.changes;
+    if (root === undefined) return 1;
+    let bytes = 0;
+    let kept = 0;
+    const queue: CRDTChangeNode<ChangesType>[] = [root];
+    for (let index = 0; index < queue.length; index++) {
+      const node = queue[index]!;
+      if (node.change !== undefined) {
+        bytes += this._changesSerializer.serializeChanges(node.change).byteLength;
+        if (kept > 0 && bytes > GOSSIP_RETAINED_TREE_KEEP_BYTES) break;
+        kept++;
+      }
+      if (node.children !== undefined && node.children !== crdtChangeNodeDeferred)
+        queue.push(...Object.values(node.children));
+    }
+    return Math.max(1, kept);
   }
 
   /**
@@ -4365,11 +4501,10 @@ export class PeerborneDocument<
    * `keepCount`.
    *
    * @param keepCount Maximum number of change nodes to retain in the sync tree.
-   * @param depthBound Count every node, ACL or document, except deferred
-   *   leaves, so `keepCount` bounds both the retained depth and the changes a
-   *   lagging peer can still receive inline. A node whose payload was sent by
-   *   CID still nests its children, so it counts. ACL nodes below the cut are
-   *   still preserved as re-attached leaves.
+   * @param depthBound Count every node that carries an inline change, ACL or
+   *   document, and no deferred leaves, so `keepCount` bounds both the retained
+   *   depth and the changes a lagging peer can still receive inline. ACL nodes
+   *   below the cut are still preserved as re-attached leaves.
    * @returns Set of CID strings for document nodes that were pruned from the tree.
    *   ACL node CIDs are never included (they are always preserved).
    */
@@ -4489,11 +4624,7 @@ export class PeerborneDocument<
         current.kind === crdtReaderChangeNode ||
         current.kind === crdtWriterChangeNode;
 
-      if (
-        depthBound
-          ? current.change !== undefined || current.children !== undefined
-          : !isACLNode
-      ) {
+      if (depthBound ? current.change !== undefined : !isACLNode) {
         documentNodesVisited++;
       }
 
@@ -6731,6 +6862,7 @@ export class PeerborneDocument<
           ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
           ...this._knownSyncSnapshots,
         ])].slice(0, 32),
+        peer: this.libp2p.peerId.toString(),
         knownTips: [
           ...new Set([
             this._lastSyncMessage.changeId,
@@ -6822,6 +6954,10 @@ export class PeerborneDocument<
     isCurrent: () => boolean = () => this._subscribed,
     source?: PeerId,
   ): Promise<void> {
+    // A request is answered only for the libp2p peer that signed it into
+    // GossipSub, so a copy republished by another peer is ignored without
+    // consuming the original's replay entry.
+    if (source !== undefined && source.toString() !== request.peer) return;
     const direct = await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
@@ -6894,35 +7030,30 @@ export class PeerborneDocument<
             isSyncRequestFresh(request, dispatch)
           );
         };
-        try {
-          await this._publishSyncMessage(message, isDispatchCurrent);
+        const bytes =
+          this._syncMessageSerializer.serializeSyncMessage(message);
+        if (bytes.byteLength <= MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+          await this._publishSyncBytes(bytes, isDispatchCurrent);
           return;
-        } catch (error) {
-          if (!(error instanceof GossipFrameLimitError)) throw error;
         }
-        // Too large for GossipSub: answer the publishing peer directly.
-        const bounded =
-          source === undefined
-            ? undefined
-            : await boundSyncMessage(
-                message,
-                MAX_DIRECT_SYNC_MESSAGE_BYTES,
-                (candidate) =>
-                  this._syncMessageSerializer.serializeSyncMessage(candidate),
-                (candidate) => this._signAsWriter(candidate),
-              );
-        if (bounded === undefined) {
+        // Too large for GossipSub: answer the requesting peer directly, with
+        // the same inline message.
+        if (
+          source === undefined ||
+          bytes.byteLength > MAX_DIRECT_SYNC_MESSAGE_BYTES
+        ) {
           console.warn(
             `Sync response for ${this.documentPath} exceeds the frame limit; the requester must load the document`,
           );
           return;
         }
         if (!isDispatchCurrent()) return;
+        if (!this._admitDirectReply(source.toString(), now)) return;
         return {
-          peer: source!,
+          peer: source,
           payload: this._buildPathPrefixedFrame(
             'sync-frame',
-            await this._encryptSyncFrame(bounded.bytes),
+            await this._encryptSyncFrame(bytes),
           ),
         };
       } finally {
@@ -6931,78 +7062,148 @@ export class PeerborneDocument<
       }
     });
     if (direct === undefined || !isCurrent()) return;
-    try {
-      await this._sendDirectSyncFrame(direct.peer, direct.payload);
-    } catch {
-      console.warn(
-        `Direct sync response for ${this.documentPath} could not be delivered`,
-      );
+    // Sent outside the receive slot that delivered the request.
+    this._sendDirectSyncFrames([direct.peer], direct.payload, 'Sync response');
+  }
+
+  /** At most one direct reply per requesting peer per interval. */
+  private _admitDirectReply(peer: string, now: number): boolean {
+    const sent = (this._directReplyAt ??= new Map());
+    for (const [key, at] of sent)
+      if (now - at >= DIRECT_REPLY_INTERVAL_MS) sent.delete(key);
+    const last = sent.get(peer);
+    if (last !== undefined || sent.size >= MAX_DIRECT_REPLY_PEERS) return false;
+    sent.set(peer, now);
+    return true;
+  }
+
+  /**
+   * Send one encrypted `syncFrameV1` payload to each peer without waiting.
+   * Bytes in flight are charged to a per-document budget; a send that does
+   * not fit, or that the receiver does not acknowledge, is reported.
+   */
+  private _sendDirectSyncFrames(
+    peers: readonly PeerId[],
+    payload: Uint8Array,
+    label: string,
+  ): void {
+    const budget = (this._directSendBudget ??=
+      new GroupDocumentOperationBudget(
+        MAX_DIRECT_SENDS,
+        MAX_DIRECT_SEND_BYTES,
+      ));
+    for (const peer of peers) {
+      let release: () => void;
+      try {
+        release = budget.reserve(payload.byteLength);
+      } catch {
+        console.warn(
+          `${label} for ${this.documentPath} was not sent: too many direct frames in flight`,
+        );
+        continue;
+      }
+      void this._sendDirectSyncFrame(peer, payload)
+        .then((delivered) => {
+          if (!delivered)
+            console.warn(
+              `${label} for ${this.documentPath} was not acknowledged by a peer`,
+            );
+        })
+        .finally(release);
     }
   }
 
   private async _sendDirectSyncFrame(
     peer: PeerId,
     payload: Uint8Array,
-  ): Promise<void> {
-    const signal = AbortSignal.timeout(DIRECT_SYNC_FRAME_TIMEOUT_MS);
-    const stream = await this.libp2p.dialProtocol(peer, [syncFrameV1], {
-      runOnLimitedConnection: true,
-      signal,
-    });
+  ): Promise<boolean> {
+    const signal = AbortSignal.timeout(syncFrameTimeoutMs(payload.byteLength));
+    let stream: Awaited<ReturnType<Libp2p['dialProtocol']>> | undefined;
     try {
+      stream = await awaitLoadWork(
+        this.libp2p.dialProtocol(peer, [syncFrameV1], {
+          runOnLimitedConnection: true,
+          signal,
+        }),
+        signal,
+      );
       if (!stream.send(payload)) await stream.onDrain({ signal });
-    } catch (error) {
-      stream.abort(error instanceof Error ? error : new Error('Direct sync frame failed'));
-      throw error;
+      await stream.close({ signal });
+      const ack = await awaitLoadWork(readFirstChunk(stream), signal);
+      return ack?.byteLength === 1 && ack[0] === SYNC_FRAME_ACK;
+    } catch {
+      stream?.abort(new Error('Direct sync frame failed'));
+      return false;
     }
-    // The receiver reads to our FIN, then resets the stream, so a failed close
-    // does not mean the frame was lost.
-    await stream.close({ signal }).catch(() => undefined);
   }
 
   /**
    * Handle an inbound `syncFrameV1` payload (already de-framed of the
    * path-prefix header by the shared handler in `peerborne.ts`). The frame is
    * admitted and applied exactly like a GossipSub frame, except that a sync
-   * request is ignored.
+   * request is ignored. A one-byte acknowledgement tells the sender the whole
+   * frame arrived.
    *
    * @internal Invoked by the shared protocol handler in `peerborne.ts`.
    */
   public async handleSyncFrameData(
     payload: Uint8Array,
     admission?: SharedProtocolHandlerAdmission,
+    stream?: ProtocolWriteStream,
+    remotePeer?: PeerId,
   ): Promise<void> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
-    if (!isSharedProtocolHandlerActive(admission)) return;
-    void this._receiveDirectSyncFrame?.(payload);
+    const receive = this._receiveDirectSyncFrame;
+    if (!isSharedProtocolHandlerActive(admission) || receive === undefined)
+      return;
+    void receive(payload, remotePeer);
+    if (stream) await writeStream(stream, [Uint8Array.of(SYNC_FRAME_ACK)]);
   }
 
   /**
-   * Publish a signed sync message, deferring old change payloads to CIDs when
-   * the whole tree would not fit one GossipSub frame.
+   * Publish a signed change. A message too large for GossipSub is sent
+   * directly to connected subscribers instead; one too large for a direct
+   * frame is rejected. Returns the serialized size.
    */
-  private async _publishSyncMessage(
+  private async _publishChangeMessage(
     message: CRDTSyncMessage<ChangesType>,
-    isCurrent?: () => boolean,
-  ): Promise<boolean> {
-    const bounded = await boundSyncMessage(
-      message,
-      MAX_GOSSIP_SYNC_MESSAGE_BYTES,
-      (candidate) =>
-        this._syncMessageSerializer.serializeSyncMessage(candidate),
-      (candidate) => this._signAsWriter(candidate),
-    );
-    if (bounded === undefined) throw new GossipFrameLimitError();
-    if (
-      message.changes?.change !== undefined &&
-      bounded.message.changes?.change === undefined
-    ) {
-      console.warn(
-        `A change to ${this.documentPath} exceeds the GossipSub frame limit; peers fetch it by CID`,
-      );
+    staged: boolean,
+  ): Promise<number> {
+    const bytes = this._syncMessageSerializer.serializeSyncMessage(message);
+    if (bytes.byteLength <= MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+      await this._publishSyncBytes(bytes);
+      return bytes.byteLength;
     }
-    return this._publishSyncBytes(bounded.bytes, isCurrent);
+    // A staged membership change needs one bounded broadcast to commit.
+    if (staged) throw new GossipFrameLimitError(MAX_GOSSIP_SYNC_MESSAGE_BYTES);
+    if (bytes.byteLength > MAX_DIRECT_SYNC_MESSAGE_BYTES)
+      throw new GossipFrameLimitError();
+    const payload = this._buildPathPrefixedFrame(
+      'sync-frame',
+      await this._encryptSyncFrame(bytes),
+    );
+    const peers = await this._directSyncFramePeers();
+    console.warn(
+      `A change to ${this.documentPath} exceeds the GossipSub frame limit; sending it directly to ${peers.length} peer(s)`,
+    );
+    this._sendDirectSyncFrames(peers, payload, 'Oversized change');
+    return bytes.byteLength;
+  }
+
+  /** Document topic subscribers that advertise `syncFrameV1`. */
+  private async _directSyncFramePeers(): Promise<PeerId[]> {
+    const pubsub = this.swarm.heliaNode.libp2p.services.pubsub as GossipSub;
+    const peers: PeerId[] = [];
+    for (const peer of pubsub.getSubscribers?.(this._topic) ?? []) {
+      try {
+        const known = await this.libp2p.peerStore.get(peer);
+        if (known.protocols.includes(syncFrameV1)) peers.push(peer);
+      } catch {
+        // A peer without identify data cannot be addressed safely.
+      }
+    }
+    return peers.slice(0, MAX_DIRECT_SENDS);
   }
 
   private async _encryptSyncFrame(bytes: Uint8Array): Promise<Uint8Array> {
@@ -7704,6 +7905,10 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
+      // Blocks named by CID are fetched before the state queue, under one
+      // bounded deadline; the queued sync never waits on the network.
+      const prefetchedBlocks = await this._prefetchMissingBlocks(message);
+      if (!receiveAdmission.active) return;
       await this._runStateMutation(async () => {
         if (!receiveAdmission.active) return;
         await this._syncUnlocked(
@@ -7718,9 +7923,8 @@ export class PeerborneDocument<
               if (!receiveAdmission.active)
                 throw new Error('GossipSub receive subscription closed');
             },
-            // A change sent by CID must not hold the state queue while no
-            // reachable peer serves its block.
-            blockFetchAttempt: GOSSIP_BLOCK_FETCH_ATTEMPT,
+            prefetchedBlocks,
+            fetchMissingBlocks: false,
           },
         );
       });
@@ -7730,12 +7934,13 @@ export class PeerborneDocument<
     const retryFrame =
       (source: PeerId | undefined, direct = false) => (frame: Uint8Array) =>
         receiveFrame(frame, source, direct).catch(reportReceiveFailure);
-    this._receiveDirectSyncFrame = (payload) =>
+    this._receiveDirectSyncFrame = (payload, remotePeer) =>
       receiveAdmission
         .run(
           payload,
           (frame) => receiveFrame(frame, undefined, true),
           retryFrame(undefined, true),
+          directSenderKey(remotePeer),
         )
         .then(() => undefined, reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
@@ -7747,6 +7952,7 @@ export class PeerborneDocument<
           rawMessage.detail.data,
           (frame) => receiveFrame(frame, source),
           retryFrame(source),
+          source?.toString(),
         )
         .catch(reportReceiveFailure);
     };
@@ -7798,6 +8004,12 @@ export class PeerborneDocument<
                   if (isSyncRequest(rawContent)) {
                     const request = decodeSyncRequest(rawContent);
                     if (!request) return TopicValidatorResult.Reject;
+                    const publisher = gossipSource(message);
+                    if (
+                      publisher !== undefined &&
+                      publisher.toString() !== request.peer
+                    )
+                      return TopicValidatorResult.Reject;
                     return await this._runStateMutation(async () => {
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
@@ -7867,6 +8079,7 @@ export class PeerborneDocument<
                   });
                 },
                 retryFrame(gossipSource(message)),
+                gossipSource(message)?.toString(),
               );
               return receiveAdmission.active
                 ? (result ?? TopicValidatorResult.Ignore)
@@ -8972,6 +9185,7 @@ export class PeerborneDocument<
   private async _snapshotUnlocked(
     signal?: AbortSignal,
     depthBound = false,
+    boundedKeepCount = CHANGE_TREE_COMPACTION_KEEP,
   ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     const gcLifecycle = this._gcLifecycle;
     await this._ensureCurrentUserCanWrite();
@@ -9029,7 +9243,7 @@ export class PeerborneDocument<
       // for lagging peers to heal from live traffic, and room to grow again.
       const prunedCIDs = this._pruneChanges(
         depthBound
-          ? CHANGE_TREE_COMPACTION_KEEP
+          ? boundedKeepCount
           : this._compactionConfig.keepRecentNodes,
         depthBound,
       );
