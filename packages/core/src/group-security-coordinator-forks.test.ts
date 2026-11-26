@@ -242,7 +242,7 @@ describe('GroupSecurityCoordinator forks', () => {
     expect(exactRestart.publicState.epoch).toBe(1n);
   });
 
-  test('durably poisons an authenticated ambiguity when conflict reconciliation cannot load', async () => {
+  test('stops in memory without durable poison when conflict reconciliation cannot load', async () => {
     const delegate = new InMemoryGroupStateStore();
     const winner = await context(delegate);
     const winnerCoordinator = await bootstrap(winner);
@@ -261,6 +261,7 @@ describe('GroupSecurityCoordinator forks', () => {
       control(0x51, 'update', id(0xd2)),
     );
     await failingStore.transactionEntered;
+    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeDefined();
     await createTransition(
       winnerCoordinator,
       control(0x52, 'update', id(0xd1)),
@@ -268,13 +269,53 @@ describe('GroupSecurityCoordinator forks', () => {
     failingStore.release();
 
     await expect(losingTransition).rejects.toMatchObject({
+      code: 'rollback-failed',
+    });
+    expect(() => loser.publicState).toThrow(/poisoned/);
+    const anchor = await winner.rollbackAnchor.load(storeKey);
+    expect(anchor?.forkPoison).toBeUndefined();
+    expect(anchor?.epoch).toBe(1n);
+    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    const restarted = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(winner)),
+    );
+    expect(restarted.publicState.epoch).toBe(1n);
+  });
+
+  test('durably poisons a competing writer that replaced the losing intent', async () => {
+    const delegate = new InMemoryGroupStateStore();
+    const winner = await context(delegate);
+    const winnerCoordinator = await bootstrap(winner);
+    await flushAndCollect(winnerCoordinator);
+    const blockingStore = new ReconciliationLoadFailureStore(delegate, 0);
+    const loser = await GroupSecurityCoordinator.restore(
+      config({
+        ...winner,
+        provider: new ContractTestProvider(),
+        store: blockingStore,
+        authorization: new AuthorizationPolicy(winner.identities.actorId),
+      }),
+    );
+    const losingTransition = createTransition(
+      loser,
+      control(0x57, 'update', id(0xd6)),
+    );
+    await blockingStore.transactionEntered;
+    const losingIntent = await winner.rollbackAnchor.loadIntent(storeKey);
+    await createTransition(
+      winnerCoordinator,
+      control(0x58, 'update', id(0xd7)),
+    );
+    expect(losingIntent).toBeDefined();
+    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    blockingStore.release();
+
+    await expect(losingTransition).rejects.toMatchObject({
       code: 'fork-detected',
     });
-    const poison = (await winner.rollbackAnchor.load(storeKey))?.forkPoison;
-    expect(poison).toMatchObject({
-      reason: 'unreconciled-authenticated-candidate',
-      epoch: 1n,
-    });
+    expect(
+      (await winner.rollbackAnchor.load(storeKey))?.forkPoison,
+    ).toMatchObject({ epoch: 1n });
     const restartedProvider = new ContractTestProvider();
     await expect(
       GroupSecurityCoordinator.restore(
@@ -284,7 +325,7 @@ describe('GroupSecurityCoordinator forks', () => {
     expect(restartedProvider.importCalls).toBe(0);
   });
 
-  test('durably poisons an unreconciled first-anchor candidate', async () => {
+  test('stops an unreconciled first-anchor candidate without durable poison', async () => {
     const delegate = new InMemoryGroupStateStore();
     const winner = await context(delegate);
     const failingStore = new ReconciliationLoadFailureStore(delegate);
@@ -304,22 +345,16 @@ describe('GroupSecurityCoordinator forks', () => {
     failingStore.release();
 
     await expect(losingBootstrap).rejects.toMatchObject({
-      code: 'fork-detected',
+      code: 'rollback-failed',
     });
     expect(
       (await winner.rollbackAnchor.load(storeKey))?.forkPoison,
-    ).toMatchObject({
-      reason: 'unreconciled-first-anchor-candidate',
-      epoch: 0n,
-      candidateRevision: 1,
-    });
-    const restartedProvider = new ContractTestProvider();
-    await expect(
-      GroupSecurityCoordinator.restore(
-        config(cloneContextWithProvider(winner, restartedProvider)),
-      ),
-    ).rejects.toMatchObject({ code: 'fork-detected' });
-    expect(restartedProvider.importCalls).toBe(0);
+    ).toBeUndefined();
+    expect(await winner.rollbackAnchor.loadIntent(storeKey)).toBeUndefined();
+    const restarted = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(winner)),
+    );
+    expect(restarted.publicState.epoch).toBe(0n);
   });
 
   test('recovers exact commits when a durable transaction rejects after commit', async () => {
@@ -353,14 +388,14 @@ describe('GroupSecurityCoordinator forks', () => {
     expect(restored.publicState.epoch).toBe(1n);
   });
 
-  test('rejects a no-op anchor response instead of claiming an ambiguity was durably poisoned', async () => {
+  test('rejects a no-op anchor response instead of claiming a competing fork was durably poisoned', async () => {
     const delegate = new InMemoryGroupStateStore();
     const anchor = new ControlledRollbackAnchor();
     const winner = await context(delegate);
     winner.rollbackAnchor = anchor;
     const winnerCoordinator = await bootstrap(winner);
     await flushAndCollect(winnerCoordinator);
-    const failingStore = new ReconciliationLoadFailureStore(delegate);
+    const failingStore = new ReconciliationLoadFailureStore(delegate, 0);
     const loserContext: TestContext = {
       ...winner,
       provider: new ContractTestProvider(),

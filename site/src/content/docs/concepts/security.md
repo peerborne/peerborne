@@ -24,6 +24,14 @@ controller/role history and optional device-key encrypted replay journal. The
 actual Automerge/Yjs document path uses staged admission; legacy load and ACL
 handlers cannot bypass it. A pinned authority root, a group-security provider,
 and an independent persistent rollback anchor remain application responsibilities.
+Before each group-state commit, the coordinator records a write-ahead intent in
+that anchor naming the exact next store snapshot. If the commit or the anchor
+update after it fails, the live coordinator stops. Restore then completes the
+intent when the store holds exactly that snapshot, discards it when the store
+still holds the previous one, and fails closed for anything else. A transient
+storage error therefore requires a restore rather than leaving the group
+unopenable on that device. Focused tests show this with in-memory stores and
+anchors only.
 Automatic content onboarding, anti-entropy, field permissions and device
 performance qualification are not supplied by this mode. The default BeeKEM
 workflow described below remains separate. See the repository

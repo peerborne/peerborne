@@ -69,7 +69,7 @@ export interface GroupSecurityRollbackRemoval {
 }
 
 /** Irreversible terminal authenticated-fork commitment. */
-export interface GroupSecurityRollbackAuthenticatedForkPoison {
+export interface GroupSecurityRollbackForkPoison {
   readonly epoch: bigint;
   readonly parentRecordId: Uint8Array;
   readonly firstRecordId: Uint8Array;
@@ -78,59 +78,70 @@ export interface GroupSecurityRollbackAuthenticatedForkPoison {
 }
 
 /**
- * Terminal ambiguity marker used when an authenticated/authorized candidate
- * cannot be reconciled with durable state after a write conflict.
+ * Write-ahead record of the exact store snapshot that a commit is about to
+ * produce, kept beside the current anchor value.
+ *
+ * `baseRevision` and `baseStoreCommitment` name the snapshot the commit starts
+ * from. For an active anchor they equal its revision and store commitment. For
+ * a first anchor they name the pre-group snapshot, with revision 0 and no
+ * commitment when the store is empty. `next` is the exact active value to
+ * install once the store holds `next.storeCommitment`.
  */
-export interface GroupSecurityRollbackAmbiguityPoison {
-  readonly reason: 'unreconciled-authenticated-candidate';
-  readonly epoch: bigint;
+export interface GroupSecurityRollbackIntent {
   readonly baseRevision: number;
-  readonly baseControlHead: Uint8Array;
-  readonly baseStoreCommitment: Uint8Array;
-  readonly candidateParentRecordId: Uint8Array;
-  readonly candidateRecordId: Uint8Array;
-  readonly observationHash: Uint8Array;
+  readonly baseStoreCommitment: Uint8Array | undefined;
+  readonly next: GroupSecurityRollbackAnchorValue;
 }
-
-/**
- * Terminal marker for an authenticated first-anchor candidate whose durable
- * winner could not be read back. The candidate anchor is supplied as the
- * atomic poison initialization value, so a transient reconciliation failure
- * cannot leave an observed bootstrap/join fork unrecorded globally.
- */
-export interface GroupSecurityRollbackFirstAnchorAmbiguityPoison {
-  readonly reason: 'unreconciled-first-anchor-candidate';
-  readonly epoch: bigint;
-  readonly candidateRevision: number;
-  readonly candidateControlHead: Uint8Array;
-  readonly candidateStoreCommitment: Uint8Array;
-  readonly observationHash: Uint8Array;
-}
-
-export type GroupSecurityRollbackForkPoison =
-  | GroupSecurityRollbackAuthenticatedForkPoison
-  | GroupSecurityRollbackAmbiguityPoison
-  | GroupSecurityRollbackFirstAnchorAmbiguityPoison;
 
 /**
  * Separately protected compare-and-set boundary for rollback detection.
  *
- * `advance` must be durable before it resolves and must return `false` without
- * changing state when `expected` does not equal the current value. Advancing
- * an anchor and committing its matching group-state snapshot should be treated
- * as one security transaction. A crash between the two may require explicit
- * recovery, but must never silently accept the older side.
+ * Every store commit is bracketed by two anchor writes. `prepare` records the
+ * exact next value as an intent before the store commits, and `advance`
+ * installs a value after it commits. If the second write never happens,
+ * restore completes the intent when the store holds exactly the intended
+ * snapshot and discards it when the store still holds the base snapshot. Any
+ * other store state fails closed. Every mutating method must be durable before
+ * it resolves and must leave state unchanged when it returns `false`.
  */
 export interface DurableGroupSecurityRollbackAnchor {
   load(
     key: GroupStateStoreKey,
   ): Promise<GroupSecurityRollbackAnchorValue | undefined>;
+  /** Return the intent recorded beside the current value, if any. */
+  loadIntent(
+    key: GroupStateStoreKey,
+  ): Promise<GroupSecurityRollbackIntent | undefined>;
+  /**
+   * Record `intent` while `expected` is current (`undefined` before the first
+   * anchor), replacing any earlier intent. The intent must extend `expected`.
+   * Return false when `expected` is not current.
+   */
+  prepare(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue | undefined,
+    intent: GroupSecurityRollbackIntent,
+  ): Promise<boolean>;
+  /** Install `next` while `expected` is current and clear any intent. */
   advance(
     key: GroupStateStoreKey,
     expected: GroupSecurityRollbackAnchorValue | undefined,
     next: GroupSecurityRollbackAnchorValue,
   ): Promise<boolean>;
-  /** Atomically and irreversibly poison whichever active value is current. */
+  /**
+   * Remove exactly `intent` while `expected` is current. Return true when it
+   * was removed or no intent remains, and false when `expected` is not current
+   * or a different intent is recorded.
+   */
+  discard(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue | undefined,
+    intent: GroupSecurityRollbackIntent,
+  ): Promise<boolean>;
+  /**
+   * Atomically and irreversibly poison whichever active value is current and
+   * clear any intent.
+   */
   poison(
     key: GroupStateStoreKey,
     forkPoison: GroupSecurityRollbackForkPoison,
@@ -141,7 +152,8 @@ export interface DurableGroupSecurityRollbackAnchor {
    * The caller authenticates the control and protocol Commit first. Retrying
    * the identical expected position and marker is idempotent. A different
    * current position returns false without changing state. Once written, the
-   * marker prevents every later active advance, including after store rollback.
+   * marker prevents every later active advance, including after store rollback,
+   * and any intent is cleared.
    * Return true only after the exact terminal marker is durably retained.
    */
   retire(
@@ -159,6 +171,7 @@ export class InMemoryGroupSecurityRollbackAnchor
   implements DurableGroupSecurityRollbackAnchor
 {
   private readonly values = new Map<string, GroupSecurityRollbackAnchorValue>();
+  private readonly intents = new Map<string, GroupSecurityRollbackIntent>();
   private readonly tails = new Map<string, Promise<void>>();
 
   async load(
@@ -169,6 +182,40 @@ export class InMemoryGroupSecurityRollbackAnchor
     await (this.tails.get(encodedKey) ?? Promise.resolve());
     const current = this.values.get(encodedKey);
     return current === undefined ? undefined : cloneAnchor(current);
+  }
+
+  async loadIntent(
+    keyValue: GroupStateStoreKey,
+  ): Promise<GroupSecurityRollbackIntent | undefined> {
+    const key = cloneAndValidateKey(keyValue);
+    const encodedKey = encodeKey(key);
+    await (this.tails.get(encodedKey) ?? Promise.resolve());
+    const intent = this.intents.get(encodedKey);
+    return intent === undefined ? undefined : cloneAndValidateIntent(intent);
+  }
+
+  async prepare(
+    keyValue: GroupStateStoreKey,
+    expectedValue: GroupSecurityRollbackAnchorValue | undefined,
+    intentValue: GroupSecurityRollbackIntent,
+  ): Promise<boolean> {
+    const key = cloneAndValidateKey(keyValue);
+    const expected =
+      expectedValue === undefined
+        ? undefined
+        : cloneAndValidateAnchor(expectedValue);
+    const intent = cloneAndValidateIntent(intentValue);
+    validateIntentBase(expected, intent);
+    const encodedKey = encodeKey(key);
+    const prior = this.tails.get(encodedKey) ?? Promise.resolve();
+    const run = prior.then(() => {
+      if (!optionalAnchorEqual(this.values.get(encodedKey), expected)) {
+        return false;
+      }
+      this.intents.set(encodedKey, cloneAndValidateIntent(intent));
+      return true;
+    });
+    return trackQueuedOperation(this.tails, encodedKey, run);
   }
 
   async advance(
@@ -189,6 +236,33 @@ export class InMemoryGroupSecurityRollbackAnchor
       const current = this.values.get(encodedKey);
       if (!optionalAnchorEqual(current, expected)) return false;
       this.values.set(encodedKey, cloneAnchor(next));
+      this.intents.delete(encodedKey);
+      return true;
+    });
+    return trackQueuedOperation(this.tails, encodedKey, run);
+  }
+
+  async discard(
+    keyValue: GroupStateStoreKey,
+    expectedValue: GroupSecurityRollbackAnchorValue | undefined,
+    intentValue: GroupSecurityRollbackIntent,
+  ): Promise<boolean> {
+    const key = cloneAndValidateKey(keyValue);
+    const expected =
+      expectedValue === undefined
+        ? undefined
+        : cloneAndValidateAnchor(expectedValue);
+    const intent = cloneAndValidateIntent(intentValue);
+    const encodedKey = encodeKey(key);
+    const prior = this.tails.get(encodedKey) ?? Promise.resolve();
+    const run = prior.then(() => {
+      if (!optionalAnchorEqual(this.values.get(encodedKey), expected)) {
+        return false;
+      }
+      const current = this.intents.get(encodedKey);
+      if (current === undefined) return true;
+      if (!intentEqual(current, intent)) return false;
+      this.intents.delete(encodedKey);
       return true;
     });
     return trackQueuedOperation(this.tails, encodedKey, run);
@@ -220,6 +294,7 @@ export class InMemoryGroupSecurityRollbackAnchor
         }
         const poisoned = cloneAnchor({ ...initial, forkPoison });
         this.values.set(encodedKey, poisoned);
+        this.intents.delete(encodedKey);
         return cloneAnchor(poisoned);
       }
       if (current.forkPoison !== undefined || current.removal !== undefined) {
@@ -227,6 +302,7 @@ export class InMemoryGroupSecurityRollbackAnchor
       }
       const poisoned = cloneAnchor({ ...current, forkPoison });
       this.values.set(encodedKey, poisoned);
+      this.intents.delete(encodedKey);
       return cloneAnchor(poisoned);
     });
     return trackQueuedOperation(this.tails, encodedKey, run);
@@ -261,6 +337,7 @@ export class InMemoryGroupSecurityRollbackAnchor
       if (optionalAnchorEqual(current, retired)) return true;
       if (!optionalAnchorEqual(current, expected)) return false;
       this.values.set(encodedKey, retired);
+      this.intents.delete(encodedKey);
       return true;
     });
     return trackQueuedOperation(this.tails, encodedKey, run);
@@ -271,6 +348,28 @@ export function cloneGroupSecurityRollbackAnchor(
   value: GroupSecurityRollbackAnchorValue,
 ): GroupSecurityRollbackAnchorValue {
   return cloneAndValidateAnchor(value);
+}
+
+export function cloneGroupSecurityRollbackIntent(
+  value: GroupSecurityRollbackIntent,
+): GroupSecurityRollbackIntent {
+  return cloneAndValidateIntent(value);
+}
+
+/** Whether `intent` names a valid one-step successor of `expected`. */
+export function groupSecurityRollbackIntentExtends(
+  expected: GroupSecurityRollbackAnchorValue | undefined,
+  intent: GroupSecurityRollbackIntent,
+): boolean {
+  try {
+    validateIntentBase(
+      expected === undefined ? undefined : cloneAndValidateAnchor(expected),
+      cloneAndValidateIntent(intent),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function groupSecurityRollbackAnchorsEqual(
@@ -316,6 +415,76 @@ function validateAdvance(
       'rollback anchor control head cannot change without an epoch advance',
   };
   throw new Error(messages[disposition]);
+}
+
+function validateIntentBase(
+  expected: GroupSecurityRollbackAnchorValue | undefined,
+  intent: GroupSecurityRollbackIntent,
+): void {
+  if (
+    expected !== undefined &&
+    (intent.baseRevision !== expected.revision ||
+      intent.baseStoreCommitment === undefined ||
+      !equalBytes(intent.baseStoreCommitment, expected.storeCommitment))
+  ) {
+    throw new Error('rollback anchor intent must extend the expected value');
+  }
+  validateAdvance(expected, intent.next);
+}
+
+function cloneAndValidateIntent(value: unknown): GroupSecurityRollbackIntent {
+  const object = exactPlainObject(
+    value,
+    ['baseRevision', 'baseStoreCommitment', 'next'],
+    'rollback anchor intent',
+  );
+  const baseRevision = dataProperty(object, 'baseRevision');
+  const baseStoreCommitment = dataProperty(object, 'baseStoreCommitment');
+  if (!Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0) {
+    throw new Error(
+      'rollback anchor intent base revision must be a non-negative safe integer',
+    );
+  }
+  if ((baseRevision === 0) !== (baseStoreCommitment === undefined)) {
+    throw new Error(
+      'rollback anchor intent base commitment must be present exactly when a base snapshot exists',
+    );
+  }
+  const next = cloneAndValidateAnchor(
+    dataProperty(object, 'next') as GroupSecurityRollbackAnchorValue,
+  );
+  if (next.forkPoison !== undefined || next.removal !== undefined) {
+    throw new Error('rollback anchor intent must name an active value');
+  }
+  if (next.revision !== (baseRevision as number) + 1) {
+    throw new Error('rollback anchor intent must name the next revision');
+  }
+  return {
+    baseRevision: baseRevision as number,
+    baseStoreCommitment:
+      baseStoreCommitment === undefined
+        ? undefined
+        : cloneExactBytes(
+            baseStoreCommitment,
+            'rollback anchor intent base store commitment',
+            STORE_COMMITMENT_LENGTH,
+          ),
+    next,
+  };
+}
+
+function intentEqual(
+  left: GroupSecurityRollbackIntent,
+  right: GroupSecurityRollbackIntent,
+): boolean {
+  return (
+    left.baseRevision === right.baseRevision &&
+    (left.baseStoreCommitment === undefined
+      ? right.baseStoreCommitment === undefined
+      : right.baseStoreCommitment !== undefined &&
+        equalBytes(left.baseStoreCommitment, right.baseStoreCommitment)) &&
+    optionalAnchorEqual(left.next, right.next)
+  );
 }
 
 function cloneAndValidateAnchor(
@@ -448,118 +617,8 @@ function optionalRemovalEqual(
 }
 
 function cloneForkPoison(value: unknown): GroupSecurityRollbackForkPoison {
-  const snapshot = snapshotPlainObject(value, 'rollback anchor fork poison');
-  if (Object.prototype.hasOwnProperty.call(snapshot, 'reason')) {
-    const reason = dataProperty(snapshot, 'reason');
-    if (reason === 'unreconciled-first-anchor-candidate') {
-      requireExactKeys(
-        snapshot,
-        [
-          'reason',
-          'epoch',
-          'candidateRevision',
-          'candidateControlHead',
-          'candidateStoreCommitment',
-          'observationHash',
-        ],
-        'rollback anchor first-anchor ambiguity poison',
-      );
-      const epoch = dataProperty(snapshot, 'epoch');
-      if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
-        throw new Error(
-          'rollback anchor first-anchor ambiguity epoch must be unsigned 64-bit',
-        );
-      }
-      const candidateRevision = dataProperty(snapshot, 'candidateRevision');
-      if (
-        !Number.isSafeInteger(candidateRevision) ||
-        (candidateRevision as number) < 1
-      ) {
-        throw new Error(
-          'rollback anchor first-anchor ambiguity candidate revision is invalid',
-        );
-      }
-      return {
-        reason,
-        epoch,
-        candidateRevision: candidateRevision as number,
-        candidateControlHead: cloneExactBytes(
-          dataProperty(snapshot, 'candidateControlHead'),
-          'rollback anchor first-anchor ambiguity candidate control head',
-          CONTROL_HEAD_LENGTH,
-        ),
-        candidateStoreCommitment: cloneExactBytes(
-          dataProperty(snapshot, 'candidateStoreCommitment'),
-          'rollback anchor first-anchor ambiguity candidate store commitment',
-          STORE_COMMITMENT_LENGTH,
-        ),
-        observationHash: cloneExactBytes(
-          dataProperty(snapshot, 'observationHash'),
-          'rollback anchor first-anchor ambiguity observation hash',
-          FORK_EVIDENCE_HASH_LENGTH,
-        ),
-      };
-    }
-    requireExactKeys(
-      snapshot,
-      [
-        'reason',
-        'epoch',
-        'baseRevision',
-        'baseControlHead',
-        'baseStoreCommitment',
-        'candidateParentRecordId',
-        'candidateRecordId',
-        'observationHash',
-      ],
-      'rollback anchor ambiguity poison',
-    );
-    if (reason !== 'unreconciled-authenticated-candidate') {
-      throw new Error('rollback anchor ambiguity poison reason is invalid');
-    }
-    const epoch = dataProperty(snapshot, 'epoch');
-    if (typeof epoch !== 'bigint' || epoch < 0n || epoch > MAX_U64) {
-      throw new Error(
-        'rollback anchor ambiguity epoch must be unsigned 64-bit',
-      );
-    }
-    const baseRevision = dataProperty(snapshot, 'baseRevision');
-    if (!Number.isSafeInteger(baseRevision) || (baseRevision as number) < 1) {
-      throw new Error('rollback anchor ambiguity base revision is invalid');
-    }
-    return {
-      reason,
-      epoch,
-      baseRevision: baseRevision as number,
-      baseControlHead: cloneExactBytes(
-        dataProperty(snapshot, 'baseControlHead'),
-        'rollback anchor ambiguity base control head',
-        CONTROL_HEAD_LENGTH,
-      ),
-      baseStoreCommitment: cloneExactBytes(
-        dataProperty(snapshot, 'baseStoreCommitment'),
-        'rollback anchor ambiguity base store commitment',
-        STORE_COMMITMENT_LENGTH,
-      ),
-      candidateParentRecordId: cloneExactBytes(
-        dataProperty(snapshot, 'candidateParentRecordId'),
-        'rollback anchor ambiguity candidate parent recordId',
-        CONTROL_HEAD_LENGTH,
-      ),
-      candidateRecordId: cloneExactBytes(
-        dataProperty(snapshot, 'candidateRecordId'),
-        'rollback anchor ambiguity candidate recordId',
-        CONTROL_HEAD_LENGTH,
-      ),
-      observationHash: cloneExactBytes(
-        dataProperty(snapshot, 'observationHash'),
-        'rollback anchor ambiguity observation hash',
-        FORK_EVIDENCE_HASH_LENGTH,
-      ),
-    };
-  }
-  requireExactKeys(
-    snapshot,
+  const snapshot = exactPlainObject(
+    value,
     [
       'epoch',
       'parentRecordId',
@@ -607,33 +666,6 @@ function optionalForkPoisonEqual(
   right: GroupSecurityRollbackForkPoison | undefined,
 ): boolean {
   if (left === undefined || right === undefined) return left === right;
-  if ('reason' in left || 'reason' in right) {
-    if (!('reason' in left) || !('reason' in right)) return false;
-    if (left.reason !== right.reason) return false;
-    if (left.reason === 'unreconciled-first-anchor-candidate') {
-      if (right.reason !== 'unreconciled-first-anchor-candidate') return false;
-      return (
-        left.epoch === right.epoch &&
-        left.candidateRevision === right.candidateRevision &&
-        equalBytes(left.candidateControlHead, right.candidateControlHead) &&
-        equalBytes(
-          left.candidateStoreCommitment,
-          right.candidateStoreCommitment,
-        ) &&
-        equalBytes(left.observationHash, right.observationHash)
-      );
-    }
-    if (right.reason !== 'unreconciled-authenticated-candidate') return false;
-    return (
-      left.epoch === right.epoch &&
-      left.baseRevision === right.baseRevision &&
-      equalBytes(left.baseControlHead, right.baseControlHead) &&
-      equalBytes(left.baseStoreCommitment, right.baseStoreCommitment) &&
-      equalBytes(left.candidateParentRecordId, right.candidateParentRecordId) &&
-      equalBytes(left.candidateRecordId, right.candidateRecordId) &&
-      equalBytes(left.observationHash, right.observationHash)
-    );
-  }
   return (
     left.epoch === right.epoch &&
     equalBytes(left.parentRecordId, right.parentRecordId) &&

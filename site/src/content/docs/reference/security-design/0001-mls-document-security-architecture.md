@@ -125,6 +125,11 @@ protected rollback-anchor contract. The marker commits the fork epoch, parent,
 sibling IDs, and a canonical evidence hash; the rollbackable store receives a
 best-effort copy of the full audit evidence afterward. Reconstruction rejects
 the terminal marker before loading the store or importing provider state.
+A failed write whose durable winner cannot be read back or re-verified is not
+fork evidence. The coordinator stops in memory and leaves its write-ahead
+intent (below) for restore. It writes no durable marker, so a later fork in
+that case is detected only when the sibling is delivered again inside the
+replay window.
 Focused tests share the in-memory anchor across reconstructed coordinators and
 therefore demonstrate only same-process fail-stop behavior; durable restart
 protection requires an application-supplied persistent monotonic backend.
@@ -216,7 +221,30 @@ first-anchor publication. Full audit evidence is only the store's subsequent
 best-effort copy. The active snapshot commitment covers the encrypted provider
 envelope, pending and consumed KeyPackages, outbox, replay, and stored audit
 evidence, so same-revision metadata substitution fails closed before provider
-import. The anchor must not share the group database's rollback domain. The
+import. The anchor must not share the group database's rollback domain.
+
+Every store commit is bracketed by two anchor writes. Before the store
+transaction, `prepare` records a write-ahead intent beside the current value.
+The intent names its base (the active revision and store commitment, or the
+pre-group snapshot for a first anchor) and the exact next value: revision,
+epoch, control head, and store commitment. The next value must pass the same
+one-step rule as an advance. After the commit, `advance` installs that value
+and clears the intent. A newer `prepare` replaces an older intent, and poison
+or retirement clears it. If the second write never happens, restore compares
+the store with the intent:
+
+- a store holding exactly the intended snapshot completes the transition by
+  advancing the anchor;
+- a store still holding the base snapshot discards the intent, which then
+  cannot be completed later; and
+- any other store fails closed with the existing rollback checks.
+
+Completion requires the full snapshot commitment, not only the next revision.
+A storage attacker therefore cannot relabel an older snapshot as the next
+revision, restore a consumed KeyPackage, or drop outbox entries. Discarding is
+equivalent to a crash before the store commit, because nothing from the
+uncommitted state leaves the device before the anchor advances. For a first
+anchor, this leaves the existing pre-group rollback limit unchanged. The
 repository requires this contract, but its
 `InMemoryGroupSecurityRollbackAnchor` is a same-process test reference and is
 not rollback-resistant storage.
@@ -254,12 +282,15 @@ An outbound transition is ordered as follows:
 
 An error before durability restores an active provider checkpoint. Authenticated
 terminal removal never reloads its erased private state. If rollback fails,
-the coordinator is poisoned and stops. After durability, the coordinator
-reloads the snapshot and requires its commitment to equal the transaction it
-already authenticated and authorized, then advances the rollback anchor. It
+the coordinator is poisoned and stops. Before the commit, the coordinator
+records the write-ahead intent for the exact snapshot it authenticated and
+authorized. After durability, it reloads the snapshot and requires its
+commitment to equal that transaction, then advances the rollback anchor. It
 does not run the signature or authorization callbacks again at that point, so
 a callback that refuses or fails after commit cannot leave durable state ahead
-of its anchor. Restore runs both callbacks again over the retained window. In
+of its anchor. If the reload or advance fails, the coordinator is poisoned and
+restore completes the intent. Restore runs both callbacks again over the
+retained window. In
 the target persistent implementation, restart recovery revalidates signed
 control state before the outbox resumes. That process/browser restart behavior
 is not currently tested.

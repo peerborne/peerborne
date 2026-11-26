@@ -29,6 +29,7 @@ import {
 DurableGroupSecurityRollbackAnchor,
 GroupSecurityRollbackAnchorValue,
 GroupSecurityRollbackForkPoison,
+GroupSecurityRollbackIntent,
 GroupSecurityRollbackRemoval,
 InMemoryGroupSecurityRollbackAnchor,
 } from '../group-security-rollback-anchor.js';
@@ -873,8 +874,20 @@ export class StaticRollbackAnchor
     return this.value;
   }
 
+  async loadIntent(): Promise<undefined> {
+    return undefined;
+  }
+
+  async prepare(): Promise<boolean> {
+    throw new Error('unexpected intent against static rollback anchor');
+  }
+
   async advance(): Promise<boolean> {
     throw new Error('unexpected advance against static rollback anchor');
+  }
+
+  async discard(): Promise<boolean> {
+    throw new Error('unexpected discard against static rollback anchor');
   }
 
   async poison(): Promise<GroupSecurityRollbackAnchorValue> {
@@ -892,7 +905,10 @@ export class ReconciliationLoadFailureStore implements DurableGroupStateStore {
   readonly transactionEntered: Promise<void>;
   private readonly transactionRelease: Promise<void>;
 
-  constructor(readonly delegate: InMemoryGroupStateStore) {
+  constructor(
+    readonly delegate: InMemoryGroupStateStore,
+    private readonly failedLoadsAfterConflict = 2,
+  ) {
     let entered!: () => void;
     this.transactionEntered = new Promise<void>((resolve) => {
       entered = resolve;
@@ -928,7 +944,7 @@ export class ReconciliationLoadFailureStore implements DurableGroupStateStore {
     try {
       return await this.delegate.transaction(key, operation);
     } catch (error) {
-      this.remainingFailedLoads = 2;
+      this.remainingFailedLoads = this.failedLoadsAfterConflict;
       throw error;
     }
   }
@@ -938,18 +954,70 @@ export class ControlledRollbackAnchor
   implements DurableGroupSecurityRollbackAnchor
 {
   failNextAdvance = false;
+  failNextAdvanceAfterWrite = false;
   rejectNextAdvance = false;
+  failNextPrepare = false;
+  failNextPrepareAfterWrite = false;
+  rejectNextPrepare = false;
+  failNextDiscard = false;
   noOpNextPoison = false;
   failNextRetire = false;
   rejectNextRetire = false;
   noOpNextRetire = false;
   malformedNextAdvance?: unknown;
-  private readonly delegate = new InMemoryGroupSecurityRollbackAnchor();
+  malformedNextIntent?: unknown;
+  prepared: GroupSecurityRollbackIntent[] = [];
+  readonly delegate = new InMemoryGroupSecurityRollbackAnchor();
 
   load(
     key: GroupStateStoreKey,
   ): Promise<GroupSecurityRollbackAnchorValue | undefined> {
     return this.delegate.load(key);
+  }
+
+  loadIntent(
+    key: GroupStateStoreKey,
+  ): Promise<GroupSecurityRollbackIntent | undefined> {
+    if (this.malformedNextIntent !== undefined) {
+      const result = this.malformedNextIntent;
+      this.malformedNextIntent = undefined;
+      return Promise.resolve(result as GroupSecurityRollbackIntent);
+    }
+    return this.delegate.loadIntent(key);
+  }
+
+  async prepare(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue | undefined,
+    intent: GroupSecurityRollbackIntent,
+  ): Promise<boolean> {
+    if (this.failNextPrepare) {
+      this.failNextPrepare = false;
+      throw new Error('injected rollback intent failure');
+    }
+    if (this.rejectNextPrepare) {
+      this.rejectNextPrepare = false;
+      return false;
+    }
+    const prepared = await this.delegate.prepare(key, expected, intent);
+    if (prepared) this.prepared.push(intent);
+    if (this.failNextPrepareAfterWrite) {
+      this.failNextPrepareAfterWrite = false;
+      throw new Error('injected rollback intent failure after write');
+    }
+    return prepared;
+  }
+
+  async discard(
+    key: GroupStateStoreKey,
+    expected: GroupSecurityRollbackAnchorValue | undefined,
+    intent: GroupSecurityRollbackIntent,
+  ): Promise<boolean> {
+    if (this.failNextDiscard) {
+      this.failNextDiscard = false;
+      throw new Error('injected rollback intent discard failure');
+    }
+    return this.delegate.discard(key, expected, intent);
   }
 
   retire(
@@ -972,7 +1040,7 @@ export class ControlledRollbackAnchor
     return this.delegate.retire(key, expected, removal);
   }
 
-  advance(
+  async advance(
     key: GroupStateStoreKey,
     expected: GroupSecurityRollbackAnchorValue | undefined,
     next: GroupSecurityRollbackAnchorValue,
@@ -980,17 +1048,22 @@ export class ControlledRollbackAnchor
     if (this.malformedNextAdvance !== undefined) {
       const result = this.malformedNextAdvance;
       this.malformedNextAdvance = undefined;
-      return Promise.resolve(result as boolean);
+      return result as boolean;
     }
     if (this.failNextAdvance) {
       this.failNextAdvance = false;
-      return Promise.reject(new Error('injected rollback anchor failure'));
+      throw new Error('injected rollback anchor failure');
     }
     if (this.rejectNextAdvance) {
       this.rejectNextAdvance = false;
-      return Promise.resolve(false);
+      return false;
     }
-    return this.delegate.advance(key, expected, next);
+    const advanced = await this.delegate.advance(key, expected, next);
+    if (this.failNextAdvanceAfterWrite) {
+      this.failNextAdvanceAfterWrite = false;
+      throw new Error('injected rollback anchor failure after write');
+    }
+    return advanced;
   }
 
   async poison(
