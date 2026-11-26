@@ -1,6 +1,7 @@
 import {
   ACLProvider,
   AuthProvider,
+  ChangeDeliveryFailure,
   ChangesSerializer,
   Peerborne,
   CRDTProvider,
@@ -185,6 +186,7 @@ export function usePeerborneDocumentState<
     setKemKeyPair: (keyPair: CryptoKeyPair | undefined) => Promise<void>;
   },
   Error | undefined,
+  ChangeDeliveryFailure | undefined,
 ] {
   const {
     docCache,
@@ -204,6 +206,10 @@ export function usePeerborneDocumentState<
     key: string;
     error: Error;
   }>();
+  const [delivery, setDelivery] = useState<{
+    key: string;
+    failure: ChangeDeliveryFailure | undefined;
+  }>();
 
   useEffect(() => {
     const {
@@ -212,6 +218,8 @@ export function usePeerborneDocumentState<
       openTaskResults,
       subscriberCounts,
       activationRetries,
+      createdPaths,
+      retainedDocuments,
     } = hookCaches;
     let active = true;
     let subscribedDocRef: PeerborneDocument<
@@ -255,12 +263,16 @@ export function usePeerborneDocumentState<
       >
     >;
 
+    // A path this node created opens instead: creating it again would found
+    // a different document.
     const activate = async (mode: PeerborneDocumentInitialization): OpenTask => {
       const docRef = peerborne.doc(documentPath);
       if (!docRef) {
         throw new Error(`Failed to open/find document: ${documentPath}`);
       }
-      await docRef[mode]();
+      const creating = mode === 'create' && !createdPaths.has(documentPath);
+      await (creating ? docRef.create() : docRef.open());
+      if (creating) createdPaths.add(documentPath);
       try {
         const readers = await docRef.getReaders();
         const writers = await docRef.getWriters();
@@ -328,12 +340,30 @@ export function usePeerborneDocumentState<
           PublicKey,
           DocumentKey
         >;
-        const current = (cachedResult?.document ?? docRef.document) as DocType;
-        const readers = (cachedResult?.readers ?? result.readers ?? []) as PublicKey[];
-        const writers = (cachedResult?.writers ?? result.writers ?? []) as PublicKey[];
+        let { readers: activatedReaders, writers: activatedWriters } = result;
+        if (!cachedResult && retainedDocuments.has(docRef)) {
+          [activatedReaders, activatedWriters] = await Promise.all([
+            docRef.getReaders(),
+            docRef.getWriters(),
+          ]);
+          if (!active) return;
+        }
+        const settled = openTaskResults.get(documentPath);
+        const current = (settled?.document ?? docRef.document) as DocType;
+        const readers = (settled?.readers ?? activatedReaders ?? []) as PublicKey[];
+        const writers = (settled?.writers ?? activatedWriters ?? []) as PublicKey[];
         openTaskResults.set(documentPath, { docRef, document: current, readers, writers });
         updateContext(docRef, current, readers, writers);
 
+        const syncDelivery = () => {
+          if (!active) return;
+          const failure = docRef.deliveryFailure;
+          setDelivery((previous) =>
+            previous?.key === activationKey && previous.failure === failure
+              ? previous
+              : { key: activationKey, failure },
+          );
+        };
         docRef.subscribe(
           subscriptionIdRef.current,
           (current, nextReaders, nextWriters) => {
@@ -345,10 +375,13 @@ export function usePeerborneDocumentState<
               writers: nextWriters,
             });
             updateContext(docRef, current, nextReaders, nextWriters);
+            syncDelivery();
           },
           originFilter,
         );
+        docRef.subscribeDeliveryFailures(subscriptionIdRef.current, syncDelivery);
         subscribedDocRef = docRef;
+        syncDelivery();
         setActivationFailure(undefined);
       } catch (error) {
         if (active) {
@@ -377,6 +410,7 @@ export function usePeerborneDocumentState<
       active = false;
       setActivationFailure(undefined);
       subscribedDocRef?.unsubscribe(subscriptionIdRef.current);
+      subscribedDocRef?.unsubscribeDeliveryFailures(subscriptionIdRef.current);
 
       const retries = activationRetries.get(documentPath);
       retries?.delete(run);
@@ -402,12 +436,22 @@ export function usePeerborneDocumentState<
         return;
       }
 
+      // A document this node created stays open, since closing it could
+      // discard the only copy; a retired one is replaced by an open.
       pendingTask
         .then((result) => {
           if (
             (subscriberCounts.get(documentPath) || 0) === 0 &&
             openTasks.get(documentPath) === pendingTask
           ) {
+            if (
+              result.docRef &&
+              createdPaths.has(documentPath) &&
+              !result.docRef.retired
+            ) {
+              retainedDocuments.add(result.docRef);
+              return;
+            }
             openTasks.delete(documentPath);
             if (result.docRef && typeof result.docRef.close === 'function') {
               result.docRef.close().catch(() => {});
@@ -456,5 +500,6 @@ export function usePeerborneDocumentState<
       },
     },
     activationFailure?.key === activationKey ? activationFailure.error : undefined,
+    delivery?.key === activationKey ? delivery.failure : undefined,
   ];
 }

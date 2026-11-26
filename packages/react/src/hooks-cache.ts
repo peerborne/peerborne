@@ -29,6 +29,8 @@ export type PeerborneHookCaches = {
   openTaskResults: Map<string, PeerborneContextOpenResultAny>;
   subscriberCounts: Map<string, number>;
   activationRetries: Map<string, Set<() => void>>;
+  createdPaths: Set<string>;
+  retainedDocuments: WeakSet<PeerborneDocument<any, any, any, any, any, any>>;
 };
 
 let cachesByPeerborne = new WeakMap<object, PeerborneHookCaches>();
@@ -44,6 +46,8 @@ export function getPeerborneHookCaches(peerborne: object): PeerborneHookCaches {
       openTaskResults: new Map(),
       subscriberCounts: new Map(),
       activationRetries: new Map(),
+      createdPaths: new Set(),
+      retainedDocuments: new WeakSet(),
     };
     cachesByPeerborne.set(peerborne, caches);
   }
