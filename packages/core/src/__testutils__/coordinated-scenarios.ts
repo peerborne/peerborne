@@ -2,6 +2,10 @@ import type { ChangesSerializer } from '../changes-serializer.js';
 import type { CRDTProvider } from '../crdt-provider.js';
 import { isDocumentRedeliveryFrame } from '../document-redelivery-wire.js';
 import {
+  isDocumentCatchUpCheckpointFrame,
+  isDocumentCatchUpRequestFrame,
+} from '../document-catch-up-wire.js';
+import {
   coordinatedGroupFixture,
   type GroupPublication,
 } from './coordinated-group.js';
@@ -148,6 +152,195 @@ export async function lostFrameRedeliveryScenario<Document, Changes, Change>(
     return {
       errors,
       held,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The publications and pubsub handlers of a fixture group. */
+interface FloodGroup {
+  take(): GroupPublication[];
+  dispatch(publication: GroupPublication, recipient: number): void;
+}
+
+/** The coordinated engine behind a fixture member's document. */
+export const engineOf = (document: object) =>
+  (
+    document as unknown as {
+      _coordinated: { needsJoinCatchUp(): boolean; hasHeldFrames(): boolean };
+    }
+  )._coordinated;
+
+/**
+ * Flood every publication to every other listed member through its real
+ * pubsub handler, as GossipSub would, until `done` holds.
+ */
+export async function floodUntil(
+  g: FloodGroup,
+  members: readonly number[],
+  done: () => boolean,
+  within = 30_000,
+  seen: (publication: GroupPublication) => void = () => {},
+): Promise<boolean> {
+  for (const started = Date.now(); Date.now() - started < within; ) {
+    for (const publication of g.take()) {
+      seen(publication);
+      for (const recipient of members)
+        if (recipient !== publication.sender) g.dispatch(publication, recipient);
+    }
+    if (done()) return true;
+    await pause(20);
+  }
+  return done();
+}
+
+/** Catch-up and redelivery messages seen on the topic, by kind and sender. */
+function count() {
+  const value = { requests: [] as number[], checkpoints: [] as number[], redeliveries: [] as number[] };
+  return {
+    value,
+    seen: ({ sender, data }: GroupPublication) => {
+      if (isDocumentCatchUpRequestFrame(data)) value.requests.push(sender);
+      else if (isDocumentCatchUpCheckpointFrame(data))
+        value.checkpoints.push(sender);
+      else if (isDocumentRedeliveryFrame(data)) value.redeliveries.push(sender);
+    },
+  };
+}
+
+function holds(read: (index: number) => unknown) {
+  return (index: number, labels: readonly string[]) => {
+    const view = JSON.stringify(read(index));
+    return labels.every((label) => view.includes(`"${label}"`));
+  };
+}
+
+/**
+ * Members 0 and 1 edit; the controller then adds member 2 in a new epoch.
+ * Every replica opens and edits with publications flooded between them, and
+ * no member relays a catch-up message itself.
+ */
+export async function joinCatchUpScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    catchUp: true,
+    peers: true,
+  });
+  const has = holds((index) => adapter.read(g.doc(index).document));
+  const all = (members: readonly number[], labels: readonly string[]) => () =>
+    members.every((index) => has(index, labels));
+  try {
+    await g.addMember(1);
+    await g.open(0);
+    await g.open(1);
+    await g.doc(0).change(adapter.edit('first'));
+    await g.doc(1).change(adapter.edit('second'));
+    const before = await floodUntil(
+      g,
+      [0, 1],
+      all([0, 1], ['first', 'second']),
+    );
+    await g.addMember(2);
+    await g.open(2);
+    const empty = adapter.read(g.doc(2).document);
+    const traffic = count();
+    const joined = await floodUntil(
+      g,
+      [0, 1, 2],
+      all([2], ['first', 'second']),
+      30_000,
+      traffic.seen,
+    );
+    await g.doc(1).change(adapter.edit('third'));
+    await g.doc(2).change(adapter.edit('fourth'));
+    const after = await floodUntil(
+      g,
+      [0, 1, 2],
+      all([0, 1, 2], ['first', 'second', 'third', 'fourth']),
+    );
+    return {
+      before,
+      empty,
+      joined,
+      after,
+      traffic: traffic.value,
+      views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
+    };
+  } finally {
+    await g.close();
+  }
+}
+
+/**
+ * Member 2 misses more of member 1's frames than any peer retains. A later
+ * frame of member 1 waits at member 2, redelivery finds nothing to resend,
+ * and member 2 resumes from a checkpoint carried on the topic.
+ */
+export async function missedWindowCatchUpScenario<Document, Changes, Change>(
+  adapter: ScenarioAdapter<Document, Changes, Change>,
+  missed = 70,
+) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 3,
+    catchUp: true,
+    peers: true,
+  });
+  const has = holds((index) => adapter.read(g.doc(index).document));
+  const labels: string[] = [];
+  try {
+    await g.addMember(1);
+    await g.addMember(2);
+    for (let index = 0; index < 3; index++) await g.open(index);
+    await g.doc(0).change(adapter.edit('base'));
+    const joined = await floodUntil(
+      g,
+      [0, 1, 2],
+      () =>
+        [1, 2].every(
+          (index) =>
+            has(index, ['base']) && !engineOf(g.doc(index)).needsJoinCatchUp(),
+        ),
+    );
+    for (let index = 0; index < missed; index++) {
+      const label = `w${index}`;
+      labels.push(label);
+      await g.doc(1).change(adapter.edit(label));
+      for (const publication of g.take())
+        if (
+          publication.sender === 1 &&
+          !isDocumentRedeliveryFrame(publication.data)
+        )
+          await g.deliver(publication, [0]);
+    }
+    const behind = !has(2, labels.slice(0, 1));
+    await g.doc(1).change(adapter.edit('late'));
+    labels.push('late');
+    const traffic = count();
+    const recovered = await floodUntil(
+      g,
+      [0, 1, 2],
+      () => has(2, labels),
+      30_000,
+      traffic.seen,
+    );
+    await g.doc(1).change(adapter.edit('next'));
+    labels.push('next');
+    const live = await floodUntil(g, [0, 1, 2], () =>
+      [0, 1, 2].every((index) => has(index, labels)),
+    );
+    return {
+      joined,
+      behind,
+      recovered,
+      live,
+      traffic: traffic.value,
+      held: engineOf(g.doc(2)).hasHeldFrames(),
       views: [0, 1, 2].map((index) => adapter.read(g.doc(index).document)),
     };
   } finally {

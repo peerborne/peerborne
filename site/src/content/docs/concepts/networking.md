@@ -349,8 +349,8 @@ document.subscribeToAntiEntropy('status', (event, status) => {
 ```
 
 Events are `gap`, `request`, `load`, `repaired` and `abandoned`. Catch-up runs only for
-signed documents on a node with a libp2p identity; coordinated documents use
-their [controller catch-up](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#resume-with-a-controller-checkpoint).
+signed documents on a node with a libp2p identity; coordinated documents
+request their [controller checkpoint on the document topic](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#automatic-catch-up-on-the-document-topic).
 `requestSync()` still sends a request at once, within its 2 s rate limit, and
 restarts the periodic delay.
 
