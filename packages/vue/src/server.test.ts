@@ -7,7 +7,7 @@ import { usePeerborneStore } from './index.js';
 
 test('server rendering does not open documents', async () => {
   const source = new TestDocument();
-  const store = createDocumentStore(source);
+  const store = createDocumentStore(() => source);
   const app = createSSRApp({
     setup() {
       const snapshot = usePeerborneStore(store);

@@ -1,5 +1,5 @@
 import { LoroDoc } from 'loro-crdt';
-import type { CRDTProvider } from '@peerborne/core';
+import { PartialLocalChangeError, type CRDTProvider } from '@peerborne/core';
 
 export type LoroChange = (document: LoroDoc) => void;
 
@@ -21,7 +21,17 @@ export class LoroProvider
     change: LoroChange,
   ): [LoroDoc, Uint8Array] {
     const from = document.oplogVersion();
-    change(document);
+    try {
+      change(document);
+    } catch (error) {
+      document.commit({ message });
+      if (from.compare(document.oplogVersion()) === 0) throw error;
+      throw new PartialLocalChangeError(
+        error,
+        document,
+        document.export({ mode: 'update', from }),
+      );
+    }
     document.commit({ message });
     return [document, document.export({ mode: 'update', from })];
   }

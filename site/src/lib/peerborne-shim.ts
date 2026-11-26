@@ -8,6 +8,7 @@ export {
   DocumentOperationTargets,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
+  PartialLocalChangeError,
   canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,

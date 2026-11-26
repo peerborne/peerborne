@@ -6,7 +6,7 @@ import { peerborneReadable } from './index.js';
 
 test('readables share document ownership and deliver in-place updates synchronously', async () => {
   const source = new TestDocument();
-  const store = createDocumentStore(source);
+  const store = createDocumentStore(() => source);
   const readable = peerborneReadable(store);
   const titles: (string | undefined)[] = [];
   const first = readable.subscribe((snapshot) => {

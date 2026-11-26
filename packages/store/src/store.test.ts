@@ -5,7 +5,7 @@ import { deferred, TestDocument } from './test-utils.js';
 describe('framework-independent document store', () => {
   test('construction and snapshot subscriptions perform no I/O during SSR', () => {
     const source = new TestDocument();
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     const unsubscribe = store.subscribe(() => {});
     expect(store.getSnapshot()).toBe(store.getServerSnapshot());
     expect(store.getSnapshot()).toBe(store.getSnapshot());
@@ -16,7 +16,7 @@ describe('framework-independent document store', () => {
 
   test('publishes new snapshots for in-place CRDT updates and detached ACL arrays', async () => {
     const source = new TestDocument();
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await store.start();
     const before = store.getSnapshot();
     source.document.title = 'Remote';
@@ -33,7 +33,7 @@ describe('framework-independent document store', () => {
 
   test('shares one open across consumers and closes only after the final release', async () => {
     const source = new TestDocument();
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     const first = store.connect();
     const second = store.connect();
     await store.start();
@@ -52,7 +52,7 @@ describe('framework-independent document store', () => {
 
   test('a StrictMode-style release/reconnect does not close the shared handle', async () => {
     const source = new TestDocument();
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     store.connect()();
     const release = store.connect();
     await store.start();
@@ -67,7 +67,7 @@ describe('framework-independent document store', () => {
     const gate = deferred();
     const source = new TestDocument();
     source.openGate = gate.promise;
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     const release = store.connect();
     await Promise.resolve();
     release();
@@ -82,7 +82,7 @@ describe('framework-independent document store', () => {
   test('open failures are observable and release the failed subscription', async () => {
     const source = new TestDocument();
     source.openError = new Error('Denied');
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await expect(store.start()).rejects.toThrow('Denied');
     expect(store.getSnapshot().status).toBe('error');
     expect(source.handlers.size).toBe(0);
@@ -96,7 +96,7 @@ describe('framework-independent document store', () => {
     const source = new TestDocument();
     const gate = deferred();
     source.writeGate = gate.promise;
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await store.start();
     const writing = store.change((data) => {
       data.title = 'Saved';
@@ -114,7 +114,7 @@ describe('framework-independent document store', () => {
   test('mutation rejection reaches both the caller and the snapshot', async () => {
     const source = new TestDocument();
     source.writeError = new Error('Read only');
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await expect(store.change(() => {})).rejects.toThrow('Read only');
     expect(store.getSnapshot().status).toBe('ready');
     expect(store.getSnapshot().error).toBe(source.writeError);
@@ -130,7 +130,7 @@ describe('framework-independent document store', () => {
     const source = new TestDocument();
     const gate = deferred();
     source.readGate = gate.promise;
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     const starting = store.start();
     await Promise.resolve();
     source.readers = ['new-reader'];
@@ -140,6 +140,65 @@ describe('framework-independent document store', () => {
     await starting;
     expect(store.getSnapshot().readers).toEqual(['new-reader']);
     await store.stop();
+  });
+
+  test('reopens a fresh handle after the final release closed the previous one', async () => {
+    const handles: TestDocument[] = [];
+    const store = createDocumentStore(() => {
+      const handle = new TestDocument();
+      handle.reopenable = false;
+      handle.document = { title: `Handle ${handles.length + 1}` };
+      handles.push(handle);
+      return handle;
+    });
+    store.connect()();
+    await Promise.resolve();
+    await store.stop();
+    expect(store.getSnapshot().status).toBe('closed');
+
+    const release = store.connect();
+    await store.start();
+    expect(store.getSnapshot()).toMatchObject({
+      status: 'ready',
+      data: { title: 'Handle 2' },
+    });
+    await store.change((data) => {
+      data.title = 'Edited';
+    });
+    expect(
+      handles.map(({ openCount, closeCount }) => [openCount, closeCount]),
+    ).toEqual([
+      [1, 1],
+      [1, 0],
+    ]);
+    expect(handles[1].document.title).toBe('Edited');
+    expect(handles[0].handlers.size).toBe(0);
+    release();
+    await Promise.resolve();
+    await store.stop();
+    expect(handles[1].closeCount).toBe(1);
+  });
+
+  test('retries a failed open with a fresh handle', async () => {
+    const failed = new TestDocument();
+    failed.openError = new Error('Denied');
+    const fresh = new TestDocument();
+    const handles = [failed, fresh];
+    const store = createDocumentStore(() => handles.shift()!);
+    await expect(store.start()).rejects.toThrow('Denied');
+    expect(failed.closeCount).toBe(1);
+    await store.start();
+    expect(store.getSnapshot().status).toBe('ready');
+    expect(fresh.openCount).toBe(1);
+    await store.stop();
+  });
+
+  test('requires a handle factory exactly when it manages the lifecycle', () => {
+    const source = new TestDocument();
+    expect(() => createDocumentStore(source as never)).toThrow(TypeError);
+    expect(() =>
+      createDocumentStore((() => source) as never, { manageLifecycle: false }),
+    ).toThrow(TypeError);
   });
 
   test('supports externally owned document lifecycles', async () => {
@@ -157,7 +216,7 @@ describe('framework-independent document store', () => {
     source.subscribe = () => {
       throw new Error('Subscribe failed');
     };
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await expect(store.start()).rejects.toThrow('Subscribe failed');
     expect(store.getSnapshot().status).toBe('error');
     expect(source.closeCount).toBe(1);
@@ -165,7 +224,7 @@ describe('framework-independent document store', () => {
 
   test('an unsubscribe failure does not skip closing the document', async () => {
     const source = new TestDocument();
-    const store = createDocumentStore(source);
+    const store = createDocumentStore(() => source);
     await store.start();
     source.unsubscribe = () => {
       throw new Error('Unsubscribe failed');
@@ -180,7 +239,7 @@ describe('framework-independent document store', () => {
     'reports %s cleanup failures in operation order',
     async (operation) => {
       const source = new TestDocument();
-      const store = createDocumentStore(source);
+      const store = createDocumentStore(() => source);
       const openError = new Error('Open failed');
       const unsubscribeError = new Error('Unsubscribe failed');
       const closeError = new Error('Close failed');

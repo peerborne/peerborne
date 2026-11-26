@@ -173,6 +173,33 @@ describe('AutomergeProvider', () => {
     expect(doc2.title).toBe(doc1a.title);
     expect(doc2.count).toBe(doc1a.count);
   });
+
+  test('a throwing change leaves the document unchanged and rethrows its error', () => {
+    const [doc] = provider.localChange(provider.newDocument(), '', (d) => {
+      d.title = 'v0';
+    });
+    const failure = new Error('validation');
+    let error: unknown;
+    try {
+      provider.localChange(doc, '', (d) => {
+        d.count = 1;
+        throw failure;
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBe(failure);
+    expect({ ...doc }).toEqual({ title: 'v0' });
+    const [next, changes] = provider.localChange(doc, '', (d) => {
+      d.title = 'v1';
+    });
+    const peer = provider.remoteChange(provider.newDocument(), [
+      ...provider.getHistory(doc),
+      ...changes,
+    ]);
+    expect({ ...peer }).toEqual({ title: 'v1' });
+    expect({ ...peer }).toEqual({ ...next });
+  });
 });
 
 // ─── serializeKey / deserializeKey ──────────────────────────────────

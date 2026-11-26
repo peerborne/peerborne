@@ -41,15 +41,12 @@ export class PeerborneIndexIntegration<DocType> {
 
   /**
    * Begin tracking a document. Subscribes to all changes and indexes the current state.
+   * Tracking a path again subscribes `doc` in place of the previous handle and
+   * re-indexes its current state, for example after a reopen or index redefinition.
    */
   trackDocument(doc: SubscribableDocument<DocType>): Promise<void> {
-    if (this._trackedDocuments.has(doc.documentPath)) {
-      return this._manager.flush(doc.documentPath);
-    }
-
+    const previous = this._trackedDocuments.get(doc.documentPath);
     const registration = { document: doc };
-    this._trackedDocuments.set(doc.documentPath, registration);
-
     const handlerId = INDEX_HANDLER_PREFIX + doc.documentPath;
 
     doc.subscribe(
@@ -64,6 +61,10 @@ export class PeerborneIndexIntegration<DocType> {
       },
       'all',
     );
+    this._trackedDocuments.set(doc.documentPath, registration);
+    if (previous && previous.document !== doc) {
+      previous.document.unsubscribe(handlerId);
+    }
 
     // Index current state immediately
     const ready = this._manager.updateIndex(doc.documentPath, doc.document);
@@ -75,6 +76,7 @@ export class PeerborneIndexIntegration<DocType> {
 
   /**
    * Stop tracking a document. Unsubscribes from changes and removes from index.
+   * A handle that a newer handle for its path replaced is ignored.
    */
   untrackDocument(documentPath: string): Promise<void>;
   untrackDocument(doc: SubscribableDocument<DocType>): Promise<void>;
@@ -82,6 +84,9 @@ export class PeerborneIndexIntegration<DocType> {
     const path = typeof docOrPath === 'string' ? docOrPath : docOrPath.documentPath;
     const tracked = this._trackedDocuments.get(path);
     if (!tracked) return Promise.resolve();
+    if (typeof docOrPath !== 'string' && tracked.document !== docOrPath) {
+      return Promise.resolve();
+    }
     const handlerId = INDEX_HANDLER_PREFIX + path;
     this._trackedDocuments.delete(path);
     tracked.document.unsubscribe(handlerId);
