@@ -201,7 +201,10 @@ export interface CoordinatedGroupOptions {
   /** Report topic subscribers, none while a member is offline. */
   readonly subscribers?: boolean;
   /** Extra security options for every member's document. */
-  readonly security?: Pick<CoordinatedDocumentOptions, 'onPublicationsDropped'>;
+  readonly security?: Pick<
+    CoordinatedDocumentOptions,
+    'onPublicationsDropped' | 'authorizeCatchUp' | 'onCatchUpRefused'
+  >;
   /** Give each member a libp2p PeerId, which enables redelivery requests. */
   readonly peers?: boolean;
 }
