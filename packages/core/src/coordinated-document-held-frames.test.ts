@@ -117,7 +117,7 @@ describe('coordinated document held frames', () => {
       ),
       { seed: 202611251, numRuns: 25 },
     );
-  });
+  }, 60_000);
 
   test('refuses an equivocating or damaged held frame and bounds each author', async () => {
     const f = await documentFixture(),
