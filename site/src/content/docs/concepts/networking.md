@@ -300,8 +300,8 @@ behind in the same way.
   with the number of open documents so that they plan at most half of the
   rate (beyond about 90 documents at the default interval). At most one
   catch-up load runs at a time, and at most one per peer every 10 s. A
-  catch-up load is aborted after 60 s, and its slot is released then even if
-  the load has not stopped.
+  catch-up load is aborted after 5 minutes, and its slot is released then
+  even if the load has not stopped.
 - Responders keep the existing limits: one reply per document every 2 s, a
   60 s freshness window and a 128-entry replay ledger, however many members
   ask.

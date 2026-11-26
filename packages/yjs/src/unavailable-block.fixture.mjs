@@ -5,6 +5,7 @@ import {
   documentFixture,
   receiveEncrypted,
   replicaOf,
+  signedMessage,
 } from '../../../verification/fixtures.mjs';
 
 const options = { adapter: 'yjs' };
@@ -196,4 +197,52 @@ test('a replica missing a block whose author is offline keeps working', async (t
     'close() did not abort the fetch of B2',
   );
   assert.equal(g.document.hasChange(a5.cid), false);
+});
+
+test('a snapshot that covers a missing change releases what waited for it', async (t) => {
+  const a = await documentFixture({ ...options, index: 1 });
+  await a.document.change((doc) => doc.getMap('root').set('created', true));
+  const b = await replicaOf(a, 2, options);
+  const g = await replicaOf(a, 3, options);
+  t.after(async () => {
+    await Promise.all([a.close(), b.close(), g.close()]);
+  });
+
+  // G cannot fetch B1, which only B and A store, so A2 waits for it.
+  await deliver((await append(a, 'a1')).frame, g);
+  const b1 = await append(b, 'b1');
+  await deliver(b1.frame, a);
+  await share(b, a, b1.cid);
+  const a2 = await append(a, 'a2');
+  assert.equal(crossLinks(a2.tree, b1.cid), true);
+  await deliver(a2.frame, g);
+  const root = g.document.document.getMap('root');
+  assert.equal(root.get('a2'), true);
+  assert.equal(g.document.hasChange(a2.cid), false);
+  assert.equal(g.document._holdsChange(b1.cid), false);
+  assert.notEqual(g.document._lastSyncMessage.changeId, a2.cid);
+
+  // A's snapshot covers B1. G applies it, stops waiting and serves A's tree.
+  await a.document.snapshot();
+  assert.equal(
+    await g.document.sync(
+      await signedMessage(a, {
+        changeId: a2.cid,
+        changes: a2.tree,
+        snapshot: a.document._latestSnapshot,
+      }),
+    ),
+    true,
+  );
+  assert.equal(root.get('b1'), true);
+  assert.equal(g.document._holdsChange(b1.cid), true);
+  assert.equal(g.document._isWaiting(a2.cid), false);
+  assert.equal(g.document._lastSyncMessage.changeId, a2.cid);
+
+  // A later change that cites B1 again is held without fetching it.
+  const a3 = await append(a, 'a3');
+  assert.equal(crossLinks(a3.tree, b1.cid), true);
+  await deliver(a3.frame, g);
+  assert.equal(g.document.hasChange(a3.cid), true);
+  assert.equal(g.document._lastSyncMessage.changeId, a3.cid);
 });

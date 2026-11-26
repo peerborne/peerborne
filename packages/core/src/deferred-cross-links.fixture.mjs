@@ -34,6 +34,12 @@ import {
   YjsKeychainProvider,
   YjsProvider,
 } from '@peerborne/yjs';
+import {
+  documentFixture,
+  project,
+  replicaOf,
+  signedMessage,
+} from '../../../verification/fixtures.mjs';
 
 for (const method of ['log', 'info', 'debug', 'warn', 'error'])
   console[method] = () => {};
@@ -140,13 +146,17 @@ function stack(adapter) {
   ];
 }
 
-async function peer(relayAddress, adapter, { identity, config = {} } = {}) {
+async function peer(
+  relayAddress,
+  adapter,
+  { identity, kem, config = {} } = {},
+) {
   identity ??= await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-384' },
     false,
     ['sign', 'verify'],
   );
-  const kem = await crypto.subtle.generateKey(
+  kem ??= await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
     false,
     ['deriveBits'],
@@ -309,53 +319,77 @@ async function editConcurrently(edits, writer, wd, other, od) {
 }
 
 // Invitations support only the attested Automerge profile.
-for (const edits of ['concurrent', 'offline']) {
-  test(`automerge: re-sharing after removing a collaborator whose ${edits} edits only it stored`, async (t) => {
-    const adapter = 'automerge';
-    const path = `/deferred-cross-links/reshare-${edits}-${crypto.randomUUID()}`;
-    const join = await network(t, path);
-    const founder = await join(adapter);
-    const collaborator = await join(adapter);
-    const fd = founder.doc(path);
-    await fd.setKemKeyPair(founder.kem);
-    await fd.create();
-    fd.historyVisibility = 'full_history';
-    await set(fd, 'body', 'v0');
-    const cd = await collaborator.swarm.acceptInvitation(
-      await invite(founder, fd),
-      collaborator.kem,
-    );
-    await until('collaborator sees v0', () => get(cd, 'body') === 'v0');
-    const expected = await editConcurrently(
-      edits,
-      founder,
-      fd,
-      collaborator,
-      cd,
-    );
-
-    await fd.removeWriter(collaborator.identity.publicKey);
-    await fd.removeReader(collaborator.identity.publicKey);
-    await collaborator.stop();
-    await set(fd, 'afterRemoval', 1);
-    expected.afterRemoval = 1;
-
-    const replacement = await join(adapter);
-    const rd = await within(
-      replacement.swarm.acceptInvitation(
+for (const restore of [false, true])
+  for (const edits of ['concurrent', 'offline']) {
+    const restored = restore ? ' after the founder restored a checkpoint' : '';
+    test(`automerge: re-sharing after removing a collaborator whose ${edits} edits only it stored${restored}`, async (t) => {
+      const adapter = 'automerge';
+      const path = `/deferred-cross-links/reshare-${edits}-${restore}-${crypto.randomUUID()}`;
+      const join = await network(t, path);
+      let founder = await join(adapter);
+      const collaborator = await join(adapter);
+      let fd = founder.doc(path);
+      await fd.setKemKeyPair(founder.kem);
+      await fd.create();
+      fd.historyVisibility = 'full_history';
+      await set(fd, 'body', 'v0');
+      const cd = await collaborator.swarm.acceptInvitation(
         await invite(founder, fd),
-        replacement.kem,
-      ),
-      10_000,
-      'acceptInvitation',
-    );
-    await until(
-      'replacement holds every edit',
-      () => holds(rd, expected),
-      10_000,
-    );
-  });
-}
+        collaborator.kem,
+      );
+      await until('collaborator sees v0', () => get(cd, 'body') === 'v0');
+      const expected = await editConcurrently(
+        edits,
+        founder,
+        fd,
+        collaborator,
+        cd,
+      );
+
+      if (restore) {
+        // The restored founder no longer has the delivered history of the
+        // collaborator's branch, which its next change would have carried.
+        const saved = await fd.exportCheckpoint();
+        await founder.stop();
+        founder = await join(adapter, {
+          identity: founder.identity,
+          kem: founder.kem,
+        });
+        fd = founder.doc(path);
+        await fd.setKemKeyPair(founder.kem);
+        await fd.restoreCheckpoint(saved);
+        await fd.open();
+        fd.historyVisibility = 'full_history';
+        await set(fd, 'body', 'v1');
+        expected.body = 'v1';
+        await until('collaborator sees v1', () => get(cd, 'body') === 'v1');
+      }
+
+      await fd.removeWriter(collaborator.identity.publicKey);
+      await fd.removeReader(collaborator.identity.publicKey);
+      await collaborator.stop();
+      await set(fd, 'afterRemoval', 1);
+      expected.afterRemoval = 1;
+
+      const replacement = await join(adapter);
+      const rd = await within(
+        replacement.swarm.acceptInvitation(
+          await invite(founder, fd),
+          replacement.kem,
+        ),
+        10_000,
+        'acceptInvitation',
+      );
+      await until(
+        'replacement holds every edit',
+        () => holds(rd, expected),
+        10_000,
+      );
+      assert.equal(rd._crdtProvider.hasPendingChanges(rd._document), false);
+      await set(fd, 'later', 1);
+      await until('replacement keeps up', () => get(rd, 'later') === 1, 10_000);
+    });
+  }
 
 test('automerge: an invitation is served from a snapshot when the founder lost a block its tree cites', async (t) => {
   const adapter = 'automerge';
@@ -544,3 +578,82 @@ for (const adapter of adapters) {
     );
   });
 }
+
+test('automerge: a change recorded once its dependency arrives is covered by a snapshot', async (t) => {
+  const options = { adapter: 'automerge' };
+  const a = await documentFixture({ ...options, index: 1 });
+  await a.document.change((doc) => {
+    doc.created = 1;
+  });
+  const b = await replicaOf(a, 2, options);
+  const f = await replicaOf(a, 3, options);
+  const g = await documentFixture({
+    ...options,
+    index: 4,
+    identity: a.identity,
+    path: a.document.documentPath,
+    open: false,
+  });
+  t.after(async () => {
+    for (const fixture of [a, b, f]) await fixture.close();
+    await g.helia.stop();
+  });
+  const append = async (key) => {
+    await b.document.change((doc) => {
+      doc[key] = 1;
+    });
+    const { changeId, changes } = b.document._lastSyncMessage;
+    return { cid: changeId, change: changes.change };
+  };
+  const b1 = await append('b1');
+  const b2 = await append('b2');
+
+  // F receives B2 citing B1, which it cannot fetch, so B2 waits. B1 then
+  // arrives in a tree without B2, and B2 is recorded only afterwards.
+  const node = (change, children) => ({ kind: 'document', change, children });
+  assert.equal(
+    await f.document.sync(
+      await signedMessage(b, {
+        changeId: b2.cid,
+        changes: node(b2.change, { [b1.cid]: { kind: 'document' } }),
+      }),
+    ),
+    true,
+  );
+  assert.equal(f.document.hasChange(b2.cid), false);
+  assert.equal(
+    await f.document.sync(
+      await signedMessage(b, { changeId: b1.cid, changes: node(b1.change) }),
+    ),
+    true,
+  );
+  assert.equal(f.document.hasChange(b2.cid), true);
+
+  // F's next change cannot carry B2, so F covers it with a snapshot.
+  assert.equal(f.document._latestSnapshot, undefined);
+  await f.document.change((doc) => {
+    doc.f1 = 1;
+  });
+  assert.notEqual(f.document._latestSnapshot, undefined);
+  assert.equal(await f.document._unservableChanges(true), 0);
+
+  g.document._writers.merge(f.document._writers.current());
+  g.document._keychain.merge(f.document._keychain.history());
+  await g.document._keychain.keys();
+  const { changeId, changes } = f.document._lastSyncMessage;
+  assert.equal(
+    await g.document.sync(
+      await signedMessage(f, {
+        changeId,
+        changes,
+        snapshot: f.document._latestSnapshot,
+      }),
+    ),
+    true,
+  );
+  assert.deepEqual(
+    { b1: project(g).b1, b2: project(g).b2, f1: project(g).f1 },
+    { b1: 1, b2: 1, f1: 1 },
+  );
+  assert.equal(g.provider.hasPendingChanges(g.document._document), false);
+});

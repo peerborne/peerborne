@@ -349,9 +349,11 @@ const MEMBER_PENALTY_MS = 5 * 60 * 1000;
 const MAX_MEMBER_PENALTY_MS = 2 * 60 * 60 * 1000;
 /**
  * A catch-up load is aborted after this long, and its load slot is released
- * even if the load ignores the abort, so other repairs can proceed.
+ * even if the load ignores the abort, so other repairs can proceed. Each block
+ * a load fetches has its own stall deadline, so this only bounds a load that
+ * stops making progress some other way.
  */
-export const CATCH_UP_LOAD_DEADLINE_MS = 60_000;
+export const CATCH_UP_LOAD_DEADLINE_MS = 5 * 60_000;
 const UNKNOWN_PEER = '\0unknown';
 const GAP_TRIGGERS: readonly AntiEntropyTrigger[] = [
   'pending-changes',

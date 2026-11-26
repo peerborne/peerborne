@@ -1611,9 +1611,13 @@ export class PeerborneDocument<
   // Changes a delivered tree cited without their content whose blocks could
   // not be fetched. They are not held, and a node that references one waits.
   private _missingChanges?: Set<string>;
-  // Delivered nodes of recent tips, so a tip whose block this replica does
-  // not hold is cross-linked inline with its delivered history.
-  private _tipNodes?: Map<string, CRDTChangeNode<ChangesType>>;
+  // Delivered history of recent tips that the retained tree does not
+  // describe, so a tip whose block this replica does not store is
+  // cross-linked inline with it. At most one change frame's worth is kept.
+  private _tipNodes?: Map<
+    string,
+    { readonly node: CRDTChangeNode<ChangesType>; readonly bytes: number }
+  >;
   // First-seen actor registrations of each ACL, which derives its actors in
   // its own domain, and the actor this instance writes each ACL under.
   private _aclActorBindings?: Record<HeldACLKind, CRDTActorBindings>;
@@ -1749,6 +1753,9 @@ export class PeerborneDocument<
   private _compactionConfig: CompactionConfig;
   private _latestSnapshot?: CRDTSnapshotNode<ChangesType>;
   private _latestSnapshotSource?: object;
+  // Changes the latest snapshot is known to cover: every held change when this
+  // replica took it, or the delivered history beneath an adopted one.
+  private _snapshotCovered?: Set<string>;
   private _changesSinceSnapshot = 0;
   private _compactionInProgress = false;
   private _gcLifecycle: object = {};
@@ -2802,7 +2809,11 @@ export class PeerborneDocument<
     trackTipInList(this._recentTips, { cid, kind }, MAX_RECENT_TIPS);
   }
 
-  /** Keep the delivered nodes of recorded recent tips, and only theirs. */
+  /**
+   * Keep, for the recorded recent tips this delivered tree carries and the
+   * retained tree does not describe, the delivered history the retained tree
+   * lacks, within one change frame in all.
+   */
   private _rememberTipNodes(
     rootId: string | undefined,
     root: CRDTChangeNode<ChangesType>,
@@ -2815,43 +2826,85 @@ export class PeerborneDocument<
     if (tips.size === 0 && this._tipNodes === undefined) return;
     const tipNodes = (this._tipNodes ??= new Map());
     for (const cid of tipNodes.keys()) if (!tips.has(cid)) tipNodes.delete(cid);
-    for (const [cid, node] of findInlineNodes(rootId, root, tips))
-      tipNodes.set(cid, node);
+    for (const cid of tipNodes.keys()) tips.delete(cid);
+    if (tips.size === 0) return;
+    const described = describedCids(
+      this._lastSyncMessage?.changeId,
+      this._lastSyncMessage?.changes,
+    );
+    for (const cid of described) tips.delete(cid);
+    let bytes = 0;
+    for (const entry of tipNodes.values()) bytes += entry.bytes;
+    for (const [cid, node] of findInlineNodes(rootId, root, tips)) {
+      const copy = carryRemoteSubtree(
+        cid,
+        node,
+        described,
+        new Set(citedWithoutChanges(cid, node)),
+      );
+      const copyBytes = this._nodeFrameBytes(copy);
+      if (bytes + copyBytes > MAX_CHANGE_FRAME_BYTES) continue;
+      bytes += copyBytes;
+      tipNodes.set(cid, { node: copy, bytes: copyBytes });
+    }
   }
 
   /**
-   * How many blocks the retained tree cites without their content, above
-   * the latest snapshot, that this replica does not store and cannot serve.
+   * How many changes a recipient of the retained tree and the latest
+   * snapshot could not obtain from this replica: blocks the tree cites
+   * without their content above the snapshot that this replica does not
+   * store, and with `complete`, held changes that the tree neither carries
+   * nor cites as stored blocks and that the snapshot is not known to cover.
    */
-  private async _unservableCitedBlocks(): Promise<number> {
+  private async _unservableChanges(complete = false): Promise<number> {
     const message = this._lastSyncMessage;
-    if (message?.changes === undefined) return 0;
     const boundary = this._latestSnapshot?.lastChangeNodeCID;
+    const inline = new Set<string>();
+    const cited = new Set<string>();
+    if (message?.changes !== undefined)
+      for (const { nodeId, change } of collectBoundedChangeTree(
+        message.changeId,
+        message.changes,
+        { stopBelowNodeIds: boundary ? new Set([boundary]) : undefined },
+      ))
+        if (nodeId !== undefined)
+          (change === undefined ? cited : inline).add(nodeId);
+    for (const cid of inline) cited.delete(cid);
+    const servable = async (cid: string): Promise<boolean> =>
+      cid === boundary ||
+      inline.has(cid) ||
+      (cited.has(cid) && (await this._holdsBlock(cid)));
     let unservable = 0;
-    for (const cid of citedWithoutChanges(
-      message.changeId,
-      message.changes,
-      boundary ? new Set([boundary]) : undefined,
-    ))
-      if (cid !== boundary && !(await this._holdsBlock(cid))) unservable++;
+    for (const cid of cited) if (!(await servable(cid))) unservable++;
+    if (complete)
+      for (const cid of this._hashes)
+        if (
+          !cited.has(cid) &&
+          this._snapshotCovered?.has(cid) !== true &&
+          !(await servable(cid))
+        )
+          unservable++;
     return unservable;
   }
 
   /**
-   * Before a recipient that needs every cited block is sent the retained
-   * tree, cover the blocks this replica cannot serve with a snapshot, which
-   * the recipient applies instead of fetching them. Returns how many stay
-   * unservable. The caller holds `_mutationQueue`.
+   * Before a recipient is sent the retained tree, cover what this replica
+   * cannot serve with a snapshot, which the recipient applies instead. A
+   * `complete` recipient needs every held change, as an invitation does.
+   * Returns how many changes stay unservable. The caller holds
+   * `_mutationQueue`.
    */
-  private async _coverUnservableCitedBlocksUnlocked(): Promise<number> {
-    if ((await this._unservableCitedBlocks()) === 0) return 0;
+  private async _coverUnservableChangesUnlocked(
+    complete = false,
+  ): Promise<number> {
+    if ((await this._unservableChanges(complete)) === 0) return 0;
     try {
       if ((await this._writers.check(this._userPublicKey)) === true)
         await this._snapshotUnlocked();
     } catch {
       // Reported by the count below.
     }
-    return this._unservableCitedBlocks();
+    return this._unservableChanges(complete);
   }
 
   /** Whether this replica stores the block `cid` names, so peers can fetch it. */
@@ -2942,6 +2995,26 @@ export class PeerborneDocument<
     missing.add(cid);
     if (missing.size > MAX_WAITING_REMOTE_CHANGES)
       missing.delete(missing.values().next().value!);
+  }
+
+  /**
+   * An applied snapshot covers `cids`, so they are no longer missing and the
+   * nodes that waited only because they reference one are released. Changes
+   * the CRDT holds and ACL changes held outside the ACL keep waiting.
+   */
+  private _stopWaitingFor(cids: ReadonlySet<string>): void {
+    const entries = this._waiting?.entries;
+    for (const cid of cids) {
+      this._missingChanges?.delete(cid);
+      const entry = entries?.get(cid);
+      if (
+        entry !== undefined &&
+        entry.changes === undefined &&
+        entry.unmerged === undefined &&
+        this._refusedChanges?.has(cid) !== true
+      )
+        entries!.delete(cid);
+    }
   }
 
   /** Whether a node referencing `cid` in a delivered tree must wait for it. */
@@ -3440,10 +3513,20 @@ export class PeerborneDocument<
         throwIfLoadAborted(fetchSignal);
       };
       const fetchMissingBlock = (cid: CID, missingHash: string) => {
-        const read = (readSignal: AbortSignal) =>
+        const read = (readSignal: AbortSignal, progress?: () => void) =>
           this._getBlock(
             cid,
-            { signal: readSignal, maxBlockBytes, consumeBytes },
+            {
+              signal: readSignal,
+              maxBlockBytes,
+              consumeBytes:
+                progress === undefined
+                  ? consumeBytes
+                  : (byteLength) => {
+                      progress();
+                      consumeBytes?.(byteLength);
+                    },
+            },
             fetchOptions.getKey,
           );
         return fetchOptions.remoteFetches === undefined
@@ -3451,6 +3534,7 @@ export class PeerborneDocument<
           : fetchOptions.remoteFetches.fetch(missingHash, read, fetchSignal);
       };
       const missing = (missingHash: string): void => {
+        if (this._snapshotCovered?.has(missingHash) === true) return;
         this._noteMissingChange(missingHash);
         this._antiEntropy?.missingChange(missingHash);
       };
@@ -3677,7 +3761,6 @@ export class PeerborneDocument<
         }
       }
     }
-    this._rememberTipNodes(changeId, changes);
     // Refresh `_lastSyncMessage` so the served frontier reflects what we now
     // hold. Without this, a relay peer that joined via `load()` (or that has
     // only ever applied remote changes via GossipSub) would keep
@@ -3699,6 +3782,7 @@ export class PeerborneDocument<
     // yet, so only the part of the tree below them is served. The frame
     // bounds the size of whichever part is adopted.
     const servedId = this._refreshServedTree(changeId, changes);
+    this._rememberTipNodes(changeId, changes);
     const adoptedFrameBytes =
       servedId !== undefined && this._lastSyncMessage?.changeId === servedId
         ? fetchOptions.frameBytes
@@ -4222,15 +4306,16 @@ export class PeerborneDocument<
     context: 'load-response-v4' | 'invitation-catch-up-v1',
   ): Promise<CRDTSyncMessage<ChangesType>> {
     const challenge = cloneInitialLoadChallenge(request.loadChallenge!);
-    if ((await this._unservableCitedBlocks()) > 0) {
+    const complete = context === 'invitation-catch-up-v1';
+    if ((await this._unservableChanges(complete)) > 0) {
       const unservable = await this._runStateMutation(() =>
-        this._coverUnservableCitedBlocksUnlocked(),
+        this._coverUnservableChangesUnlocked(complete),
       );
       if (unservable > 0) {
         console.warn(
-          `[${this.documentPath}] Declining a load: this replica does not store ${unservable} of the change blocks its tree cites`,
+          `[${this.documentPath}] Declining a load: this replica cannot serve ${unservable} of the changes its tree names`,
         );
-        throw new Error('Load response cites change blocks it cannot serve');
+        throw new Error('Load response names changes it cannot serve');
       }
     }
     const message = this._createSyncMessage(context);
@@ -5297,6 +5382,7 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
+    let uncoveredTip = false;
     let reachedNoMember = false;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
@@ -5329,9 +5415,10 @@ export class PeerborneDocument<
         // `_syncDocumentChanges`. A replica stores only the blocks of its own
         // changes and of those it fetched, so a remote tip delivered inline
         // is carried inline instead, with the delivered history this tree
-        // does not carry yet, within the frame a change may use. It is not
-        // cited at all when that history is gone: no peer could otherwise be
-        // relied on to serve it once its author leaves.
+        // does not carry yet, within the frame a change may use. When that
+        // history is gone, as after a restore, or does not fit, the tip is
+        // not cited at all: no peer could be relied on to serve it once its
+        // author leaves. A snapshot then covers it.
         const crossLinkTips = selectCrossLinks(
           this._recentTips,
           primaryParentId,
@@ -5350,21 +5437,25 @@ export class PeerborneDocument<
             changeNode.children[tip.cid] = { kind: tip.kind };
             continue;
           }
-          const tipNode = this._tipNodes?.get(tip.cid);
-          if (tipNode === undefined) continue;
           carried ??= describedCids(primaryParentId, updateMessage.changes);
           if (carried.has(tip.cid)) continue;
-          const held = new Set<string>();
-          for (const cid of citedWithoutChanges(tip.cid, tipNode))
-            if (!carried.has(cid) && (await this._holdsBlock(cid)))
-              held.add(cid);
-          const copy = carryRemoteSubtree(tip.cid, tipNode, carried, held);
-          const tipBytes = this._nodeFrameBytes(copy);
-          inlineBytes ??= this._changeFrameBytes(changes, kind);
-          if (inlineBytes + tipBytes > MAX_CHANGE_FRAME_BYTES) continue;
-          inlineBytes += tipBytes;
-          changeNode.children[tip.cid] = copy;
-          for (const cid of describedCids(tip.cid, copy)) carried.add(cid);
+          const tipNode = this._tipNodes?.get(tip.cid)?.node;
+          if (tipNode !== undefined) {
+            const held = new Set<string>();
+            for (const cid of citedWithoutChanges(tip.cid, tipNode))
+              if (!carried.has(cid) && (await this._holdsBlock(cid)))
+                held.add(cid);
+            const copy = carryRemoteSubtree(tip.cid, tipNode, carried, held);
+            const tipBytes = this._nodeFrameBytes(copy);
+            inlineBytes ??= this._changeFrameBytes(changes, kind);
+            if (inlineBytes + tipBytes <= MAX_CHANGE_FRAME_BYTES) {
+              inlineBytes += tipBytes;
+              changeNode.children[tip.cid] = copy;
+              for (const cid of describedCids(tip.cid, copy)) carried.add(cid);
+              continue;
+            }
+          }
+          if (this._snapshotCovered?.has(tip.cid) !== true) uncoveredTip = true;
         }
       }
       updateMessage.changeId = hash;
@@ -5503,7 +5594,7 @@ export class PeerborneDocument<
       this._changesSinceSnapshot++;
     }
     try {
-      await this._maybeCompact(undefined, publishedBytes);
+      await this._maybeCompact(undefined, publishedBytes, uncoveredTip);
     } catch (error) {
       throw handlerFailure
         ? new AggregateError(
@@ -5649,7 +5740,11 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact(signal?: AbortSignal, frameBytes = 0) {
+  private async _maybeCompact(
+    signal?: AbortSignal,
+    frameBytes = 0,
+    uncovered = false,
+  ) {
     // Each local change nests the retained tree one level deeper, so a writer
     // must compact before the tree reaches the serialization depth limit even
     // when periodic compaction is disabled.
@@ -5669,9 +5764,13 @@ export class PeerborneDocument<
     // load digests, stay identical.
     const oversized = canBound && frameBytes > RETAINED_TREE_HIGH_BYTES;
     const sizeBound = oversized && !depthBound;
+    // A change the retained tree cannot carry reaches peers only through a
+    // snapshot, which catch-up replies, loads and invitations include.
+    const coverage = canBound && uncovered;
     if (
       !depthBound &&
       !sizeBound &&
+      !coverage &&
       !shouldCompact(
         this._compactionConfig.enabled,
         this._snapshotUnsupported,
@@ -5706,9 +5805,10 @@ export class PeerborneDocument<
     } catch (error) {
       // The triggering change is already published. A failed bounded
       // snapshot is retried by the next change instead of rolling it back.
-      if (!(depthBound || sizeBound) || signal?.aborted) throw error;
+      if (!(depthBound || sizeBound || coverage) || signal?.aborted)
+        throw error;
       console.warn(
-        `${depthBound ? 'Depth' : 'Size'}-bound compaction failed for ${this.documentPath}`,
+        `${depthBound ? 'Depth' : sizeBound ? 'Size' : 'Coverage'}-bound compaction failed for ${this.documentPath}`,
       );
     } finally {
       this._compactionInProgress = false;
@@ -7087,8 +7187,9 @@ export class PeerborneDocument<
             cidsToPrefetch.length,
           );
           // Bitswap waits for a block no reachable peer holds until the read
-          // is aborted. Each block gets a deadline, and the first one that
-          // cannot be fetched ends the prefetch, since the load needs them all.
+          // is aborted. A block whose bytes stop arriving for the deadline is
+          // unavailable, and the first one ends the prefetch, since the load
+          // needs them all.
           let unavailable = false;
           const worker = async (): Promise<void> => {
             while (!prefetchLimitExceeded && !unavailable) {
@@ -7103,15 +7204,17 @@ export class PeerborneDocument<
                 // `_syncDocumentChanges` decrypt and deserialize that exact
                 // value without a second blockstore read or byte budget.
                 const block = await readWithin(
-                  (readSignal) =>
+                  (readSignal, progress) =>
                     this._readBlock(cid, {
                       signal: readSignal,
                       maxBlockBytes: trackedBootstrapLoad
                         ? responseLimit
                         : undefined,
-                      consumeBytes: trackedBootstrapLoad
-                        ? consumePrefetchedBytes
-                        : undefined,
+                      consumeBytes: (byteLength) => {
+                        progress();
+                        if (trackedBootstrapLoad)
+                          consumePrefetchedBytes(byteLength);
+                      },
                     }),
                   prefetchSignal,
                 );
@@ -8218,15 +8321,16 @@ export class PeerborneDocument<
 
   /**
    * Whether `cid` is held or covered by held state: recorded, referenced as
-   * a parent by a held change, or the snapshot boundary. A cited change whose
-   * block could not be fetched is not held.
+   * a parent by a held change, or covered by the latest snapshot. A cited
+   * change whose block could not be fetched is not held.
    */
   private _holdsChange(cid: string): boolean {
     if (this._missingChanges?.has(cid) === true) return false;
     return (
       this._hashes.has(cid) ||
       this._referencedAncestors.has(cid) ||
-      this._latestSnapshot?.lastChangeNodeCID === cid
+      this._latestSnapshot?.lastChangeNodeCID === cid ||
+      this._snapshotCovered?.has(cid) === true
     );
   }
 
@@ -8971,6 +9075,7 @@ export class PeerborneDocument<
       this._waiting = undefined;
       this._missingChanges = undefined;
       this._tipNodes = undefined;
+      this._snapshotCovered = undefined;
       this._keychain = keychain;
       this._lastSyncMessage = retainedMessage;
       this._hashes = hashes;
@@ -10495,15 +10600,15 @@ export class PeerborneDocument<
           // it and all ancestor nodes. This prevents re-applying pre-snapshot
           // changes (which the snapshot already covers) and avoids inflating
           // _documentChangeCount / _changesSinceSnapshot.
+          this._snapshotCovered = undefined;
           if (incoming.lastChangeNodeCID) {
             this._hashes.add(incoming.lastChangeNodeCID);
-            if (this._missingChanges?.size)
-              for (const cid of collectCoveredBySnapshot(
-                message.changeId,
-                changeTreePreflight?.changes,
-                incoming.lastChangeNodeCID,
-              ))
-                this._missingChanges.delete(cid);
+            this._snapshotCovered = collectCoveredBySnapshot(
+              message.changeId,
+              changeTreePreflight?.changes,
+              incoming.lastChangeNodeCID,
+            );
+            this._stopWaitingFor(this._snapshotCovered);
           }
           console.log(
             `Applied remote snapshot for ${this.documentPath}: ${incoming.compactedCount} nodes compacted`,
@@ -11946,6 +12051,7 @@ export class PeerborneDocument<
 
     this._latestSnapshot = snapshotNode;
     this._latestSnapshotSource = undefined;
+    this._snapshotCovered = new Set(this._hashes);
     this._changesSinceSnapshot = 0;
 
     // Prune old change nodes from the in-memory sync tree if configured.
@@ -12669,13 +12775,13 @@ export class PeerborneDocument<
       throw new Error(`Unsupported invitation role: ${String(role)}`);
     }
 
-    // The recipient must fetch every block the bootstrap cites from this
-    // replica, the only peer it reaches before acceptance.
-    const unservable = await this._coverUnservableCitedBlocksUnlocked();
+    // The recipient obtains every change from this replica, the only peer it
+    // reaches before acceptance, and cannot converge without all of them.
+    const unservable = await this._coverUnservableChangesUnlocked(true);
     if (unservable > 0) {
       throw new Error(
         `Invitation bootstrap for ${this.documentPath} cannot be served: this replica ` +
-          `does not store ${unservable} of the change blocks its tree cites, and no snapshot could cover them`,
+          `cannot convey ${unservable} of its changes, and no snapshot could cover them`,
       );
     }
     assertCanContinue?.();

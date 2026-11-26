@@ -76,6 +76,10 @@ function fakeDocument(fields: Record<string, unknown> = {}): any {
     _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
     _refreshLastSyncMessageFromSync: jest.fn(),
     _maybeCompact: jest.fn(async () => undefined),
+    _syncMessageSerializer: {
+      serializeSyncMessage: (message: unknown) =>
+        new TextEncoder().encode(JSON.stringify(message)),
+    },
     _remoteBlockFetches: new RemoteBlockFetches({ deadlineMs: 20 }),
     ...fields,
   });
@@ -247,7 +251,28 @@ describe('serving a tree that cites a block this replica does not store', () => 
     document._snapshotUnlocked = jest.fn(async () => {
       document._latestSnapshot = { lastChangeNodeCID: 'ROOT' };
     });
-    await expect(document._coverUnservableCitedBlocksUnlocked()).resolves.toBe(
+    await expect(document._coverUnservableChangesUnlocked()).resolves.toBe(0);
+    expect(document._snapshotUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('an invitation also needs every held change the tree does not convey', async () => {
+    const document = fakeDocument({
+      _lastSyncMessage: {
+        ...served,
+        changes: { kind: crdtDocumentChangeNode, change: ['root'] },
+      },
+      _holdsBlock: jest.fn(async () => false),
+      _writers: { check: jest.fn(async () => true) },
+    });
+    document._hashes.add('ROOT');
+    document._hashes.add('LOST');
+    await expect(document._unservableChanges()).resolves.toBe(0);
+    await expect(document._unservableChanges(true)).resolves.toBe(2);
+    document._snapshotUnlocked = jest.fn(async () => {
+      document._latestSnapshot = { lastChangeNodeCID: 'ROOT' };
+      document._snapshotCovered = new Set(document._hashes);
+    });
+    await expect(document._coverUnservableChangesUnlocked(true)).resolves.toBe(
       0,
     );
     expect(document._snapshotUnlocked).toHaveBeenCalledTimes(1);
@@ -267,11 +292,11 @@ describe('serving a tree that cites a block this replica does not store', () => 
         { documentId: '/block-fetch', loadChallenge: new Uint8Array(32) },
         'load-response-v4',
       ),
-    ).rejects.toThrow('Load response cites change blocks it cannot serve');
+    ).rejects.toThrow('Load response names changes it cannot serve');
     expect(document._snapshotUnlocked).not.toHaveBeenCalled();
     expect(document._keychainChangesForVisibility).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
-      '[/block-fetch] Declining a load: this replica does not store 1 of the change blocks its tree cites',
+      '[/block-fetch] Declining a load: this replica cannot serve 1 of the changes its tree names',
     );
   });
 });
