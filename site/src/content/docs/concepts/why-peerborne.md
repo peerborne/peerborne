@@ -80,8 +80,8 @@ Current evidence includes:
 
 - A signed, distinct-identity founder-plus-one invitation across a Circuit
   Relay and NAT boundary, followed by fresh edits in both directions
-- Single-browser smoke tests for all four example applications, including the
-  bounded Peerborne Note invitation UX
+- Single-browser smoke tests for the four example applications and the
+  integration examples, including the bounded Peerborne Note invitation UX
 - Separate Docker-backed transport tests for discovery, GossipSub delivery, and NAT behavior
 
 That evidence does not yet prove durable restart recovery, offline or

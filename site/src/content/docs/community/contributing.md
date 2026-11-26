@@ -47,11 +47,11 @@ cross-NAT job supplies the current two-browser invitation evidence.
 
 ```sh
 yarn build                         # eleven library workspaces
-yarn build:examples                # libraries, then all four Vite examples
+yarn build:examples                # libraries, then all seven example apps
 yarn test                          # eleven library Jest suites
 yarn test:relay                    # separate relay-server Jest suite
 yarn exec playwright install chromium
-yarn test:e2e                     # four Vite example smoke suites; no Docker
+yarn test:e2e                     # four example apps and the integration examples; no Docker
 yarn test:e2e:peerborne-note:live # deployed app + public relay; set PEERBORNE_NOTE_LIVE_URL
 ```
 
@@ -114,7 +114,7 @@ revocation, partition/rejoin, or relay failover.
 
 ## Generated API reference
 
-The **Site** workflow runs the documentation build with the Node runtime pinned in `site/.tool-versions`. Starlight TypeDoc generates package API Markdown into the ignored `site/src/content/docs/reference/api/` directory. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. Starlight TypeDoc is the only API reference workflow.
+The **Site** workflow runs the documentation build with the Node runtime pinned in the repository's `.tool-versions`. Starlight TypeDoc generates package API Markdown into the ignored `site/src/content/docs/reference/api/` directory. Change exported source comments or `site/astro.config.mjs`, then rebuild the site. Starlight TypeDoc is the only API reference workflow.
 
 ## Pull request expectations
 
@@ -126,7 +126,7 @@ The **Site** workflow runs the documentation build with the Node runtime pinned 
 - Use normal project-style commit messages. Do not add automatic co-author or AI-attribution trailers unless the contributor explicitly requests them.
 
 The CI workflow runs the eleven-package build and unit-test matrix, relay tests,
-four example smoke suites, Docker integration, NAT traversal, and the real
+example and integration browser suites, Docker integration, NAT traversal, and the real
 Peerborne cross-NAT job. The separate Site workflow builds generated TypeDoc
 and the site.
 

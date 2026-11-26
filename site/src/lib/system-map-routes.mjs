@@ -94,7 +94,7 @@ export const flowRoutes = {
     {
       edges: ['replica-storage'],
       nodes: ['crypto'],
-      note: 'The SDK exports a signed checkpoint. The application stores it and protects its contents.',
+      note: 'The SDK exports a signed checkpoint, sealed under an application AES-GCM key. It holds document keys; the application stores it and never transmits it.',
     },
     {
       edges: [],

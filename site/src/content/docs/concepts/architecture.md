@@ -36,14 +36,24 @@ when signing is enabled, checking the outer signature against known authorized
 writers. It applies inline history directly and fetches only missing or deferred
 CID references. Helia validates fetched ciphertext against the requested CID;
 Peerborne then decrypts and deserializes the stored change payload. Those stored
-blocks do not carry their own writer signature or ACL decision. A storage or
-publication error can reject `change()` after the mutation is already visible
-locally. There is no automatic rollback, durable outbox, or remote delivery
-receipt.
+blocks do not carry their own writer signature or ACL decision.
+
+`change()` resolves once the change is committed locally: its block is stored
+and its signed sync message has become the retained change tree. Encrypting
+and publishing the frame come after that. Their failure does not reject the
+call; it is reported to `subscribeDeliveryFailures()` handlers and through
+`deliveryFailure` and `subscribeDeliveryState()`, and the next frame or a sync
+response carries the change. A failure before the commit, such as a storage or
+signing error, rejects the call and discards the change: Automerge returns to
+its state before the change, and a Yjs or Loro instance, which cannot undo an
+in-place edit, is retired. There is no durable outbox or remote delivery
+receipt. See [What `change()` covers](../local-first/#what-change-covers).
 
 **Evidence boundary:** the component pipeline and its failure semantics are
-implemented and covered by focused tests. Live post-load browser mutation and
-convergence through this complete path are not yet demonstrated in CI.
+implemented and covered by focused tests. A cross-NAT CI job verifies live
+post-load Automerge mutations in both directions between two Chromium
+processes through a Circuit Relay. Many-peer convergence, Yjs and Loro
+documents between identities, and latency are not demonstrated in CI.
 
 ## Data flow: loading an existing document
 
@@ -137,7 +147,7 @@ See the [limitations page](../limitations/) for a complete list. Key architectur
 - **No durable reconnect-and-replay guarantee**: libp2p may redial and explicit loads or later sync history may catch a peer up, but connection restoration and replay of every missed update are not guaranteed
 - **No pass/fail performance budgets**: benchmarks exist but have no thresholds
 - **Pinning is not implemented**: `PeerborneNode` has no document-announcement receiver and no authenticated publisher exists
-- **Browser restart recovery is unverified**: IndexedDB persistence works in tests but full close/reopen cycles are not proven in CI
+- **Restart recovery needs an application checkpoint**: IndexedDB blocks alone do not reopen a closed document. Note and the password manager reopen documents from their encrypted checkpoints after a browser relaunch in CI; other applications must save and restore their own [encrypted checkpoints](../storage/#local-checkpoints)
 
 ## Next steps
 

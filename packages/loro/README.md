@@ -14,6 +14,9 @@ const [, update] = provider.localChange(document, 'Set title', (doc) => {
 provider.remoteChange(provider.newDocument(), update);
 ```
 
+A Loro document cannot be shared with another identity: invitations require
+the Automerge provider profile, so only the founder's identity can open it.
+
 This package supplies only the document provider. It uses Loro binary updates
 and full-history snapshots. The browser example composes it with the existing
 `YjsJSONSerializer`, `YjsACLProvider`, and `YjsKeychainProvider`: application state

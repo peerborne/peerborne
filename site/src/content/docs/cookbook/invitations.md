@@ -8,6 +8,11 @@ collaborator with a separate signing identity. The founder and recipient must
 both be online and reachable through a Circuit Relay while the invitation is
 accepted. Application-level signing must remain enabled on both nodes.
 
+Invitations require the bundled Automerge provider, ACL and keychain
+providers, and JSON serializers with `SubtleCrypto`. A Yjs or Loro document
+cannot create or accept one, and no other path admits a new identity, so in
+the default document mode a Yjs or Loro document has only its founder.
+
 The offer is a bearer capability. It contains public metadata, not a document
 key, but anyone who obtains it can claim its reader or editor role first. Send
 it through a channel you trust and keep it out of server logs and analytics.
@@ -67,8 +72,10 @@ const offer = await note.createInvitation({
   rendezvous: [founderCircuitAddress],
   expiresInMs: 15 * 60 * 1000,
   // Record the new member before the acceptance releases the document key.
-  // saveCheckpoint is the application's encrypted local store.
-  beforeAcceptance: async () => saveCheckpoint(await note.exportCheckpoint()),
+  // saveCheckpoint is the application's local store; storageKey is its
+  // non-extractable AES-GCM key.
+  beforeAcceptance: async () =>
+    saveCheckpoint(await note.exportEncryptedCheckpoint(storageKey)),
 });
 
 const offerBytes = encodeInvitationOffer(offer);
@@ -77,7 +84,9 @@ const offerBytes = encodeInvitationOffer(offer);
 
 Every offer requires `beforeAcceptance`. It runs after the recipient's
 membership is committed in the founder document and before the acceptance that
-carries the document key is signed. Store a checkpoint there. If the founder
+carries the document key is signed. Store a checkpoint there, encrypted as
+`exportEncryptedCheckpoint()` returns it: it holds the document keys, so never
+send it to another party. If the founder
 stops after the recipient has the key but before a checkpoint records it, a
 founder restored from an earlier checkpoint has no record of the collaborator
 and cannot remove it, while the collaborator keeps reading every later founder
@@ -145,7 +154,8 @@ await note.removeReader(editorSigningPublicKey);
 const replacement = await note.createInvitation({
   role: 'reader',
   rendezvous: [founderCircuitAddress],
-  beforeAcceptance: async () => saveCheckpoint(await note.exportCheckpoint()),
+  beforeAcceptance: async () =>
+    saveCheckpoint(await note.exportEncryptedCheckpoint(storageKey)),
 });
 ```
 

@@ -559,7 +559,7 @@ test('a founder restored from its acceptance checkpoint revokes the collaborator
         await document._readers.check(member.identity.publicKey),
         true,
       );
-      saved = await document.exportCheckpoint();
+      saved = await document.exportPlaintextCheckpoint();
     },
   });
   const joined = await member.swarm.acceptInvitation(offer, member.kem);
@@ -573,7 +573,7 @@ test('a founder restored from its acceptance checkpoint revokes the collaborator
   });
   const restored = restarted.swarm.doc(path);
   await restored.setKemKeyPair(founder.kem);
-  await restored.restoreCheckpoint(saved);
+  await restored.restorePlaintextCheckpoint(saved);
   await restored.open();
   const memberId = await serialize(member.identity.publicKey);
   assert.ok((await members(restored, 'getReaders')).includes(memberId));

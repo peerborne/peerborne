@@ -124,8 +124,8 @@ for (const adapter of Object.keys(adapters)) {
       open: false,
     });
     fixtures.push(restored);
-    await restored.document.restoreCheckpoint(
-      await g.document.exportCheckpoint(),
+    await restored.document.restorePlaintextCheckpoint(
+      await g.document.exportPlaintextCheckpoint(),
     );
     await restored.document.open();
     assert.deepEqual(log(restored), log(g));
@@ -182,8 +182,8 @@ test('a new Automerge replica keeps a restorable checkpoint when its first tree 
     open: false,
   });
   fixtures.push(restored);
-  await restored.document.restoreCheckpoint(
-    await joined.document.exportCheckpoint(),
+  await restored.document.restorePlaintextCheckpoint(
+    await joined.document.exportPlaintextCheckpoint(),
   );
   await restored.document.open();
 

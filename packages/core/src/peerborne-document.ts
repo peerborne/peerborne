@@ -51,12 +51,16 @@ import {
 } from './policy/sync-request.js';
 import {
   assertCheckpointChangeHistory,
+  assertCheckpointStorageKey,
   captureDocumentCheckpoint,
+  captureEncryptedDocumentCheckpoint,
   checkpointDecode,
   checkpointEncode,
   decodeCheckpointState,
   digestDocumentCheckpointPayload,
   encodeCheckpointState,
+  openSealedDocumentCheckpoint,
+  sealDocumentCheckpoint,
   type DocumentCheckpoint,
 } from './document-checkpoint.js';
 import { canCommitBeeKEMPathUpdate, checkpointCommitmentPermitsRestore } from './policy/beekem-transition.js';
@@ -8517,11 +8521,37 @@ export class PeerborneDocument<
     );
   }
   /**
-   * Capture a bounded, self-signed local checkpoint. The payload contains
-   * document keys: applications must encrypt it before storage and must never
-   * transmit it. This is local recovery, not a network trust or backup format.
+   * Capture a bounded, self-signed local checkpoint, encrypted with AES-GCM
+   * under `storageKey` and bound to this document path. Restore it with
+   * `restoreEncryptedCheckpoint()` and the same key before `open()`. Use a
+   * non-extractable 256-bit AES-GCM key that the application keeps apart from
+   * the checkpoint. The checkpoint is local recovery, not a network trust or
+   * backup format: it holds document keys, so never send it to another party.
    */
-  public async exportCheckpoint(): Promise<DocumentCheckpoint> {
+  public async exportEncryptedCheckpoint(
+    storageKey: CryptoKey,
+  ): Promise<Uint8Array> {
+    assertCheckpointStorageKey(storageKey, 'encrypt');
+    const checkpoint = await this.exportPlaintextCheckpoint();
+    try {
+      return await sealDocumentCheckpoint(
+        checkpoint,
+        this.documentPath,
+        storageKey,
+      );
+    } finally {
+      checkpoint.payload.fill(0);
+    }
+  }
+
+  /**
+   * Capture a bounded, self-signed local checkpoint as plaintext. The payload
+   * is unencrypted JSON holding this document's state and its raw document
+   * keys. Never store it unencrypted and never transmit it; use
+   * `exportEncryptedCheckpoint()` unless the application encrypts it at once
+   * with its own authenticated storage format.
+   */
+  public async exportPlaintextCheckpoint(): Promise<DocumentCheckpoint> {
     return this._runStateMutation(async () => {
       if (this._inTransaction || this._hashes.size === 0)
         throw new Error('No committed document state to checkpoint');
@@ -8639,7 +8669,48 @@ export class PeerborneDocument<
   }
 
   /**
-   * Restore this identity's authenticated checkpoint on a fresh instance.
+   * Restore a checkpoint from `exportEncryptedCheckpoint()` on a fresh
+   * instance, before `open()`. It must be sealed under `storageKey` for this
+   * document path and signed by this identity. Supply the independently
+   * trusted commitment that `documentCheckpointCommitment` computed from these
+   * bytes to restrict restoration to that exact checkpoint.
+   */
+  public async restoreEncryptedCheckpoint(
+    sealed: Uint8Array,
+    storageKey: CryptoKey,
+    expectedCommitment?: Uint8Array,
+  ): Promise<void> {
+    if (this._coordinated)
+      throw new Error('Legacy document operations are unavailable in coordinated mode');
+    assertCheckpointStorageKey(storageKey, 'decrypt');
+    const bytes = captureEncryptedDocumentCheckpoint(sealed);
+    const commitment =
+      expectedCommitment === undefined
+        ? undefined
+        : copyUnsharedUint8Array(expectedCommitment, 32, 32, 'Checkpoint commitment');
+    if (
+      !checkpointCommitmentPermitsRestore(
+        commitment !== undefined,
+        commitment !== undefined &&
+          constantTimeEqual(commitment, await digestDocumentCheckpointPayload(bytes)),
+      )
+    )
+      throw new Error('Local checkpoint commitment mismatch');
+    const checkpoint = await openSealedDocumentCheckpoint(
+      bytes,
+      this.documentPath,
+      storageKey,
+    );
+    try {
+      await this.restorePlaintextCheckpoint(checkpoint);
+    } finally {
+      checkpoint.payload.fill(0);
+    }
+  }
+
+  /**
+   * Restore this identity's authenticated plaintext checkpoint from
+   * `exportPlaintextCheckpoint()` on a fresh instance.
    * All fallible decoding/provider work is staged before any live state changes.
    * The next open activates the restored local state without a network load.
    * Supply the independently trusted commitment from
@@ -8647,7 +8718,7 @@ export class PeerborneDocument<
    * Applications must protect the pin and keep it current independently of the
    * checkpoint. A signature alone cannot establish freshness.
    */
-  public async restoreCheckpoint(
+  public async restorePlaintextCheckpoint(
     checkpoint: DocumentCheckpoint,
     expectedCommitment?: Uint8Array,
   ): Promise<void> {

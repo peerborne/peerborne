@@ -268,7 +268,7 @@ async function seedCold({ seed }) {
   try {
     // The reference checkpoint store encrypts the small base checkpoint. The
     // large update is stored only as a production UnixFS change block.
-    const checkpoint = await doc.exportCheckpoint();
+    const checkpoint = await doc.exportPlaintextCheckpoint();
     const checkpointPin = await documentCheckpointCommitment(checkpoint);
     try {
       await fixture.checkpoints.save(coldPath, false, checkpoint, 0);
@@ -366,7 +366,10 @@ async function loadCold() {
         const saved = await fixture.checkpoints.load(coldPath);
         assert(saved, 'base checkpoint missing');
         try {
-          await doc.restoreCheckpoint(saved.checkpoint, manifest.checkpointPin);
+          await doc.restorePlaintextCheckpoint(
+            saved.checkpoint,
+            manifest.checkpointPin,
+          );
         } finally {
           saved.checkpoint.payload.fill(0);
           saved.checkpoint.signature.fill(0);

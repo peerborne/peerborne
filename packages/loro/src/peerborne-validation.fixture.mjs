@@ -50,7 +50,7 @@ function recorded(fixture) {
 }
 
 async function restore(fixture, index) {
-  const checkpoint = await fixture.document.exportCheckpoint();
+  const checkpoint = await fixture.document.exportPlaintextCheckpoint();
   const restored = await documentFixture({
     ...options,
     index,
@@ -58,7 +58,7 @@ async function restore(fixture, index) {
     path: fixture.document.documentPath,
     open: false,
   });
-  await restored.document.restoreCheckpoint(checkpoint);
+  await restored.document.restorePlaintextCheckpoint(checkpoint);
   return restored;
 }
 

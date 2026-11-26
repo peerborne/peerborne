@@ -10,7 +10,8 @@ A store that opens and closes the document takes a handle factory, such as
 after a remount closed the previous one. A closed handle does not reopen when
 `beekemForkStore` is configured or the document is coordinated. A fresh handle
 loads from a connected peer, so a remount after the close needs one, or a
-factory that restores the latest checkpoint; see the
+factory that restores the latest checkpoint with
+`restoreEncryptedCheckpoint()`; see the
 [store README](https://github.com/peerborne/peerborne/blob/main/packages/store/README.md).
 The `closeDelay` option keeps the document open across a quick remount, and
 the final release keeps a document with an undelivered change open for up to

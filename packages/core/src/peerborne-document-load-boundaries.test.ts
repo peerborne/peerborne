@@ -164,7 +164,7 @@ test.each(['single', 'batch'])(
     expect(descendant).not.toHaveBeenCalled();
     expect(() => document.document).toThrow('retired after an oversized edit');
     expect(() => document.startChange()).toThrow('retired after an oversized edit');
-    await expect(document.exportCheckpoint()).rejects.toThrow('retired after an oversized edit');
+    await expect(document.exportPlaintextCheckpoint()).rejects.toThrow('retired after an oversized edit');
     expect(document._bootstrapLoadApplicationRevision).toBe(10);
     expect(document._lastSyncMessage).toBe(acceptedHead);
     expect([...history]).toEqual([acceptedHead.changeId]);

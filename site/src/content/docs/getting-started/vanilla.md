@@ -44,7 +44,7 @@ const release = store.connect();
 function render() {
   const snapshot = store.getSnapshot();
   output.textContent =
-    snapshot.status === 'ready'
+    snapshot.status === 'ready' && snapshot.data
       ? String(snapshot.data.getMap('data').get('title') ?? 'Untitled')
       : snapshot.status;
 }
@@ -69,7 +69,9 @@ member, up to `undeliveredCloseDelay`.
 Imperative applications can instead `await store.start()` and
 `await store.stop()`. `store.change` never opens the document; it rejects with
 `Document store is closed` after the store closes. Every mutation returns a
-promise; catch it to report authorization, storage, or publication failures.
+promise; catch it to report authorization, storage, or signing failures. A
+change that is committed but not delivered resolves, and
+`snapshot.deliveryFailure` reports it.
 Use `snapshot.error` for subscription-driven error UI. A `retired` status means
 the document refused a change it could not roll back and must be reopened; see
 [Local changes that fail before publication](../../concepts/local-first/#local-changes-that-fail-before-publication).
@@ -92,7 +94,9 @@ as the Vite example does. No published CDN URL or standalone prebundled runtime
 is provided. Build tooling is separate from framework choice.
 
 The example generates a fresh signing identity on reload and has no bootstrap
-peers. Durable identity/key storage and new-member onboarding are application
-work; a document path does not grant access. See
+peers, and its Yjs document cannot be shared with another identity. Durable
+identity/key storage, [encrypted checkpoints](../../concepts/storage/#local-checkpoints)
+for reopening after a reload, and new-member onboarding are application work;
+a document path does not grant access. See
 [Identities](../../concepts/identities/) and
 [integration evidence](../../reference/integration-status/).

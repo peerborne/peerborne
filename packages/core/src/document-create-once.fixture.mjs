@@ -27,14 +27,14 @@ for (const adapter of ['automerge', 'yjs']) {
     await assert.rejects(whileOpen.create(), alreadyCreated);
     assert.equal(whileOpen.historySize(), 0);
 
-    const checkpoint = await founder.document.exportCheckpoint();
+    const checkpoint = await founder.document.exportPlaintextCheckpoint();
     await founder.document.close();
     const afterClose = swarm.doc(path);
     await assert.rejects(afterClose.create(), alreadyCreated);
     assert.equal(afterClose.historySize(), 0);
 
     const restored = swarm.doc(path);
-    await restored.restoreCheckpoint(checkpoint);
+    await restored.restorePlaintextCheckpoint(checkpoint);
     await assert.rejects(restored.create(), /existing local state/);
     await restored.open();
     assert.equal(titleOf(restored), 'Founded');

@@ -33,7 +33,7 @@ async function restore(
   saved: SavedDocument,
 ): Promise<void> {
   try {
-    await doc.restoreCheckpoint(saved.checkpoint);
+    await doc.restorePlaintextCheckpoint(saved.checkpoint);
   } finally {
     saved.checkpoint.payload.fill(0);
     saved.checkpoint.signature.fill(0);
@@ -210,7 +210,7 @@ export class VaultSession {
     const operation = entry.writes
       .catch(() => undefined)
       .then(async () => {
-        const checkpoint = await entry.doc.exportCheckpoint();
+        const checkpoint = await entry.doc.exportPlaintextCheckpoint();
         try {
           entry.revision = await this.store.save(
             entry.doc.documentPath,
