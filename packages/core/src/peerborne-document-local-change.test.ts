@@ -76,7 +76,19 @@ function fakeDocument(): any {
 const KEY_ID_BYTES = 32;
 const NONCE_BYTES = 12;
 
-function publishingDocument(): any {
+const copyingProvider = {
+  localChange(
+    document: string[],
+    _message: string,
+    edit: Edit,
+  ): [string[], string[]] {
+    const next = [...document];
+    edit(next);
+    return [next, next.slice(document.length)];
+  },
+};
+
+function publishingDocument(crdtProvider: object = inPlaceProvider): any {
   const serializer = new JSONSerializer<string[]>();
   let blocks = 0;
   const document: any = Object.assign(
@@ -85,7 +97,7 @@ function publishingDocument(): any {
       documentPath: '/local-change',
       _userPublicKey: 'writer',
       _document: [] as string[],
-      _crdtProvider: inPlaceProvider,
+      _crdtProvider: crdtProvider,
       _mutationQueue: {
         run: (operation: () => Promise<unknown>) => operation(),
       },
@@ -132,7 +144,11 @@ function publishingDocument(): any {
       },
       getReaders: async () => [],
       getWriters: async () => [],
+      _closeDocument: jest.fn(async () => undefined),
+      _deliveryFailureHandlers: {},
+      _remoteHandlers: {},
       handled: [] as string[][],
+      undelivered: [] as { changeId: string; error: unknown }[],
       frames: [] as Uint8Array[],
     },
   );
@@ -141,6 +157,9 @@ function publishingDocument(): any {
       document.handled.push([...current]);
     },
   };
+  document.subscribeDeliveryFailures('probe', (failure: any) => {
+    document.undelivered.push(failure);
+  });
   return document;
 }
 
@@ -246,7 +265,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document._documentChangeCount).toBe(2);
   });
 
-  test('change() rejects with both errors when publishing the partial edit fails', async () => {
+  test('change() rethrows the change function error, keeps the partial edit and reports it undelivered when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -254,18 +273,24 @@ describe('committing the partial edit of a throwing change function', () => {
       offline,
     );
 
-    const error = await rejection(
+    await expect(
       document.change((doc: string[]) => {
         doc.push('partial');
         throw failure;
       }),
-    );
-    expect(error).toBeInstanceOf(AggregateError);
-    expect(error.errors).toHaveLength(2);
-    expect(error.errors[0]).toBe(failure);
-    expect(error.errors[1]).toBe(offline);
-    expect(document.handled).toEqual([]);
-    expect(document._documentChangeCount).toBe(0);
+    ).rejects.toBe(failure);
+    const partialId = document._lastSyncMessage.changeId;
+    expect(document._hashes.has(partialId)).toBe(true);
+    expect(document.undelivered).toEqual([
+      { documentPath: '/local-change', changeId: partialId, error: offline },
+    ]);
+    expect(document.handled).toEqual([['partial']]);
+
+    await document.change((doc: string[]) => doc.push('next'));
+    expect(document.frames).toHaveLength(1);
+    expect(
+      document._lastSyncMessage.changes.children[partialId].change,
+    ).toEqual(['partial']);
   });
 
   test('change() rejects with both errors when a local handler fails after publication', async () => {
@@ -287,7 +312,7 @@ describe('committing the partial edit of a throwing change function', () => {
     expect(document.frames).toHaveLength(1);
   });
 
-  test('endChange() rejects with both errors, rolls back and ends the transaction when publishing fails', async () => {
+  test('endChange() rethrows the change function error, keeps the partial batch and ends the transaction when publishing fails', async () => {
     const document = publishingDocument();
     const failure = new Error('validation');
     const offline = new Error('offline');
@@ -300,13 +325,256 @@ describe('committing the partial edit of a throwing change function', () => {
       throw failure;
     });
 
-    const error = await rejection(document.endChange());
-    expect(error).toBeInstanceOf(AggregateError);
-    expect(error.errors[0]).toBe(failure);
-    expect(error.errors[1]).toBe(offline);
-    expect(document._hashes.size).toBe(0);
-    expect(document._lastSyncMessage).toBeUndefined();
+    await expect(document.endChange()).rejects.toBe(failure);
+    expect(document._hashes.size).toBe(1);
+    expect(document._lastSyncMessage.changes.change).toEqual(['partial']);
+    expect(document.undelivered).toHaveLength(1);
+    expect(document.undelivered[0].error).toBe(offline);
     expect(document._inTransaction).toBe(false);
     expect(document._committing).toBe(false);
+  });
+});
+
+describe('a local change that fails before publication', () => {
+  const beforeTheTree: [string, (document: any) => any][] = [
+    ['storing the block', (document) => document._putBlock],
+    ['signing the frame', (document) => document._signAsWriter],
+  ];
+  const inTheTree: [string, (document: any) => any][] = [
+    ['encrypting the frame', (document) => document._authProvider.encrypt],
+    [
+      'publishing the frame',
+      (document) => document.swarm.heliaNode.libp2p.services.pubsub.publish,
+    ],
+  ];
+  const entries: [string, (document: any, edit: Edit) => Promise<void>][] = [
+    ['change()', (document, edit) => document.change(edit)],
+    [
+      'endChange()',
+      (document, edit) => {
+        document.startChange();
+        document.addChange(edit);
+        return document.endChange();
+      },
+    ],
+  ];
+  const cases = (steps: [string, (document: any) => any][]) =>
+    entries.flatMap(([entry, commit]) =>
+      steps.map(
+        ([step, failingStep]) => [entry, step, commit, failingStep] as const,
+      ),
+    );
+
+  async function committedOnce(provider: object) {
+    const document = publishingDocument(provider);
+    await document.change((doc: string[]) => doc.push('accepted'));
+    return {
+      document,
+      hashes: [...document._hashes],
+      tree: document._lastSyncMessage,
+      tips: [...document._recentTips],
+      ancestors: [...document._referencedAncestors],
+    };
+  }
+
+  test.each(cases(beforeTheTree))(
+    'in %s while %s, an in-place provider retires the instance',
+    async (_entry, _step, commit, failingStep) => {
+      const { document, hashes, tree, tips, ancestors } =
+        await committedOnce(inPlaceProvider);
+      const failure = new Error('commit failed');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      const error = await rejection(
+        commit(document, (doc: string[]) => doc.push('lost')),
+      );
+      expect(error.message).toMatch(/could not be rolled back/);
+      expect(error.cause).toBe(failure);
+      expect([...document._hashes]).toEqual(hashes);
+      expect(document._lastSyncMessage).toBe(tree);
+      expect(document._recentTips).toEqual(tips);
+      expect([...document._referencedAncestors]).toEqual(ancestors);
+      expect(document._documentChangeCount).toBe(1);
+      expect(document._inTransaction).toBe(false);
+      expect(document.handled).toEqual([['accepted']]);
+      expect(document._closeDocument).toHaveBeenCalledTimes(1);
+      await expect(
+        document.change((doc: string[]) => doc.push('next')),
+      ).rejects.toThrow(/could not be rolled back/);
+      expect(() => document.startChange()).toThrow(/could not be rolled back/);
+    },
+  );
+
+  test.each(cases(beforeTheTree))(
+    'in %s while %s, a provider that returns a new document restores the earlier one',
+    async (_entry, _step, commit, failingStep) => {
+      const { document, hashes, tree, tips } =
+        await committedOnce(copyingProvider);
+      const accepted = document._document;
+      const failure = new Error('commit failed');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await expect(
+        commit(document, (doc: string[]) => doc.push('lost')),
+      ).rejects.toBe(failure);
+      expect(document._document).toBe(accepted);
+      expect([...document._hashes]).toEqual(hashes);
+      expect(document._lastSyncMessage).toBe(tree);
+      expect(document._recentTips).toEqual(tips);
+      expect(document._closeDocument).not.toHaveBeenCalled();
+
+      await commit(document, (doc: string[]) => doc.push('next'));
+      expect(document._document).toEqual(['accepted', 'next']);
+      expect(publishedChange(document, document.frames.length - 1)).toEqual([
+        'next',
+      ]);
+      expect(Object.keys(document._lastSyncMessage.changes.children)).toEqual([
+        tree.changeId,
+      ]);
+    },
+  );
+
+  test.each(
+    cases(inTheTree).flatMap((entry) => [
+      [...entry, 'an in-place provider', inPlaceProvider] as const,
+      [
+        ...entry,
+        'a provider that returns a new document',
+        copyingProvider,
+      ] as const,
+    ]),
+  )(
+    'in %s while %s, %s resolves, keeps the change and reports it undelivered',
+    async (_entry, _step, commit, failingStep, _name, provider) => {
+      const { document, tree } = await committedOnce(provider);
+      const failure = new Error('PublishError.NoPeersSubscribedToTopic');
+      failingStep(document).mockRejectedValueOnce(failure);
+
+      await commit(document, (doc: string[]) => doc.push('kept'));
+      const keptId = document._lastSyncMessage.changeId;
+      expect(keptId).not.toBe(tree.changeId);
+      expect(document._hashes.has(keptId)).toBe(true);
+      expect(document._document).toEqual(['accepted', 'kept']);
+      expect(document._documentChangeCount).toBe(2);
+      expect(document._inTransaction).toBe(false);
+      expect(document.undelivered).toEqual([
+        { documentPath: '/local-change', changeId: keptId, error: failure },
+      ]);
+      expect(Object.isFrozen(document.undelivered[0])).toBe(true);
+      expect(document.handled).toEqual([['accepted'], ['accepted', 'kept']]);
+      expect(document._closeDocument).not.toHaveBeenCalled();
+
+      await commit(document, (doc: string[]) => doc.push('next'));
+      expect(document.frames).toHaveLength(2);
+      const delivered = document._syncMessageSerializer.deserializeSyncMessage(
+        document.frames[1].subarray(KEY_ID_BYTES + NONCE_BYTES),
+      );
+      expect(delivered.changes.change).toEqual(['next']);
+      expect(delivered.changes.children[keptId].change).toEqual(['kept']);
+      expect(
+        Object.keys(delivered.changes.children[keptId].children),
+      ).toContain(tree.changeId);
+      expect(document.undelivered).toHaveLength(1);
+    },
+  );
+
+  test('a throwing delivery failure handler does not fail the change, and unsubscribing removes handlers', async () => {
+    const { document } = await committedOnce(inPlaceProvider);
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      document.subscribeDeliveryFailures('broken', () => {
+        throw new Error('handler');
+      });
+      const { publish } = document.swarm.heliaNode.libp2p.services.pubsub;
+      publish.mockRejectedValueOnce(new Error('offline'));
+      await document.change((doc: string[]) => doc.push('kept'));
+      expect(document.undelivered).toHaveLength(1);
+      expect(error).toHaveBeenCalledWith(
+        '[/local-change] a delivery failure handler failed.',
+      );
+
+      document.unsubscribe('probe');
+      expect(document._localHandlers.probe).toBeUndefined();
+      document.unsubscribeDeliveryFailures('broken');
+      document.unsubscribeDeliveryFailures('probe');
+      publish.mockRejectedValueOnce(new Error('offline'));
+      await document.change((doc: string[]) => doc.push('again'));
+      expect(document.undelivered).toHaveLength(1);
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe('local update handlers that throw', () => {
+  test('do not stop later handlers, counting or compaction of a change', async () => {
+    const document = publishingDocument();
+    document.swarm.heliaNode.libp2p.services.pubsub.publish.mockRejectedValue(
+      new Error('PublishError.NoPeersSubscribedToTopic'),
+    );
+    const later: string[][] = [];
+    document._localHandlers = {
+      broken: () => {
+        throw new Error('handler bug');
+      },
+      later: (current: string[]) => {
+        later.push([...current]);
+      },
+    };
+    for (let index = 0; index < 3; index++)
+      await expect(
+        document.change((doc: string[]) => doc.push(`e${index}`)),
+      ).rejects.toThrow('handler bug');
+    expect(document.undelivered).toHaveLength(3);
+    expect(document._hashes.size).toBe(3);
+    expect(document._document).toEqual(['e0', 'e1', 'e2']);
+    expect(later).toEqual([['e0'], ['e0', 'e1'], ['e0', 'e1', 'e2']]);
+    expect({
+      documentChangeCount: document._documentChangeCount,
+      changesSinceSnapshot: document._changesSinceSnapshot,
+    }).toEqual({ documentChangeCount: 3, changesSinceSnapshot: 3 });
+  });
+
+  test('reject together with all their errors', async () => {
+    const document = publishingDocument();
+    const first = new Error('first');
+    const second = new Error('second');
+    document._localHandlers = {
+      first: () => {
+        throw first;
+      },
+      second: () => {
+        throw second;
+      },
+    };
+    const error = await rejection(
+      document.change((doc: string[]) => doc.push('edit')),
+    );
+    expect(error).toBeInstanceOf(AggregateError);
+    expect([...error.errors]).toEqual([first, second]);
+    expect(document.frames).toHaveLength(1);
+    expect(document._documentChangeCount).toBe(1);
+  });
+
+  test('a rejected asynchronous delivery failure handler is logged, not left unhandled', async () => {
+    const document = publishingDocument();
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      document.subscribeDeliveryFailures('async', async () => {
+        throw new Error('handler');
+      });
+      document.swarm.heliaNode.libp2p.services.pubsub.publish.mockRejectedValueOnce(
+        new Error('offline'),
+      );
+      await document.change((doc: string[]) => doc.push('kept'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(error).toHaveBeenCalledWith(
+        '[/local-change] a delivery failure handler failed.',
+      );
+      expect(document.undelivered).toHaveLength(1);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

@@ -417,7 +417,7 @@
     },
     {
       "id": "coordinated-held-frames",
-      "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, equivocation check, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection is adapter behavior, so generated arrival orders exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
+      "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, per-author shares, eviction, expiry, equivocation check, dependency-targeted retry, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection and naming is adapter behavior, so generated arrival orders and focused bound, retry-cost and session tests exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
       "evidence": [
         "packages/core/src/coordinated-document-held-frames.test.ts",
         "packages/automerge/src/coordinated-held-frames.test.ts",

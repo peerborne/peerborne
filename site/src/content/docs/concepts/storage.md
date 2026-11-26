@@ -68,6 +68,13 @@ CRDT state, and membership before opening locally. Retaining blocks alone does
 not restore those things; other applications and peer-assisted recovery remain
 unverified.
 
+A checkpoint is also what a retired document instance reopens from. A Yjs or
+Loro instance retires when a change cannot be stored or signed, including after
+a transient IndexedDB write error or a cancelled remote or WebAuthn signer. A
+change that was committed locally but not delivered to peers, as reported to
+`subscribeDeliveryFailures()` handlers, exists only on this device, so export a
+checkpoint after each such change. Otherwise reopening loses it.
+
 ### Several tabs of one origin
 
 `defaultConfig()` opens the same IndexedDB blockstore (`/peerborne-blocks`) and
@@ -227,6 +234,14 @@ snapshot boundary, but deletion is **destructive for that local copy**:
 - Deleted blocks disappear from that origin's IndexedDB-backed blockstore
 - Recovery then depends on another reachable provider still holding the bytes
 - GC is disabled by default
+
+Deletion pauses whenever the retained tree changes, so a writer that keeps
+editing can leave pruned blocks waiting; `document.collectGarbage()` retries
+them. Blocks still waiting are recorded in the next `exportCheckpoint()`, and
+an instance restored from that checkpoint deletes them at its next collection.
+Blocks pruned after the last export are recorded nowhere else and stay in the
+blockstore. Peerborne does not sweep the blockstore for them, because it is
+shared by every document on the node.
 
 ## CI-backed evidence
 

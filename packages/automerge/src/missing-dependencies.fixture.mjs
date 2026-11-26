@@ -43,8 +43,13 @@ const adapters = {
       doc.getList('log').push(entry);
     },
     log: (fixture) => fixture.document.document.getList('log').toJSON(),
+    // The provider holds a waiting update outside Loro's own pending queue.
     waiting: (fixture) =>
-      fixture.document.document.exportPendingUpdates() !== undefined,
+      [...(fixture.document._waiting?.entries.values() ?? [])].some(
+        ({ changes }) =>
+          changes !== undefined &&
+          !fixture.provider.hasIntegrated(fixture.document.document, changes),
+      ),
   },
 };
 
