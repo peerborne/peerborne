@@ -11,8 +11,10 @@ encrypts it with the document key (AES-GCM by default), and stores the resulting
 key ID, mode-specific encryption parameters, and ciphertext bytes in the local
 Helia blockstore. The CID addresses those encrypted bytes. A separate
 signed-when-enabled, encrypted `CRDTSyncMessage` carries the CID and shadow
-graph metadata; the stored payload itself has no writer signature or parent
-links.
+graph metadata. A stored document change also carries its author's
+[change signature](../security/#crdt-actors-are-bound-to-change-signers); the
+stored payload has no parent links, and ACL and keychain payloads have no
+writer signature.
 
 ## Implemented model
 

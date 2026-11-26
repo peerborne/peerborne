@@ -1,4 +1,6 @@
 import {
+  actorRegistration,
+  authoredChange,
   documentFixture,
   replicaOf,
   syntheticText,
@@ -26,8 +28,9 @@ export async function run({ full, seed }) {
     const frames = [];
     const count = full ? 2048 : 64;
     const payloadBytes = full ? 4096 : 1024;
+    const { registration, actor } = await actorRegistration(source);
     let rawDocument = source.provider.newDocument();
-    rawDocument.clientID = 9000;
+    rawDocument.clientID = Number(actor);
     const [epoch, key] = await source.document._keychain.current();
     // Generate a bounded stream of individual, valid signed CRDT deltas.
     // This controls incoming load, rather than benchmarking growing sender DAGs.
@@ -43,11 +46,12 @@ export async function run({ full, seed }) {
             .set('streamPayload', syntheticText(payloadBytes, seed + i));
         },
       );
+      const change = await authoredChange(source, registration, delta);
       const message = {
         documentId: source.document.documentPath,
         signatureContext: 'ordinary-sync-v1',
-        changeId: await source.document._putBlock(delta),
-        changes: { kind: 'document', change: delta },
+        changeId: await source.document._putBlock(change),
+        changes: { kind: 'document', change },
       };
       message.signature = await source.document._signAsWriter(message);
       const encrypted = await source.auth.encrypt(

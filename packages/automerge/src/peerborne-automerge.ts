@@ -11,6 +11,7 @@ import {
   getObjectId,
   applyChanges,
   getMissingDeps,
+  getChangesMetaSince,
   getHeads,
   hasHeads,
   Change as BinaryChange,
@@ -28,6 +29,8 @@ import {
   ACLProvider,
   PeerborneDocumentChangeHandler,
   PreparedACLChange,
+  CRDTActorBinding,
+  CRDTActorBindingError,
   CRDTChangeNodeWire,
   CRDTProvider,
   CRDTDocumentSession,
@@ -61,6 +64,7 @@ import {
   serializeLoadSecurityCommitmentsForWire,
   TIPS_HASH_LENGTH,
   assertCanonicalP384PublicKeyEncoding,
+  isCRDTActorPrefix,
 } from '@peerborne/core';
 import { Base64 } from 'js-base64';
 import { AutomergeOperationIndex } from './operation-targets.js';
@@ -86,11 +90,69 @@ const assertCanonicalKeychainEntry: typeof canonicalKeychain.assertCanonicalKeyc
 export type AutomergeDocumentChangeHandler<T = any> =
   PeerborneDocumentChangeHandler<Doc<T>, CryptoKey>;
 
+const AUTOMERGE_DOCUMENT_CHUNK = 0;
+
+function automergeChangeActor(change: unknown): string {
+  if (!(change instanceof Uint8Array))
+    throw new CRDTActorBindingError('Automerge change must be bytes');
+  return decodeChange(change).actor;
+}
+
+function automergeStateActors(state: BinaryChange[]): ReadonlySet<string> {
+  if (!Array.isArray(state))
+    throw new CRDTActorBindingError('Automerge state must be a change list');
+  const actors = new Set<string>();
+  for (const chunk of state) {
+    if (chunk instanceof Uint8Array && chunk[8] === AUTOMERGE_DOCUMENT_CHUNK) {
+      const loaded = load(chunk);
+      try {
+        for (const { actor } of getChangesMetaSince(loaded, []))
+          actors.add(actor);
+      } finally {
+        free(loaded);
+      }
+    } else {
+      actors.add(automergeChangeActor(chunk));
+    }
+  }
+  return actors;
+}
+
+function automergeActorBinding<T>(): CRDTActorBinding<Doc<T>, BinaryChange[]> {
+  return {
+    actorFromDigest: (digest) =>
+      Array.from(digest.subarray(0, 16), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    localActor: (document) => getActorId(document),
+    setLocalActor: (document, actor) => clone(document, actor),
+    changeActors(changes) {
+      if (!Array.isArray(changes))
+        throw new CRDTActorBindingError('Automerge changes must be a list');
+      return new Set(changes.map(automergeChangeActor));
+    },
+    stateActors: automergeStateActors,
+    attach: (changes, prefix) => [prefix as BinaryChange, ...changes],
+    detach(changes) {
+      if (
+        !Array.isArray(changes) ||
+        changes.length === 0 ||
+        !isCRDTActorPrefix(changes[0])
+      )
+        throw new CRDTActorBindingError('Missing actor binding prefix');
+      return [changes[0], changes.slice(1)];
+    },
+  };
+}
+
 export class AutomergeProvider<T = any>
   implements CRDTProvider<Doc<T>, BinaryChange[], (doc: T) => void>
 {
   readonly initialInvitationCapacityProfile =
     INITIAL_INVITATION_CAPACITY_PROFILE;
+
+  readonly actorBinding: CRDTActorBinding<Doc<T>, BinaryChange[]> =
+    automergeActorBinding<T>();
 
   createDocumentSession(
     initial: Doc<T>,

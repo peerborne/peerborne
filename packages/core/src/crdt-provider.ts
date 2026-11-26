@@ -1,3 +1,4 @@
+import type { CRDTActorBinding } from './crdt-actor-binding.js';
 import type { CRDTDocumentSession } from './document-crdt-session.js';
 
 /**
@@ -29,6 +30,14 @@ export class PartialLocalChangeError<DocType, ChangesType> extends Error {
  * @typeParam MessageType The sync message that gets sent when changes are made to a document
  */
 export interface CRDTProvider<DocType, ChangesType, ChangeFnType> {
+  /**
+   * Binds this provider's actor identifiers to change signers. When present,
+   * ordinary documents sign every change, write under derived actors and
+   * reject a change that adds operations under an actor its signer does not
+   * own. Coordinator-backed documents do not use it.
+   */
+  readonly actorBinding?: CRDTActorBinding<DocType, ChangesType>;
+
   /** Required by coordinator-backed documents; never falls back to live preparation. */
   createDocumentSession?(
     document: DocType,

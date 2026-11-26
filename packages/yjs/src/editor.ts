@@ -19,6 +19,8 @@ export interface YjsEditorSource<PublicKey = unknown> {
     originFilter?: 'all' | 'local' | 'remote',
   ): void;
   unsubscribe(id: string): void;
+  /** A fresh actor bound to the source's signer, for the editor mirror. */
+  reserveActor?(): Promise<string | undefined>;
 }
 
 export interface YjsEditorBridge {
@@ -35,15 +37,18 @@ let nextBridge = 0;
 /**
  * Bind an editor to an already-open Peerborne document. Local mirror updates
  * enter source.change() before mutating the authoritative document, preserving
- * delta capture, authorization, encryption and publication. Remote updates do
- * not echo. After a write failure, recreate the bridge from authoritative state.
+ * delta capture, authorization, encryption and publication. The mirror writes
+ * under an actor the source reserves for its signer. Remote updates do not
+ * echo. After a write failure, recreate the bridge from authoritative state.
  * Presence/awareness transport is not provided.
  */
-export function createYjsEditorBridge<PublicKey>(
+export async function createYjsEditorBridge<PublicKey>(
   source: YjsEditorSource<PublicKey>,
   options: { onError?: (error: unknown) => void; message?: string } = {},
-): YjsEditorBridge {
+): Promise<YjsEditorBridge> {
   const document = new Doc();
+  const actor = await source.reserveActor?.();
+  if (actor !== undefined) document.clientID = Number(actor);
   const origin = {};
   const id = `peerborne-editor-${nextBridge++}`;
   let pending = Promise.resolve();

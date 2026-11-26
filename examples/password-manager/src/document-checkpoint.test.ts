@@ -12,7 +12,11 @@ import {
   deserializeBeeKEMWelcomeV2FromWire,
   documentCheckpointCommitment,
   activateDocumentReplacement,
+  createCRDTActorNonce,
+  crdtChangeAuthorPayload,
+  deriveCRDTActorDigest,
   documentRecoveryContentDigest,
+  encodeCRDTChangeAuthor,
   type BeeKEMForkRecord,
   type DurableBeeKEMForkStore,
   type DocumentRecoveryApproval,
@@ -407,15 +411,37 @@ test('a document that adopts a tree naming forgotten ancestors still exports and
   const head = messages.at(-1)!.changeId!;
   // Another device of this writer publishes a change whose primary parent is
   // its own older head and that cross-links this replica's head.
+  const auth = new SubtleCrypto();
+  const author = {
+    signer: await auth.serializePublicKey(signing.publicKey),
+    nonce: createCRDTActorNonce(),
+  };
+  const binding = new YjsProvider().actorBinding;
   const other = new Y.Doc();
+  other.clientID = Number(
+    binding.actorFromDigest(
+      await deriveCRDTActorDigest(created.documentPath, author),
+    ),
+  );
   other.getText('fixture').insert(0, 'other device ');
+  const otherChange = Y.encodeStateAsUpdateV2(other);
+  const authored = binding.attach(
+    otherChange,
+    encodeCRDTChangeAuthor({
+      ...author,
+      signature: await auth.sign(
+        crdtChangeAuthorPayload(created.documentPath, author, otherChange),
+        signing.privateKey,
+      ),
+    }),
+  );
   const unsigned = {
     documentId: created.documentPath,
     signatureContext: 'ordinary-sync-v1' as const,
     changeId: syntheticCid(9_000_000),
     changes: {
       kind: 'document' as const,
-      change: Y.encodeStateAsUpdateV2(other),
+      change: authored,
       children: {
         [known.changeId!]: known.changes!,
         [head]: { kind: 'document' as const },

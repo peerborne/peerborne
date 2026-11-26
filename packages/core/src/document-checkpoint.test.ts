@@ -27,13 +27,14 @@ function state(
 ): DocumentCheckpointState {
   const bytes = checkpointEncode(new Uint8Array([1]));
   return {
-    format: 'peerborne/local-document-checkpoint/2',
+    format: 'peerborne/local-document-checkpoint/3',
     documentPath: '/checkpoint',
     owner: 'owner',
     document: bytes,
     readers: bytes,
     writers: bytes,
     keychain: bytes,
+    actors: bytes,
     message: bytes,
     hashes: ['cid-root'],
     ancestors: [],

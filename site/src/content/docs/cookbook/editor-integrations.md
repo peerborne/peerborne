@@ -19,7 +19,7 @@ import { createYjsEditorBridge } from '@peerborne/yjs/editor';
 
 const document = peerborne.doc('/notes/launch-plan');
 await document.create();
-const bridge = createYjsEditorBridge(document, {
+const bridge = await createYjsEditorBridge(document, {
   onError: () => { showEditorError(); },
 });
 
@@ -42,6 +42,9 @@ it rejects with `No document state is available…`; if one can and
 `TrustedLoadSecurityCommitmentsError`. See
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 
+The mirror writes under a Yjs client ID that `document.reserveActor()` binds
+to the document's signer, so its edits pass
+[actor binding](../../concepts/security/#crdt-actors-are-bound-to-change-signers).
 Remote document notifications update the mirror without generating another
 local write. Local updates are queued in order. `flush()` and `destroy()` reject
 on failed document writes. The first failure halts later queued writes, and the

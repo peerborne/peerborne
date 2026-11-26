@@ -8,8 +8,10 @@ description: Identity model, encryption, access control, quorum loading, and rev
 Peerborne encrypts stored change payloads, ordinary GossipSub sync envelopes,
 and load responses. With document signing enabled (the default), those outgoing
 `CRDTSyncMessage` payloads are signed before their serialized envelopes are
-encrypted; load requests also carry a signature. The separate CID-addressed
-stored payload has no writer signature.
+encrypted; load requests also carry a signature. A document change payload
+additionally carries its author's signature inside the encrypted block, which
+[binds its CRDT actor](#crdt-actors-are-bound-to-change-signers) to that
+author. ACL and keychain payloads have no writer signature of their own.
 Relay and other infrastructure not given the document key handle ciphertext
 rather than document plaintext; they never need a signing private key. During
 normal post-load sync, once a trusted writer set exists, a peer without a
@@ -146,6 +148,79 @@ no:
 - Role-based access beyond reader/writer
 - Delegation or sub-key authorization (UCAN capabilities exist but are not integrated)
 - Rate limiting or abuse prevention
+
+### CRDT actors are bound to change signers
+
+Yjs client IDs, Automerge actors and Loro peer IDs are visible in every update,
+and each CRDT identifies an operation by its actor and counter. If two writers
+produced different operations at the same position, a replica holding one
+could never accept the other: Automerge and Loro reject every later change
+that depends on it, and Yjs keeps whichever arrived first. A malicious writer
+that wrote under an honest writer's actor would therefore cut replicas off
+from that writer permanently, even after a snapshot. Ordinary documents
+prevent this by binding every actor to the signer that owns it:
+
+- A document instance draws a random 16-byte nonce before its first write and
+  writes under the actor derived from SHA-256 of the document path, its
+  signer's canonical public key and that nonce: 53 bits for a Yjs client ID,
+  64 bits for a Loro peer ID and 128 bits for an Automerge actor. A rollback
+  copy, a restored checkpoint, or a document whose actor otherwise changed
+  draws a new nonce, so a position that may already be published is never
+  reused.
+- Every document change carries an authored-change envelope: the signer, the
+  nonce and a P-384 signature over the document path, nonce and change bytes.
+  It travels inside the encrypted block, so the block's CID, inline relays
+  and fetched blocks all carry it.
+- Before a change from any path is applied (GossipSub, `requestSync()`
+  replies, loads, invitation bootstraps and fetched blocks), the receiver
+  verifies the envelope signature and decodes, without applying the change,
+  every actor it adds operations for: Yjs struct client IDs, Automerge change
+  actors, and the Loro import blob's version range. Each must be the actor
+  the envelope derives. The inline changes of one message are all checked
+  before any is applied, so a rejected change never enters the live
+  document. Deletions of, and references to, other actors' operations are not
+  restricted.
+- A change therefore introduces or extends only its own signer's actors. A
+  writer that re-wraps another writer's change under its own envelope, or
+  claims the other writer's nonce without its signature, is rejected. Relaying
+  another writer's change with its envelope intact is accepted. A local change
+  may contain operations under one actor only: the instance's own, or one it
+  reserved with `document.reserveActor()` for a separate editing copy such as
+  the Yjs editor bridge's mirror. A change function that switches to another
+  actor fails before publication. A Yjs local change carries only the
+  transactions its change function ran, not the pending structs of other
+  writers that Yjs would otherwise fold into it.
+- A replica also remembers the first registration it admitted for each actor
+  and rejects a different one. Signed snapshots carry a canonical manifest of
+  the registration of every actor in their state. A loader derives each
+  actor, requires the actors to match the snapshot state exactly and checks
+  them against its own bindings before applying the snapshot, including on a
+  first load. Local checkpoints carry every binding. One signer can bind at
+  most 4,096 actors in a document; further registrations are rejected.
+
+The binding costs one more signature per local change, one verification per
+received change and about 260 bytes per change before wire encoding. Its
+limits:
+
+- A writer that searches about 2^53 (Yjs) or 2^64 (Loro) nonces for its own
+  key can derive another writer's actor. A replica that holds the victim's
+  binding rejects that registration, but a replica that has seen neither can
+  accept it and then reject the victim's operations under that actor.
+  Automerge's 128-bit actors make this search infeasible.
+- A snapshot's content is attested only by its signer, who can still place
+  operations under another writer's actor inside a snapshot it signs. Quorum
+  loading, not the manifest, defends a loader against one malicious
+  snapshotter.
+- The envelope proves authorship; the outer writer signature still decides
+  whether a message is accepted. An author does not need to be a current
+  writer, so a removed writer's earlier changes keep syncing, and the 4,096
+  limit applies per signing key: a writer can sign changes with fresh keys
+  to add actors, each costing an accepted change, as it can add content.
+- With `enableSigning: false` the envelope is unsigned and protects nothing
+  against a peer that can decrypt the traffic.
+- Coordinator-backed documents and the ACL and keychain CRDTs do not use this
+  binding. Several devices of one signer are distinct actors that are not
+  protected from each other.
 
 ### UCAN capabilities
 
@@ -300,7 +375,7 @@ When a writer is removed from the ACL:
 - The causal ACL chain is not integrated, so a stale or partitioned writer can race the removal with a signed re-grant; writer revocation does not protect against a malicious writer equivocating across partitions
 - `removeWriter()` revokes write authorization, not BeeKEM reader membership; an identity that remains a reader retains its existing read access, while `removeReader()` separately attempts a BeeKEM key rotation
 - With `enableSigning: false`, ordinary inbound sync does not enforce writer signatures, so removing an ACL entry is not an adversarial remote-writer revocation boundary
-- Past contributions remain in the document; stored payloads do not carry persistent per-block writer attribution
+- Past contributions remain in the document and keep syncing; each document change carries its author's signature, but authorship is not checked against the current writer list
 - There is no mechanism to retroactively remove those past contributions
 
 ```ts
@@ -405,6 +480,10 @@ Verified in CI:
 - ECDSA P-384 signing and verification of sync-message payloads
 - AES-GCM encryption and decryption of document blocks
 - Current-replica reader/writer ACL checks at document boundaries
+- CRDT actor binding for Yjs, Automerge and Loro documents with distinct
+  signers over an in-memory transport: actor squats and re-wrapped changes are
+  rejected before import, the honest writer keeps syncing, and a colliding
+  registration is rejected after a snapshot load and a checkpoint restore
 - BeeKEM key encapsulation and decapsulation
 - UCAN capability issuance and verification (standalone module)
 - Encrypted document retrieval through Circuit Relay
