@@ -1755,7 +1755,7 @@ describe('runLoadQuorum: injected orchestration contract', () => {
 
       expect(err).toBeInstanceOf(LoadQuorumFailedError);
       expect((err as LoadQuorumFailedError).reason).toBe(
-        'equivocating-authority',
+        'divergent-authority',
       );
     });
 
@@ -1808,4 +1808,239 @@ describe('quorum vote normalization', () => {
     })).resolves.toMatchObject({ ok: true });
   });
 
+});
+
+describe('single-writer fallback', () => {
+  const WRITER = 'sole-writer';
+  const HASH_Z = fixedByteHash(0xcc);
+  const HASH_Z_HEX = tipsHashToHex(HASH_Z);
+  const devices =
+    (states: Record<string, Uint8Array | null>) => async (peer: TestPeer) => {
+      const hash = states[peer];
+      return hash === null ? null : { hash, signerAuthority: WRITER };
+    };
+  const singleWriter = (
+    peers: TestPeer[],
+    probeFn: (peer: TestPeer) => Promise<unknown>,
+    config: Parameters<typeof runLoadQuorum>[0]['config'] = {},
+    trustedAuthorities: readonly string[] = [WRITER],
+  ) =>
+    runLoadQuorum({
+      peers,
+      peerIdOf,
+      probeFn: probeFn as Parameters<typeof runLoadQuorum>[0]['probeFn'],
+      documentPath: '/single-writer',
+      trustedAuthorities,
+      config,
+    });
+  let consoleSpies: Array<{ mockRestore(): void }>;
+
+  beforeEach(() => {
+    consoleSpies = [
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined),
+      jest.spyOn(console, 'log').mockImplementation(() => undefined),
+    ];
+  });
+
+  afterEach(() => {
+    for (const spy of consoleSpies) spy.mockRestore();
+  });
+
+  test('devices of the one trusted writer that agree pass without a second authority', async () => {
+    const result = await singleWriter(
+      ['laptop', 'phone', 'tablet'],
+      devices({ laptop: HASH_X, phone: HASH_X, tablet: HASH_X }),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      narrowedPeers: ['laptop', 'phone', 'tablet'],
+      winningHashHex: HASH_X_HEX,
+      boundHashHexes: [HASH_X_HEX, HASH_X_HEX, HASH_X_HEX],
+    });
+  });
+
+  test.each([
+    ['a lone device', ['phone'], { phone: HASH_X }],
+    [
+      'one responding device among silent peers',
+      ['relay', 'phone'],
+      { relay: null, phone: HASH_X },
+    ],
+  ] as const)(
+    'accepts %s by default without loadQuorumAllowSinglePeer',
+    async (_label, peers, states) => {
+      const result = await singleWriter([...peers], devices(states));
+
+      expect(result).toMatchObject({
+        ok: true,
+        narrowedPeers: ['phone'],
+        winningHashHex: HASH_X_HEX,
+        boundHashHexes: [HASH_X_HEX],
+      });
+    },
+  );
+
+  test('out-of-sync devices are not equivocation: the most-advertised state leads and the rest follow bound to their own digests', async () => {
+    const result = await singleWriter(
+      ['stale', 'current-a', 'current-b'],
+      devices({ stale: HASH_Y, 'current-a': HASH_X, 'current-b': HASH_X }),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      narrowedPeers: ['current-a', 'current-b', 'stale'],
+      winningHashHex: HASH_X_HEX,
+      boundHashHexes: [HASH_X_HEX, HASH_X_HEX, HASH_Y_HEX],
+    });
+  });
+
+  test('a tie between out-of-sync devices keeps probe order', async () => {
+    const result = await singleWriter(
+      ['preferred', 'other', 'third'],
+      devices({ preferred: HASH_Y, other: HASH_X, third: HASH_Z }),
+    );
+
+    expect(result).toMatchObject({
+      narrowedPeers: ['preferred', 'other', 'third'],
+      winningHashHex: HASH_Y_HEX,
+      boundHashHexes: [HASH_Y_HEX, HASH_X_HEX, HASH_Z_HEX],
+    });
+  });
+
+  test('responses from any other authority are not votes', async () => {
+    const intruders = async (peer: TestPeer) =>
+      peer === 'phone'
+        ? { hash: HASH_X, signerAuthority: WRITER }
+        : { hash: HASH_Y, signerAuthority: `intruder:${peer}` };
+    await expect(
+      singleWriter(['reader-a', 'phone', 'reader-b'], intruders),
+    ).resolves.toMatchObject({
+      narrowedPeers: ['phone'],
+      winningHashHex: HASH_X_HEX,
+      boundHashHexes: [HASH_X_HEX],
+    });
+
+    const err = await singleWriter(['reader-a', 'reader-b'], intruders).catch(
+      (error: unknown) => error,
+    );
+    expect(err).toBeInstanceOf(LoadQuorumFailedError);
+    expect(err).toMatchObject({
+      reason: 'insufficient-responses',
+      respondingCount: 0,
+      requiredQ: 1,
+    });
+  });
+
+  test.each([
+    ['no response', async () => null],
+    [
+      'a thrown probe',
+      async () => {
+        throw new Error('probe failed');
+      },
+    ],
+    ['a bare digest', async () => HASH_X],
+    [
+      'a short digest',
+      async () => ({ hash: new Uint8Array(31), signerAuthority: WRITER }),
+    ],
+    ['an empty authority', async () => ({ hash: HASH_X, signerAuthority: '' })],
+  ] as const)(
+    'fails closed when every device returns %s',
+    async (_label, probe) => {
+      await expect(
+        singleWriter(['laptop', 'phone'], probe),
+      ).rejects.toMatchObject({
+        name: 'LoadQuorumFailedError',
+        reason: 'insufficient-responses',
+        requiredQ: 1,
+      });
+    },
+  );
+
+  test('a document with two trusted writers still needs two agreeing authorities', async () => {
+    const twoWriters = [WRITER, 'second-writer'];
+    const err = await singleWriter(
+      ['laptop', 'phone', 'tablet'],
+      devices({ laptop: HASH_X, phone: HASH_X, tablet: HASH_X }),
+      {},
+      twoWriters,
+    ).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(LoadQuorumFailedError);
+    expect(err).toMatchObject({
+      reason: 'insufficient-responses',
+      respondingCount: 1,
+      requiredQ: 2,
+    });
+
+    await expect(
+      singleWriter(
+        ['laptop', 'second'],
+        async (peer: TestPeer) => ({
+          hash: HASH_X,
+          signerAuthority: peer === 'second' ? 'second-writer' : WRITER,
+        }),
+        {},
+        twoWriters,
+      ),
+    ).resolves.toMatchObject({
+      narrowedPeers: ['laptop', 'second'],
+      winningHashHex: HASH_X_HEX,
+    });
+  });
+
+  test('a document with two trusted writers reports diverging devices without calling them equivocation', async () => {
+    const err = await singleWriter(
+      ['laptop', 'phone', 'second'],
+      async (peer: TestPeer) => ({
+        hash: peer === 'phone' ? HASH_Y : HASH_X,
+        signerAuthority: peer === 'second' ? 'second-writer' : WRITER,
+      }),
+      {},
+      [WRITER, 'second-writer'],
+    ).catch((error: unknown) => error);
+
+    expect(err).toMatchObject({ reason: 'divergent-authority' });
+    expect((err as Error).message).toMatch(/out of sync/);
+    expect((err as Error).message).not.toMatch(/equivocat/);
+  });
+
+  test('an explicit Q above one remains a floor of distinct authorities', async () => {
+    await expect(
+      singleWriter(
+        ['laptop', 'phone', 'tablet'],
+        devices({ laptop: HASH_X, phone: HASH_X, tablet: HASH_X }),
+        { q: 2 },
+      ),
+    ).rejects.toMatchObject({
+      reason: 'insufficient-responses',
+      respondingCount: 1,
+      requiredQ: 2,
+    });
+    await expect(
+      singleWriter(['laptop'], devices({ laptop: HASH_X }), { q: 1 }),
+    ).resolves.toMatchObject({ narrowedPeers: ['laptop'] });
+  });
+
+  test('probes at most K devices and skips when quorum is disabled', async () => {
+    const probe = jest.fn(devices({ a: HASH_X, b: HASH_X, c: HASH_X }));
+    await expect(
+      singleWriter(['a', 'b', 'c'], probe, { k: 2 }),
+    ).resolves.toMatchObject({ narrowedPeers: ['a', 'b'] });
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    probe.mockClear();
+    await expect(
+      singleWriter(['a', 'b', 'c'], probe, { enabled: false }),
+    ).resolves.toEqual({ skipped: true });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  test('a duplicated authority list is still one writer', async () => {
+    await expect(
+      singleWriter(['phone'], devices({ phone: HASH_X }), {}, [WRITER, WRITER]),
+    ).resolves.toMatchObject({ narrowedPeers: ['phone'] });
+  });
 });

@@ -3244,13 +3244,9 @@ export class PeerborneDocument<
     return loadResponseManifestHash({
       changeId: message.changeId,
       changes: message.changes,
-      serializeChange: (change) => this._changesSerializer.serializeChanges(change),
       snapshot: message.snapshot === undefined ? undefined : {
         stateBytes: this._changesSerializer.serializeChanges(message.snapshot.state),
         lastChangeNodeCID: message.snapshot.lastChangeNodeCID,
-        compactedCount: message.snapshot.compactedCount,
-        timestamp: message.snapshot.timestamp,
-        signature: message.snapshot.signature,
       },
       keychainChangesBytes: message.keychainChanges === undefined ? undefined :
         this._changesSerializer.serializeChanges(message.keychainChanges),
@@ -3812,6 +3808,51 @@ export class PeerborneDocument<
     return verifyMemberSignature(writerKeys, (writerKey) =>
       this._authProvider.verify(payload, writerKey, signature),
     );
+  }
+
+  /**
+   * Authenticate a load response's snapshot against the writers captured for
+   * the load, trying the response signer first. Each attempt draws on the
+   * session's shared authentication budget.
+   */
+  private async _isTrustedLoadSnapshot(
+    session: InitialLoadSession<PublicKey>,
+    message: CRDTSyncMessage<ChangesType>,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!this._isSigningEnabled()) return true;
+    const snapshot = message.snapshot;
+    if (snapshot === undefined) return false;
+    let payload: Uint8Array;
+    try {
+      payload = this._buildSnapshotSignPayload(
+        this._changesSerializer.serializeChanges(snapshot.state),
+        snapshot.lastChangeNodeCID,
+        snapshot.timestamp,
+        snapshot.compactedCount,
+      );
+    } catch {
+      return false;
+    }
+    const responder = message.signerAuthority;
+    const candidates = [
+      ...session.authorities.filter(({ authorityId }) => authorityId === responder),
+      ...session.authorities.filter(({ authorityId }) => authorityId !== responder),
+    ];
+    for (const { authorityId } of candidates) {
+      const signer = await identifyInitialLoadSigner({
+        payload,
+        signature: snapshot.signature,
+        signerAuthority: authorityId,
+        trustedSigners: session.trustedSigners,
+        budget: session.authenticationBudget,
+        signal,
+        verify: (bytes, key, signature) =>
+          this._authProvider.verify(bytes, key, signature),
+      });
+      if (signer !== null) return true;
+    }
+    return false;
   }
 
   private async _signAsWriter(
@@ -5780,6 +5821,22 @@ export class PeerborneDocument<
                 `${expectedTipsHashHex.slice(0, 12)}... got ${servedHex.slice(0, 12)}...`,
             );
           }
+          // The agreed digest binds the snapshot's state and boundary but not
+          // who signed it. Authenticate the signature before any state
+          // application so an agreeing responder cannot substitute an
+          // unverifiable snapshot and leave this load partially applied.
+          if (
+            message.snapshot !== undefined &&
+            !(await awaitLoadWork(
+              this._isTrustedLoadSnapshot(session, message, signal),
+              signal,
+            ))
+          ) {
+            throw new _QuorumBindCheckFailedError(
+              '(untrusted-snapshot-signature)',
+              'Quorum-bound load snapshot is not signed by a locally trusted writer',
+            );
+          }
           // Content-address verification.
           //
           // The structural bind above proves Q peers agree on the
@@ -6409,12 +6466,16 @@ export class PeerborneDocument<
    * resolveLoadSecurityCommitments. A remote response cannot supply its own
    * trust root. Signing is mandatory.
    *
-   * Quorum selection counts each authenticated authority once. The selected
-   * response must match the captured challenge and tuple; its derived frontier
-   * and complete manifest must match the agreed digest before mutation.
-   * Quorum loads prefetch the served tree's CIDs before applying state. With
-   * loadQuorumEnabled false, one trusted signed V4 response may be selected;
-   * challenge, tuple, signature, and frontier checks still apply.
+   * Quorum selection counts each authenticated authority once. When the
+   * captured trusted writer set has exactly one authority, a valid response
+   * from any of its devices is accepted without a second vote; devices that
+   * advertise different states are tried, most-advertised state first, each
+   * bound to its own digest. The selected response must match the captured
+   * challenge and tuple; its derived frontier and manifest must match the
+   * bound digest, and its snapshot must be signed by a trusted writer, before
+   * mutation. Quorum loads prefetch the served tree's CIDs before applying
+   * state. With loadQuorumEnabled false, one trusted signed V4 response may be
+   * selected; challenge, tuple, signature, and frontier checks still apply.
    *
    * @param preferredPeer Optional peer to try first (typically a PeerId from a
    *   pubsub message sender), matched against the last `/p2p/<id>` segment of
@@ -6496,6 +6557,7 @@ export class PeerborneDocument<
         );
       },
       documentPath: this.documentPath,
+      trustedAuthorities: session.authorities.map(({ authorityId }) => authorityId),
       config: {
         enabled: this.swarm.config?.loadQuorumEnabled ?? true,
         k: this.swarm.config?.loadQuorumK ?? DEFAULT_LOAD_QUORUM_K,
@@ -6507,6 +6569,10 @@ export class PeerborneDocument<
     });
 
     let winningHashHex: string | null = null;
+    const boundHashHexes = new Map<
+      import('@multiformats/multiaddr').Multiaddr,
+      string
+    >();
     if ('skipped' in quorumResult) {
 
       const quorumWasEnabled = this.swarm.config?.loadQuorumEnabled ?? true;
@@ -6519,6 +6585,9 @@ export class PeerborneDocument<
       winningHashHex = quorumResult.winningHashHex;
       orderedPeers.length = 0;
       orderedPeers.push(...quorumResult.narrowedPeers);
+      quorumResult.narrowedPeers.forEach((peer, index) =>
+        boundHashHexes.set(peer, quorumResult.boundHashHexes[index]),
+      );
     }
 
     const narrowedCohortSize = orderedPeers.length;
@@ -6539,7 +6608,7 @@ export class PeerborneDocument<
             request.session,
             snapshotStream,
             request.serializedRequest,
-            winningHashHex,
+            boundHashHexes.get(peer) ?? winningHashHex,
           );
           if (loaded) {
             this._assertNoIncompleteBootstrapLoad();
@@ -6576,7 +6645,7 @@ export class PeerborneDocument<
           request.session,
           docStream,
           request.serializedRequest,
-          winningHashHex,
+          boundHashHexes.get(peer) ?? winningHashHex,
         );
         if (loaded) {
           this._assertNoIncompleteBootstrapLoad();

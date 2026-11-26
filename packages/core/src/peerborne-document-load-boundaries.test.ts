@@ -213,6 +213,7 @@ function signedLoadHarness(
   const document = fakeDocument({
     documentPath: message.documentId,
     _fixtureLoadResponse: contextMessage,
+    _encoder: new TextEncoder(),
     _changesSerializer: { serializeChanges: fixtureSerializeChanges },
     swarm: {
       config: { enableSigning: true, loadQuorumTimeoutMs: 1000 },
@@ -1661,8 +1662,8 @@ describe('document load response boundaries', () => {
     },
   );
 
-  test('rejects a re-signed snapshot outside the agreed manifest before state application', async () => {
-    const message = {
+  describe('quorum-bound snapshot substitution', () => {
+    const agreed = () => ({
       documentId: '/load-race',
       signatureContext: 'load-response-v4',
       signature: 'AAAA',
@@ -1684,35 +1685,129 @@ describe('document load response boundaries', () => {
         signature: new Uint8Array([4]),
         timestamp: 1,
       },
-    };
-    const { document, stream } = signedLoadHarness(
-      async () => [],
-      async () => true,
-      message,
-    );
-    document._writers = {
-      users: jest.fn(async () => []),
-      check: async () => false,
-    };
-    document._syncUnlocked = jest.fn(async () => true);
-    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
-    document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
-      currentLoadResponse({
-        ...message,
-        snapshot: { ...message.snapshot, signature: new Uint8Array([5]) },
-      }),
-    );
+    });
+    const untrustedSignature = 5;
 
-    await expect(
-      document._sendLoadRequestAndSync(
-        await loadSessionFixture(document, undefined),
+    async function serveSubstitute(
+      substitute: (message: ReturnType<typeof agreed>) => unknown,
+      authenticationAttempts?: number,
+    ) {
+      const message = agreed();
+      const { document, stream } = signedLoadHarness(
+        async () => [],
+        async (_payload, _key, signature) =>
+          !(
+            (signature as Uint8Array).length === 1 &&
+            (signature as Uint8Array)[0] === untrustedSignature
+          ),
+        message,
+      );
+      document._writers = {
+        users: jest.fn(async () => []),
+        check: async () => false,
+      };
+      document._syncUnlocked = jest.fn(
+        async (
+          appliedMessage: any,
+          _verifySignature: boolean,
+          _context: string,
+          onStateApplicationStart?: () => void,
+        ) => {
+          onStateApplicationStart?.();
+          for (const cid of ['HEAD', 'BOUNDARY']) document._hashes.add(cid);
+          document._latestSnapshot = appliedMessage.snapshot;
+          document._latestSnapshotSource = appliedMessage.snapshot;
+          return true;
+        },
+      );
+      const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+      document._syncMessageSerializer.deserializeSyncMessage.mockReturnValue(
+        currentLoadResponse(substitute(message)),
+      );
+      const session = await loadSessionFixture(document, undefined);
+      if (authenticationAttempts !== undefined) {
+        let remaining = authenticationAttempts;
+        session.authenticationBudget.reserve = () => remaining-- > 0;
+      }
+      const load = document._sendLoadRequestAndSync(
+        session,
         stream,
         new Uint8Array([1]),
         expectedTipsHash,
-      ),
-    ).rejects.toMatchObject({ name: '_QuorumBindCheckFailedError' });
-    expect(document._syncUnlocked).not.toHaveBeenCalled();
-    expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      );
+      return { document, load };
+    }
+
+    test.each([
+      [
+        'a re-signature no trusted writer made',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: {
+            ...message.snapshot,
+            signature: new Uint8Array([untrustedSignature]),
+          },
+        }),
+        '(untrusted-snapshot-signature)',
+      ],
+      [
+        'different state bytes under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, state: { compacted: 'forged' } },
+        }),
+        undefined,
+      ],
+      [
+        'a different boundary under the agreed digest',
+        (message: ReturnType<typeof agreed>) => ({
+          ...message,
+          snapshot: { ...message.snapshot, lastChangeNodeCID: 'HEAD' },
+        }),
+        undefined,
+      ],
+    ])(
+      'rejects %s before state application',
+      async (_label, substitute, advertisedHex) => {
+        const { document, load } = await serveSubstitute(substitute);
+
+        await expect(load).rejects.toMatchObject({
+          name: '_QuorumBindCheckFailedError',
+          ...(advertisedHex === undefined ? {} : { advertisedHex }),
+        });
+        expect(document._syncUnlocked).not.toHaveBeenCalled();
+        expect(document._bootstrapLoadApplicationState).toBe('pristine');
+      },
+    );
+
+    test('accepts a trusted writer that signed its own snapshot of the agreed state', async () => {
+      const { document, load } = await serveSubstitute((message) => ({
+        ...message,
+        snapshot: {
+          ...message.snapshot,
+          signature: new Uint8Array([6, 6]),
+          timestamp: 2,
+          compactedCount: 119,
+        },
+      }));
+
+      await expect(load).resolves.toBe(true);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(document._latestSnapshot).toMatchObject({
+        signature: new Uint8Array([6, 6]),
+        timestamp: 2,
+      });
+    });
+
+    test('draws snapshot verification from the shared session budget', async () => {
+      const { document, load } = await serveSubstitute((message) => message, 1);
+
+      await expect(load).rejects.toMatchObject({
+        name: '_QuorumBindCheckFailedError',
+        advertisedHex: '(untrusted-snapshot-signature)',
+      });
+      expect(document._syncUnlocked).not.toHaveBeenCalled();
+    });
   });
 
   test('rejects a snapshot-only quorum-bound first load before state application', async () => {

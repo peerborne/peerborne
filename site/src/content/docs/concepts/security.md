@@ -221,7 +221,7 @@ challenge it sent to that responder. A peer that speaks the load protocols but
 holds no document key therefore cannot forward a loader's request to a writer
 and return the writer's signed answer as its own vote. It can neither fill a
 probe slot that way nor pair a forwarded answer with the writer's later direct
-answer to abort the load as an equivocating authority.
+answer to abort the load as a divergent authority.
 
 V4 loading also requires trusted writer identities and locally resolved
 control/group commitments. Configure
@@ -236,14 +236,35 @@ compares this tuple but does not yet replay an MLS control log.
 `loadQuorumK` bounds queried transport peers. A connected peer whose identify
 record omits the document-load protocol, such as a relay, is identified once
 more and is not a candidate if it still omits it; a peer that has not completed
-identify remains one. `loadQuorumQ` requires
-that many independent trusted signing authorities to agree on one complete response
-manifest and security-state digest. The manifest binds the snapshot signature
-as well as its state, so a responder cannot substitute one after agreement.
-One credential contributes only one vote,
-even through multiple PeerIds. An explicit Q is never lowered when fewer peers
-are available. Distinct compromised authorities can still collude; independent
+identify remains one. `loadQuorumQ` requires that many independent trusted
+signing authorities to agree on one response-manifest and security-state
+digest. The digest covers the served frontier, each change CID with its kind
+and edges, the snapshot's state bytes and boundary CID, and keychain changes.
+It omits inline change payloads, which a quorum-bound load discards before
+fetching every CID from the blockstore, and the snapshot's signature,
+timestamp and compacted count, because each writer signs its own snapshot of
+the same state. Before a quorum-bound load applies any state, the loader
+verifies the selected response's snapshot signature against its trusted
+writers, so an agreeing responder can substitute neither other snapshot bytes
+nor an unverifiable signature. One credential contributes only one vote, even
+through multiple PeerIds; when devices sharing a credential advertise different
+digests in a document with several trusted writers, the load fails as
+`divergent-authority`. An explicit Q is never lowered when fewer peers are
+available. Distinct compromised authorities can still collude; independent
 trust configuration is essential.
+
+When the trusted writer set captured for a load has exactly one authority, no
+second authority can agree, so the default quorum could never pass for a
+user's second device. The loader then accepts one valid response from that
+authority, from any of its devices and without `loadQuorumAllowSinglePeer`.
+Challenge, tuple, responder, signature, frontier, manifest and snapshot checks
+still apply. Devices that advertise different digests are out of sync, not
+equivocating. A digest does not show which state is newer, so the loader tries
+the state most devices advertise first, keeping probe order on a tie, and falls
+back to each other device bound to the digest it advertised; live sync then
+merges the remaining changes. Every holder of that writer's key is trusted,
+and the first loaded state can be older than another device's. An explicit
+`loadQuorumQ` above 1 cannot be met by such a document.
 
 `loadQuorumEnabled: false` permits one authenticated V4 response and retains
 challenge, tuple, signature, and frontier checks. Unsigned loads are rejected.

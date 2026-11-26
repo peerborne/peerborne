@@ -16,23 +16,22 @@ const commitments = (groupId: string) => ({
   confirmedTranscriptHash: new Uint8Array(32),
 });
 
-test.each(['lastChangeNodeCID', 'compactedCount', 'timestamp'] as const)(
-  'invalid snapshot %s is rejected before payload copies or change serialization',
-  async (field) => {
+test.each(['oversized', 'malformed', 'non-string'] as const)(
+  'a %s snapshot boundary is rejected before payload copies or graph capture',
+  async (kind) => {
     await fc.assert(
       fc.asyncProperty(
         fc.uint8Array({ minLength: 1, maxLength: 128 }),
         async (payload) => {
           const snapshot = {
             stateBytes: payload,
-            lastChangeNodeCID: 'ROOT',
-            compactedCount: 0,
-            timestamp: 0,
-            signature: new Uint8Array([7]),
+            lastChangeNodeCID:
+              kind === 'oversized'
+                ? 'x'.repeat(1025)
+                : kind === 'malformed'
+                  ? '\udc00'
+                  : (7 as unknown as string),
           };
-          if (field === 'lastChangeNodeCID')
-            snapshot.lastChangeNodeCID = 'x'.repeat(1025);
-          else snapshot[field] = -1;
           let copied = 0;
           const original = byteUtilities.copyUnsharedUint8Array;
           const spy = jest
@@ -41,13 +40,12 @@ test.each(['lastChangeNodeCID', 'compactedCount', 'timestamp'] as const)(
               const result = original(...args);
               if (
                 args[3] === 'snapshot state' ||
-                args[3] === 'keychain changes' ||
-                args[3] === 'inline changes'
+                args[3] === 'keychain changes'
               )
                 copied += result.byteLength;
               return result;
             });
-          const serializeChange = jest.fn(() => payload);
+          const walk = jest.spyOn(treeWalk, 'snapshotBoundedChangeTree');
           try {
             await expect(
               loadResponseManifestHash({
@@ -55,12 +53,12 @@ test.each(['lastChangeNodeCID', 'compactedCount', 'timestamp'] as const)(
                 changes: { kind: 'document', change: payload },
                 snapshot,
                 keychainChangesBytes: payload,
-                serializeChange,
               }),
             ).rejects.toThrow();
-            expect(serializeChange).not.toHaveBeenCalled();
             expect(copied).toBe(0);
+            expect(walk).not.toHaveBeenCalled();
           } finally {
+            walk.mockRestore();
             spy.mockRestore();
           }
         },
@@ -233,41 +231,37 @@ test('valid text retains canonical challenge bytes and needs no encoding during 
   );
 });
 
-test('validated metadata and payloads stay captured when a change serializer mutates the input', async () => {
+test('validated metadata and payloads stay captured when the input mutates across digest yields', async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.uint8Array({ minLength: 1, maxLength: 128 }),
-      fc.nat(100000),
-      async (payload, timestamp) => {
+      async (payload) => {
         const make = () => ({
           changeId: 'ROOT',
           changes: {
             kind: 'document' as const,
             change: new Uint8Array([1]),
+            children: { CHILD: { kind: 'writer' as const } } as Record<
+              string,
+              { kind: 'writer' | 'reader' }
+            >,
           },
           snapshot: {
             stateBytes: payload.slice(),
             lastChangeNodeCID: 'ROOT',
-            compactedCount: 1,
-            timestamp,
-            signature: payload.slice(),
           },
           keychainChangesBytes: payload.slice(),
-          serializeChange: () => new Uint8Array([2]),
         });
         const expected = await loadResponseManifestHash(make());
         const input = make();
-        input.serializeChange = () => {
-          input.changeId = 'OTHER';
-          input.snapshot.lastChangeNodeCID = 'x'.repeat(1025);
-          input.snapshot.compactedCount = -1;
-          input.snapshot.timestamp = -1;
-          input.snapshot.stateBytes.fill(0);
-          input.snapshot.signature.fill(0);
-          input.keychainChangesBytes.fill(0);
-          return new Uint8Array([2]);
-        };
-        expect(await loadResponseManifestHash(input)).toEqual(expected);
+        const pending = loadResponseManifestHash(input);
+        input.changeId = 'OTHER';
+        input.changes.children.CHILD.kind = 'reader';
+        input.changes.children.ATTACKER = { kind: 'writer' };
+        input.snapshot.lastChangeNodeCID = 'x'.repeat(1025);
+        input.snapshot.stateBytes.fill(0);
+        input.keychainChangesBytes.fill(0);
+        expect(await pending).toEqual(expected);
       },
     ),
     { seed: 2011805, numRuns: 24 },
@@ -301,7 +295,7 @@ test('invalid UTF-8 limits and forbidden empty values reject before allocation',
   );
 });
 
-test('invalid roots fail before graph capture, payload copies or serialization', async () => {
+test('invalid roots fail before graph capture or payload copies', async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.constantFrom('absent-tree', 'empty', 'long', 'malformed', 'type'),
@@ -325,12 +319,8 @@ test('invalid roots fail before graph capture, payload copies or serialization',
           snapshot: {
             stateBytes: payload,
             lastChangeNodeCID: 'ROOT',
-            compactedCount: 1,
-            timestamp: 0,
-            signature: new Uint8Array([7]),
           },
           keychainChangesBytes: payload,
-          serializeChange: jest.fn(() => payload),
         };
         const copies = jest.spyOn(byteUtilities, 'copyUnsharedUint8Array');
         const walk = jest.spyOn(treeWalk, 'snapshotBoundedChangeTree');
@@ -344,7 +334,6 @@ test('invalid roots fail before graph capture, payload copies or serialization',
           ).rejects.toThrow();
           expect(walk).not.toHaveBeenCalled();
           expect(copies).not.toHaveBeenCalled();
-          expect(input.serializeChange).not.toHaveBeenCalled();
         } finally {
           walk.mockRestore();
           copies.mockRestore();

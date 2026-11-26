@@ -2,6 +2,8 @@ import { createInitialLoadSignerLookup } from './initial-load-trust.js';
 import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixtureLoadChallenge, fixtureLoadCommitments, loadSessionFixture, fixtureLoadDigest } from './__testutils__/load-session.js';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
+import { loadAdvertisementHash } from './load-advertisement-hash.js';
+import { tipsHashToHex } from './tips-hash.js';
 import { PeerborneDocument } from './peerborne-document.js';
 import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
 
@@ -306,6 +308,71 @@ describe('load-response V4 confinement', () => {
     )).resolves.toBe(true);
     expect((harness.syncUnlocked.mock.calls[0][0] as any).changes.change.value).toBe(1);
     expect(decoded.changes.change.value).toBe(1);
+  });
+
+  test('advertises one digest for an author and a replica that compacted the same state', async () => {
+    const document = fakeDocument({
+      documentPath,
+      _changesSerializer: { serializeChanges: fixtureSerializeChanges },
+    });
+    const tree = (inline: boolean) => ({
+      kind: 'document',
+      ...(inline ? { change: { edit: 2 } } : {}),
+      children: {
+        BOUNDARY: {
+          kind: 'document',
+          ...(inline ? { change: { edit: 1 } } : {}),
+        },
+        WRITER: { kind: 'writer', ...(inline ? { change: { acl: 1 } } : {}) },
+      },
+    });
+    const response = (inline: boolean, snapshot: Record<string, unknown>) =>
+      currentLoadResponse({
+        documentId: documentPath,
+        signatureContext: 'load-response-v4',
+        changeId: 'HEAD',
+        changes: tree(inline),
+        snapshot,
+        signature: 'AQ==',
+      });
+    const advertised = async (message: any) =>
+      tipsHashToHex(
+        await loadAdvertisementHash(
+          documentPath,
+          message.tips,
+          fixtureLoadCommitments(),
+          await document._loadResponseManifestHash(message),
+        ),
+      );
+    const authorSnapshot = {
+      state: { compacted: [1, 2] },
+      lastChangeNodeCID: 'BOUNDARY',
+      compactedCount: 120,
+      timestamp: 1000,
+      signature: new Uint8Array([1, 2]),
+    };
+    const author = await advertised(response(true, authorSnapshot));
+    const replicaSnapshot = {
+      state: { compacted: [1, 2] },
+      lastChangeNodeCID: 'BOUNDARY',
+      compactedCount: 119,
+      timestamp: 2000,
+      signature: new Uint8Array([3]),
+    };
+
+    await expect(advertised(response(false, replicaSnapshot))).resolves.toBe(
+      author,
+    );
+    await expect(
+      advertised(
+        response(false, { ...replicaSnapshot, state: { compacted: [1, 3] } }),
+      ),
+    ).resolves.not.toBe(author);
+    await expect(
+      advertised(
+        response(false, { ...replicaSnapshot, lastChangeNodeCID: 'HEAD' }),
+      ),
+    ).resolves.not.toBe(author);
   });
 
   test('rejects a response whose serializer mutates signed content', async () => {
@@ -929,7 +996,18 @@ describe('load connection handling', () => {
       _writerMutationsInFlight: 0,
       _compactionConfig: { enabled: false },
     });
-    document._captureLoadSession = async () => fixedLoadSession(document);
+    const authorities = [
+      ...new Set(
+        peers.map(
+          (peer) => `writer:${document._peerIdOf({ toString: () => peer })}`,
+        ),
+      ),
+    ].map((authorityId) => ({ authorityId, publicKey: authorityId }));
+    document._captureLoadSession = async () => ({
+      ...fixedLoadSession(document),
+      authorities,
+      trustedSigners: createInitialLoadSignerLookup(authorities),
+    });
     document._serializeInitialLoadRequest = async () => new Uint8Array([1]);
     return document;
   }
