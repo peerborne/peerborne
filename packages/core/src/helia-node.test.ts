@@ -213,6 +213,7 @@ describe('Helia node startup cleanup', () => {
       start: jest.fn(async () => undefined),
       stop: jest.fn(async () => undefined),
       addMixin: jest.fn(),
+      routing: fakeRouting(),
       libp2p: { services: { pubsub: {} } },
     };
     const { helia } = createConfig();
