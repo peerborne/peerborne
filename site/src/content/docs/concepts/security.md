@@ -243,10 +243,17 @@ and edges, the snapshot's state bytes and boundary CID, and keychain changes.
 It omits inline change payloads, which a quorum-bound load discards before
 fetching every CID from the blockstore, and the snapshot's signature,
 timestamp and compacted count, because each writer signs its own snapshot of
-the same state. Before a quorum-bound load applies any state, the loader
-verifies the selected response's snapshot signature against its trusted
-writers, so an agreeing responder can substitute neither other snapshot bytes
-nor an unverifiable signature. One credential contributes only one vote, even
+the same state. A quorum-bound first load can verify its snapshot only after
+the response's CID-validated writer blocks establish the writer ACL, when the
+instance can no longer fall back to another peer. Before applying any state,
+the loader therefore decodes those blocks into an isolated ACL and checks that
+one of its writers signed the snapshot, the same rule the apply-time check
+uses. An agreeing responder can substitute neither other snapshot bytes nor a
+snapshot that would fail after application began; it is skipped instead. A
+later load ignores a snapshot that does not verify against the current writer
+ACL. The snapshot's compacted count is signed advisory metadata: snapshot
+creation clamps it to the 32-bit limit, so an inflated count cannot stop a
+writer from compacting. One credential contributes only one vote, even
 through multiple PeerIds; when devices sharing a credential advertise different
 digests in a document with several trusted writers, the load fails as
 `divergent-authority`. An explicit Q is never lowered when fewer peers are

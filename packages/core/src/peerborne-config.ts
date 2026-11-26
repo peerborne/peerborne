@@ -380,8 +380,9 @@ export interface PeerborneConfig {
    * edges, the snapshot's state bytes and boundary, and keychain changes. It
    * does not cover inline payloads, which quorum-bound loads discard before
    * fetching each CID-addressed block, or who signed the snapshot, so holders
-   * with the same state agree. The selected response's snapshot must still be
-   * signed by a locally trusted writer before any state is applied.
+   * with the same state agree. On a first load, the selected response's
+   * snapshot must still be signed by a writer that its CID-validated writer
+   * blocks establish, checked before any state is applied.
    *
    * When the trusted writer set captured for the load (the existing writer
    * ACL, or `resolveTrustedDocumentWriters` on a first load) has exactly one

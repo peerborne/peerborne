@@ -37,7 +37,13 @@ import { canCommitBeeKEMPathUpdate, checkpointCommitmentPermitsRestore } from '.
 import { serializeBeeKEMWelcomeV2ForWire, deserializeBeeKEMWelcomeV2FromWire, serializeBeeKEMLocalRecovery, deserializeBeeKEMLocalRecovery } from './beekem-welcome-wire.js';
 import { captureTrustedLoadSecurityCommitments, loadSecurityCommitmentsEqual } from './load-security-state.js';
 import { captureInitialLoadSignerAuthorities, createInitialLoadSignerLookup, validateInitialLoadSignerAuthority } from './initial-load-trust.js';
-import { identifyInitialLoadSigner, verifyInitialLoadAuthentication, InitialLoadAuthenticationBudget } from './initial-load-auth.js';
+import {
+  identifyInitialLoadSigner,
+  verifyInitialLoadAuthentication,
+  InitialLoadAuthenticationBudget,
+  MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES,
+  MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+} from './initial-load-auth.js';
 import { createInitialLoadChallenge, cloneInitialLoadChallenge, initialLoadChallengeEquals, initialLoadRequestSignaturePayload, validateInitialLoadResponder } from './initial-load-challenge.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { loadResponseManifestHash } from './load-response-manifest.js';
@@ -833,6 +839,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
 
 /** Bound encrypted advertisements, including escaped identifiers and signatures. */
 const MAX_SECURITY_ADVERTISE_RESPONSE_SIZE = 64 * 1024;
+
+const MAX_SNAPSHOT_COMPACTED_COUNT = 0xffffffff;
 
 /** Bound ordinary encrypted snapshot/document responses before decoding. */
 export const MAX_DOCUMENT_LOAD_RESPONSE_SIZE = 10 * 1024 * 1024;
@@ -3811,19 +3819,25 @@ export class PeerborneDocument<
   }
 
   /**
-   * Authenticate a load response's snapshot against the writers captured for
-   * the load, trying the response signer first. Each attempt draws on the
-   * session's shared authentication budget.
+   * Check, before any state is applied, that a quorum-bound first load's
+   * snapshot will pass the apply-time check: a signature by a writer that the
+   * response's CID-validated writer blocks establish. The blocks are decoded
+   * into an isolated ACL with keys from a staged, uncommitted keychain merge,
+   * so no live state changes. The payload is charged to the session budget
+   * once and verified against each distinct writer key, the response signer
+   * first.
    */
-  private async _isTrustedLoadSnapshot(
+  private async _isServedSnapshotSignedByServedWriter(
     session: InitialLoadSession<PublicKey>,
     message: CRDTSyncMessage<ChangesType>,
+    prefetchedBlocks: ReadonlyMap<string, Uint8Array>,
     signal?: AbortSignal,
   ): Promise<boolean> {
     if (!this._isSigningEnabled()) return true;
     const snapshot = message.snapshot;
     if (snapshot === undefined) return false;
     let payload: Uint8Array;
+    let signature: Uint8Array;
     try {
       payload = this._buildSnapshotSignPayload(
         this._changesSerializer.serializeChanges(snapshot.state),
@@ -3831,28 +3845,91 @@ export class PeerborneDocument<
         snapshot.timestamp,
         snapshot.compactedCount,
       );
+      signature = copyUnsharedUint8Array(
+        snapshot.signature,
+        1,
+        MAX_INITIAL_LOAD_AUTHENTICATION_SIGNATURE_BYTES,
+        'Load snapshot signature',
+      );
     } catch {
       return false;
     }
-    const responder = message.signerAuthority;
-    const candidates = [
-      ...session.authorities.filter(({ authorityId }) => authorityId === responder),
-      ...session.authorities.filter(({ authorityId }) => authorityId !== responder),
-    ];
-    for (const { authorityId } of candidates) {
-      const signer = await identifyInitialLoadSigner({
-        payload,
-        signature: snapshot.signature,
-        signerAuthority: authorityId,
-        trustedSigners: session.trustedSigners,
-        budget: session.authenticationBudget,
+    if (
+      payload.byteLength > MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES ||
+      !session.authenticationBudget.reserve(payload.byteLength)
+    ) {
+      return false;
+    }
+    try {
+      const writers = await this._writersEstablishedByLoadResponse(
+        message,
+        prefetchedBlocks,
         signal,
-        verify: (bytes, key, signature) =>
-          this._authProvider.verify(bytes, key, signature),
-      });
-      if (signer !== null) return true;
+      );
+      const serialize = requireSerializePublicKey(
+        this._authProvider,
+        'Load snapshot signer',
+      );
+      const seen = new Set<string>();
+      const candidates: PublicKey[] = [];
+      for (const writer of writers) {
+        const authority = await serialize(writer);
+        if (seen.has(authority)) continue;
+        seen.add(authority);
+        if (authority === message.signerAuthority) candidates.unshift(writer);
+        else candidates.push(writer);
+      }
+      for (const writer of candidates) {
+        throwIfLoadAborted(signal);
+        if (
+          (await this._authProvider.verify(
+            new Uint8Array(payload),
+            writer,
+            new Uint8Array(signature),
+          )) === true
+        ) {
+          return true;
+        }
+      }
+    } catch {
+      throwIfLoadAborted(signal);
     }
     return false;
+  }
+
+  /**
+   * The writer set that applying a load response's writer blocks to an empty
+   * ACL would produce, computed in an isolated ACL instance.
+   */
+  private async _writersEstablishedByLoadResponse(
+    message: CRDTSyncMessage<ChangesType>,
+    prefetchedBlocks: ReadonlyMap<string, Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<PublicKey[]> {
+    const staged =
+      message.keychainChanges === undefined
+        ? undefined
+        : this._keychain.prepareMerge(message.keychainChanges);
+    if (staged !== undefined) {
+      await awaitLoadWork(staged.hydrateKeys(), signal);
+    }
+    const getKey = (keyID: Uint8Array): DocumentKey | undefined =>
+      staged?.getKey(keyID) ?? this._keychain.getKey(keyID);
+    const writers = this._aclProvider.initialize();
+    if (message.changes !== undefined) {
+      for (const { nodeId, kind } of collectBoundedChangeTree(
+        message.changeId,
+        message.changes,
+      )) {
+        if (kind !== crdtWriterChangeNode || nodeId === undefined) continue;
+        const block = prefetchedBlocks.get(nodeId);
+        if (block === undefined) continue;
+        writers.merge(
+          await this._decodeBlock(CID.parse(nodeId), block, signal, getKey),
+        );
+      }
+    }
+    return writers.users();
   }
 
   private async _signAsWriter(
@@ -5821,22 +5898,6 @@ export class PeerborneDocument<
                 `${expectedTipsHashHex.slice(0, 12)}... got ${servedHex.slice(0, 12)}...`,
             );
           }
-          // The agreed digest binds the snapshot's state and boundary but not
-          // who signed it. Authenticate the signature before any state
-          // application so an agreeing responder cannot substitute an
-          // unverifiable snapshot and leave this load partially applied.
-          if (
-            message.snapshot !== undefined &&
-            !(await awaitLoadWork(
-              this._isTrustedLoadSnapshot(session, message, signal),
-              signal,
-            ))
-          ) {
-            throw new _QuorumBindCheckFailedError(
-              '(untrusted-snapshot-signature)',
-              'Quorum-bound load snapshot is not signed by a locally trusted writer',
-            );
-          }
           // Content-address verification.
           //
           // The structural bind above proves Q peers agree on the
@@ -5999,6 +6060,28 @@ export class PeerborneDocument<
                   `state is unchanged.`,
               );
             }
+          }
+
+          // The agreed digest binds the snapshot's state and boundary but not
+          // who signed it. A first load verifies the snapshot only after its
+          // writer blocks merge, when the instance can no longer try another
+          // peer, so check the same rule here before any state application.
+          if (
+            requiresServedSnapshot &&
+            !(await awaitLoadWork(
+              this._isServedSnapshotSignedByServedWriter(
+                session,
+                message,
+                prefetchedBlocks,
+                signal,
+              ),
+              signal,
+            ))
+          ) {
+            throw new _QuorumBindCheckFailedError(
+              '(untrusted-snapshot-signature)',
+              'Quorum-bound first-load snapshot is not signed by a writer its ACL establishes',
+            );
           }
 
           const syncResult = await syncLoadMessage();
@@ -6471,9 +6554,9 @@ export class PeerborneDocument<
    * from any of its devices is accepted without a second vote; devices that
    * advertise different states are tried, most-advertised state first, each
    * bound to its own digest. The selected response must match the captured
-   * challenge and tuple; its derived frontier and manifest must match the
-   * bound digest, and its snapshot must be signed by a trusted writer, before
-   * mutation. Quorum loads prefetch the served tree's CIDs before applying
+   * challenge and tuple, and its derived frontier and manifest must match the
+   * bound digest, before mutation. A first load also checks, before mutation,
+   * that a writer its writer blocks establish signed its snapshot. Quorum loads prefetch the served tree's CIDs before applying
    * state. With loadQuorumEnabled false, one trusted signed V4 response may be
    * selected; challenge, tuple, signature, and frontier checks still apply.
    *
@@ -8923,8 +9006,13 @@ export class PeerborneDocument<
     // Use _documentChangeCount (document-kind changes only) rather than
     // _hashes.size (which includes ACL nodes) to keep the semantic consistent.
     // Binary layout with length prefixes avoids ambiguity and is efficient
-    // for large state blobs (no JSON/Array.from overhead).
-    const compactedCount = this._documentChangeCount;
+    // for large state blobs (no JSON/Array.from overhead). The count is
+    // advisory metadata, and an adopted remote snapshot can raise it to the
+    // uint32 limit, so clamp it rather than let a later snapshot fail.
+    const compactedCount = Math.min(
+      this._documentChangeCount,
+      MAX_SNAPSHOT_COMPACTED_COUNT,
+    );
     const stateBytes = this._changesSerializer.serializeChanges(state);
     let signature: Uint8Array;
     if (this._isSigningEnabled()) {

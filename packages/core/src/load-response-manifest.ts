@@ -48,7 +48,7 @@ const reflectApply = Reflect.apply;
  * The snapshot state a load response would apply. The signer, signature,
  * timestamp and compacted count are deliberately absent: honest writers sign
  * their own snapshots of the same state, and the loader authenticates the
- * signature separately against its locally trusted writers.
+ * signature separately against the document's writers.
  */
 export interface LoadResponseManifestSnapshot {
   readonly stateBytes: Uint8Array;
@@ -296,7 +296,7 @@ function snapshotPayloadBytes(name: string, value: unknown): Uint8Array {
  * reconciled with the full representation of their CID. The snapshot's
  * signature, timestamp and compacted count are excluded so writers that
  * signed their own snapshot of one state agree; loaders verify that signature
- * against their trusted writers before applying the snapshot. The response
+ * against the document's writers before applying the snapshot. The response
  * bytes are never trusted as a precomputed manifest: advertisers and loaders
  * must independently derive this digest from the actual plan they would serve
  * or apply.

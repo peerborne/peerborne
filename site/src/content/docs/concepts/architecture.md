@@ -66,8 +66,9 @@ its devices. The agreed digest binds the document, served frontier, captured
 tuple, and a response manifest containing change CIDs, node kinds, edges,
 snapshot state and boundary, and keychain changes. The selected response must
 echo the challenge sent to that responder, match the local tuple, verify under a
-captured writer, carry a snapshot signed by a captured writer, and reproduce
-that digest before mutation. Disabling quorum
+captured writer, and reproduce that digest before mutation; a first load's
+snapshot must also be signed by a writer that the response's writer blocks
+establish. Disabling quorum
 allows one trusted signed V4 response; challenge, tuple, signature, and
 frontier checks remain.
 
