@@ -37,20 +37,27 @@ export async function syncInvitationMessageCompletely<ChangesType>(
   phase: 'bootstrap' | 'catch-up',
   options: {
     readonly provenSnapshotBoundariesBeforeSync?: ReadonlySet<string>;
+    readonly knownBeforeSync?: ReadonlySet<string>;
     readonly isSnapshotApplied?: () => boolean;
   } = {},
 ): Promise<boolean> {
   const provenBeforeSync = new Set(options.provenSnapshotBoundariesBeforeSync);
+  const knownBeforeSync = options.knownBeforeSync ?? new Set<string>();
   const expectedWithoutNewSnapshot = new Set(
     collectInvitationCidsToInstall(
       message.changeId,
       message.changes,
       provenBeforeSync,
+      knownBeforeSync,
     ),
   );
   const snapshotBoundary = message.snapshot?.lastChangeNodeCID;
-  if (snapshotBoundary !== undefined) {
-    expectedWithoutNewSnapshot.add(snapshotBoundary);
+  const requiredSnapshotBoundary =
+    snapshotBoundary !== undefined && !knownBeforeSync.has(snapshotBoundary)
+      ? snapshotBoundary
+      : undefined;
+  if (requiredSnapshotBoundary !== undefined) {
+    expectedWithoutNewSnapshot.add(requiredSnapshotBoundary);
   }
   const withNewSnapshot = new Set(provenBeforeSync);
   if (snapshotBoundary !== undefined) withNewSnapshot.add(snapshotBoundary);
@@ -59,10 +66,11 @@ export async function syncInvitationMessageCompletely<ChangesType>(
       message.changeId,
       message.changes,
       withNewSnapshot,
+      knownBeforeSync,
     ),
   );
-  if (snapshotBoundary !== undefined) {
-    expectedWithNewSnapshot.add(snapshotBoundary);
+  if (requiredSnapshotBoundary !== undefined) {
+    expectedWithNewSnapshot.add(requiredSnapshotBoundary);
   }
   const synced = await sync();
   if (synced !== true) return false;
@@ -75,15 +83,21 @@ export async function syncInvitationMessageCompletely<ChangesType>(
   return true;
 }
 
-/** @internal Collect all advertised CIDs outside an applied snapshot boundary. */
+/**
+ * @internal Collect the advertised CIDs a sync must install: all but those
+ * below an applied snapshot boundary, and none at or below a CID already known
+ * before the sync, since the merge stops there.
+ */
 export function collectInvitationCidsToInstall<ChangesType>(
   rootId: string | undefined,
   root: CRDTChangeNode<ChangesType> | undefined,
   provenSnapshotBoundaries: ReadonlySet<string>,
+  knownBeforeSync: ReadonlySet<string> = new Set(),
 ): string[] {
   const required = new Set<string>();
   if (root === undefined) {
-    if (rootId !== undefined) required.add(rootId);
+    if (rootId !== undefined && !knownBeforeSync.has(rootId))
+      required.add(rootId);
     return [...required];
   }
   if (rootId === undefined) {
@@ -91,9 +105,12 @@ export function collectInvitationCidsToInstall<ChangesType>(
   }
 
   for (const { nodeId } of collectBoundedChangeTree(rootId, root, {
-    stopBelowNodeIds: provenSnapshotBoundaries,
+    stopBelowNodeIds:
+      knownBeforeSync.size === 0
+        ? provenSnapshotBoundaries
+        : new Set([...provenSnapshotBoundaries, ...knownBeforeSync]),
   })) {
-    if (nodeId !== undefined) {
+    if (nodeId !== undefined && !knownBeforeSync.has(nodeId)) {
       required.add(nodeId);
     }
   }
