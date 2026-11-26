@@ -14,18 +14,26 @@ function fixture(duplicate = false) {
     (data: Data, readers: string[], writers: string[], hashes: string[]) => void
   >();
   let opens = 0;
+  let closes = 0;
   let writeError: Error | undefined;
   let openError: Error | undefined;
+  let retireOnWrite = false;
+  let retired = false;
   const emit = () => {
     for (const handler of handlers.values()) handler(data, [], [], []);
   };
   const source: DocumentHandle<Data, Change, string> = {
     document: data,
+    get retired() {
+      return retired;
+    },
     async open() {
       opens++;
       if (openError) throw openError;
     },
-    async close() {},
+    async close() {
+      closes++;
+    },
     async getReaders() {
       return [];
     },
@@ -33,6 +41,14 @@ function fixture(duplicate = false) {
       return [];
     },
     async change(change) {
+      if (retired) throw new Error('Document was retired');
+      if (retireOnWrite) {
+        change(data);
+        retired = true;
+        throw new Error(
+          'Document was retired: the change could not be rolled back',
+        );
+      }
       if (writeError) throw writeError;
       change(data);
       emit();
@@ -45,37 +61,49 @@ function fixture(duplicate = false) {
     },
   };
   const store = createDocumentStore(() => source);
-  const collection = createCollection(
-    peerborneCollectionOptions({
-      id: `fixture-${Math.random()}`,
-      store,
-      getKey: (row: Row) => row.id,
-      select: (doc) =>
-        duplicate ? [doc.items.a, doc.items.a] : Object.values(doc.items),
-      mutate: (mutations) => (doc) => {
-        for (const mutation of mutations) {
-          if (mutation.type === 'delete') delete doc.items[mutation.key];
-          else if (mutation.type === 'insert')
-            doc.items[mutation.key] = mutation.value;
-          else Object.assign(doc.items[mutation.key], mutation.changes);
-        }
-      },
-    }),
-  );
+  const createProjection = () =>
+    createCollection(
+      peerborneCollectionOptions({
+        id: `fixture-${Math.random()}`,
+        store,
+        getKey: (row: Row) => row.id,
+        select: (doc) =>
+          duplicate ? [doc.items.a, doc.items.a] : Object.values(doc.items),
+        mutate: (mutations) => (doc) => {
+          for (const mutation of mutations) {
+            if (mutation.type === 'delete') delete doc.items[mutation.key];
+            else if (mutation.type === 'insert')
+              doc.items[mutation.key] = mutation.value;
+            else Object.assign(doc.items[mutation.key], mutation.changes);
+          }
+        },
+      }),
+    );
+  const collection = createProjection();
   return {
     data,
     collection,
+    createProjection,
     store,
     handlers,
     emit,
     get opens() {
       return opens;
     },
+    get closes() {
+      return closes;
+    },
     denyWrite() {
       writeError = new Error('Read only');
     },
     denyOpen() {
       openError = new Error('Open denied');
+    },
+    allowOpen() {
+      openError = undefined;
+    },
+    retireOnWrite() {
+      retireOnWrite = true;
     },
     async cleanup() {
       await collection.cleanup();
@@ -131,6 +159,45 @@ describe('experimental TanStack DB collection', () => {
     await expect(transaction.when('settled')).rejects.toThrow('Read only');
     expect(f.data.items.a.title).toBe('Initial');
     expect(f.collection.get('a')?.title).toBe('Initial');
+    await f.cleanup();
+  });
+
+  test('a retired document fails the collection instead of projecting the discarded edit', async () => {
+    const f = fixture();
+    await f.collection.preload();
+    const statuses: string[] = [];
+    f.store.subscribe(() => statuses.push(f.store.getSnapshot().status));
+    f.retireOnWrite();
+    const transaction = f.collection.update('a', (row) => {
+      row.title = 'Discarded';
+    });
+    await expect(transaction.when('settled')).rejects.toThrow('retired');
+    expect(f.data.items.a.title).toBe('Discarded');
+    expect(f.collection.health.hasErrors).toBe(true);
+    expect(f.collection.get('a')?.title).toBe('Initial');
+    f.emit();
+    expect(f.collection.get('a')?.title).toBe('Initial');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(statuses).toEqual(['retired', 'closed']);
+    expect(f.closes).toBe(1);
+    await f.cleanup();
+    expect(f.handlers.size).toBe(0);
+  });
+
+  test('a collection restarted after a transient open failure retries the open', async () => {
+    const f = fixture();
+    f.denyOpen();
+    await expect(f.collection.preload()).rejects.toThrow('Open denied');
+    expect(f.opens).toBe(1);
+    expect(f.store.getSnapshot().status).toBe('error');
+    await f.collection.cleanup();
+
+    f.allowOpen();
+    const restarted = f.createProjection();
+    await restarted.preload();
+    expect(f.opens).toBe(2);
+    expect(restarted.get('a')?.title).toBe('Initial');
+    await restarted.cleanup();
     await f.cleanup();
   });
 

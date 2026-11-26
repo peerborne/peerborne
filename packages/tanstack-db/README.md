@@ -17,7 +17,10 @@ The adapter subscribes before opening the document, replaces the complete row
 snapshot on each notification, and releases its ownership during cleanup.
 Writes await `store.change`; authorization failures propagate to TanStack DB's
 transaction rollback. Settlement is local API completion, not a peer delivery
-or durability acknowledgement.
+or durability acknowledgement. When the store reports an error or a `retired`
+document, the adapter calls `fail()` and stops projecting, so the collection
+keeps its last rows and never shows an edit that a retired Yjs or Loro
+document discarded.
 
 This prototype does not implement query-driven network sync, incremental row
 diffing, relational persistence, schema migration, or distributed transactions.

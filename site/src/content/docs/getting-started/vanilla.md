@@ -59,14 +59,19 @@ await store.stop();
 await document.close();
 ```
 
-`create()` founds the path. Opening an existing path from peers instead needs
-`resolveLoadSecurityCommitments`; see
+`create()` founds the path, once per node. Opening an existing path from peers
+instead needs `resolveLoadSecurityCommitments`; see
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 `subscribe` does not open anything. `connect` opens and retains the shared
-document until the last consumer releases it. Imperative applications can
-instead `await store.start()` and `await store.stop()`. Every mutation returns a
+document until the last consumer releases it, and longer while
+`snapshot.deliveryFailure` reports a change that has not reached peers.
+Imperative applications can instead `await store.start()` and
+`await store.stop()`. `store.change` never opens the document; it rejects with
+`Document store is closed` after the store closes. Every mutation returns a
 promise; catch it to report authorization, storage, or publication failures.
-Use `snapshot.error` for subscription-driven error UI.
+Use `snapshot.error` for subscription-driven error UI. A `retired` status means
+the document refused a change it could not roll back and must be reopened; see
+[Local changes that fail before publication](../../concepts/local-first/#local-changes-that-fail-before-publication).
 
 Snapshots change identity when mutable CRDT state changes. The wrapper and
 membership arrays are readonly, but `snapshot.data` is the actual CRDT: route

@@ -32,6 +32,8 @@ export interface PeerborneCollectionOptions<
  * range. Each document notification replaces the complete row snapshot.
  * This does not implement query-driven network synchronization or persistence.
  * Construct during SSR, but start/preload the collection only in its owner runtime.
+ * The collection fails when the store reports an error or a retired document,
+ * so it never projects an edit that a retired document discarded.
  */
 export function peerborneCollectionOptions<
   Row extends object,
@@ -88,7 +90,7 @@ export function peerborneCollectionOptions<
         const refresh = () => {
           if (!active) return;
           const snapshot = options.store.getSnapshot();
-          if (snapshot.status === 'error') {
+          if (snapshot.status === 'error' || snapshot.status === 'retired') {
             stopWithError(snapshot.error);
             return;
           }

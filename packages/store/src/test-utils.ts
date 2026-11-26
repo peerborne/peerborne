@@ -18,6 +18,9 @@ export class TestDocument
   openError?: Error;
   writeError?: Error;
   reopenable = true;
+  retired = false;
+  retireOnWriteError = false;
+  deliveryFailure?: DocumentDeliveryFailure;
   handlers = new Map<
     string,
     (
@@ -27,6 +30,7 @@ export class TestDocument
       hashes: string[],
     ) => void
   >();
+  filters = new Map<string, 'all' | 'local' | 'remote'>();
 
   async open() {
     this.openCount++;
@@ -49,17 +53,25 @@ export class TestDocument
   async change(change: TestChange) {
     this.writeCount++;
     await this.writeGate;
-    if (this.writeError) throw this.writeError;
+    if (this.retired) throw new Error('Document was retired');
+    if (this.writeError) {
+      if (this.retireOnWriteError) {
+        change(this.document);
+        this.retired = true;
+      }
+      throw this.writeError;
+    }
     change(this.document);
+    const changeId = `cid-${this.writeCount}`;
     if (this.undeliveredError) {
       for (const handler of this.deliveryHandlers.values())
         handler({
           documentPath: '/test',
-          changeId: `cid-${this.writeCount}`,
+          changeId,
           error: this.undeliveredError,
         });
     }
-    this.emit();
+    this.emit('local', [changeId]);
   }
   subscribe(
     id: string,
@@ -69,11 +81,14 @@ export class TestDocument
       writers: string[],
       hashes: string[],
     ) => void,
+    originFilter: 'all' | 'local' | 'remote' = 'all',
   ) {
     this.handlers.set(id, handler);
+    this.filters.set(id, originFilter);
   }
   unsubscribe(id: string) {
     this.handlers.delete(id);
+    this.filters.delete(id);
   }
   deliveryHandlers = new Map<
     string,
@@ -89,9 +104,11 @@ export class TestDocument
   unsubscribeDeliveryFailures(id: string) {
     this.deliveryHandlers.delete(id);
   }
-  emit() {
-    for (const handler of this.handlers.values()) {
-      handler(this.document, [...this.readers], [...this.writers], []);
+  emit(origin: 'local' | 'remote' = 'remote', hashes: string[] = []) {
+    for (const [id, handler] of this.handlers) {
+      const filter = this.filters.get(id);
+      if (filter !== 'all' && filter !== origin) continue;
+      handler(this.document, [...this.readers], [...this.writers], hashes);
     }
   }
 }
