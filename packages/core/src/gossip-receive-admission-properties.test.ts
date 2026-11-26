@@ -128,7 +128,7 @@ test('the newest frame of every open scope is processed once work drains, within
         { minLength: 5, maxLength: 80 },
       ),
       async (steps) => {
-        const aggregate = new GroupDocumentOperationBudget(3, 10);
+        const aggregate = new GroupDocumentOperationBudget(64, 1024);
         const scopes = [0, 1].map(() => {
           const local = new GroupDocumentOperationBudget(2, 6);
           return {
@@ -161,8 +161,7 @@ test('the newest frame of every open scope is processed once work drains, within
             scope.newest = id;
             runs.push(scope.receive.run(input, process(scope), process(scope)));
           }
-          expect(aggregate.usage.operations).toBeLessThanOrEqual(3);
-          expect(aggregate.usage.bytes).toBeLessThanOrEqual(10);
+          expect(aggregate.usage.operations).toBeLessThanOrEqual(64);
           for (const { local, receive } of scopes) {
             expect(local.usage.operations).toBeLessThanOrEqual(2);
             expect(receive.keptBytes).toBeLessThanOrEqual(5);

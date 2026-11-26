@@ -65,14 +65,16 @@ GossipSub is **best-effort**:
 
 Each open document processes at most 16 frames and 16 MiB of ciphertext at a
 time, and all documents together at most 64 frames and 64 MiB. A frame that
-arrives while either budget is full is skipped. If a skipped frame decrypts
-under a document key, it is kept as its sender's latest frame and processed
-once a credit frees; one such check runs at a time per document, and a newer
-arrival replaces a frame still waiting for it. A writer's later frames carry
-its earlier changes inline, so this recovers the end of a typing burst. A
-frame that does not decrypt never displaces a kept one. At most eight senders
-are kept per document; beyond that, the oldest kept frame is dropped until
-its sender's next frame or a `requestSync()`.
+arrives while the document's budget is full is skipped, but the latest skipped
+frame of each GossipSub sender is retained, holding one of the shared credits.
+One at a time, a retained frame is checked to decrypt under the document's
+current key; a frame that passes is kept and processed once a credit frees. A
+writer's later frames carry its earlier changes inline, so this recovers the
+end of a typing burst. A sender's frame is only replaced by a newer one from
+the same sender, and a frame that fails the check, including one under a
+retired epoch key, is never kept. At most eight senders and 16 MiB are kept
+per document; sync requests are dropped first, then the oldest frame. A frame
+skipped while the shared credits are exhausted is not retained.
 
 ## Peer discovery
 

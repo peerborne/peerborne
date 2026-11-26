@@ -125,10 +125,10 @@ test('without a retry a skipped frame is dropped as before', async () => {
   expect(local.usage).toEqual({ operations: 0, bytes: 0 });
 });
 
-test('a frame skipped for shared capacity runs when another subscription frees it', async () => {
-  const aggregate = new GroupDocumentOperationBudget(2, 1024);
+test('a retained frame holds a shared credit, and one skipped for shared capacity is not retained', async () => {
+  const aggregate = new GroupDocumentOperationBudget(3, 1024);
   const busy = new GossipReceiveAdmission(
-    new GroupDocumentOperationBudget(4, 1024),
+    new GroupDocumentOperationBudget(1, 1024),
     aggregate,
   );
   const idle = new GossipReceiveAdmission(
@@ -137,28 +137,106 @@ test('a frame skipped for shared capacity runs when another subscription frees i
   );
   const work = blocking();
   const retried: number[] = [];
-  const pending = [
-    busy.run(Uint8Array.of(1), work.operation),
-    busy.run(Uint8Array.of(2), work.operation),
-  ];
-  await idle.run(Uint8Array.of(7), work.operation, async (frame) => {
+  const retry = async (frame: Uint8Array) => {
     retried.push(frame[0]!);
-  });
-  expect(idle.keptBytes).toBe(1);
-  work.gates[1]!.resolve();
-  await pending[1];
+  };
+  const first = busy.run(Uint8Array.of(1), work.operation, retry);
+  await busy.run(Uint8Array.of(2), work.operation, retry);
   await turn();
-  expect(retried).toEqual([7]);
+  expect(busy.keptBytes).toBe(1);
+  expect(aggregate.usage).toEqual({ operations: 2, bytes: 2 });
+  const second = idle.run(Uint8Array.of(5), work.operation, retry);
+  // Shared credits are exhausted, so this skipped frame is dropped.
+  await idle.run(Uint8Array.of(6), work.operation, retry);
+  await idle.run(Uint8Array.of(7), work.operation, retry);
+  await turn();
+  expect(idle.keptBytes).toBe(0);
   await work.settleAll();
-  await Promise.all(pending);
+  await Promise.all([first, second]);
+  for (let index = 0; index < 4; index++) await turn();
+  await work.settleAll();
+  expect(retried).toEqual([2]);
   expect(aggregate.usage).toEqual({ operations: 0, bytes: 0 });
+});
+
+test('each sender keeps its own frame waiting for the check', async () => {
+  const local = new GroupDocumentOperationBudget(1, 1024);
+  const checks: number[] = [];
+  const pendingChecks: PromiseWithResolvers<'sync'>[] = [];
+  const receive = new GossipReceiveAdmission(
+    local,
+    new GroupDocumentOperationBudget(16, 1024),
+    async (frame) => {
+      checks.push(frame[0]!);
+      const check = Promise.withResolvers<'sync'>();
+      pendingChecks.push(check);
+      return check.promise;
+    },
+  );
+  const work = blocking();
+  const retried: number[] = [];
+  const retry = async (frame: Uint8Array) => {
+    retried.push(frame[0]!);
+  };
+  const busy = receive.run(Uint8Array.of(1), work.operation, retry, 'a');
+  await receive.run(Uint8Array.of(2), work.operation, retry, 'a');
+  // While a's first skipped frame is checked, a's last frame waits, and
+  // frames from other senders do not replace it.
+  await receive.run(Uint8Array.of(3), work.operation, retry, 'a');
+  for (let index = 0; index < 5; index++)
+    await receive.run(
+      Uint8Array.of(20 + index),
+      work.operation,
+      retry,
+      `b${index}`,
+    );
+  for (let index = 0; index < 7; index++) {
+    pendingChecks.at(-1)!.resolve('sync');
+    await turn();
+  }
+  expect(checks).toContain(3);
+  await work.settleAll();
+  await busy;
+  for (let index = 0; index < 6; index++) await turn();
+  expect(retried).toContain(3);
+  expect(retried).not.toContain(2);
+});
+
+test('sync requests are evicted before ordinary frames', async () => {
+  const local = new GroupDocumentOperationBudget(1, 1024);
+  const receive = new GossipReceiveAdmission(
+    local,
+    new GroupDocumentOperationBudget(64, 1024),
+    async (frame) => (frame[0]! >= 100 ? 'request' : 'sync'),
+  );
+  const work = blocking();
+  const retried: number[] = [];
+  const retry = async (frame: Uint8Array) => {
+    retried.push(frame[0]!);
+  };
+  const busy = receive.run(Uint8Array.of(1), work.operation, retry, 'w');
+  await receive.run(Uint8Array.of(2), work.operation, retry, 'writer');
+  for (let index = 0; index < 4; index++) await turn();
+  for (let index = 0; index < MAX_KEPT_FRAME_SENDERS + 2; index++) {
+    await receive.run(
+      Uint8Array.of(100 + index),
+      work.operation,
+      retry,
+      `reader${index}`,
+    );
+    for (let turnIndex = 0; turnIndex < 3; turnIndex++) await turn();
+  }
+  await work.settleAll();
+  await busy;
+  for (let index = 0; index < 6; index++) await turn();
+  expect(retried).toContain(2);
 });
 
 test('a frame from another sender does not displace a kept frame, and kept senders are bounded', async () => {
   const local = new GroupDocumentOperationBudget(1, 1024);
   const receive = new GossipReceiveAdmission(
     local,
-    new GroupDocumentOperationBudget(8, 1024),
+    new GroupDocumentOperationBudget(16, 1024),
   );
   const work = blocking();
   const retried: number[] = [];
@@ -184,6 +262,7 @@ test('a frame from another sender does not displace a kept frame, and kept sende
       retry,
       `peer-${sender}`,
     );
+  for (let index = 0; index < 4; index++) await turn();
   expect(receive.keptBytes).toBe(MAX_KEPT_FRAME_SENDERS);
   await work.settleAll();
   await busy;
@@ -205,7 +284,7 @@ test('a skipped frame that fails authentication never displaces a kept member fr
       mostAtOnce = Math.max(mostAtOnce, ++checking);
       await turn();
       checking--;
-      return frame[0]! < 100;
+      return frame[0]! < 100 ? 'sync' : undefined;
     },
   );
   const work = blocking();

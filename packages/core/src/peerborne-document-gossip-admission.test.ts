@@ -68,6 +68,7 @@ function documentFixture(
     _hashes: new Set(),
     _computeTopic: () => topic,
     _keychainProvider: { keyIDLength: 1 },
+    _keychain: { current: async () => [Uint8Array.of(1), {}] },
     _authProvider: { nonceBytes: 1 },
     _decryptBlock: decrypt,
     _syncUnlocked: sync,
@@ -117,24 +118,26 @@ test('the active receive paths share document and aggregate limits until work ac
         if (index % 2 === 0) fixture.deliver();
         else validators.push(validate({}, { data: frame() }));
       }
-      await expect(validate({}, { data: frame() })).resolves.toBe('ignore');
     }
+    // Shared credits are exhausted, so skipped frames are not even retained.
+    for (const fixture of fixtures.slice(0, 4))
+      await expect(fixture.validator()({}, { data: frame() })).resolves.toBe(
+        'ignore',
+      );
     const charged = 4 * DEFAULT_DOCUMENT_OPERATION_COUNT;
-    // Each skipped frame waits for one authentication check, outside credits.
-    expect(decrypt).toHaveBeenCalledTimes(charged + 4);
+    expect(decrypt).toHaveBeenCalledTimes(charged);
     await expect(target.validator()({}, { data: frame() })).resolves.toBe(
       'ignore',
     );
-    expect(decrypt).toHaveBeenCalledTimes(charged + 5);
     await fixtures[0].document.close();
     target.deliver();
-    expect(decrypt).toHaveBeenCalledTimes(charged + 5);
+    expect(decrypt).toHaveBeenCalledTimes(charged);
 
     pending[0].resolve(new Uint8Array([3]));
     await turn();
     expect(fixtures[0].deserialize).not.toHaveBeenCalled();
     const fresh = target.validator()({}, { data: frame() });
-    expect(decrypt).toHaveBeenCalledTimes(charged + 6);
+    expect(decrypt).toHaveBeenCalledTimes(charged + 1);
     pending.at(-1)!.resolve(new Uint8Array([3]));
     await expect(fresh).resolves.toBe('accept');
   } finally {
@@ -214,6 +217,53 @@ test('frames that do not decrypt never displace a member frame kept for capacity
         } as never),
       );
       fixture.deliver(frame(255));
+      await turn();
+    }
+    unblock.resolve();
+    await Promise.all(results);
+    for (let index = 0; index < 10; index++) await turn();
+    expect(fixture.sync).toHaveBeenCalledTimes(1);
+    expect(fixture.sync.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        changeId: String(DEFAULT_DOCUMENT_OPERATION_COUNT + 1),
+      }),
+    );
+  } finally {
+    unblock.resolve();
+    await queued;
+    await fixture.document.close();
+  }
+});
+
+test('a skipped frame under a retired epoch key is never kept', async () => {
+  const decrypt = jest.fn(
+    async (_key: Uint8Array, _nonce: Uint8Array, data: Uint8Array) => data,
+  );
+  const fixture = documentFixture('/document', decrypt);
+  const unblock = Promise.withResolvers<void>();
+  const queued = fixture.queue.run(() => unblock.promise);
+  try {
+    await fixture.document.open();
+    const validate = fixture.validator();
+    const results = Array.from(
+      { length: DEFAULT_DOCUMENT_OPERATION_COUNT + 1 },
+      (_, index) =>
+        validate({}, {
+          type: 'signed',
+          from: writer,
+          data: frame(index + 1),
+        } as never),
+    );
+    for (let index = 0; index < 4; index++) await turn();
+    for (let index = 0; index < 20; index++) {
+      // Decryptable, but under an older key than the current one.
+      results.push(
+        validate({}, {
+          type: 'signed',
+          from: { toString: () => `former-${index}` },
+          data: Uint8Array.of(9, 2, 200),
+        } as never),
+      );
       await turn();
     }
     unblock.resolve();

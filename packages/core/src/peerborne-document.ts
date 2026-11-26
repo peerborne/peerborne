@@ -44,7 +44,11 @@ import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
-import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipReceiveAdmission,
+  type SkippedFrameKind,
+} from './gossip-receive-admission.js';
+import { documentBytesEqual } from './internal/document-binary.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -7457,6 +7461,23 @@ export class PeerborneDocument<
     }
   }
 
+  /** Cheap authenticity check for a frame skipped by receive admission. */
+  private async _checkSkippedGossipFrame(
+    frame: Uint8Array,
+  ): Promise<SkippedFrameKind | undefined> {
+    const keyEnd = this._keychainProvider.keyIDLength;
+    const [currentKeyId] = await this._keychain.current();
+    if (
+      currentKeyId === undefined ||
+      frame.byteLength <= keyEnd ||
+      !documentBytesEqual(frame.subarray(0, keyEnd), currentKeyId)
+    )
+      return undefined;
+    const content = await this._decryptGossipFrame(frame);
+    if (content === undefined) return undefined;
+    return isSyncRequest(content) ? 'request' : 'sync';
+  }
+
   private _decryptGossipFrame(frame: Uint8Array) {
     const keyEnd = this._keychainProvider.keyIDLength;
     const nonceEnd = keyEnd + this._authProvider.nonceBytes;
@@ -7539,12 +7560,13 @@ export class PeerborneDocument<
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
-    // A frame skipped for capacity is kept only if it decrypts under a
-    // document key, so a non-member cannot displace a member's frame.
+    // A frame skipped for capacity is kept only if it decrypts under the
+    // current document key, so non-members and members holding only a
+    // retired epoch key cannot displace a member's frame.
     const receiveAdmission = new GossipReceiveAdmission(
       undefined,
       undefined,
-      async (frame) => (await this._decryptGossipFrame(frame)) !== undefined,
+      (frame) => this._checkSkippedGossipFrame(frame),
     );
     this._gossipReceiveAdmission = receiveAdmission;
     const reportReceiveFailure = () => {
