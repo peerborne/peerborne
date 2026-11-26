@@ -207,6 +207,7 @@ async function batching({ full }) {
 
 const coldPath = '/technical-cold-recovery';
 const coldHistoryChunkSize = 64 * 1024;
+const coldHistoryEditsPerBatch = 16;
 const coldCheckpoints = createBrowserCheckpointStorage(
   '/technical-cold-checkpoints',
   'peerborne/technical-cold-checkpoint/1',
@@ -267,7 +268,7 @@ async function seedCold({ seed }) {
   const doc = fixture.document;
   try {
     // The reference checkpoint store encrypts the small base checkpoint. The
-    // large update is stored only as a production UnixFS change block.
+    // historical changes are stored in production UnixFS blocks.
     const checkpoint = await doc.exportPlaintextCheckpoint();
     const checkpointPin = await documentCheckpointCommitment(checkpoint);
     try {
@@ -277,33 +278,46 @@ async function seedCold({ seed }) {
       checkpoint.signature.fill(0);
     }
 
-    let cid;
+    const cids = [];
     doc.subscribe(
       'cold-change-cid',
       (_state, _readers, _writers, [hash]) => {
-        cid = hash;
+        cids.push(hash);
       },
       'local',
     );
     doc.document.gc = false;
-    await doc.change((state) => {
-      const root = state.getMap('root');
-      const edits = state.getArray('edits');
-      state.transact(() => {
-        for (let i = 0; i < historyMutations; i++) {
-          root.set(
-            'historicalText',
-            syntheticText(coldHistoryChunkSize, seed + i),
-          );
-          edits.push([i]);
-          if (i > 0) edits.delete(0, 1);
-        }
+    // Each batch crosses the UnixFS chunk boundary and fits one gossip frame.
+    for (
+      let first = 0;
+      first < historyMutations;
+      first += coldHistoryEditsPerBatch
+    ) {
+      const end = Math.min(first + coldHistoryEditsPerBatch, historyMutations);
+      await doc.change((state) => {
+        const root = state.getMap('root');
+        const edits = state.getArray('edits');
+        state.transact(() => {
+          for (let i = first; i < end; i++) {
+            root.set(
+              'historicalText',
+              syntheticText(coldHistoryChunkSize, seed + i),
+            );
+            edits.push([i]);
+            if (i > 0) edits.delete(0, 1);
+          }
+        });
       });
-    });
+    }
     doc.unsubscribe('cold-change-cid');
     assert(
-      cid && CID.parse(cid).code !== rawCodec,
-      'expected a chunked UnixFS change',
+      new Set(cids).size === cids.length &&
+        cids.length === Math.ceil(historyMutations / coldHistoryEditsPerBatch),
+      'expected one distinct change block per historical batch',
+    );
+    assert(
+      cids.every((cid) => CID.parse(cid).code !== rawCodec),
+      'expected each historical batch to be a chunked UnixFS change',
     );
     const encodedHistoryBytes = fixture.provider.getHistory(
       doc.document,
@@ -313,32 +327,39 @@ async function seedCold({ seed }) {
       'fixture must contain at least the requested encoded history bytes',
     );
 
-    // Normal sync supports signed deferred change nodes. The fixture supplies
-    // one such node after restart to replay the accepted local change by CID.
-    const deferred = {
-      documentId: coldPath,
-      signatureContext: 'ordinary-sync-v1',
-      changeId: cid,
-      changes: { kind: 'document' },
-    };
-    const signature = await fixture.auth.sign(
-      fixture.serializer.serializeSyncMessage(deferred),
-      fixture.identity.privateKey,
-    );
-    await coldManifest('readwrite', {
-      checkpointPin,
-      message: {
+    // Supply genuine signed deferred change records in their authored order.
+    const messages = [];
+    for (const cid of cids) {
+      const deferred = {
+        documentId: coldPath,
+        signatureContext: 'ordinary-sync-v1',
+        changeId: cid,
+        changes: { kind: 'document' },
+      };
+      const signature = await fixture.auth.sign(
+        fixture.serializer.serializeSyncMessage(deferred),
+        fixture.identity.privateKey,
+      );
+      messages.push({
         ...deferred,
         signature: btoa(String.fromCharCode(...signature)),
-      },
+      });
+    }
+    const historicalTextBytes = historyMutations * coldHistoryChunkSize;
+    await coldManifest('readwrite', {
+      checkpointPin,
+      messages,
       encodedHistoryBytes,
+      historicalTextBytes,
       historyMutations,
       seed,
     });
     return {
       encodedHistoryBytes,
+      historicalTextBytes,
       historyMutations,
       targetBytes,
+      deferredBlockCount: messages.length,
       encryption: 'AES-GCM',
       sourceGC: false,
       chunkedUnixFS: true,
@@ -380,22 +401,23 @@ async function loadCold() {
           doc.document.getArray('edits').length === 0,
           'base already contains the tail',
         );
-        assert(
-          !doc.hasChange(manifest.message.changeId),
-          'base already knows the tail',
-        );
-
-        timeline.replayStartedMs = performance.now();
-        assert(
-          await doc.sync(manifest.message),
-          'signed deferred sync was rejected',
-        );
-        timeline.historyFinishedMs = performance.now();
-        assert(
-          doc.hasChange(manifest.message.changeId),
-          'SDK did not apply the stored change',
-        );
         const edits = doc.document.getArray('edits');
+        timeline.replayStartedMs = performance.now();
+        for (const [index, message] of manifest.messages.entries()) {
+          assert(!doc.hasChange(message.changeId), 'change already applied');
+          assert(await doc.sync(message), 'signed deferred sync was rejected');
+          const expectedCount = Math.min(
+            (index + 1) * coldHistoryEditsPerBatch,
+            manifest.historyMutations,
+          );
+          assert(
+            doc.hasChange(message.changeId) &&
+              edits.length === 1 &&
+              edits.get(0) === expectedCount - 1,
+            'SDK did not integrate the next stored change',
+          );
+        }
+        timeline.historyFinishedMs = performance.now();
         const lastEdit = edits.get(0);
         assert(
           edits.length === 1 && lastEdit === manifest.historyMutations - 1,
@@ -433,7 +455,9 @@ async function loadCold() {
         });
         return {
           encodedHistoryBytes: manifest.encodedHistoryBytes,
+          historicalTextBytes: manifest.historicalTextBytes,
           historyMutations: manifest.historyMutations,
+          deferredBlockCount: manifest.messages.length,
         };
       },
       { sampleHeap: true },

@@ -81,11 +81,14 @@ ciphertext per file, with tighter caller limits, and charges traversal bytes
 against the caller's aggregate fetch budget. Writes enforce the same file limit
 before persistence. If a legacy edit has already advanced a provider's live
 causal state, the oversized-write check retires that handle. Reopen from accepted
-state before splitting and retrying the edit. Native properties cover real UnixFS
-chunking, tighter caller budgets and cancellation. A Chromium profile relaunch
-exercises restore, authenticated sync and an edit with at least 50 MiB of
-encoded history. Renderer memory, long tasks and latency are measured at
-runtime because the proof covers logical counts and bytes.
+state before splitting and retrying the edit. For UnixFS file output, the
+assembler owns each accepted segment and flattens those segments at their
+proved prefix offsets. For a file of size `B`, the assembler writes at most
+`2B` bytes into its own buffers. Native properties check ownership, exact
+backing size, real UnixFS chunking, caller budgets and cancellation. A Chromium
+profile relaunch exercises restore, authenticated sync and an edit with at
+least 50 MiB of encoded history. Renderer memory, long tasks and latency
+remain runtime measurements.
 
 ### BeeKEM revocation and pinned restart
 
@@ -664,7 +667,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 72 property-suite files containing 264 explicit
+The inventory audits 82 property-suite files containing 290 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized
