@@ -8,6 +8,7 @@ import {
   PeerborneConfig,
   defaultConfig,
   defaultBootstrapConfig,
+  type ChangeDeliveryFailure,
 } from '@peerborne/core';
 
 /**
@@ -19,6 +20,22 @@ function captureTrace(): string | undefined {
     return new Error().stack;
   }
   return undefined;
+}
+
+function deliverySubscriptionId(documentId: string): string {
+  return `${documentId}#delivery`;
+}
+
+function releaseDocument(
+  documentRef: Pick<
+    PeerborneDocument<unknown, unknown, unknown, unknown, unknown, unknown>,
+    'unsubscribe' | 'unsubscribeDeliveryFailures'
+  >,
+  documentId: string,
+): void {
+  documentRef.unsubscribe(documentId);
+  documentRef.unsubscribe(deliverySubscriptionId(documentId));
+  documentRef.unsubscribeDeliveryFailures(documentId);
 }
 
 function requirePeerborneState<RootStateType, State>(
@@ -253,6 +270,7 @@ export function openDocumentAsync<
     >
   | CloseDocumentAction
   | SyncDocumentAction<DocType>
+  | DeliveryFailureAction
 > {
   return async (dispatch, getState) => {
     const { node } = requirePeerborneState(selectPeerborneState, getState());
@@ -260,7 +278,7 @@ export function openDocumentAsync<
     const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {
       const prevRef = documents[documentId].documentRef;
-      prevRef.unsubscribe(documentId);
+      releaseDocument(prevRef, documentId);
       await prevRef.close();
       dispatch(closeDocument(documentId, captureTrace()));
     }
@@ -282,6 +300,28 @@ export function openDocumentAsync<
         throw error;
       }
       dispatch(openDocument(documentId, documentRef, captureTrace()));
+      const reportDelivery = () => {
+        const current =
+          selectPeerborneState(getState())?.documents?.[documentId];
+        if (
+          current?.documentRef === documentRef &&
+          current.deliveryFailure !== documentRef.deliveryFailure
+        ) {
+          dispatch(
+            deliveryFailure(
+              documentId,
+              documentRef.deliveryFailure,
+              captureTrace(),
+            ),
+          );
+        }
+      };
+      documentRef.subscribeDeliveryFailures(documentId, reportDelivery);
+      documentRef.subscribe(
+        deliverySubscriptionId(documentId),
+        reportDelivery,
+        'local',
+      );
       return documentRef;
     } else {
       console.warn('Unable to find document:', documentId);
@@ -376,7 +416,7 @@ export function closeDocumentAsync<
     const { documents } = requirePeerborneState(selectPeerborneState, getState());
     if (documents[documentId] && documents[documentId].documentRef) {
       const documentRef = documents[documentId].documentRef;
-      documentRef.unsubscribe(documentId);
+      releaseDocument(documentRef, documentId);
       await documentRef.close();
       dispatch(closeDocument(documentId, captureTrace()));
     } else {
@@ -475,6 +515,29 @@ export function changeDocument<DocType>(
   return { type: CHANGE_DOCUMENT, documentId, document, ...(_trace != null && { _trace }) };
 }
 
+export const DELIVERY_FAILURE = 'PEERBORNE_DELIVERY_FAILURE';
+/**
+ * The document's latest local change that is committed but undelivered, or
+ * `undefined` once a later local change's frame is published and carries it.
+ */
+export interface DeliveryFailureAction extends Action<typeof DELIVERY_FAILURE> {
+  documentId: string;
+  deliveryFailure: ChangeDeliveryFailure | undefined;
+  _trace?: string;
+}
+export function deliveryFailure(
+  documentId: string,
+  failure: ChangeDeliveryFailure | undefined,
+  _trace?: string,
+): DeliveryFailureAction {
+  return {
+    type: DELIVERY_FAILURE,
+    documentId,
+    deliveryFailure: failure,
+    ...(_trace != null && { _trace }),
+  };
+}
+
 export const PEER_CONNECT = 'PEERBORNE_PEER_CONNECT';
 export interface PeerConnectAction extends Action<typeof PEER_CONNECT> {
   peerAddress: string;
@@ -521,5 +584,6 @@ export type PeerborneActions<
   | CloseDocumentAction
   | SyncDocumentAction<DocType>
   | ChangeDocumentAction<DocType>
+  | DeliveryFailureAction
   | PeerConnectAction
   | PeerDisconnectAction;

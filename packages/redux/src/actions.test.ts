@@ -1,6 +1,7 @@
 import { describe, expect, test, jest, beforeEach } from '@jest/globals';
 
 const actions = require('./actions');
+const { peerborneReducer } = require('./reducers');
 
 describe('peerborne-redux sync action creators', () => {
   test('initialize action includes node', () => {
@@ -78,6 +79,9 @@ describe('peerborne-redux async thunks', () => {
       change: jest.fn().mockImplementation(async (fn: any) => mockDocRef.document),
       subscribe: jest.fn(),
       unsubscribe: jest.fn(),
+      deliveryFailure: undefined,
+      subscribeDeliveryFailures: jest.fn(),
+      unsubscribeDeliveryFailures: jest.fn(),
     };
     getState = jest.fn();
   });
@@ -184,6 +188,50 @@ describe('peerborne-redux async thunks', () => {
     expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/existing');
     expect(mockDocRef.close).toHaveBeenCalledTimes(1);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test('records a delivery failure until a later local frame is published', async () => {
+    const reducer = peerborneReducer(...Array(9).fill({}));
+    let state = { node: mockNode, documents: {}, peers: [] };
+    dispatch = jest.fn((action: any) => {
+      state = reducer(state, action);
+    });
+    getState = () => state;
+    mockNode.doc.mockReturnValue(mockDocRef);
+    await actions.openDocumentAsync('/doc')(dispatch, getState);
+    const [[failureId, onFailure]] = mockDocRef.subscribeDeliveryFailures.mock.calls;
+    const local = mockDocRef.subscribe.mock.calls.find(
+      ([, , filter]: unknown[]) => filter === 'local',
+    );
+    expect(failureId).toBe('/doc');
+    expect(local[0]).toBe('/doc#delivery');
+
+    const failure = {
+      documentPath: '/doc',
+      changeId: 'cid-1',
+      error: new Error('NoPeersSubscribedToTopic'),
+    };
+    mockDocRef.deliveryFailure = failure;
+    onFailure(failure);
+    local[1](mockDocRef.document, [], [], ['cid-1']);
+    expect(state.documents['/doc'].deliveryFailure).toBe(failure);
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'PEERBORNE_DELIVERY_FAILURE' }),
+    );
+    const dispatched = dispatch.mock.calls.length;
+
+    mockDocRef.deliveryFailure = undefined;
+    local[1](mockDocRef.document, [], [], ['cid-2']);
+    expect(state.documents['/doc'].deliveryFailure).toBeUndefined();
+    local[1](mockDocRef.document, [], [], ['cid-3']);
+    expect(dispatch).toHaveBeenCalledTimes(dispatched + 1);
+
+    await actions.closeDocumentAsync('/doc')(dispatch, getState);
+    expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc');
+    expect(mockDocRef.unsubscribe).toHaveBeenCalledWith('/doc#delivery');
+    expect(mockDocRef.unsubscribeDeliveryFailures).toHaveBeenCalledWith('/doc');
+    onFailure(failure);
+    expect(state.documents['/doc']).toBeUndefined();
   });
 
   test('closeDocumentAsync closes open document', async () => {
