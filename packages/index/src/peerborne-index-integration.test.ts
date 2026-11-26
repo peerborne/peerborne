@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, jest as jestFn, test } from '@
 import { PeerborneIndexIntegration, SubscribableDocument } from './peerborne-index-integration.js';
 import { IndexManager } from './index-manager.js';
 import { MemoryIndexStorage } from './memory-index-storage.js';
+import type { IndexDefinition } from './types.js';
 
 interface MockDoc {
   title: string;
@@ -103,6 +104,11 @@ class MockSubscribableDocument implements SubscribableDocument<MockDoc> {
   }
 }
 
+const docsIndex = (): IndexDefinition => ({ version: 2, name: 'docs', collectionPrefix: '/docs/', fields: [
+    { path: 'title', type: 'string' },
+    { path: 'author', type: 'string' },
+  ] });
+
 async function createTestIntegration(storage: MemoryIndexStorage): Promise<{
   manager: IndexManager<MockDoc>;
   integration: PeerborneIndexIntegration<MockDoc>;
@@ -111,10 +117,7 @@ async function createTestIntegration(storage: MemoryIndexStorage): Promise<{
     storage,
     (doc: MockDoc) => doc as unknown as Record<string, unknown>,
   );
-  await manager.defineIndex({ version: 2, name: 'docs', collectionPrefix: '/docs/', fields: [
-      { path: 'title', type: 'string' },
-      { path: 'author', type: 'string' },
-    ] });
+  await manager.defineIndex(docsIndex());
   return { manager, integration: new PeerborneIndexIntegration(manager) };
 }
 
@@ -283,6 +286,41 @@ describe('PeerborneIndexIntegration', () => {
 
       const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
       expect(result.documents[0]?.snapshot.title).toBe('v2');
+      expect(doc.handlerCount).toBe(1);
+    });
+
+    test('should follow a reopened handle for an already tracked path', async () => {
+      const closed = new MockSubscribableDocument('/docs/1', { title: 'v1', author: 'Alice' });
+      await integration.trackDocument(closed);
+      const reopened = new MockSubscribableDocument('/docs/1', { title: 'v2', author: 'Alice' });
+
+      await integration.trackDocument(reopened);
+      expect(closed.handlerCount).toBe(0);
+      expect(reopened.handlerCount).toBe(1);
+      const titles = async () =>
+        (await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' }))
+          .documents.map(({ snapshot }) => snapshot.title);
+      expect(await titles()).toEqual(['v2']);
+
+      reopened.simulateChange({ title: 'v3', author: 'Alice' });
+      await manager.flush();
+      expect(await titles()).toEqual(['v3']);
+
+      await integration.untrackDocument(closed);
+      expect(integration.getTrackedPaths()).toEqual(['/docs/1']);
+      expect(reopened.handlerCount).toBe(1);
+      expect(await titles()).toEqual(['v3']);
+    });
+
+    test('should repopulate a redefined index when the same handle is tracked again', async () => {
+      const doc = new MockSubscribableDocument('/docs/1', { title: 'v1', author: 'Alice' });
+      await integration.trackDocument(doc);
+      await manager.removeIndex('docs');
+      await manager.defineIndex(docsIndex());
+
+      await integration.trackDocument(doc);
+      const result = await manager.query({ version: 2, count: 'exact', allowScan: true, indexName: 'docs' });
+      expect(result.documents.map(({ documentPath }) => documentPath)).toEqual(['/docs/1']);
       expect(doc.handlerCount).toBe(1);
     });
   });
