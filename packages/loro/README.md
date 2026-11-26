@@ -38,7 +38,9 @@ with the waiting updates it releases, and the batch is rejected if an operation
 writes to an unknown container type, deletes elements outside its container or
 causal past, or moves a tree node that does not exist, or if any root container
 reads differently after a snapshot round trip. Only a batch that passes reaches
-the document; a rejected one leaves it unchanged.
+the document; a rejected one leaves it unchanged. A waiting update dropped
+because it fails with the update that released it is reported by `hasDiscarded`,
+so Peerborne stops waiting for it.
 
 Validation reads the whole document, so every integrated remote update costs
 O(document). Duplicate and waiting deliveries cost microseconds. The rules

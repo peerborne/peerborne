@@ -174,7 +174,7 @@ describe('Loro remote payload validation', () => {
     expectDurable(provider, live);
   });
 
-  test('validates a waiting update with the change that releases it and keeps only that change', () => {
+  test('discards a waiting update that fails with the change that releases it and keeps the rest', () => {
     const provider = new LoroProvider();
     const complete = rawReplica(baseSnapshot());
     const partial = complete.forkAt([{ peer: '1', counter: 31 }]);
@@ -182,17 +182,31 @@ describe('Loro remote payload validation', () => {
       mode: 'update',
       from: partial.oplogVersion(),
     });
+    const author = rawReplica(baseSnapshot());
+    author.setPeerId('7');
+    const [, dependent] = provider.localChange(author, 'after', (doc) => {
+      doc.getMap('m').set('after', true);
+    });
     const live = provider.remoteChange(
       provider.newDocument(),
       partial.export({ mode: 'update' }),
     );
     const before = provider.getSnapshot(live);
     const crafted = fixture('unknown-tree-container');
-    provider.remoteChange(live, crafted);
+    for (const update of [crafted, dependent]) {
+      expect(provider.remoteChange(live, update)).toBe(live);
+      expect(provider.hasIntegrated(live, update)).toBe(false);
+      expect(provider.hasDiscarded(live, update)).toBe(false);
+    }
     expect(provider.getSnapshot(live)).toEqual(before);
     provider.remoteChange(live, missing);
-    expect(live.oplogVersion().compare(complete.oplogVersion())).toBe(0);
-    expect(live.toJSON()).toEqual(complete.toJSON());
+    expect(live.oplogVersion().compare(author.oplogVersion())).toBe(0);
+    expect(live.toJSON()).toEqual(author.toJSON());
+    expect(provider.hasIntegrated(live, missing)).toBe(true);
+    expect(provider.hasIntegrated(live, dependent)).toBe(true);
+    expect(provider.hasDiscarded(live, dependent)).toBe(false);
+    expect(provider.hasIntegrated(live, crafted)).toBe(false);
+    expect(provider.hasDiscarded(live, crafted)).toBe(true);
     expectRejected(provider, live, crafted, 'unsupported container');
     expectDurable(provider, live);
   });

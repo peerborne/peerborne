@@ -122,3 +122,56 @@ test('replicas reject crafted Loro payloads from an authorized writer and stay i
   assert.equal(await alice.document.sync(await publishedMessage(carol)), true);
   assert.deepEqual(project(carol), project(alice));
 });
+
+test('a crafted change that waited for a dependency stops waiting once it is discarded', async (t) => {
+  const complete = new LoroDoc();
+  complete.import(baseSnapshot());
+  const partial = complete.forkAt([{ peer: '1', counter: 31 }]);
+  const missing = complete.export({
+    mode: 'update',
+    from: partial.oplogVersion(),
+  });
+  const alice = await documentFixture({ ...options, index: 11 });
+  await alice.document.change((doc) => {
+    doc.import(partial.export({ mode: 'update' }));
+  });
+  const bob = await replicaOf(alice, 12, options);
+  const mallory = await replicaOf(alice, 13, options);
+  t.after(() => Promise.all([alice, bob, mallory].map((f) => f.close())));
+
+  const crafted = fixture('unknown-tree-container');
+  mallory.provider.localChange = (doc) => [doc, crafted];
+  await mallory.document.change(() => {});
+  const poisoned = await publishedMessage(mallory);
+  assert.equal(await alice.document.sync(poisoned), true);
+  assert.equal(alice.document._isWaiting(poisoned.changeId), true);
+  assert.equal(alice.document._hashes.has(poisoned.changeId), false);
+
+  await bob.document.change((doc) => {
+    doc.import(missing);
+  });
+  const dependency = bob.document._lastSyncMessage.changeId;
+  await bob.document.change((doc) => {
+    doc.getMap('m').set('bob', 1);
+  });
+  const dependent = bob.document._lastSyncMessage.changeId;
+  const notified = [];
+  alice.document.subscribe(
+    'remote-updates',
+    (_document, _readers, _writers, hashes) => notified.push(...hashes),
+    'remote',
+  );
+  assert.equal(await alice.document.sync(await publishedMessage(bob)), true);
+  for (const cid of [dependency, dependent]) {
+    assert.equal(alice.document._hashes.has(cid), true);
+    assert.ok(notified.includes(cid));
+  }
+  assert.equal(alice.document._isWaiting(poisoned.changeId), false);
+  assert.equal(alice.document._hashes.has(poisoned.changeId), false);
+  assert.deepEqual(project(alice), project(bob));
+
+  await assert.rejects(alice.document.sync(poisoned), /unsupported container/);
+  assert.equal(alice.document._isWaiting(poisoned.changeId), false);
+  assert.equal(alice.document._hashes.has(poisoned.changeId), false);
+  assert.deepEqual(project(alice), project(bob));
+});

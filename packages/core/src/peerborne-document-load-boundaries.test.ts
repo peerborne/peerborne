@@ -1222,6 +1222,55 @@ describe('document load response boundaries', () => {
     expect(document._crdtProvider.remoteChange).toHaveBeenCalledTimes(2);
   });
 
+  test('stops waiting for a change the CRDT discards and passes a redelivery to the CRDT again', async () => {
+    const discarded = new Set<string>();
+    const provider = {
+      remoteChange: jest.fn(
+        (state: Set<string>, change: BufferedChange) =>
+          new Set([...state, change.id]),
+      ),
+      hasIntegrated: jest.fn(
+        (state: Set<string>, change: BufferedChange) =>
+          !discarded.has(change.id) &&
+          change.deps.every((dependency) => state.has(dependency)),
+      ),
+      hasDiscarded: jest.fn((_state: Set<string>, change: BufferedChange) =>
+        discarded.has(change.id),
+      ),
+    };
+    const { document } = bufferingDocument({ _crdtProvider: provider });
+    const crafted = bufferedNode('crafted', ['dependency']);
+
+    await document._syncDocumentChanges('CRAFTED', crafted);
+    expect(document._isWaiting('CRAFTED')).toBe(true);
+    expect(provider.hasDiscarded).not.toHaveBeenCalled();
+
+    discarded.add('crafted');
+    await document._syncDocumentChanges(
+      'DEPENDENCY',
+      bufferedNode('dependency'),
+    );
+
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'DEPENDENCY']));
+    expect(document._isDelivered('CRAFTED')).toBe(false);
+    expect(document._fireOrDeferRemoteUpdateHandlers.mock.calls).toEqual([
+      [['DEPENDENCY']],
+    ]);
+
+    await document._syncDocumentChanges('CRAFTED', crafted);
+    expect(provider.remoteChange).toHaveBeenCalledTimes(3);
+    expect(document._isWaiting('CRAFTED')).toBe(true);
+
+    discarded.clear();
+    const late = bufferedNode('late', ['missing']);
+    await document._syncDocumentChanges('LATE', late);
+    await document._syncDocumentChanges('LATE', late);
+    expect(provider.remoteChange).toHaveBeenCalledTimes(4);
+    discarded.add('late');
+    await document._syncDocumentChanges('LATE', late);
+    expect(provider.remoteChange).toHaveBeenCalledTimes(5);
+  });
+
   test('checks a waiting change once per delivery and once after another change integrates', async () => {
     const { document, hasIntegrated } = bufferingDocument({
       _mergeWriters: jest.fn(async () => undefined),

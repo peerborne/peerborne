@@ -347,8 +347,9 @@ export class LoroProvider implements CRDTProvider<
   /**
    * Rejects a blob that is not a valid update and leaves `document` unchanged.
    * An update whose dependencies are missing waits and is validated once they
-   * arrive. When it then fails validation with the update that released it,
-   * that update is kept on its own and the waiting ones are dropped.
+   * arrive, together with the update that released it. When that batch fails
+   * but the releasing update passes on its own, each waiting update is then
+   * validated on its own, and the ones that fail are discarded.
    */
   remoteChange(document: LoroDoc, changes: Uint8Array): LoroDoc {
     const range = expectMode(changes, 'update');
@@ -361,17 +362,32 @@ export class LoroProvider implements CRDTProvider<
       waitingUpdates.set(document, queue.slice(-MAX_WAITING_UPDATES));
       return document;
     }
-    let accepted = ready;
+    let valid = true;
     try {
       validateImport(document, ready);
     } catch (error) {
       if (ready.length === 1 || integrable(document, [changes]).length === 0) {
         throw error;
       }
-      validateImport(document, [changes]);
-      accepted = [changes];
+      valid = false;
     }
-    document.importBatch(accepted);
+    if (valid) {
+      document.importBatch(ready);
+    } else {
+      validateImport(document, [changes]);
+      document.importBatch([changes]);
+      for (const update of ready) {
+        if (update === changes || integrable(document, [update]).length === 0) {
+          continue;
+        }
+        try {
+          validateImport(document, [update]);
+          document.importBatch([update]);
+        } catch {
+          // `hasDiscarded` reports the update from now on.
+        }
+      }
+    }
     waitingUpdates.set(
       document,
       queue.filter((update) => !ready.includes(update)),
@@ -385,6 +401,20 @@ export class LoroProvider implements CRDTProvider<
    */
   hasIntegrated(document: LoroDoc, changes: Uint8Array): boolean {
     return covers(document.oplogVersion().toJSON(), rangeOf(changes));
+  }
+
+  /**
+   * An update is discarded once it is neither integrated nor waiting: it
+   * failed validation with the update that released it, the waiting queue
+   * evicted it, or `remoteChange` rejected it.
+   */
+  hasDiscarded(document: LoroDoc, changes: Uint8Array): boolean {
+    if (this.hasIntegrated(document, changes)) return false;
+    const held = waitingUpdates.get(document) ?? [];
+    return (
+      !held.includes(changes) &&
+      !held.some((update) => sameBytes(update, changes))
+    );
   }
 
   getHistory(document: LoroDoc): Uint8Array {
