@@ -161,7 +161,7 @@ When compaction runs:
 Each document also remembers the CIDs of the changes it has seen, so it does
 not apply one twice. Writers and readers bound that memory with or without
 compaction. They keep the CIDs of the retained tree, the snapshot boundary, the
-recent tips and the current heads, plus every CID learned in the current
+recent tips and the newest 1,024 heads, plus every CID learned in the current
 generation of 1,024. Older CIDs are forgotten when the next generation fills,
 so the encrypted checkpoint of a long-edited document stays small and
 restorable. `hasChange()` and `loadChangeBlock()` report only remembered CIDs.

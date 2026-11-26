@@ -2,6 +2,7 @@ import { webcrypto } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MemoryBlockstore } from 'blockstore-core/memory';
+import * as Y from 'yjs';
 import {
   beekemPathUpdateV2,
   Peerborne,
@@ -335,7 +336,7 @@ test('refuses to export a checkpoint that could not be restored', async () => {
   assert.equal(restored.document.getText('fixture').toString(), 'before restart');
 });
 
-test('rejects a signed checkpoint that forgot a CID of its retained change tree', async () => {
+test('rejects a signed checkpoint that forgot its change root', async () => {
   const { document, created, signing } = await fixture();
   await created.change((doc) => doc.getText('fixture').insert(0, 'next '));
   const checkpoint = await created.exportCheckpoint();
@@ -343,10 +344,11 @@ test('rejects a signed checkpoint that forgot a CID of its retained change tree'
   const message = new YjsJSONSerializer().deserializeSyncMessage(
     Buffer.from(state.message, 'base64'),
   );
-  const [parent] = Object.keys(message.changes!.children!);
-  state.hashes = state.hashes.filter((cid: string) => cid !== parent);
+  state.hashes = state.hashes.filter(
+    (cid: string) => cid !== message.changeId,
+  );
   state.recentTips = state.recentTips.filter(
-    ([cid]: [string, string]) => cid !== parent,
+    ([cid]: [string, string]) => cid !== message.changeId,
   );
   const payload = new TextEncoder().encode(JSON.stringify(state));
   const signature = new Uint8Array(
@@ -359,13 +361,92 @@ test('rejects a signed checkpoint that forgot a CID of its retained change tree'
   const candidate = document();
   await assert.rejects(
     candidate.restoreCheckpoint({ payload, signature }),
-    /incomplete change history/,
+    /Invalid checkpoint change root/,
   );
   assert.equal(candidate.historySize(), 0);
   await candidate.restoreCheckpoint(checkpoint);
   assert.equal(
     candidate.document.getText('fixture').toString(),
     'next before restart',
+  );
+});
+
+test('a document that adopts a tree naming forgotten ancestors still exports and restores', async () => {
+  const { document, created, signing, kem, traffic } = await fixture();
+  for (let index = 0; index < 60; index++)
+    await created.change((doc) => doc.getText('fixture').insert(0, '.'));
+  const serializer = new YjsJSONSerializer();
+  const { broadcasts, keychain } = traffic.get(created)!;
+  const [, key] = await keychain.current();
+  const messages = [];
+  for (const frame of broadcasts) {
+    const message = serializer.deserializeSyncMessage(
+      await decryptBroadcast(frame, key),
+    );
+    if (message.signatureContext === 'ordinary-sync-v1' && message.changes)
+      messages.push(message);
+  }
+  // Snapshots prune the tree to its 50 newest changes and trim twice.
+  learnHistory(created, 0, 1_025);
+  await created.snapshot();
+  learnHistory(created, 1_025, 1_025);
+  await created.snapshot();
+
+  const cids = (node: { children?: Record<string, any> }): string[] =>
+    Object.entries(node.children ?? {}).flatMap(([cid, child]) => [
+      cid,
+      ...cids(child),
+    ]);
+  const known = messages.find(
+    (message) =>
+      created.hasChange(message.changeId!) &&
+      cids(message.changes!).some((cid) => !created.hasChange(cid)),
+  );
+  assert.ok(known, 'a retained change must name forgotten ancestors');
+  const head = messages.at(-1)!.changeId!;
+  // Another device of this writer publishes a change whose primary parent is
+  // its own older head and that cross-links this replica's head.
+  const other = new Y.Doc();
+  other.getText('fixture').insert(0, 'other device ');
+  const unsigned = {
+    documentId: created.documentPath,
+    signatureContext: 'ordinary-sync-v1' as const,
+    changeId: syntheticCid(9_000_000),
+    changes: {
+      kind: 'document' as const,
+      change: Y.encodeStateAsUpdateV2(other),
+      children: {
+        [known.changeId!]: known.changes!,
+        [head]: { kind: 'document' as const },
+      },
+    },
+  };
+  const signature = Buffer.from(
+    await new SubtleCrypto().sign(
+      serializer.serializeSyncMessage(unsigned),
+      signing.privateKey,
+    ),
+  ).toString('base64');
+  const message = serializer.deserializeSyncMessage(
+    serializer.serializeSyncMessage({ ...unsigned, signature } as never),
+  );
+  assert.equal(await created.sync(message as never), true);
+  assert.equal(created.hasChange(unsigned.changeId), true);
+
+  const restored = document();
+  await restored.setKemKeyPair(kem);
+  await restored.restoreCheckpoint(await created.exportCheckpoint());
+  const text = created.document.getText('fixture').toString();
+  assert.ok(text.includes('other device'));
+  assert.equal(restored.document.getText('fixture').toString(), text);
+  await restored.open();
+  await restored.change((doc) => doc.getText('fixture').insert(0, 'after '));
+  const reopened = document();
+  await reopened.setKemKeyPair(kem);
+  await reopened.restoreCheckpoint(await restored.exportCheckpoint());
+  assert.equal(
+    reopened.document.getText('fixture').toString(),
+    'after ' + text,
   );
 });
 

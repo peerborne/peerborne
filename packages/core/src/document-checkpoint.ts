@@ -139,7 +139,11 @@ export function encodeCheckpointState(
   return encoded;
 }
 
-/** Require a checkpoint's retained change tree to be rooted at, and made of, known CIDs. */
+/**
+ * Require a checkpoint's retained change tree to be well formed and rooted at
+ * a known CID. Everything beneath a known CID is covered by it, as in a merge,
+ * so an adopted tree may still name ancestors the document has forgotten.
+ */
 export function assertCheckpointChangeHistory<ChangesType>(
   documentPath: string,
   message: CRDTSyncMessage<ChangesType>,
@@ -156,12 +160,6 @@ export function assertCheckpointChangeHistory<ChangesType>(
     canonicalizeNodeId: (value) => CID.parse(value).toString(),
   });
   validateRemoteSyncTreeAliases(message.changeId, tree.root);
-  if (
-    tree.entries.some(
-      (entry) => entry.nodeId === undefined || !hashes.has(entry.nodeId),
-    )
-  )
-    throw new Error('Checkpoint has incomplete change history');
 }
 
 export function decodeCheckpointState(

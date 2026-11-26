@@ -139,6 +139,24 @@ describe('known-change trimming', () => {
     expect(knownChangesNeedTrim(new Set(hashes), new Set())).toBe(true);
   });
 
+  test('retains only the newest generation of frontier heads', () => {
+    const heads = Array.from(
+      { length: KNOWN_CHANGE_GENERATION + 10 },
+      (_, index) => `head-${index}`,
+    );
+    const retained = retainedKnownChanges(
+      undefined,
+      undefined,
+      undefined,
+      [],
+      heads,
+    );
+    expect(retained.size).toBe(KNOWN_CHANGE_GENERATION);
+    expect(retained.has('head-9')).toBe(false);
+    expect(retained.has('head-10')).toBe(true);
+    expect(retained.has(heads.at(-1)!)).toBe(true);
+  });
+
   test('retains every node of the tree, the snapshot boundary, the tips and the heads', () => {
     const leaf = (kind = crdtDocumentChangeNode): CRDTChangeNode<string> => ({
       kind,

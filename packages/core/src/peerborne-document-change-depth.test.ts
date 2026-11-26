@@ -516,6 +516,23 @@ describe('known-change sets', () => {
     expect(document._hashes.has(document._lastSyncMessage.changeId)).toBe(true);
   });
 
+  test('a burst of unreferenced roots, such as redelivered forgotten changes, cannot regrow the sets', async () => {
+    const { document } = writerDocument({}, false);
+    receiver(document);
+    for (let index = 0; index < 3 * generationSize; index++)
+      await document._syncDocumentChanges(`root-${index}`, {
+        kind: crdtDocumentChangeNode,
+        change: { index },
+      });
+
+    expect(document._currentFrontier().length).toBeLessThanOrEqual(
+      2 * generationSize,
+    );
+    expect(document._hashes.size).toBeLessThanOrEqual(2 * generationSize);
+    expect(document._hashes.has('root-1')).toBe(false);
+    expect(document._hashes.has(`root-${3 * generationSize - 1}`)).toBe(true);
+  });
+
   test('does not trim while bootstrap state application is pending', () => {
     const { document } = writerDocument();
     learnRemoteHistory(document, 0);

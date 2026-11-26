@@ -104,25 +104,17 @@ describe('checkpoint change history', () => {
   };
   const retained = ['cid-head', 'cid-parent', 'cid-tip'];
 
-  test('accepts a retained tree whose older history was forgotten', () => {
+  test.each([
+    ['every node is known', retained],
+    ['a node beneath the known root was forgotten', ['cid-head', 'cid-tip']],
+    ['only the root is known', ['cid-head']],
+  ])('accepts a retained tree when %s', (_name, known) => {
     expect(() =>
-      assertCheckpointChangeHistory('/checkpoint', message, new Set(retained)),
+      assertCheckpointChangeHistory('/checkpoint', message, new Set(known)),
     ).not.toThrow();
   });
 
   test.each([
-    [
-      'a forgotten retained node',
-      retained.filter((cid) => cid !== 'cid-parent'),
-      message,
-      /incomplete change history/,
-    ],
-    [
-      'a forgotten cross-link leaf',
-      retained.filter((cid) => cid !== 'cid-tip'),
-      message,
-      /incomplete change history/,
-    ],
     ['a forgotten root', retained.slice(1), message, /change root/],
     [
       'another document',
@@ -159,8 +151,36 @@ describe('checkpoint change history', () => {
             children: { 'cid-NotCanonical': { kind: crdtDocumentChangeNode } },
           },
         },
-        new Set([...retained, 'cid-NotCanonical']),
+        new Set(retained),
       ),
     ).toThrow(/canonical CID/);
+  });
+
+  test('rejects conflicting descriptions of one node', () => {
+    expect(() =>
+      assertCheckpointChangeHistory(
+        '/checkpoint',
+        {
+          ...message,
+          changes: {
+            ...message.changes,
+            children: {
+              ...message.changes.children,
+              'cid-other': {
+                kind: crdtDocumentChangeNode,
+                change: 'other',
+                children: {
+                  'cid-parent': {
+                    kind: crdtDocumentChangeNode,
+                    change: 'a different parent',
+                  },
+                },
+              },
+            },
+          },
+        },
+        new Set(retained),
+      ),
+    ).toThrow(/conflicting descriptions/);
   });
 });

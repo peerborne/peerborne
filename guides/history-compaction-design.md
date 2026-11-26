@@ -34,16 +34,17 @@ deduplication after its block is deleted.
 `_hashes` and `_referencedAncestors` are bounded for writers and readers alike.
 After each remote sync and each snapshot, including a writer's depth-bound
 snapshot, a set that has gained more than 1,024 CIDs (one generation) is
-trimmed. The document keeps
-the retained tree, the snapshot boundary, the recent tips, the frontier heads
-and the current generation, and forgets the older entries. An older referenced
-ancestor stays while it is still a known hash, so trimming never changes the
-frontier, and served frontiers and quorum digests do not read these sets. A
+trimmed. The document keeps the retained tree, the snapshot boundary, the
+recent tips, the newest 1,024 frontier heads and the current generation, and
+forgets the older entries. An older referenced ancestor stays while it is still
+a known hash, so trimming leaves the frontier unchanged while it has at most
+1,024 heads. Served frontiers and quorum digests do not read these sets. A
 forgotten change that is delivered again is merged again; the merges are
 idempotent, as for a peer that loaded the same snapshot. Load completeness
 checks require only the CIDs that the merge will apply: nothing at or below a
 CID that was known before the sync. Checkpoints persist both sets, so their
-size no longer grows with history.
+size no longer grows with history. A checkpoint's change root must be known;
+an adopted tree may still name forgotten ancestors beneath a known CID.
 
 `hasChange(cid)` checks that known-CID set. `loadChangeBlock(cid)` loads and
 decrypts a known block, returning `undefined` for an unknown, forgotten or

@@ -1348,8 +1348,8 @@ export class PeerborneDocument<
 
   // Insertion-ordered set of known change CIDs, used to skip already-merged
   // changes during sync. `_trimKnownChanges()` keeps it bounded: it keeps the
-  // retained tree, snapshot boundary, recent tips, frontier heads and every
-  // CID learned in the current generation, and forgets older CIDs.
+  // retained tree, snapshot boundary, recent tips, newest 1,024 frontier heads
+  // and every CID learned in the current generation, and forgets older CIDs.
   private _hashes = new Set<string>();
 
   // Fail-closed bootstrap admission state. A bootstrap load can mutate
@@ -1413,7 +1413,8 @@ export class PeerborneDocument<
   // from the loader's view of the DAG.
   //
   // Trimmed with `_hashes`: an older entry stays while it names a retained
-  // CID or a still-known hash, so trimming never changes the frontier.
+  // CID or a still-known hash, so trimming leaves the frontier unchanged
+  // while it has at most 1,024 heads.
   private _referencedAncestors = new Set<string>();
 
   // Bounded list of recently-known change CIDs paired with their node kind.
@@ -2339,8 +2340,8 @@ export class PeerborneDocument<
    *     head.
    *   - Pruned ancestors: irrelevant. Pruning removes CIDs from the
    *     in-memory change tree, and `_trimKnownChanges()` later forgets
-   *     them from both sets together; they were never heads, and every
-   *     head is retained.
+   *     them from both sets together; they were never heads, and the
+   *     newest 1,024 heads are retained.
    *
    * Returns a fresh array so callers can't mutate internal state. Digest
    * helpers sort independently, so we don't sort here.
@@ -8838,9 +8839,9 @@ export class PeerborneDocument<
    * the blockstore. Callers should therefore still handle
    * `loadChangeBlock(cid)` resolving to `undefined` (and may need to fall
    * back to dialing peers). `_hashes` is bounded: a CID outside the retained
-   * tree, the snapshot boundary, the recent tips and the frontier is
-   * forgotten once roughly 1,024 to 2,048 newer CIDs are known, after which
-   * this returns `false`.
+   * tree, the snapshot boundary, the recent tips and the newest frontier
+   * heads is forgotten once roughly 1,024 to 2,048 newer CIDs are known,
+   * after which this returns `false`.
    */
   public hasChange(cid: string): boolean {
     this._assertNoIncompleteBootstrapLoad();

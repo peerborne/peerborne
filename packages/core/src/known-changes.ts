@@ -36,16 +36,19 @@ export function knownChangesNeedTrim(
 
 /**
  * @internal CIDs that stay known across every trim: each node of the retained
- * tree, the snapshot boundary, the recent tips and the current frontier heads.
+ * tree, the snapshot boundary, the recent tips and the last
+ * `KNOWN_CHANGE_GENERATION` frontier heads. `heads` is insertion-ordered,
+ * oldest first. The cap stops a burst of redelivered, forgotten roots, which
+ * become heads, from regrowing the sets.
  */
 export function retainedKnownChanges<ChangesType>(
   rootId: string | undefined,
   root: CRDTChangeNode<ChangesType> | undefined,
   snapshotBoundary: string | undefined,
   tips: Iterable<string>,
-  heads: Iterable<string>,
+  heads: readonly string[],
 ): Set<string> {
-  const retained = new Set<string>(heads);
+  const retained = new Set<string>(heads.slice(-KNOWN_CHANGE_GENERATION));
   for (const tip of tips) retained.add(tip);
   if (snapshotBoundary) retained.add(snapshotBoundary);
   if (rootId !== undefined) retained.add(rootId);
