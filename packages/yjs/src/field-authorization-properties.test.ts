@@ -293,7 +293,7 @@ test('the encrypted document boundary rejects signed out-of-scope Yjs changes be
   );
 });
 
-function encodeItem(item: Y.Item, deleted?: Y.Item): Uint8Array {
+function encodeItem(item: Y.Item | Y.GC, deleted?: Y.Item): Uint8Array {
   const encoder = new Y.UpdateEncoderV2();
   writeVarUint(encoder.restEncoder, 1);
   writeVarUint(encoder.restEncoder, 1);
@@ -678,6 +678,138 @@ test('collected operations are inert and charged like visible ones, while visibl
       ],
     },
   );
+});
+
+test('operations the mirror collected are inert only where the document collects them too', () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom('default', 'filter', 'disabled', 'undo'),
+      fc.boolean(),
+      fc.integer({ min: 2, max: 1000 }),
+      (policy, forged, value) => {
+        const base = new Y.Doc();
+        base.clientID = 10;
+        base.getMap('root').set('a', new Y.Map<unknown>([['x', 1]]));
+        base.getMap('root').set('b', new Y.Map<unknown>([['k', 'safe']]));
+        const map = (doc: Y.Doc, key: string) =>
+          doc.getMap('root').get(key) as Y.Map<unknown>;
+        const deleter = clone(base, 30),
+          sender = clone(base, 20);
+        deleter.getMap('root').delete('a');
+        const deletion = Y.encodeStateAsUpdateV2(
+          deleter,
+          Y.encodeStateVector(base),
+        );
+        map(sender, forged ? 'b' : 'a').set(forged ? 'k' : 'x', value);
+        let update = Y.encodeStateAsUpdateV2(sender, Y.encodeStateVector(base));
+        if (forged) {
+          const [struct] = Y.decodeUpdateV2(update).structs as Y.Item[];
+          struct.origin = map(base, 'b')._map.get('k')!.id;
+          struct.rightOrigin = map(base, 'a')._map.get('x')!.id;
+          update = encodeItem(struct);
+        }
+        const replica = new Y.Doc(
+          policy === 'filter' ? { gcFilter: () => false } : {},
+        );
+        replica.getMap('root');
+        Y.applyUpdateV2(replica, Y.encodeStateAsUpdateV2(base));
+        const undo =
+          policy === 'undo'
+            ? new Y.UndoManager(replica.getMap('root'))
+            : undefined;
+        if (policy !== 'disabled') Y.applyUpdateV2(replica, deletion);
+        const session = new YjsProvider().createDocumentSession(replica);
+        if (policy === 'disabled') {
+          const removal = session.prepareRemote(deletion);
+          replica.gc = false;
+          removal.commit();
+        }
+        const plan = session.prepareRemote(update, {
+          inspectOperations: true,
+        });
+        const kept = policy !== 'default';
+        expect(pathsOf(plan.operationPaths!())).toEqual(
+          kept
+            ? pathsOf([forged ? ['root', 'b', 'k'] : ['root', 'a', 'x']])
+            : [],
+        );
+        if (forged && kept) {
+          expect(() =>
+            assertDocumentOperationsAllowed(plan, [['root', 'a']]),
+          ).toThrow(/signed field grants/);
+          plan.discard();
+        } else {
+          assertDocumentOperationsAllowed(plan, [['root', 'a']]);
+          plan.commit();
+        }
+        expect(map(replica, 'b').get('k')).toBe('safe');
+        expect(replica.getMap('root').has('a')).toBe(false);
+        undo?.destroy();
+        session.close();
+        for (const doc of [base, deleter, sender, replica]) doc.destroy();
+      },
+    ),
+    {
+      seed: 2012334,
+      numRuns: 24,
+      examples: [
+        ['default', true, 2],
+        ['filter', true, 2],
+        ['disabled', true, 2],
+        ['undo', true, 2],
+        ['undo', false, 2],
+      ],
+    },
+  );
+});
+
+test('content deleted by the update that integrates it is charged once at every replica', () => {
+  for (const gc of [true, false]) {
+    const base = new Y.Doc({ gc });
+    base.clientID = 10;
+    base.getMap('root').set('a', new Y.Map<unknown>([['text', new Y.Text()]]));
+    const deleter = clone(base, 30),
+      writer = clone(base, 20);
+    deleter.getMap('root').delete('a');
+    (
+      (writer.getMap('root').get('a') as Y.Map<unknown>).get('text') as Y.Text
+    ).insert(0, 'x'.repeat(70000));
+    const update = Y.encodeStateAsUpdateV2(writer, Y.encodeStateVector(base));
+    for (const deleteFirst of [false, true]) {
+      const replica = clone(base, 40);
+      if (deleteFirst)
+        Y.applyUpdateV2(
+          replica,
+          Y.encodeStateAsUpdateV2(deleter, Y.encodeStateVector(base)),
+        );
+      const session = new YjsProvider().createDocumentSession(replica);
+      const plan = session.prepareRemote(update, { inspectOperations: true });
+      assertDocumentOperationsAllowed(plan, [['root', 'a']]);
+      plan.commit();
+      session.close();
+      replica.destroy();
+    }
+    for (const doc of [base, deleter, writer]) doc.destroy();
+  }
+});
+
+test('restricted frames cannot send collected structs directly', () => {
+  const base = new Y.Doc();
+  base.getMap('root').set('allowed', 0);
+  const replica = clone(base, 30),
+    session = new YjsProvider().createDocumentSession(replica);
+  expect(() =>
+    session.prepareRemote(encodeItem(new Y.GC(Y.createID(40, 0), 100)), {
+      inspectOperations: true,
+    }),
+  ).toThrow(/inspection failed/);
+  const plan = session.prepareRemote(
+    encodeItem(new Y.GC(Y.createID(40, 0), 100)),
+  );
+  plan.commit();
+  expect(Y.getState(replica.store, 40)).toBe(100);
+  session.close();
+  for (const doc of [base, replica]) doc.destroy();
 });
 
 test('a restricted writer stays live at replicas that collected a concurrently deleted granted container', async () => {
