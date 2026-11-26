@@ -8,9 +8,10 @@ import { AutomergeACL } from '@peerborne/automerge';
 import { aclDependencyScenarios } from '../../../verification/acl-dependencies.mjs';
 
 // A valid membership addition whose only dependency is a hash nobody holds.
-async function orphan(acl, publicKey) {
+async function orphan(acl, publicKey, actor) {
   const author = new AutomergeACL();
   author.merge(acl.current());
+  author.actorBinding.setLocalActor(actor);
   const before = clone(author._acl);
   await author.add(publicKey);
   const [addition] = getChanges(before, author._acl);

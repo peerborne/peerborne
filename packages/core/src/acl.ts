@@ -54,6 +54,39 @@ export class ACLMergeDependencyError extends Error {
 }
 
 /**
+ * A staged ACL change could only reuse a position of the ACL's bound local
+ * actor that an earlier staged change may already have published. It is
+ * thrown before any state changes; bind a fresh actor and stage again.
+ */
+export class ACLActorUnavailableError extends Error {
+  constructor() {
+    super('The ACL local actor has no unpublished position left');
+    this.name = 'ACLActorUnavailableError';
+  }
+}
+
+/** Hooks an ACL implements so documents can bind its actors to signers. */
+export interface ACLActorBinding<ChangesType> {
+  /** Native actor identifier selected by a 32-byte derivation digest. */
+  actorFromDigest(digest: Uint8Array): string;
+  /**
+   * Make every later local change under `actor`. Once an actor is bound, a
+   * staged change that would reuse one of its positions throws
+   * {@link ACLActorUnavailableError} instead of choosing another actor.
+   */
+  setLocalActor(actor: string): void;
+  /**
+   * Actors `changes` adds operations for, decoded without merging them.
+   * Operations every replica authors identically are left out.
+   */
+  changeActors(changes: ChangesType): ReadonlySet<string>;
+  /** `changes` carrying `prefix`, an authored-change envelope. */
+  attach(changes: ChangesType, prefix: Uint8Array): ChangesType;
+  /** The prefix and bare changes. Throws when `changes` carries no prefix. */
+  detach(changes: ChangesType): readonly [Uint8Array, ChangesType];
+}
+
+/**
  * Merge changes into `acl` in order, holding those that wait for missing
  * dependencies and merging them again as soon as a later merge supplies
  * those dependencies. Returns the changes that are still waiting.
@@ -129,6 +162,13 @@ export async function retryACLConflict<T>(
  * @typeParam PublicKey Type of a user's public key.
  */
 export interface ACL<ChangesType, PublicKey> {
+  /**
+   * Lets a document bind the actors of this ACL's changes to their signers.
+   * A document then makes its own changes under signer-derived actors and
+   * admits a remote change only when its authored envelope verifies.
+   */
+  readonly actorBinding?: ACLActorBinding<ChangesType>;
+
   /**
    * Add a new user to the ACL.
    *

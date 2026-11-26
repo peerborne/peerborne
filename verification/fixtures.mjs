@@ -219,6 +219,28 @@ export async function replicaOf(source, index, options = {}) {
   return target;
 }
 
+/** Bind the fixture's ACL of `kind` to its signer and return that actor. */
+export async function aclActor(fixture, kind) {
+  await fixture.document._bindACLActor(kind);
+  return fixture.document._aclActors.get(kind).actor;
+}
+
+/**
+ * Publish an ACL node of `kind` authored by the fixture's signer. `stage`
+ * receives the bound ACL and returns the bare changes to publish.
+ */
+export async function publishACLChange(fixture, kind, stage) {
+  const { document } = fixture;
+  await document._bindACLActor(kind);
+  const changes = await stage(
+    kind === 'writer' ? document._writers : document._readers,
+  );
+  await document._makeChangeOnce(
+    await document._authorACLChange(kind, changes),
+    kind,
+  );
+}
+
 export async function publishedMessage(fixture) {
   const bytes = fixture.stats.lastFrame;
   const raw = await fixture.document._decryptBlock(

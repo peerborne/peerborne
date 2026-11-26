@@ -11,7 +11,8 @@ and load responses. With document signing enabled (the default), those outgoing
 encrypted; load requests also carry a signature. A document change payload
 additionally carries its author's signature inside the encrypted block, which
 [binds its CRDT actor](#crdt-actors-are-bound-to-change-signers) to that
-author. ACL and keychain payloads have no writer signature of their own.
+author, and so does a reader or writer ACL change. Keychain payloads have no
+writer signature of their own.
 Relay and other infrastructure not given the document key handle ciphertext
 rather than document plaintext; they never need a signing private key. During
 normal post-load sync, once a trusted writer set exists, a peer without a
@@ -121,7 +122,7 @@ await document.addWriter(peerSigningPublicKey);
 - **Readers** receive recipient-sealed keychain material through the Welcome in a signed invitation acceptance and decrypt content for epochs whose keys they hold. `addReader()` cannot onboard a new identity: a recipient with only a KEM key pair cannot authenticate a broadcast Welcome or decrypt the reader ACL row that admits it, so it could never open the document. It rejects any identity that is not already a reader before changing the ACL, and only resends the Welcome to an existing reader.
 - **Writers** sign ordinary sync messages that carry new changes. The local `addWriter()` API requires the target to have both an explicit reader row and a unique live BeeKEM leaf, so invite it as a `reader` before promotion, or invite it as an `editor`. The identity-to-KEM binding is kept by the founder document instance and its checkpoints. During post-load sync, receivers verify the outer signature against their current writer list before applying the message when signing is enabled.
 - Local role changes share a document mutation queue. `removeReader()` rejects an identity that is still a writer; demote it with `removeWriter()` first. `removeWriter(key, { requireRemainingWriter: true })` rejects with `LastWriterRemovalError` when no other writer would remain; it checks inside that queue, but concurrent removals by other peers can still leave a document with no writers. Removing an identity with no reader row and no local KEM or leaf record also fails unless the live BeeKEM tree holds only the local leaf, because absent records cannot prove the identity was revoked. These checks do not make the two replicated ACLs globally atomic: independently received ACL changes can temporarily reflect different roles on different replicas. The roles converge, but the content need not: edits made concurrently with your own demotion remain only on your replica. Every replica that applied the demotion rejects them, the demoted replica keeps them permanently, and nothing signals the divergence. A retried ACL change can leave two additions of the same identity in the history, because a publication rejected after delivery is rolled back only locally. When a removal observes only one of them, the Automerge ACL applies the removal on every replica, and a later addition that observes the removal restores the identity.
-- **ACL changes wait for the ACL history they depend on.** A receiver merges the ACL nodes of a delivered tree causal ancestors first. A change whose dependencies it still lacks, such as a Yjs struct whose client's earlier clocks never arrived or an Automerge change that cites an unknown hash, is never merged into the live ACL, so membership checks, role changes and checkpoints keep working. The receiver holds the change outside the ACL and does not record its node, so later deliveries carry it again, and merges it as soon as a later ACL change supplies its dependencies. Each frame signer holds at most 64 such changes and 4 MiB per document, and a document holds at most 256 and 16 MiB; past a bound, the signer holding the most gives up its oldest change. Held changes are not checkpointed.
+- **ACL changes wait for the ACL history they depend on.** A receiver merges the ACL nodes of a delivered tree causal ancestors first. A change whose dependencies it still lacks, such as a Yjs struct whose client's earlier clocks never arrived or an Automerge change that cites an unknown hash, is never merged into the live ACL, so membership checks, role changes and checkpoints keep working. The receiver holds the change outside the ACL and does not record its node, so later deliveries carry it again, and merges it as soon as a later ACL change supplies its dependencies. Each signer, the change's author when the ACL binds actors and otherwise the frame's signer, holds at most 64 such changes and 4 MiB per document, and a document holds at most 256 and 16 MiB; past a bound, the signer holding the most gives up its oldest change. Held changes are not checkpointed.
 - **Ordinary document sync signing is configurable.** Initial loads, security advertisements, and BeeKEM Welcome and PathUpdate membership-control messages remain writer-authenticated even when `enableSigning` is `false`.
 
 Where the receiving operation verifies a sync-message signature, that
@@ -253,9 +254,26 @@ wire encoding. Its limits:
   the cost of the nonce-search protection above for forgotten actors.
 - With `enableSigning: false` the envelope is unsigned and protects nothing
   against a peer that can decrypt the traffic.
-- Coordinator-backed documents and the ACL and keychain CRDTs do not use this
-  binding. Several devices of one signer are distinct actors that are not
-  protected from each other.
+- Coordinator-backed documents and the keychain CRDT do not use this binding.
+  Several devices of one signer are distinct actors that are not protected
+  from each other.
+
+The reader and writer ACLs are bound the same way. Each ACL of a document
+instance writes under its own actor, derived from the document path, the
+ACL, the signer and a per-instance nonce, and every published ACL node
+carries an envelope whose signature also covers the ACL, so a change cannot
+be replayed into the other ACL or the document. A receiver verifies the
+envelope of every inline ACL node of a message before merging any, and of
+every fetched one before merging it, including the writer blocks a quorum
+load uses to verify a snapshot. A relayed node that fails is merged nowhere
+and waits; a failing root rejects the message. Each ACL keeps its own
+first-seen bindings, and checkpoints carry them. An ACL change whose
+publication fails burns its actor's position, so the next change is staged
+under a fresh actor. Without the binding, a writer that saw another writer's
+ACL change could write a different change at the same position, and a
+replica that received it first kept it forever: under Yjs the replicas
+disagreed on the members, and under Automerge the replica refused the honest
+change and every change after it.
 
 ### UCAN capabilities
 
