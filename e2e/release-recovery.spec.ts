@@ -46,7 +46,7 @@ async function savedEdit(page: Page, value: string) {
 async function openSaved(page: Page) {
   await page.goto('/');
   await page
-    .getByRole('button', { name: /^Open saved note/u })
+    .getByRole('button', { name: /^Open note added /u })
     .first()
     .click();
   await expect(page.getByRole('textbox', { name: 'Note text' })).toBeVisible();

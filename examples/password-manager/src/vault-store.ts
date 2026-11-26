@@ -11,7 +11,7 @@ const storage = createBrowserCheckpointStorage(
 );
 export const getBrowserIdentity = () => storage.getIdentity();
 export class VaultStore extends storage.Store {
-  listVaults(): Promise<string[]> {
-    return this.listDocuments();
+  async listVaults(): Promise<string[]> {
+    return (await this.listDocuments()).map((vault) => vault.path);
   }
 }

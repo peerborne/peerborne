@@ -67,14 +67,84 @@ test('lists and restores accepted notes as well as notes created in this browser
     payload: new Uint8Array([1, 2]),
     signature: new Uint8Array([3]),
   };
-  await store.save('/notes/founder', true, checkpoint, 0);
-  await store.save('/notes/accepted', true, checkpoint, 0);
+  const now = jest.spyOn(Date, 'now');
+  try {
+    now.mockReturnValue(2_000);
+    await store.save('/notes/founder', true, checkpoint, 0);
+    now.mockReturnValue(1_000);
+    await store.save('/notes/accepted', true, checkpoint, 0);
+  } finally {
+    now.mockRestore();
+  }
   expect(await store.listDocuments()).toEqual([
-    '/notes/accepted',
-    '/notes/founder',
+    { path: '/notes/accepted', createdAtMs: 1_000 },
+    { path: '/notes/founder', createdAtMs: 2_000 },
   ]);
   expect((await store.load('/notes/accepted'))?.isVault).toBe(true);
   expect((await store.load('/notes/founder'))?.isVault).toBe(true);
+});
+
+test('keeps a note in creation order after later saves', async () => {
+  const identity = await getNoteIdentity(await getOrCreateIdentity());
+  const store = new NoteStore(identity, 'owner');
+  const checkpoint = {
+    payload: new Uint8Array([1, 2]),
+    signature: new Uint8Array([3]),
+  };
+  const now = jest.spyOn(Date, 'now');
+  try {
+    now.mockReturnValue(1_000);
+    const revision = await store.save('/notes/first', true, checkpoint, 0);
+    now.mockReturnValue(2_000);
+    await store.save('/notes/second', true, checkpoint, 0);
+    now.mockReturnValue(3_000);
+    await store.save('/notes/first', true, checkpoint, revision);
+  } finally {
+    now.mockRestore();
+  }
+  expect(await store.listDocuments()).toEqual([
+    { path: '/notes/first', createdAtMs: 1_000 },
+    { path: '/notes/second', createdAtMs: 2_000 },
+  ]);
+});
+
+test('lists a note whose creation time is malformed and records one on the next save', async () => {
+  const identity = await getNoteIdentity(await getOrCreateIdentity());
+  const store = new NoteStore(identity, 'owner');
+  const checkpoint = {
+    payload: new Uint8Array([1, 2]),
+    signature: new Uint8Array([3]),
+  };
+  const revision = await store.save('/notes/fixture', true, checkpoint, 0);
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open(NOTE_DATABASE, 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const tx = database.transaction('vaults', 'readwrite');
+      tx.objectStore('vaults').put(
+        { owner: 'owner', path: '/notes/fixture', createdAtMs: -1 },
+        '/notes/fixture',
+      );
+      tx.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      tx.onabort = () => reject(tx.error);
+    };
+  });
+  expect(await store.listDocuments()).toEqual([
+    { path: '/notes/fixture', createdAtMs: undefined },
+  ]);
+  const now = jest.spyOn(Date, 'now').mockReturnValue(4_000);
+  try {
+    await store.save('/notes/fixture', true, checkpoint, revision);
+  } finally {
+    now.mockRestore();
+  }
+  expect(await store.listDocuments()).toEqual([
+    { path: '/notes/fixture', createdAtMs: 4_000 },
+  ]);
 });
 
 test('the application authentication domain is bound to the ciphertext', async () => {
