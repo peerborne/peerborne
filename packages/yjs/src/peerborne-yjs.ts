@@ -1,5 +1,6 @@
 import {
   ACL,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   ACLProvider,
@@ -1252,6 +1253,27 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
+  // Name the structs and deletions a held update waits for, so it is merged
+  // again only once the live ACL holds all of them.
+  private _missingDependencies(staged: Doc): ACLMergeDependencyError {
+    const structs = [...(staged.store.pendingStructs?.missing ?? [])];
+    const deletions: Array<[number, number]> = [];
+    if (staged.store.pendingDs) {
+      for (const [client, ranges] of decodeUpdateV2(staged.store.pendingDs).ds
+        .clients) {
+        for (const { clock, len } of ranges)
+          deletions.push([client, clock + len]);
+      }
+    }
+    return new ACLMergeDependencyError(() => {
+      const store = this._acl.store;
+      return (
+        structs.every(([client, clock]) => getState(store, client) > clock) &&
+        deletions.every(([client, end]) => getState(store, client) >= end)
+      );
+    });
+  }
+
   private _reserveStagedAdditionClientID(
     base: Doc,
     fallbackClientID: number,
@@ -1467,7 +1489,11 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     try {
       return this._mergeStaged(change);
     } catch (error) {
-      if (error instanceof ACLOperationInProgressError || this._acl !== base) {
+      if (
+        error instanceof ACLOperationInProgressError ||
+        error instanceof ACLMergeDependencyError ||
+        this._acl !== base
+      ) {
         throw error;
       }
       throw new ACLMergeRejectedError(error);
@@ -1510,6 +1536,12 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       this._acl !== base
     ) {
       throw new Error('ACL changed while remote changes were being merged');
+    }
+    if (
+      staged.store.pendingStructs !== null ||
+      staged.store.pendingDs !== null
+    ) {
+      throw this._missingDependencies(staged);
     }
     if (compareBytes(baseState, stagedState) === 0) return false;
     this._acl = staged;

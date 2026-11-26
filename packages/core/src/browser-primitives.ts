@@ -1,4 +1,8 @@
-export { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
+export {
+  ACLMergeDependencyError,
+  ACLMergeRejectedError,
+  ACLOperationInProgressError,
+} from './acl.js';
 export { PartialLocalChangeError } from './crdt-provider.js';
 export {
   describeValue,

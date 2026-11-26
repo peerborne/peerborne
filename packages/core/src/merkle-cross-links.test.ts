@@ -7,6 +7,8 @@ import {
   MAX_CROSS_LINKS,
   MAX_RECENT_TIPS,
   mergeRemoteSyncTree,
+  rankAncestorsFirst,
+  reorderByRank,
   selectAncestryClosedNodes,
   selectCrossLinks,
   stripInlineChanges,
@@ -1193,6 +1195,65 @@ describe('collectReferencedAncestors (frontier helper for initial-load quorum)',
     // entries vs 3 entries), so any digest derived from it would have
     // diverged -- the behavior this regression prevents.
     expect(peerAHashes.size).not.toBe(peerBHashes.size);
+  });
+});
+
+describe('rankAncestorsFirst / reorderByRank (ACL application order)', () => {
+  type Node = CRDTChangeNode<string>;
+  const writer = (children?: Record<string, Node>): Node => ({
+    kind: crdtWriterChangeNode,
+    change: 'acl',
+    ...(children === undefined ? {} : { children }),
+  });
+
+  test('ranks every node after each node an occurrence references', () => {
+    // Reversed pre-order (D, A, C, B, R) would apply A before its parent B.
+    const tree: Node = {
+      kind: crdtDocumentChangeNode,
+      change: 'root',
+      children: {
+        B: writer({ C: writer() }),
+        A: writer({ B: writer({ C: writer() }) }),
+        D: writer({ A: { kind: crdtWriterChangeNode } }),
+      },
+    };
+    const ranks = rankAncestorsFirst('R', tree);
+    const before = (older: string, newer: string) =>
+      expect(ranks.get(older)!).toBeLessThan(ranks.get(newer)!);
+
+    before('C', 'B');
+    before('B', 'A');
+    before('A', 'D');
+    before('D', 'R');
+    expect(ranks.size).toBe(5);
+  });
+
+  test('breaks a reference cycle instead of looping', () => {
+    const tree: Node = writer({
+      X: writer({ Y: writer({ X: writer() }) }),
+    });
+
+    const ranks = rankAncestorsFirst('R', tree);
+
+    expect([...ranks.keys()].sort()).toEqual(['R', 'X', 'Y']);
+    expect(ranks.get('Y')!).toBeLessThan(ranks.get('X')!);
+  });
+
+  test('reorders only the selected entries into their own slots', () => {
+    const ranks = new Map([
+      ['a', 0],
+      ['b', 1],
+      ['c', 2],
+    ]);
+    const entries = ['c', 'doc-1', 'a', 'unranked', 'doc-2', 'b'];
+
+    expect(
+      reorderByRank(
+        entries,
+        (entry) => (entry.startsWith('doc') ? undefined : entry),
+        ranks,
+      ),
+    ).toEqual(['a', 'doc-1', 'b', 'c', 'doc-2', 'unranked']);
   });
 });
 

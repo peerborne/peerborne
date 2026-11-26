@@ -638,6 +638,91 @@ export function selectAncestryClosedNodes<ChangesType>(
 }
 
 /**
+ * Pure helper: rank every CID of a sync tree so that each node ranks after
+ * every node any of its occurrences references as a child. Applying nodes in
+ * rank order therefore applies causal ancestors first, whatever order the
+ * tree lists them in. A reference cycle, which content addressing rules out
+ * for honest trees, is broken where the walk first meets it.
+ *
+ * Returns a new Map; does not mutate the inputs.
+ */
+export function rankAncestorsFirst<ChangesType>(
+  rootId: string | undefined,
+  root: CRDTChangeNode<ChangesType>,
+): Map<string, number> {
+  const references = new Map<string | undefined, string[]>();
+  const pending: Array<
+    readonly [string | undefined, CRDTChangeNode<ChangesType>]
+  > = [[rootId, root]];
+  while (pending.length > 0) {
+    const [nodeId, node] = pending.pop()!;
+    if (
+      node.children === undefined ||
+      node.children === crdtChangeNodeDeferred ||
+      references.has(nodeId)
+    ) {
+      continue;
+    }
+    const entries = Object.entries(node.children);
+    references.set(
+      nodeId,
+      entries.map(([childId]) => childId),
+    );
+    for (let index = entries.length - 1; index >= 0; index--) {
+      pending.push(entries[index]!);
+    }
+  }
+
+  const ranks = new Map<string, number>();
+  const visiting = new Set<string | undefined>([rootId]);
+  const stack: Array<{ nodeId: string | undefined; next: number }> = [
+    { nodeId: rootId, next: 0 },
+  ];
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1]!;
+    const children = references.get(top.nodeId) ?? [];
+    if (top.next < children.length) {
+      const childId = children[top.next++]!;
+      if (!ranks.has(childId) && !visiting.has(childId)) {
+        visiting.add(childId);
+        stack.push({ nodeId: childId, next: 0 });
+      }
+      continue;
+    }
+    stack.pop();
+    visiting.delete(top.nodeId);
+    if (top.nodeId !== undefined) ranks.set(top.nodeId, ranks.size);
+  }
+  return ranks;
+}
+
+/**
+ * Pure helper: reorder the entries `select` names a CID for into ascending
+ * `ranks` order, keeping every other entry in place. Entries without a rank
+ * follow ranked ones in their original order.
+ */
+export function reorderByRank<Entry>(
+  entries: readonly Entry[],
+  select: (entry: Entry) => string | undefined,
+  ranks: ReadonlyMap<string, number>,
+): Entry[] {
+  const slots: number[] = [];
+  entries.forEach((entry, index) => {
+    if (select(entry) !== undefined) slots.push(index);
+  });
+  const rankOf = (index: number): number =>
+    ranks.get(select(entries[index]!)!) ?? Number.POSITIVE_INFINITY;
+  const ordered = [...slots].sort(
+    (left, right) => rankOf(left) - rankOf(right) || left - right,
+  );
+  const result = [...entries];
+  slots.forEach((slot, position) => {
+    result[slot] = entries[ordered[position]!]!;
+  });
+  return result;
+}
+
+/**
  * Pure helper: derive the served frontier of a load-response payload
  * STRUCTURALLY, without applying any of it to local state.
  *

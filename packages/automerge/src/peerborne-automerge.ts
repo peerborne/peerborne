@@ -23,6 +23,7 @@ import {
 
 import {
   ACL,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   ACLProvider,
@@ -512,7 +513,6 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
   >();
   private _retainedChangeBytes = 0;
   private _retainedOperations = 0;
-  private _pendingChanges = new Map<string, AutomergeACLPendingChange>();
   private _retainedCanonicalUsersRootSeed = false;
   private readonly _keyCache = new LRUCache<string, CryptoKey>(1000);
   private _mutationTail: Promise<void> = Promise.resolve();
@@ -816,19 +816,15 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     }
   }
 
-  // Pending changes are retained without materializing their writes in
-  // acl.users, so bound the members and users roots they could add once their
-  // dependencies arrive rather than admitting history that can never be
-  // completed.
-  private _preparePendingChanges(
+  // Changes whose dependencies are missing are never merged, but reject those
+  // that could never complete: bound the members and users roots they could
+  // add once their dependencies arrive.
+  private _assertPendingChangesFit(
     acl: AutomergeACLDoc,
     changes: readonly BinaryChange[],
     operation: string,
-  ): Map<string, AutomergeACLPendingChange> {
+  ): void {
     const pending = new Map<string, AutomergeACLPendingChange>();
-    for (const [hash, pendingChange] of this._pendingChanges) {
-      if (!hasHeads(acl, [hash])) pending.set(hash, pendingChange);
-    }
     for (const binaryChange of changes) {
       const decoded = decodeChange(binaryChange);
       if (pending.has(decoded.hash) || hasHeads(acl, [decoded.hash])) {
@@ -868,7 +864,6 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
         }
       }
     }
-    return pending;
   }
 
   private _prepareChangeAccounting(
@@ -1166,7 +1161,11 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
     try {
       return this._mergeStaged(change);
     } catch (error) {
-      if (error instanceof ACLOperationInProgressError || this._acl !== base) {
+      if (
+        error instanceof ACLOperationInProgressError ||
+        error instanceof ACLMergeDependencyError ||
+        this._acl !== base
+      ) {
         throw error;
       }
       throw new ACLMergeRejectedError(error);
@@ -1197,18 +1196,17 @@ export class AutomergeACL implements ACL<BinaryChange[], CryptoKey> {
       'merge ACL changes',
     );
     assertAutomergeACLResourceLimits(doc, 'merge ACL changes');
-    const pendingChanges = this._preparePendingChanges(
-      doc,
-      stableChanges,
-      'merge ACL changes',
-    );
+    this._assertPendingChangesFit(doc, stableChanges, 'merge ACL changes');
     if (this._revision !== baseRevision || this._acl !== base) {
       throw new Error('ACL changed while remote changes were being merged');
+    }
+    const missing = getMissingDeps(doc, []);
+    if (missing.length > 0) {
+      throw new ACLMergeDependencyError(() => hasHeads(this._acl, missing));
     }
     if (accounting.length === 0) return false;
     this._acl = doc;
     this._members = members;
-    this._pendingChanges = pendingChanges;
     this._commitChangeAccounting(accounting);
     this._revision++;
     return automergeACLMergeState(doc) !== before;

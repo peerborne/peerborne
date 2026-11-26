@@ -8,9 +8,12 @@ import {
 } from '@jest/globals';
 import fc from 'fast-check';
 import { clone, from, init, type Change, type Doc } from '@automerge/automerge';
+import { mergeACLChanges } from '@peerborne/core';
 import {
+  AutomergeACL,
   AutomergeJSONSerializer,
   AutomergeProvider,
+  serializeKey,
 } from './peerborne-automerge.js';
 
 type PropertyDocument = {
@@ -159,4 +162,56 @@ describe('Automerge provider generated delivery histories', () => {
       { seed: 9432, numRuns: 150, examples: [[[], 0, 0]] },
     );
   });
+});
+
+const aclProgram = fc.array(
+  fc.record({
+    key: fc.integer({ min: 0, max: 3 }),
+    remove: fc.boolean(),
+    priority: fc.integer(),
+  }),
+  { maxLength: 10 },
+);
+
+describe('Automerge ACL generated delivery orders', () => {
+  test('changes delivered in any order with duplicates keep the live ACL complete and converge', async () => {
+    const keys = await Promise.all(
+      Array.from({ length: 4 }, async () =>
+        (
+          await crypto.subtle.generateKey(
+            { name: 'ECDSA', namedCurve: 'P-384' },
+            true,
+            ['sign', 'verify'],
+          )
+        ).publicKey,
+      ),
+    );
+    const members = async (acl: AutomergeACL) =>
+      (await Promise.all((await acl.users()).map(serializeKey))).sort();
+    await fc.assert(
+      fc.asyncProperty(aclProgram, async (operations) => {
+        const sender = new AutomergeACL();
+        const packets: { changes: Change[]; priority: number }[] = [];
+        for (const { key, remove, priority } of operations) {
+          const changes = remove
+            ? await sender.remove(keys[key]!)
+            : await sender.add(keys[key]!);
+          packets.push({ changes, priority });
+        }
+        const ordered = packets
+          .sort((left, right) => left.priority - right.priority)
+          .map(({ changes }) => changes);
+        const receiver = new AutomergeACL();
+        let waiting: Change[][] = [];
+        for (const changes of [...ordered, ...ordered.reverse()]) {
+          waiting = mergeACLChanges(receiver, [...waiting, changes]);
+          expect(() => receiver.current()).not.toThrow();
+          await receiver.users();
+        }
+        expect(waiting).toEqual([]);
+        expect(await members(receiver)).toEqual(await members(sender));
+      }),
+      { seed: 9434, numRuns: 60, examples: [[[]]] },
+    );
+  }, 60_000);
 });

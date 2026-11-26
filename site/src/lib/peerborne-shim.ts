@@ -6,6 +6,7 @@
 export {
   preparedDocumentChange,
   DocumentOperationTargets,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   PartialLocalChangeError,
