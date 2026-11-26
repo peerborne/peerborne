@@ -102,13 +102,39 @@ export interface DocumentAuthority {
   };
 }
 
-/** Outcome for this author's unsent frames from the group context an update retired. */
+/** Outcome for this author's frames from the group context an update retired. */
 export interface CoordinatedAuthorityUpdateResult {
-  /** Unsent frames re-signed as new frames in the current context. */
+  /** Frames re-signed as new frames in the current context. */
   readonly resent: number;
-  /** Unsent frames removed because the author can no longer write them here. */
+  /** Frames waiting for outbox space; they are re-signed as publications drain. */
+  readonly waiting: number;
+  /** Earlier frames of the retired context that are no longer retained. */
+  readonly skipped: number;
+  /** Frames the current roles or grants deny, with every later frame that depends on them. */
   readonly dropped: number;
+  /**
+   * The author can still write, but its replica holds edits its current grants
+   * deny. The document is closed to further use; rebuild it from a checkpoint.
+   */
+  readonly diverged: boolean;
 }
+
+/** One of this author's frames, kept so a retired context's edits can be re-signed. */
+interface OwnFrame {
+  /** Local write order, kept by re-signed copies so native dependencies stay ordered. */
+  readonly order: number;
+  readonly sequence: number;
+  readonly changes: Uint8Array;
+  /** Operation paths inspected when it was written, when the author was restricted. */
+  readonly paths?: DocumentWritePaths;
+  readonly frame?: Uint8Array;
+}
+
+const MAX_OWN_FRAMES = 64;
+const MAX_OWN_BYTES = 32 * 1024 * 1024;
+
+/** The current roles or grants definitely deny a re-signed frame. */
+class ResendDeniedError extends Error {}
 
 export interface CoordinatedDocumentOptions {
   readonly coordinator: GroupSecurityCoordinator;
@@ -201,6 +227,11 @@ interface RetainedFrame {
 
 const MAX_RETAINED_FRAMES_PER_AUTHOR = 64;
 const MAX_RETAINED_BYTES = 16 * 1024 * 1024;
+const MAX_RETAINED_PROCESS_BYTES = 64 * 1024 * 1024;
+/** Retained bytes across every coordinated document in this module instance. */
+let retainedProcessBytes = 0;
+/** Room kept for the signature, AEAD tag and outer framing of a checkpoint. */
+const CHECKPOINT_SEAL_BYTES = 4096;
 
 /** True when a verified suffix may replace a conflicting receipt, beside the proved policy. */
 function catchUpReceiptExtends(
@@ -250,6 +281,13 @@ export class CoordinatedDocument<
     bytes: number;
   };
   private appliedFrames = 0;
+  private own?: {
+    readonly context: GroupSecurityDocumentContext;
+    readonly frames: OwnFrame[];
+    bytes: number;
+  };
+  private resendQueue: OwnFrame[] = [];
+  private ownOrder = 0;
   private retained?: {
     readonly context: GroupSecurityDocumentContext;
     readonly authors: Map<string, RetainedFrame[]>;
@@ -487,6 +525,7 @@ export class CoordinatedDocument<
           };
         },
       );
+      await this.drainResend().catch(() => {});
     });
   }
 
@@ -643,26 +682,45 @@ export class CoordinatedDocument<
     if (
       !this.retained ||
       !documentContextsMatch(this.retained.context, context)
-    )
+    ) {
+      this.dropRetained();
       this.retained = { context, authors: new Map(), bytes: 0, order: 0 };
+    }
     const retained = this.retained;
+    const size = (frame: Omit<RetainedFrame, 'order'>) =>
+      frame.signed.length + frame.frame.length;
     const frames = retained.authors.get(author) ?? [];
     frames.push({ ...value, order: retained.order++ });
     retained.authors.set(author, frames);
-    retained.bytes += value.signed.length + value.frame.length;
-    const evict = (list: RetainedFrame[], owner: string) => {
+    retained.bytes += size(value);
+    retainedProcessBytes += size(value);
+    const evict = (owner: string) => {
+      const list = retained.authors.get(owner)!;
       const [oldest] = list.splice(0, 1);
-      retained.bytes -= oldest.signed.length + oldest.frame.length;
+      retained.bytes -= size(oldest);
+      retainedProcessBytes -= size(oldest);
       if (list.length === 0) retained.authors.delete(owner);
     };
-    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(frames, author);
-    while (retained.bytes > MAX_RETAINED_BYTES) {
-      let owner: string | undefined;
-      for (const [id, list] of retained.authors)
-        if (owner === undefined || list[0].order < retained.authors.get(owner)![0].order)
-          owner = id;
-      evict(retained.authors.get(owner!)!, owner!);
+    if (frames.length > MAX_RETAINED_FRAMES_PER_AUTHOR) evict(author);
+    // Over budget, the author holding the most bytes gives up its oldest frame.
+    while (
+      retained.bytes > 0 &&
+      (retained.bytes > MAX_RETAINED_BYTES ||
+        retainedProcessBytes > MAX_RETAINED_PROCESS_BYTES)
+    ) {
+      let owner: string | undefined,
+        most = -1;
+      for (const [id, list] of retained.authors) {
+        const bytes = list.reduce((total, frame) => total + size(frame), 0);
+        if (bytes > most) [owner, most] = [id, bytes];
+      }
+      evict(owner!);
     }
+  }
+
+  private dropRetained(): void {
+    retainedProcessBytes -= this.retained?.bytes ?? 0;
+    this.retained = undefined;
   }
 
   /** Retained frames of `author` after `sequence`, if they form its complete suffix. */
@@ -674,8 +732,13 @@ export class CoordinatedDocument<
     head: number,
   ): RetainedFrame[] | undefined {
     const retained = this.retained;
-    if (!retained || !documentContextsMatch(retained.context, context))
+    if (!retained) return undefined;
+    if (!documentContextsMatch(retained.context, context)) {
+      if (!documentContextsMatch(context, this.options.coordinator.documentContext))
+        return undefined;
+      this.dropRetained();
       return undefined;
+    }
     const frames = retained.authors.get(author) ?? [];
     const base = frames.find((frame) => frame.sequence === sequence);
     if (base && !documentBytesEqual(base.hash, hash)) return undefined;
@@ -720,7 +783,7 @@ export class CoordinatedDocument<
     return this.enqueueCatchUp(
       request,
       MAX_DOCUMENT_CATCH_UP_REQUEST_BYTES,
-      MAX_DOCUMENT_CONTENT_BYTES,
+      MAX_DOCUMENT_CONTENT_BYTES + MAX_DOCUMENT_SECURITY_FRAME_BYTES,
       (input) =>
         this.runCatchUp(input, async (stage) => {
           const controllerId = this.options.coordinator.localMemberId;
@@ -740,20 +803,29 @@ export class CoordinatedDocument<
             this.crdt.getSnapshot!(this.session.document),
           );
           const { receipts: requested, ...request } = body;
+          const base = {
+            ...request,
+            controllerId,
+            receipts: receiptEntries(receipts),
+            suffixes: [],
+            snapshot,
+          };
+          const { offered, suffixes } = this.catchUpSuffixes(
+            stage.binding.context,
+            receipts,
+            requested,
+            body.requesterId,
+            MAX_DOCUMENT_SECURITY_FRAME_BYTES -
+              CHECKPOINT_SEAL_BYTES -
+              encodeDocumentCatchUpCheckpoint(base).length,
+          );
           const value = await this.sealCatchUp(
             stage,
             'checkpoint',
             encodeDocumentCatchUpCheckpoint({
-              ...request,
-              controllerId,
-              receipts: receiptEntries(receipts),
-              suffixes: this.catchUpSuffixes(
-                stage.binding.context,
-                receipts,
-                requested,
-                body.requesterId,
-              ),
-              snapshot,
+              ...base,
+              receipts: receiptEntries(offered),
+              suffixes,
             }),
             controller,
           );
@@ -1137,7 +1209,21 @@ export class CoordinatedDocument<
           sequence,
           extended.has(id),
         );
-      if (admission === 'conflict' && !extends_)
+      // An offer below a head accepted since the request is kept when it is
+      // one of the frames this replica retains for that author.
+      const behind =
+        admission === 'conflict' &&
+        current !== undefined &&
+        sequence < current.sequence &&
+        this.retained !== undefined &&
+        documentContextsMatch(this.retained.context, context) &&
+        this.retained.authors
+          .get(id)
+          ?.some(
+            (frame) =>
+              frame.sequence === sequence && documentBytesEqual(frame.hash, hash),
+          ) === true;
+      if (admission === 'conflict' && !extends_ && !behind)
         throw new Error(
           'Document catch-up receipt conflicts with the accepted head',
         );
@@ -1157,32 +1243,58 @@ export class CoordinatedDocument<
     );
   }
 
-  /** Retained signed frames that extend each of the requester's shorter heads. */
+  /**
+   * Retained signed frames that extend each of the requester's shorter heads,
+   * within `room` bytes. A suffix that does not fit, or is not retained, is
+   * offered only up to its last included frame, or at the requester's own head,
+   * so the requester advances over later rounds instead of conflicting. A
+   * retained fork keeps the controller's head and still conflicts.
+   */
   private catchUpSuffixes(
     context: GroupSecurityDocumentContext,
     receipts: ReadonlyMap<string, Receipt>,
     requested: readonly DocumentReplayReceipt[],
     requesterId: Uint8Array,
-  ): Uint8Array[] {
+    room: number,
+  ): { offered: Map<string, Receipt>; suffixes: Uint8Array[] } {
     const requester = documentBytesId(requesterId);
+    const offered = new Map(receipts);
     const suffixes: Uint8Array[] = [];
     let bytes = 0;
     for (const { memberId, sequence, hash } of requested) {
       const author = documentBytesId(memberId);
       const head = receipts.get(author)?.sequence ?? 0;
       if (author === requester || sequence >= head) continue;
-      const suffix = this.retainedSuffix(context, author, sequence, hash, head);
-      if (!suffix) continue;
-      const size = suffix.reduce((total, frame) => total + frame.signed.length, 0);
-      if (
-        suffixes.length + suffix.length > MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
-        bytes + size > MAX_DOCUMENT_CATCH_UP_SUFFIX_BYTES
-      )
-        continue;
-      suffixes.push(...suffix.map((frame) => frame.signed.slice()));
-      bytes += size;
+      const base = this.retained?.authors
+        .get(author)
+        ?.find((frame) => frame.sequence === sequence);
+      if (base && !documentBytesEqual(base.hash, hash)) continue;
+      const suffix =
+        this.retainedSuffix(context, author, sequence, hash, head) ?? [];
+      let included = 0;
+      for (const frame of suffix) {
+        const cost = frame.signed.length + 4;
+        if (
+          suffixes.length >= MAX_DOCUMENT_CATCH_UP_SUFFIX_FRAMES ||
+          bytes + cost > room
+        )
+          break;
+        suffixes.push(frame.signed.slice());
+        bytes += cost;
+        included++;
+      }
+      if (included < suffix.length || suffix.length === 0)
+        offered.set(
+          author,
+          included === 0
+            ? { sequence, hash }
+            : {
+                sequence: suffix[included - 1].sequence,
+                hash: suffix[included - 1].hash,
+              },
+        );
     }
-    return suffixes;
+    return { offered, suffixes };
   }
 
   /**
@@ -1290,7 +1402,7 @@ export class CoordinatedDocument<
     input?: Uint8Array,
     change?: Change,
     message = '',
-    resend?: Uint8Array,
+    resend?: OwnFrame,
   ): Promise<Uint8Array> {
     const context = this.options.coordinator.documentContext;
     const receipts = this.receiptsAt(context);
@@ -1309,6 +1421,8 @@ export class CoordinatedDocument<
     let committed = false,
       replay = false;
     let held: HeldReason | undefined;
+    let ownChanges: Uint8Array | undefined,
+      ownPaths: DocumentWritePaths | undefined;
     let result: Uint8Array = new Uint8Array();
     try {
       await this.options.coordinator.runDocumentOperation(
@@ -1419,8 +1533,10 @@ export class CoordinatedDocument<
             } else {
               memberId = this.options.coordinator.localMemberId;
               const found = lease.members.get(documentBytesId(memberId));
-              if (!found || !contentRolePermits(found.role, false))
+              if (!found || !contentRolePermits(found.role, false)) {
+                if (resend) throw new ResendDeniedError();
                 throw new Error('Local document member cannot write');
+              }
               member = found;
               const { value: ownKey } = await work.observe<string>(
                 this.auth.serializePublicKey(this.publicKey),
@@ -1439,24 +1555,30 @@ export class CoordinatedDocument<
                   inspectOperations: scope !== undefined,
                 });
                 assertDocumentOperationsAllowed(plan, scope);
-              } else if (scope !== undefined) {
-                // Re-sent content is already local; inspect it against the current grants only.
-                const inspected = this.session.prepareRemote(
-                  this.serializer.deserializeChanges(resend),
-                  { inspectOperations: true },
-                );
-                try {
-                  assertDocumentOperationsAllowed(inspected, scope);
-                } finally {
-                  inspected.discard();
+                ownPaths = scope === undefined ? undefined : plan.operationPaths?.();
+              } else {
+                // The delta is already local, so check the paths recorded when it was written.
+                if (scope !== undefined) {
+                  const paths = resend.paths;
+                  if (!paths) throw new ResendDeniedError();
+                  try {
+                    assertDocumentOperationsAllowed(
+                      { operationPaths: () => paths } as PreparedDocumentChange<Changes>,
+                      scope,
+                    );
+                  } catch {
+                    throw new ResendDeniedError();
+                  }
                 }
+                ownPaths = resend.paths;
               }
               const changes = copyUnsharedUint8Array(
-                resend ?? this.serializer.serializeChanges(plan!.changes),
+                resend?.changes ?? this.serializer.serializeChanges(plan!.changes),
                 0,
                 MAX_DOCUMENT_CONTENT_BYTES,
                 'document delta',
               );
+              ownChanges = changes;
               unsigned = encodeDocumentContent({
                 documentId: this.documentId,
                 genesisId: this.genesisId,
@@ -1549,7 +1671,7 @@ export class CoordinatedDocument<
                 );
               const changes = checkpoint
                 ? this.serializer.serializeChanges(snapshot!())
-                : (resend ?? this.serializer.serializeChanges(plan!.changes));
+                : (resend?.changes ?? this.serializer.serializeChanges(plan!.changes));
               const nextReceipts = new Map(receipts);
               nextReceipts.set(documentBytesId(memberId), { sequence, hash });
               const persistedReceipts = checkpoint
@@ -1598,6 +1720,14 @@ export class CoordinatedDocument<
                   signed: signedContent,
                   frame: input === undefined ? result.slice() : owned,
                 });
+                if (input === undefined)
+                  this.recordOwn(captured, {
+                    order: resend?.order ?? ++this.ownOrder,
+                    sequence,
+                    changes: ownChanges!,
+                    ...(ownPaths ? { paths: ownPaths } : {}),
+                    frame: result.slice(),
+                  });
                 committed = true;
                 if (
                   input === undefined &&
@@ -1680,6 +1810,15 @@ export class CoordinatedDocument<
               sequence: receipt.sequence,
               hash: receipt.hash,
             });
+            if (
+              !record.checkpoint &&
+              id === documentBytesId(this.options.coordinator.localMemberId)
+            )
+              this.recordOwn(record.context, {
+                order: ++this.ownOrder,
+                sequence: receipt.sequence,
+                changes: record.changes,
+              });
           }
           if (receipts.size > 256)
             throw new Error('Journal receipt bound exceeded');
@@ -1699,9 +1838,9 @@ export class CoordinatedDocument<
 
   /**
    * A role transition is acknowledged only after its checkpoint is durable.
-   * When it starts a new group context, this author's unsent frames from the
-   * retired context are re-signed in the new one while the author can still
-   * write them, and removed otherwise.
+   * When it starts a new group context, this author's frames from the retired
+   * context are re-signed in the new one while its roles and recorded
+   * operation paths allow them. A re-sign failure does not fail the update.
    */
   async applyAuthorityUpdate(
     encoded: Uint8Array,
@@ -1709,7 +1848,10 @@ export class CoordinatedDocument<
     return (
       (await this.queueAuthorityUpdate(encoded, false)) ?? {
         resent: 0,
+        waiting: this.resendQueue.length,
+        skipped: 0,
         dropped: 0,
+        diverged: false,
       }
     );
   }
@@ -1742,7 +1884,7 @@ export class CoordinatedDocument<
           } else {
             this.assertActivated();
           }
-          const retired = beforeOpen ? undefined : this.retained;
+          const retired = beforeOpen ? undefined : this.own;
           const authority = this.options.authority;
           if (this.options.requireGroupRosterMatch) {
             if (!(authority instanceof DocumentAuthorityLog)) {
@@ -1750,7 +1892,12 @@ export class CoordinatedDocument<
                 'Strict group roster matching requires a signed document authority log',
               );
             }
+            const before = beforeOpen ? this.own : undefined;
             await this.applyStrictAuthorityUpdate(authority, owned);
+            if (beforeOpen) {
+              this.queueRetired(before);
+              return undefined;
+            }
             return this.resendRetired(retired);
           }
           if (!authority.applyUpdate)
@@ -1855,6 +2002,7 @@ export class CoordinatedDocument<
               commit: () => {
                 this.receipts = new Map();
                 this.receiptsContext = captured;
+                this.dropRetained();
               },
             };
           })();
@@ -1874,7 +2022,51 @@ export class CoordinatedDocument<
     }
   }
 
-  /** Re-sign or remove this author's unsent frames from a retired context. */
+  private recordOwn(
+    context: GroupSecurityDocumentContext,
+    frame: OwnFrame,
+  ): void {
+    if (!this.own || !documentContextsMatch(this.own.context, context))
+      this.own = { context, frames: [], bytes: 0 };
+    const own = this.own;
+    own.frames.push(frame);
+    own.bytes += frame.changes.length + (frame.frame?.length ?? 0);
+    while (own.frames.length > MAX_OWN_FRAMES || own.bytes > MAX_OWN_BYTES) {
+      const [oldest] = own.frames.splice(0, 1);
+      own.bytes -= oldest.changes.length + (oldest.frame?.length ?? 0);
+    }
+  }
+
+  /** Queue a retired context's own frames, in order, behind any still waiting. */
+  private queueRetired(
+    retired: CoordinatedDocument<
+      Document,
+      Changes,
+      Change,
+      PrivateKey,
+      PublicKey,
+      DocumentKey
+    >['own'],
+  ): number {
+    // Without an outbox, nothing could publish a re-signed frame.
+    if (
+      !this.options.persistPublications ||
+      !retired ||
+      retired.frames.length === 0 ||
+      documentContextsMatch(
+        retired.context,
+        this.options.coordinator.documentContext,
+      )
+    )
+      return 0;
+    const queued = new Map(
+      [...this.resendQueue, ...retired.frames].map((frame) => [frame.order, frame]),
+    );
+    this.resendQueue = [...queued.values()].sort((a, b) => a.order - b.order);
+    return retired.frames[0].sequence - 1;
+  }
+
+  /** Re-sign this author's frames from the context an update retired. */
   private async resendRetired(
     retired: CoordinatedDocument<
       Document,
@@ -1883,58 +2075,92 @@ export class CoordinatedDocument<
       PrivateKey,
       PublicKey,
       DocumentKey
-    >['retained'],
+    >['own'],
   ): Promise<CoordinatedAuthorityUpdateResult> {
+    const skipped = this.queueRetired(retired);
+    try {
+      return { ...(await this.drainResend()), skipped };
+    } catch {
+      // The roles are installed; frames that could not be resolved stay queued.
+      return {
+        resent: 0,
+        waiting: this.resendQueue.length,
+        skipped,
+        dropped: 0,
+        diverged: false,
+      };
+    }
+  }
+
+  /**
+   * Re-sign queued frames in order. Outbox capacity or a transient failure
+   * leaves the rest queued. A denial drops that frame and every later one,
+   * which natively depends on it; a writer whose grants narrowed has diverged.
+   */
+  private async drainResend(): Promise<
+    Omit<CoordinatedAuthorityUpdateResult, 'skipped'>
+  > {
     let resent = 0,
-      dropped = 0;
-    if (
-      !retired ||
-      documentContextsMatch(
-        retired.context,
-        this.options.coordinator.documentContext,
-      )
-    )
-      return { resent, dropped };
-    const own =
-      retired.authors.get(
-        documentBytesId(this.options.coordinator.localMemberId),
-      ) ?? [];
+      dropped = 0,
+      diverged = false;
+    if (this.resendQueue.length === 0)
+      return { resent, waiting: 0, dropped, diverged };
     const pending = this.options.journal
       ? await this.options.journal.pendingPublications()
       : this.publications.map((frame) => frame.slice());
-    const remove = async (frame: Uint8Array) => {
+    const superseded = async (entry: OwnFrame) => {
+      const frame = entry.frame;
+      if (!frame || !pending.some((value) => documentBytesEqual(value, frame)))
+        return;
       if (this.options.journal) await this.options.journal.publicationSent(frame);
       else
         this.publications = this.publications.filter(
           (value) => !documentBytesEqual(value, frame),
         );
     };
-    for (const frame of pending) {
-      const entry = own.find((value) =>
-        documentBytesEqual(value.frame, frame),
-      );
-      if (!entry) continue;
-      const { changes } = decodeDocumentContent(
-        decodeSignedDocumentContent(entry.signed).unsigned,
-      );
-      let removed = false;
+    while (this.resendQueue.length > 0) {
+      const entry = this.resendQueue[0];
       try {
-        await this.apply(undefined, undefined, '', changes);
-      } catch {
-        // A full outbox needs the retired frame's slot before it can re-sign.
-        await remove(frame);
-        removed = true;
-        try {
-          await this.apply(undefined, undefined, '', changes);
-        } catch {
-          dropped++;
-          continue;
-        }
+        await this.apply(undefined, undefined, '', entry);
+      } catch (error) {
+        if (!(error instanceof ResendDeniedError)) break;
+        const denied = this.resendQueue;
+        this.resendQueue = [];
+        dropped = denied.length;
+        for (const later of denied) await superseded(later);
+        diverged = this.localMemberWrites();
+        if (diverged) this.failed = true;
+        break;
       }
-      if (!removed) await remove(frame);
+      this.resendQueue.shift();
       resent++;
+      await superseded(entry);
     }
-    return { resent, dropped };
+    return { resent, waiting: this.resendQueue.length, dropped, diverged };
+  }
+
+  private localMemberWrites(): boolean {
+    try {
+      const member = this.authority(
+        this.options.coordinator.documentContext,
+      ).members.get(documentBytesId(this.options.coordinator.localMemberId));
+      return member !== undefined && contentRolePermits(member.role, false);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Re-sign queued retired frames into outbox space freed by publication. */
+  continueResend(): Promise<boolean> {
+    if (this.resendQueue.length === 0) return Promise.resolve(false);
+    return this.enqueue(0, () => async () => {
+      this.assertActivated();
+      try {
+        return (await this.drainResend()).resent > 0;
+      } catch {
+        return false;
+      }
+    });
   }
 
   assertPublicationDispatchAllowed(binding = this.rosterBinding): void {
@@ -2006,7 +2232,7 @@ export class CoordinatedDocument<
     this.closed = true;
     this.activated = false;
     this.clearHeld();
-    this.retained = undefined;
+    this.dropRetained();
     this.rosterBinding = undefined;
     this.pendingCatchUp = undefined;
     this.material = undefined;

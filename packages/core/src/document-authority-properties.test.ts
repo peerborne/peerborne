@@ -508,7 +508,10 @@ describe('causal document controller authority', () => {
       expect(await pending).toBe(false);
       expect(await doc.applyAuthorityUpdate(role)).toEqual({
         resent: 1,
+        waiting: 0,
+        skipped: 0,
         dropped: 0,
+        diverged: false,
       });
       expect(() => doc.assertPublicationDispatchAllowed()).not.toThrow();
       const [resent, ...rest] = await doc.pendingPublications();

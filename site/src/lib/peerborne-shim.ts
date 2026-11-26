@@ -9,6 +9,7 @@ export {
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   PartialLocalChangeError,
+  DocumentCausalDependencyError,
   canonicalKeychain,
   describeValue,
   serializeChangeNodeForJSON,

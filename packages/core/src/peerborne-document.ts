@@ -7606,14 +7606,17 @@ export class PeerborneDocument<
       .then(async () => {
         if (this._securityPublicationQueued === task)
           this._securityPublicationQueued = undefined;
-        for (const frame of await engine.pendingPublications()) {
-          engine.assertPublicationDispatchAllowed();
-          await this.swarm.heliaNode.libp2p.services.pubsub.publish(
-            this._topic,
-            frame,
-          );
-          await engine.publicationSent(frame);
-        }
+        do {
+          for (const frame of await engine.pendingPublications()) {
+            engine.assertPublicationDispatchAllowed();
+            await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+              this._topic,
+              frame,
+            );
+            await engine.publicationSent(frame);
+          }
+          // Re-signed retired frames that waited for outbox space follow.
+        } while (await engine.continueResend());
       })
       .finally(() => {
         if (this._securityPublicationTask === task)

@@ -73,18 +73,41 @@ This option relies on the provider reporting its actual decrypting membership.
 An offline replica retains its earlier keys and roles until it learns the
 transition.
 
-Peers in a new group context cannot decrypt a frame from the retired one. When
-`applySecurityAuthorityUpdate` installs a new context, the author's frames from
-the retired context that are still in the outbox are resolved in order. While
-the new roles still let the author write, each is re-signed as a new frame in
-the new context with the same native delta and sent. A restricted author's
-delta is inspected against its current grants first. Otherwise the frame is
-removed, and the delta stays only in the author's replica. The update resolves
-with `{ resent, dropped }`. Receivers apply the re-sent frame through normal
-admission, so their field-scope checks use the new grants. Re-signing uses
-the signed content the document retains in memory. After a restart before the
-update, retired-context frames stay in the outbox undelivered. A member that
-joins in the new context gets earlier content from the controller checkpoint.
+Peers in a new group context cannot decrypt a frame from the retired one, even
+one the author already published there. When `applySecurityAuthorityUpdate`
+installs a new context, the author re-signs every frame it wrote in the
+retired context, in its original write order, as a new frame in the new
+context with the same native delta. Duplicates are harmless because native
+CRDT changes are idempotent. Re-signed frames count as frames of the new
+context, so they are re-signed again if that context is retired too. The
+document keeps each author's latest 64 own frames, up to 32 MiB, apart from
+the shared retention pool, and rebuilds them after a restart from the journal
+entries since its last checkpoint.
+
+A frame needs an outbox slot until it is published. When the outbox is full,
+the remaining frames wait and are re-signed as publication frees space. A
+retired frame in the outbox is removed only after its re-signed copy is
+accepted. A failure other than a denial leaves the remaining frames queued.
+A re-sign failure never fails the role update itself, which resolves with
+`{ resent, waiting, skipped, dropped, diverged }`:
+
+- `skipped` counts earlier frames of the retired context that are no longer
+  kept.
+- A restricted author's frame is checked against its current grants using the
+  operation paths inspected when it was written. A frame without recorded paths
+  is checked as denied.
+- When the current roles or grants deny a frame, that frame and every later
+  one, which depends on it natively, are dropped from the outbox and counted.
+- A reader or removed member keeps its replica readable.
+- An author that can still write but whose narrowed grants deny its own edits
+  has `diverged`. Its replica holds content the group cannot accept, so the
+  document closes and must be rebuilt from a controller checkpoint.
+
+Receivers admit re-signed frames through normal admission, including their
+own field-scope checks. A document opened without a publication outbox does
+not re-sign. Frames still waiting for outbox space are kept in memory, and a
+restart after the role update loses their delivery. A member that joins in the
+new context gets earlier content from the controller checkpoint.
 
 ## Resume with a controller checkpoint
 
@@ -112,23 +135,38 @@ keeps its own sequence.
 A requester that holds part of another writer's history and missed its tail
 can still resume. The request lists the requester's accepted heads, at most
 256. For each writer whose head is behind, the controller adds that writer's
-signed frames from the requester's head to its own, when it retains all of them.
-The requester accepts the higher head only after checking each frame: the
-writer's signature, this document, genesis, permission head and group context,
-consecutive sequences, and a parent hash chain from its own head to the offered
-one. Otherwise the conflict is rejected as before. Each document retains its
-latest 64 accepted frames per author in the current context, within 16 MiB, in
-memory only. A checkpoint carries at most 256 such frames and 256 KiB. A
-requester whose head is ahead of the controller's, a gap longer than the
-retained frames, or a controller restarted since accepting them still requires
-ordered frame redelivery. The proved receipt policy is unchanged; this extension
-runs beside it at runtime and is outside the formal proof.
+signed frames from the requester's head toward its own. The suffix shares the
+1 MiB sealed checkpoint with the snapshot and holds at most 256 frames, so a
+small snapshot leaves room for at least one maximum-size frame. When a
+writer's frames do not all fit, or are not all retained, the controller offers
+that writer's receipt only at the last frame it included, or at the
+requester's own head, and the requester advances over later rounds. Other
+writers are unaffected. A retained frame at the requester's head with a
+different hash keeps the controller's head, so a fork still conflicts. The
+requester accepts a higher head only after checking each frame: the writer's
+signature, this document, genesis, permission head and group context,
+consecutive sequences, and a parent hash chain from its own head to the
+offered one. An offer below a head the requester accepted after sending the
+request is kept when it matches a frame the requester retains. Anything else
+conflicts as before.
+
+Each document retains its latest 64 accepted frames per author in the current
+context, in memory only, as signed content and ciphertext. A document retains
+at most 16 MiB, and all coordinated documents in a process at most 64 MiB.
+Over either budget, the author holding the most retained bytes gives up its
+oldest frame first, so one writer's large frames do not push out other
+writers' tails. Retained frames are dropped at a new group context, at the
+receipt reset of a role transition and on close. A requester whose head is
+ahead of the controller's, a gap longer than the retained frames, or a
+controller restarted since accepting them still requires ordered frame
+redelivery. The proved receipt policy is unchanged; these extensions run
+beside it at runtime and are outside the formal proof.
 The encoded snapshot payload is limited to 512 KiB. Native snapshot generation
 and merge costs still depend on the document and adapter.
 
 The application relays the messages and retains identity, trust roots and the
 independent rollback anchor across restart. This profile leaves peer discovery,
-control-message delivery, retired-context edits after a restart and recovery
+control-message delivery, re-signs still waiting for outbox space at a restart and recovery
 after key or anchor loss to the application.
 
 ## Native field write scopes
@@ -378,8 +416,9 @@ simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
 checkpoint reconstruction, durable replay and publication retry.
 
-Automatic anti-entropy, missing-prefix redelivery requests, retired-context
-edits after a restart and epoch-fork reconciliation remain future work. The controller
+Automatic anti-entropy, missing-prefix redelivery requests, re-signs waiting
+for outbox space across a restart and epoch-fork reconciliation remain future
+work. The controller
 checkpoint is an explicit application-relayed recovery path for current
 members. A frame under an unknown or stale epoch is rejected. A frame that is
 missing its author prefix or native causal context is held only within the

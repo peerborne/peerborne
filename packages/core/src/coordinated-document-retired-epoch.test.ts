@@ -90,24 +90,40 @@ async function offlineAcrossEpoch(
     [],
   );
   const update = await g.doc(1).applySecurityAuthorityUpdate(record);
-  await g.doc(1).retrySecurityPublications();
+  const retry = await g
+    .doc(1)
+    .retrySecurityPublications()
+    .then(
+      () => '',
+      (error: Error) => error.message,
+    );
   const errors: string[] = [];
   const published = g.take();
   for (const publication of published)
     errors.push(...(await g.deliver(publication, [0])));
-  return { g, update, published, errors };
+  return { g, update, published, errors, retry };
 }
 
 describe('coordinated frames from a retired epoch', () => {
-  test('re-signs a full outbox of unsent frames in order in the new epoch', async () => {
+  test('re-signs a full outbox of unsent frames in order as outbox space frees', async () => {
     const values = Array.from({ length: 16 }, (_, index) => index + 1);
-    const { g, update, published, errors } = await offlineAcrossEpoch(values, {
-      role: 2,
-    });
+    const { g, update, published, errors, retry } = await offlineAcrossEpoch(
+      values,
+      { role: 2 },
+    );
     try {
-      expect(update).toEqual({ resent: 16, dropped: 0 });
-      expect(published).toHaveLength(16);
-      expect(errors).toEqual([]);
+      expect(update).toEqual({
+        resent: 0,
+        waiting: 16,
+        skipped: 0,
+        dropped: 0,
+        diverged: false,
+      });
+      expect(retry).toBe('');
+      // The retired frames go out first and free their slots for the re-signed ones.
+      expect(published).toHaveLength(32);
+      expect(errors).toHaveLength(16);
+      for (const error of errors) expect(error).toContain('epoch is unavailable');
       expect(g.doc(0).document).toEqual(values);
       await g.doc(1).change(push(17));
       expect(await g.deliver(g.take()[0], [0])).toEqual([]);
@@ -119,18 +135,44 @@ describe('coordinated frames from a retired epoch', () => {
     }
   });
 
-  test.each([
-    ['a reader', { role: 1 as const }],
-    ['a writer whose grants no longer cover the edit', { role: 2 as const, writePaths: [['other']] }],
-  ])('drops and reports the unsent frames of %s', async (_label, writer) => {
-    const { g, update, published } = await offlineAcrossEpoch([1, 2], writer);
+  test('drops a reader’s frames and keeps it readable', async () => {
+    const { g, update, published, retry } = await offlineAcrossEpoch([1, 2], {
+      role: 1,
+    });
     try {
-      expect(update).toEqual({ resent: 0, dropped: 2 });
+      expect(update).toEqual({
+        resent: 0,
+        waiting: 0,
+        skipped: 0,
+        dropped: 2,
+        diverged: false,
+      });
+      expect(retry).toBe('');
       expect(published).toEqual([]);
       expect(g.doc(0).document).toEqual([]);
       expect(g.doc(1).document).toEqual([1, 2]);
-      await g.doc(1).retrySecurityPublications();
-      expect(g.take()).toEqual([]);
+    } finally {
+      await g.close();
+    }
+  });
+
+  test('closes a writer whose narrowed grants deny its unsent edits', async () => {
+    const { g, update, published, retry } = await offlineAcrossEpoch([1, 2], {
+      role: 2,
+      writePaths: [['other']],
+    });
+    try {
+      expect(update).toEqual({
+        resent: 0,
+        waiting: 0,
+        skipped: 0,
+        dropped: 2,
+        diverged: true,
+      });
+      expect(retry).toContain('reopened');
+      expect(published).toEqual([]);
+      expect(g.doc(0).document).toEqual([]);
+      await expect(g.doc(1).change(push(3))).rejects.toThrow('reopened');
     } finally {
       await g.close();
     }

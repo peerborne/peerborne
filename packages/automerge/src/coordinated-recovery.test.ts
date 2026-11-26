@@ -31,7 +31,13 @@ test('resumes an Automerge member that missed a writer’s tail through the cont
 test('re-signs an Automerge edit written offline across an epoch change', async () => {
   const result = await retiredEpochScenario(adapter);
   expect(result.offline).toContain('Document change committed');
-  expect(result.update).toEqual({ resent: 1, dropped: 0 });
+  expect(result.update).toEqual({
+    resent: 2,
+    waiting: 0,
+    skipped: 0,
+    dropped: 0,
+    diverged: false,
+  });
   expect(result.errors).toEqual([]);
   expect(result.leftover).toBe(0);
   for (const view of result.views)
