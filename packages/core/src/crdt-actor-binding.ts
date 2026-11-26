@@ -8,8 +8,9 @@
  * the change bytes. A receiver admits a change only when the signature
  * verifies and every actor the change adds operations for is the actor its
  * envelope derives, so a writer cannot add operations under another signer's
- * actor. Replicas also remember the first registration seen for each actor and
- * carry those registrations in signed snapshots and checkpoints.
+ * actor. Each registration is also signed on its own, so replicas can remember
+ * the first registration seen for each actor and carry it in snapshots and
+ * checkpoints without trusting whoever relays it.
  */
 
 /** Hooks a CRDT provider implements so documents can bind its actors to signers. */
@@ -36,8 +37,13 @@ export interface CRDTActorRegistration {
   readonly nonce: Uint8Array;
 }
 
+/** A registration with its signer's signature over the document path and nonce. */
+export interface CRDTSignedActorRegistration extends CRDTActorRegistration {
+  readonly registrationSignature: Uint8Array;
+}
+
 /** Authorship carried by a document change. */
-export interface CRDTChangeAuthor extends CRDTActorRegistration {
+export interface CRDTChangeAuthor extends CRDTSignedActorRegistration {
   readonly signature: Uint8Array;
 }
 
@@ -50,14 +56,20 @@ export class CRDTActorBindingError extends Error {
 }
 
 export const CRDT_ACTOR_NONCE_BYTES = 16;
-/** Registrations a replica keeps for one signer; further actors are rejected. */
+/**
+ * Bindings a replica remembers for one signer. Beyond it, the signer's least
+ * recently used binding is forgotten; no registration is ever refused.
+ */
 export const MAX_CRDT_ACTORS_PER_SIGNER = 4096;
+/** Bindings a replica remembers per document, forgetting the least recently used. */
+export const MAX_CRDT_ACTOR_BINDINGS = 16384;
 const MAX_SIGNER_BYTES = 1024;
 const MAX_SIGNATURE_BYTES = 1024;
-const MAX_MANIFEST_SIGNERS = 1 << 16;
-const MAX_MANIFEST_REGISTRATIONS = 1 << 20;
+const MAX_MANIFEST_SIGNERS = MAX_CRDT_ACTOR_BINDINGS;
+const MAX_MANIFEST_REGISTRATIONS = MAX_CRDT_ACTOR_BINDINGS;
 
 const ACTOR_DOMAIN = 'peerborne/crdt-actor/v1\0';
+const REGISTRATION_DOMAIN = 'peerborne/crdt-actor-registration/v1\0';
 const SIGNATURE_DOMAIN = 'peerborne/crdt-change-author/v1\0';
 const WRAP_MAGIC = [0x50, 0x42, 0x57, 0x31];
 const ENVELOPE_MAGIC = [0x50, 0x42, 0x41, 0x31];
@@ -167,6 +179,36 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return compareBytes(left, right) === 0;
 }
 
+function hexOf(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  );
+}
+
+function readSignature(reader: Reader): Uint8Array {
+  const length = reader.u16();
+  if (length > MAX_SIGNATURE_BYTES)
+    throw new CRDTActorBindingError('Invalid actor binding signature');
+  return reader.take(length);
+}
+
+function signatureBytes(signature: Uint8Array): Uint8Array {
+  if (
+    !(signature instanceof Uint8Array) ||
+    signature.byteLength > MAX_SIGNATURE_BYTES
+  )
+    throw new CRDTActorBindingError('Invalid actor binding signature');
+  return signature;
+}
+
+/** Whether two registrations name the same signer and nonce. */
+export function sameCRDTActorRegistration(
+  left: CRDTActorRegistration,
+  right: CRDTActorRegistration,
+): boolean {
+  return left.signer === right.signer && sameBytes(left.nonce, right.nonce);
+}
+
 /** Draw a fresh per-instance actor nonce. */
 export function createCRDTActorNonce(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(CRDT_ACTOR_NONCE_BYTES));
@@ -189,6 +231,20 @@ export async function deriveCRDTActorDigest(
   );
 }
 
+/** Bytes a signer signs to register one actor for a document. */
+export function crdtActorRegistrationPayload(
+  documentPath: string,
+  registration: CRDTActorRegistration,
+): Uint8Array {
+  assertNonce(registration.nonce);
+  return new Writer()
+    .bytes(encoder.encode(REGISTRATION_DOMAIN))
+    .lengthPrefixed(encoder.encode(documentPath))
+    .lengthPrefixed(signerBytes(registration.signer))
+    .bytes(registration.nonce)
+    .finish();
+}
+
 /** Bytes an author signs for one document change. */
 export function crdtChangeAuthorPayload(
   documentPath: string,
@@ -208,15 +264,17 @@ export function crdtChangeAuthorPayload(
 export function encodeCRDTChangeAuthor(author: CRDTChangeAuthor): Uint8Array {
   assertNonce(author.nonce);
   const signer = signerBytes(author.signer);
-  if (author.signature.byteLength > MAX_SIGNATURE_BYTES)
-    throw new CRDTActorBindingError('Invalid change signature');
+  const registrationSignature = signatureBytes(author.registrationSignature);
+  const signature = signatureBytes(author.signature);
   return new Writer()
     .bytes(ENVELOPE_MAGIC)
     .u16(signer.byteLength)
     .bytes(signer)
     .bytes(author.nonce)
-    .u16(author.signature.byteLength)
-    .bytes(author.signature)
+    .u16(registrationSignature.byteLength)
+    .bytes(registrationSignature)
+    .u16(signature.byteLength)
+    .bytes(signature)
     .finish();
 }
 
@@ -225,26 +283,26 @@ export function decodeCRDTChangeAuthor(bytes: Uint8Array): CRDTChangeAuthor {
   reader.magic(ENVELOPE_MAGIC, 'authored-change envelope');
   const signer = readSigner(reader);
   const nonce = reader.take(CRDT_ACTOR_NONCE_BYTES);
-  const signatureLength = reader.u16();
-  if (signatureLength > MAX_SIGNATURE_BYTES)
-    throw new CRDTActorBindingError('Invalid change signature');
-  const signature = reader.take(signatureLength);
+  const registrationSignature = readSignature(reader);
+  const signature = readSignature(reader);
   reader.end();
-  return { signer, nonce, signature };
+  return { signer, nonce, registrationSignature, signature };
 }
 
 /** Canonical encoding of a registration set: equal sets encode identically. */
 export function encodeCRDTActorManifest(
-  registrations: Iterable<CRDTActorRegistration>,
+  registrations: Iterable<CRDTSignedActorRegistration>,
 ): Uint8Array {
-  const bySigner = new Map<string, Uint8Array[]>();
-  for (const { signer, nonce } of registrations) {
-    assertNonce(nonce);
-    signerBytes(signer);
-    const nonces = bySigner.get(signer) ?? [];
-    if (!nonces.some((existing) => sameBytes(existing, nonce)))
-      nonces.push(nonce);
-    bySigner.set(signer, nonces);
+  const bySigner = new Map<string, Map<string, CRDTSignedActorRegistration>>();
+  for (const registration of registrations) {
+    assertNonce(registration.nonce);
+    signerBytes(registration.signer);
+    signatureBytes(registration.registrationSignature);
+    let nonces = bySigner.get(registration.signer);
+    if (nonces === undefined)
+      bySigner.set(registration.signer, (nonces = new Map()));
+    const key = hexOf(registration.nonce);
+    if (!nonces.has(key)) nonces.set(key, registration);
   }
   const signers = [...bySigner.keys()]
     .map((signer) => [signer, encoder.encode(signer)] as const)
@@ -252,19 +310,23 @@ export function encodeCRDTActorManifest(
   const writer = new Writer().bytes(MANIFEST_MAGIC).u32(signers.length);
   for (const [, bytes] of signers) writer.u16(bytes.byteLength).bytes(bytes);
   const entries = signers.flatMap(([signer], index) =>
-    bySigner
-      .get(signer)!
-      .sort(compareBytes)
-      .map((nonce) => [index, nonce] as const),
+    [...bySigner.get(signer)!.values()]
+      .sort((left, right) => compareBytes(left.nonce, right.nonce))
+      .map((registration) => [index, registration] as const),
   );
   writer.u32(entries.length);
-  for (const [index, nonce] of entries) writer.u32(index).bytes(nonce);
+  for (const [index, { nonce, registrationSignature }] of entries)
+    writer
+      .u32(index)
+      .bytes(nonce)
+      .u16(registrationSignature.byteLength)
+      .bytes(registrationSignature);
   return writer.finish();
 }
 
 export function decodeCRDTActorManifest(
   bytes: Uint8Array,
-): CRDTActorRegistration[] {
+): CRDTSignedActorRegistration[] {
   const reader = new Reader(bytes);
   reader.magic(MANIFEST_MAGIC, 'actor manifest');
   const signerCount = reader.u32();
@@ -283,7 +345,7 @@ export function decodeCRDTActorManifest(
   const entryCount = reader.u32();
   if (entryCount > MAX_MANIFEST_REGISTRATIONS)
     throw new CRDTActorBindingError('Too many manifest registrations');
-  const registrations: CRDTActorRegistration[] = [];
+  const registrations: CRDTSignedActorRegistration[] = [];
   let last: readonly [number, Uint8Array] | undefined;
   const used = new Set<number>();
   for (let entry = 0; entry < entryCount; entry++) {
@@ -291,6 +353,7 @@ export function decodeCRDTActorManifest(
     if (index >= signers.length)
       throw new CRDTActorBindingError('Invalid manifest signer index');
     const nonce = reader.take(CRDT_ACTOR_NONCE_BYTES);
+    const registrationSignature = readSignature(reader);
     if (
       last !== undefined &&
       (index < last[0] ||
@@ -299,7 +362,11 @@ export function decodeCRDTActorManifest(
       throw new CRDTActorBindingError('Noncanonical actor manifest');
     last = [index, nonce];
     used.add(index);
-    registrations.push({ signer: signers[index]!, nonce });
+    registrations.push({
+      signer: signers[index]!,
+      nonce,
+      registrationSignature,
+    });
   }
   if (used.size !== signers.length)
     throw new CRDTActorBindingError('Noncanonical actor manifest');
@@ -341,78 +408,92 @@ export function isCRDTActorPrefix(bytes: unknown): bytes is Uint8Array {
 
 /**
  * First-seen registrations for the actors a replica has admitted. A different
- * registration for a known actor is rejected, and each signer may register at
- * most {@link MAX_CRDT_ACTORS_PER_SIGNER} actors.
+ * registration for a remembered actor is rejected. Memory is bounded by
+ * forgetting the least recently used binding beyond
+ * {@link MAX_CRDT_ACTORS_PER_SIGNER} for one signer or
+ * {@link MAX_CRDT_ACTOR_BINDINGS} in all, so honest use never stops a signer
+ * from registering a new actor.
  */
 export class CRDTActorBindings {
-  private readonly _actors = new Map<string, CRDTActorRegistration>();
-  private readonly _perSigner = new Map<string, number>();
+  private readonly _actors = new Map<string, CRDTSignedActorRegistration>();
+  private readonly _bySigner = new Map<string, Set<string>>();
 
   get size(): number {
     return this._actors.size;
   }
 
-  get(actor: string): CRDTActorRegistration | undefined {
+  get(actor: string): CRDTSignedActorRegistration | undefined {
     return this._actors.get(actor);
   }
 
   signerCount(signer: string): number {
-    return this._perSigner.get(signer) ?? 0;
+    return this._bySigner.get(signer)?.size ?? 0;
   }
 
-  /** Throw unless every pair could be recorded together. */
+  /** Throw if any pair conflicts with a remembered binding or another pair. */
   check(entries: Iterable<readonly [string, CRDTActorRegistration]>): void {
-    const added = new Map<string, number>();
     const pending = new Map<string, CRDTActorRegistration>();
     for (const [actor, registration] of entries) {
       const known = this._actors.get(actor) ?? pending.get(actor);
-      if (known !== undefined) {
-        if (
-          known.signer !== registration.signer ||
-          !sameBytes(known.nonce, registration.nonce)
-        )
-          throw new CRDTActorBindingError(
-            'CRDT actor is already bound to another registration',
-          );
-        continue;
-      }
-      pending.set(actor, registration);
-      const count =
-        this.signerCount(registration.signer) +
-        (added.get(registration.signer) ?? 0) +
-        1;
-      if (count > MAX_CRDT_ACTORS_PER_SIGNER)
+      if (
+        known !== undefined &&
+        !sameCRDTActorRegistration(known, registration)
+      )
         throw new CRDTActorBindingError(
-          `A signer may bind at most ${MAX_CRDT_ACTORS_PER_SIGNER} CRDT actors per document`,
+          'CRDT actor is already bound to another registration',
         );
-      added.set(registration.signer, (added.get(registration.signer) ?? 0) + 1);
+      pending.set(actor, registration);
     }
   }
 
-  /** Record pairs after {@link check} accepted them. */
-  record(entries: Iterable<readonly [string, CRDTActorRegistration]>): void {
+  /** Remember pairs, refreshing ones already known. */
+  record(
+    entries: Iterable<readonly [string, CRDTSignedActorRegistration]>,
+  ): void {
     const list = [...entries];
     this.check(list);
-    for (const [actor, { signer, nonce }] of list) {
-      if (this._actors.has(actor)) continue;
-      this._actors.set(actor, { signer, nonce: new Uint8Array(nonce) });
-      this._perSigner.set(signer, this.signerCount(signer) + 1);
+    for (const [actor, registration] of list) {
+      const known = this._actors.get(actor);
+      this._actors.delete(actor);
+      this._actors.set(
+        actor,
+        known ?? {
+          signer: registration.signer,
+          nonce: new Uint8Array(registration.nonce),
+          registrationSignature: new Uint8Array(
+            registration.registrationSignature,
+          ),
+        },
+      );
+      let actors = this._bySigner.get(registration.signer);
+      if (actors === undefined)
+        this._bySigner.set(registration.signer, (actors = new Set()));
+      actors.delete(actor);
+      actors.add(actor);
+      if (actors.size > MAX_CRDT_ACTORS_PER_SIGNER)
+        this._forget(actors.values().next().value!);
+      if (this._actors.size > MAX_CRDT_ACTOR_BINDINGS)
+        this._forget(this._actors.keys().next().value!);
     }
   }
 
-  /** Registrations for `actors`, or for every bound actor. */
-  registrations(actors?: Iterable<string>): CRDTActorRegistration[] {
-    const selected =
-      actors === undefined
-        ? [...this._actors.values()]
-        : [...actors].map((actor) => {
-            const registration = this._actors.get(actor);
-            if (registration === undefined)
-              throw new CRDTActorBindingError(
-                'Document state contains an unbound CRDT actor',
-              );
-            return registration;
-          });
+  private _forget(actor: string): void {
+    const registration = this._actors.get(actor);
+    if (registration === undefined) return;
+    this._actors.delete(actor);
+    const actors = this._bySigner.get(registration.signer)!;
+    actors.delete(actor);
+    if (actors.size === 0) this._bySigner.delete(registration.signer);
+  }
+
+  /** Remembered registrations for `actors`, or every remembered one. */
+  registrations(actors?: Iterable<string>): CRDTSignedActorRegistration[] {
+    if (actors === undefined) return [...this._actors.values()];
+    const selected: CRDTSignedActorRegistration[] = [];
+    for (const actor of actors) {
+      const registration = this._actors.get(actor);
+      if (registration !== undefined) selected.push(registration);
+    }
     return selected;
   }
 }

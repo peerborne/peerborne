@@ -20,7 +20,9 @@ export interface YjsEditorSource<PublicKey = unknown> {
   ): void;
   unsubscribe(id: string): void;
   /** A fresh actor bound to the source's signer, for the editor mirror. */
-  reserveActor?(): Promise<string | undefined>;
+  reserveActor(): Promise<string | undefined>;
+  /** Release an actor from `reserveActor()` once the mirror is discarded. */
+  releaseActor(actor: string): void;
 }
 
 export interface YjsEditorBridge {
@@ -47,7 +49,7 @@ export async function createYjsEditorBridge<PublicKey>(
   options: { onError?: (error: unknown) => void; message?: string } = {},
 ): Promise<YjsEditorBridge> {
   const document = new Doc();
-  const actor = await source.reserveActor?.();
+  const actor = await source.reserveActor();
   if (actor !== undefined) document.clientID = Number(actor);
   const origin = {};
   const id = `peerborne-editor-${nextBridge++}`;
@@ -96,6 +98,7 @@ export async function createYjsEditorBridge<PublicKey>(
         source.unsubscribe(id);
         document.off('updateV2', send);
         destroying = pending.finally(() => {
+          if (actor !== undefined) source.releaseActor(actor);
           document.destroy();
         });
       }

@@ -6,6 +6,7 @@ import {
   PeerborneDocument,
   SubtleCrypto,
   createCRDTActorNonce,
+  crdtActorRegistrationPayload,
   crdtChangeAuthorPayload,
   decodeCRDTChangeAuthor,
   deriveCRDTActorDigest,
@@ -30,7 +31,8 @@ function generateIdentity() {
  * change function), `forge(document, actor, key)` (bare changes that add
  * `key` under `actor`), `json(document)`, `actor(document)`,
  * `hasActor(document, actor)` and optionally `squat(actor, key)`, a change
- * function that switches the document to `actor` before writing.
+ * function that switches the document to `actor` before writing, and
+ * `hashDependencies`, set when changes depend on their predecessors by hash.
  */
 export function actorBindingScenarios(adapter) {
   const path = `/${adapter.name}-actor-binding`;
@@ -135,30 +137,79 @@ export function actorBindingScenarios(adapter) {
     };
   }
 
+  async function signRegistration(from, author) {
+    return {
+      ...author,
+      registrationSignature: await from.document._authProvider.sign(
+        crdtActorRegistrationPayload(path, author),
+        from.identity.privateKey,
+      ),
+    };
+  }
+
   async function authored(from, bare, author) {
+    const signed =
+      author.registrationSignature === undefined
+        ? await signRegistration(from, author)
+        : author;
     const signature = await from.document._authProvider.sign(
       crdtChangeAuthorPayload(
         path,
-        author,
+        signed,
         from.document._changesSerializer.serializeChanges(bare),
       ),
       from.identity.privateKey,
     );
     return from.document._crdtProvider.actorBinding.attach(
       bare,
-      encodeCRDTChangeAuthor({ ...author, signature }),
+      encodeCRDTChangeAuthor({ ...signed, signature }),
     );
   }
 
-  async function send(from, to, change) {
+  async function signed(from, fields) {
     const message = {
       documentId: path,
       signatureContext: 'ordinary-sync-v1',
-      changeId: await from.document._putBlock(change, 'document'),
-      changes: { kind: 'document', change },
+      ...fields,
     };
     message.signature = await from.document._signAsWriter(message);
-    return to.document.sync(message);
+    return message;
+  }
+
+  async function send(from, to, change, children) {
+    return to.document.sync(
+      await signed(from, {
+        changeId: await from.document._putBlock(change, 'document'),
+        changes: {
+          kind: 'document',
+          change,
+          ...(children ? { children } : {}),
+        },
+      }),
+    );
+  }
+
+  async function withSnapshot(from, snapshot) {
+    const message = { ...(await lastMessage(from)), snapshot };
+    delete message.signature;
+    message.signature = await from.document._signAsWriter(message);
+    return message;
+  }
+
+  async function resignSnapshot(from, snapshot, manifest) {
+    const binding = from.document._crdtProvider.actorBinding;
+    const [, state] = binding.detach(snapshot.state);
+    const tampered = { ...snapshot, state: binding.attach(state, manifest) };
+    tampered.signature = await from.document._authProvider.sign(
+      from.document._buildSnapshotSignPayload(
+        from.document._changesSerializer.serializeChanges(tampered.state),
+        tampered.lastChangeNodeCID,
+        tampered.timestamp,
+        tampered.compactedCount,
+      ),
+      from.identity.privateKey,
+    );
+    return tampered;
   }
 
   const json = (replica) => adapter.json(replica.document.document);
@@ -192,11 +243,6 @@ export function actorBindingScenarios(adapter) {
       ),
       bindingError(/does not own/),
     );
-    if (adapter.squat)
-      await assert.rejects(
-        mallory.document.change(adapter.squat(bobActor, 'forged')),
-        bindingError(/own actor/),
-      );
     assert.deepEqual(json(alice), before);
     assert.equal(adapter.hasActor(alice.document.document, bobActor), false);
 
@@ -205,6 +251,26 @@ export function actorBindingScenarios(adapter) {
     assert.equal(json(alice).bob, 1);
     assert.equal(json(alice).forged, undefined);
   });
+
+  if (adapter.squat)
+    test(`${adapter.name}: a local change under another actor is refused and retires the instance`, async () => {
+      const { alice, bob, mallory } = await network();
+      await bob.document.change(adapter.write('bob'));
+      const bobActor = actorOf(bob);
+      await assert.rejects(
+        mallory.document.change(adapter.squat(bobActor, 'forged')),
+        (error) =>
+          /retired/.test(error.message) &&
+          error.cause instanceof CRDTActorBindingError,
+      );
+      await assert.rejects(
+        mallory.document.change(adapter.write('later')),
+        /retired/,
+      );
+      assert.equal(await alice.document.sync(await lastMessage(bob)), true);
+      await exchange(alice, bob);
+      assert.equal(json(alice).forged, undefined);
+    });
 
   test(`${adapter.name}: re-wrapping another writer's change is rejected and an intact relay is accepted`, async () => {
     const { alice, bob, mallory } = await network();
@@ -235,6 +301,43 @@ export function actorBindingScenarios(adapter) {
     await exchange(alice, bob);
   });
 
+  test(`${adapter.name}: a relayed change that fails binding is skipped without blocking the relayer`, async () => {
+    const { alice, bob, mallory } = await network();
+    const carol = await join(alice, await generateIdentity());
+    await bob.document.change(adapter.write('bob'));
+    assert.equal(await carol.document.sync(await lastMessage(bob)), true);
+    const colliding = await registration(mallory);
+    collisions.set(
+      hex(await deriveCRDTActorDigest(path, colliding)),
+      actorOf(bob),
+    );
+    const head = await lastMessage(alice);
+    const squat = await authored(
+      mallory,
+      adapter.forge(alice.document.document, actorOf(bob), 'squat'),
+      colliding,
+    );
+    const squatMessage = await signed(mallory, {
+      changeId: await mallory.document._putBlock(squat, 'document'),
+      changes: {
+        kind: 'document',
+        change: squat,
+        children: { [head.changeId]: head.changes },
+      },
+    });
+    assert.equal(await alice.document.sync(squatMessage), true);
+    await alice.document.change(adapter.write('honest'));
+    const relayed = await lastMessage(alice);
+    assert.ok(squatMessage.changeId in relayed.changes.children);
+    assert.equal(await carol.document.sync(relayed), true);
+    assert.equal(json(carol).squat, undefined);
+    // Automerge changes depend on their predecessors by hash, so Alice's later
+    // change waits for the change Carol refused. Its 128-bit actors make the
+    // collision this test simulates infeasible.
+    if (!adapter.hashDependencies) assert.equal(json(carol).honest, 1);
+    assert.equal(json(carol).bob, 1);
+  });
+
   test(`${adapter.name}: snapshots and checkpoints keep the first registration of an actor`, async () => {
     const { alice, bob, mallory } = await network();
     await bob.document.change(adapter.write('bob'));
@@ -245,10 +348,10 @@ export function actorBindingScenarios(adapter) {
 
     const snapshot = await alice.document.snapshot();
     const carol = await admit(alice, await generateIdentity());
-    const message = { ...(await lastMessage(alice)), snapshot };
-    delete message.signature;
-    message.signature = await alice.document._signAsWriter(message);
-    assert.equal(await carol.document.sync(message), true);
+    assert.equal(
+      await carol.document.sync(await withSnapshot(alice, snapshot)),
+      true,
+    );
     assert.deepEqual(json(carol), json(alice));
 
     const restored = replica(alice.identity);
@@ -278,66 +381,113 @@ export function actorBindingScenarios(adapter) {
     assert.notEqual(actorOf(restored), actorOf(alice));
   });
 
-  test(`${adapter.name}: a replica holding another writer's orphaned change keeps publishing its own operations`, async () => {
+  test(`${adapter.name}: a replica whose first write follows another writer's orphaned change publishes only its own operations`, async () => {
     const { alice, bob } = await network();
-    await bob.document.change(adapter.write('b1'));
-    const first = await lastMessage(bob);
-    await bob.document.change(adapter.write('b2'));
-    const second = await lastMessage(bob);
-    const orphan = {
-      documentId: path,
-      signatureContext: 'ordinary-sync-v1',
+    await alice.document.change(adapter.write('a1'));
+    const first = await lastMessage(alice);
+    await alice.document.change(adapter.write('a2'));
+    const second = await lastMessage(alice);
+    const orphan = await signed(alice, {
       changeId: second.changeId,
       changes: { kind: 'document', change: second.changes.change },
-    };
-    orphan.signature = await bob.document._signAsWriter(orphan);
-    assert.equal(await alice.document.sync(orphan), true);
-    assert.equal(json(alice).b2, undefined);
+    });
+    assert.equal(await bob.document.sync(orphan), true);
+    assert.equal(json(bob).a2, undefined);
 
-    await alice.document.change(adapter.write('a2'));
-    const aliceMessage = await lastMessage(alice);
-    const [, bare] = alice.document._crdtProvider.actorBinding.detach(
-      aliceMessage.changes.change,
+    await bob.document.change(adapter.write('b1'));
+    const bobMessage = await lastMessage(bob);
+    const [, bare] = bob.document._crdtProvider.actorBinding.detach(
+      bobMessage.changes.change,
     );
     assert.deepEqual(
-      [...alice.document._crdtProvider.actorBinding.changeActors(bare)],
-      [actorOf(alice)],
+      [...bob.document._crdtProvider.actorBinding.changeActors(bare)],
+      [actorOf(bob)],
     );
-    assert.equal(await bob.document.sync(aliceMessage), true);
-    assert.equal(await alice.document.sync(first), true);
-    assert.equal(json(alice).b2, 1);
+    assert.equal(await alice.document.sync(bobMessage), true);
+    assert.equal(await bob.document.sync(first), true);
+    assert.equal(json(bob).a2, 1);
     await exchange(alice, bob);
   });
 
-  test(`${adapter.name}: a snapshot whose manifest does not bind its state is not applied`, async () => {
-    const { alice, bob } = await network();
+  test(`${adapter.name}: a snapshot manifest needs each signer's own registration signature`, async () => {
+    const { alice, bob, mallory } = await network();
     await bob.document.change(adapter.write('bob'));
     assert.equal(await alice.document.sync(await lastMessage(bob)), true);
     const snapshot = await alice.document.snapshot();
-    const binding = alice.document._crdtProvider.actorBinding;
-    const [, state] = binding.detach(snapshot.state);
-    const own = alice.document._actorBindings.registrations([actorOf(alice)]);
-    const tampered = {
-      ...snapshot,
-      state: binding.attach(state, encodeCRDTActorManifest(own)),
+    const registrations = alice.document._actorBindings.registrations();
+    const bobSigner = await bob.document._localSignerAuthority();
+    const outside = await signRegistration(mallory, {
+      ...(await registration(mallory)),
+    });
+    const borrowed = {
+      signer: bobSigner,
+      nonce: createCRDTActorNonce(),
     };
-    tampered.signature = await alice.document._authProvider.sign(
-      alice.document._buildSnapshotSignPayload(
-        alice.document._changesSerializer.serializeChanges(tampered.state),
-        tampered.lastChangeNodeCID,
-        tampered.timestamp,
-        tampered.compactedCount,
+    for (const manifest of [
+      registrations.map((entry) =>
+        entry.signer === bobSigner
+          ? { ...entry, registrationSignature: new Uint8Array([1, 2, 3]) }
+          : entry,
       ),
-      alice.identity.privateKey,
-    );
+      [...registrations, outside],
+      [
+        ...registrations,
+        {
+          ...borrowed,
+          registrationSignature: (await signRegistration(mallory, borrowed))
+            .registrationSignature,
+        },
+      ],
+    ]) {
+      const carol = await admit(alice, await generateIdentity());
+      await carol.document.sync(
+        await withSnapshot(
+          alice,
+          await resignSnapshot(
+            alice,
+            snapshot,
+            encodeCRDTActorManifest(manifest),
+          ),
+        ),
+      );
+      assert.equal(carol.document.latestSnapshot, undefined);
+      assert.equal(json(carol).bob, undefined);
+      assert.equal(carol.document._actorBindings.get(actorOf(bob)), undefined);
+    }
+
     const carol = await admit(alice, await generateIdentity());
-    const message = { ...(await lastMessage(alice)), snapshot: tampered };
-    delete message.signature;
-    message.signature = await alice.document._signAsWriter(message);
-    await carol.document.sync(message);
-    assert.equal(carol.document.latestSnapshot, undefined);
-    assert.equal(json(carol).bob, undefined);
+    const partial = registrations.filter((entry) => entry.signer === bobSigner);
+    assert.equal(
+      await carol.document.sync(
+        await withSnapshot(
+          alice,
+          await resignSnapshot(
+            alice,
+            snapshot,
+            encodeCRDTActorManifest(partial),
+          ),
+        ),
+      ),
+      true,
+    );
+    assert.equal(json(carol).bob, 1);
+    assert.notEqual(carol.document._actorBindings.get(actorOf(bob)), undefined);
   });
 
-  return { network, lastMessage, json };
+  return {
+    network,
+    lastMessage,
+    json,
+    admit,
+    join,
+    registration,
+    authored,
+    signed,
+    send,
+    actorOf,
+    exchange,
+    bindingError,
+    generateIdentity,
+    path,
+  };
 }

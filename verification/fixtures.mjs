@@ -7,6 +7,7 @@ import {
   Peerborne,
   SubtleCrypto,
   createCRDTActorNonce,
+  crdtActorRegistrationPayload,
   crdtChangeAuthorPayload,
   deriveCRDTActorDigest,
   encodeCRDTChangeAuthor,
@@ -251,9 +252,14 @@ export async function authoredChange(
   bare,
   identity = fixture.identity,
 ) {
+  const path = fixture.document.documentPath;
+  const registrationSignature = await fixture.auth.sign(
+    crdtActorRegistrationPayload(path, registration),
+    identity.privateKey,
+  );
   const signature = await fixture.auth.sign(
     crdtChangeAuthorPayload(
-      fixture.document.documentPath,
+      path,
       registration,
       fixture.serializer.serializeChanges(bare),
     ),
@@ -261,7 +267,11 @@ export async function authoredChange(
   );
   return fixture.provider.actorBinding.attach(
     bare,
-    encodeCRDTChangeAuthor({ ...registration, signature }),
+    encodeCRDTChangeAuthor({
+      ...registration,
+      registrationSignature,
+      signature,
+    }),
   );
 }
 

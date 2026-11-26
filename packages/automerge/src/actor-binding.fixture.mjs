@@ -9,6 +9,7 @@ import { actorBindingScenarios } from '../../../verification/actor-binding.mjs';
 
 actorBindingScenarios({
   name: 'automerge',
+  hashDependencies: true,
   provider: () => new AutomergeProvider(),
   acl: () => new AutomergeACLProvider(),
   keychain: () => new AutomergeKeychainProvider(),

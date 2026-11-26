@@ -21,6 +21,8 @@ function fixture() {
     subscribe(id, handler) {
       handlers.set(id, handler);
     },
+    reserveActor: jest.fn(async () => undefined as string | undefined),
+    releaseActor: jest.fn(),
     unsubscribe(id) {
       handlers.delete(id);
     },
@@ -60,6 +62,7 @@ describe('Yjs editor bridge', () => {
       new Set(['9007199254740990']),
     );
     await bridge.destroy();
+    expect(source.releaseActor).toHaveBeenCalledWith('9007199254740990');
   });
 
   test('remote updates reach the editor without generating another write', async () => {

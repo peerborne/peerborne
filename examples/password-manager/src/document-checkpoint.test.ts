@@ -13,6 +13,7 @@ import {
   documentCheckpointCommitment,
   activateDocumentReplacement,
   createCRDTActorNonce,
+  crdtActorRegistrationPayload,
   crdtChangeAuthorPayload,
   deriveCRDTActorDigest,
   documentRecoveryContentDigest,
@@ -429,6 +430,10 @@ test('a document that adopts a tree naming forgotten ancestors still exports and
     otherChange,
     encodeCRDTChangeAuthor({
       ...author,
+      registrationSignature: await auth.sign(
+        crdtActorRegistrationPayload(created.documentPath, author),
+        signing.privateKey,
+      ),
       signature: await auth.sign(
         crdtChangeAuthorPayload(created.documentPath, author, otherChange),
         signing.privateKey,

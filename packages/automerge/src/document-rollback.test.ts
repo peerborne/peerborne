@@ -40,7 +40,11 @@ async function authoredRemote(entry: string): Promise<Change[]> {
   const remote = change(clone(genesis, { actor }), push(entry));
   return provider.actorBinding.attach(
     getChanges(genesis, remote),
-    encodeCRDTChangeAuthor({ ...registration, signature: new Uint8Array() }),
+    encodeCRDTChangeAuthor({
+      ...registration,
+      registrationSignature: new Uint8Array(),
+      signature: new Uint8Array(),
+    }),
   );
 }
 

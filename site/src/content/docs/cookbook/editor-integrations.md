@@ -45,6 +45,7 @@ it rejects with `No document state is available…`; if one can and
 The mirror writes under a Yjs client ID that `document.reserveActor()` binds
 to the document's signer, so its edits pass
 [actor binding](../../concepts/security/#crdt-actors-are-bound-to-change-signers).
+`destroy()` releases that reservation.
 Remote document notifications update the mirror without generating another
 local write. Local updates are queued in order. `flush()` and `destroy()` reject
 on failed document writes. The first failure halts later queued writes, and the

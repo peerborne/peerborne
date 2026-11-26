@@ -1,5 +1,6 @@
 import { LoroDoc, decodeImportBlobMeta } from 'loro-crdt';
 import {
+  CRDTActorBindingError,
   attachCRDTActorPrefix,
   detachCRDTActorPrefix,
   type CRDTActorBinding,
@@ -7,8 +8,18 @@ import {
 
 const PEER_ID_RANGE = (1n << 64n) - 1n;
 
-function importedPeers(bytes: Uint8Array): ReadonlySet<string> {
+/**
+ * Peers with operations in a blob of exactly `mode`. Shallow snapshots,
+ * state-only exports and outdated encodings carry state whose operations
+ * their version range does not list, so they are refused.
+ */
+function importedPeers(
+  bytes: Uint8Array,
+  mode: 'update' | 'snapshot',
+): ReadonlySet<string> {
   const meta = decodeImportBlobMeta(bytes, true);
+  if (meta.mode !== mode)
+    throw new CRDTActorBindingError(`Loro ${mode} required, not ${meta.mode}`);
   const start = meta.partialStartVersionVector.toJSON();
   const peers = new Set<string>();
   for (const [peer, end] of meta.partialEndVersionVector.toJSON())
@@ -29,8 +40,8 @@ export const loroActorBinding: CRDTActorBinding<LoroDoc, Uint8Array> = {
     document.setPeerId(BigInt(actor));
     return document;
   },
-  changeActors: importedPeers,
-  stateActors: importedPeers,
+  changeActors: (changes) => importedPeers(changes, 'update'),
+  stateActors: (state) => importedPeers(state, 'snapshot'),
   attach: attachCRDTActorPrefix,
   detach: detachCRDTActorPrefix,
 };
