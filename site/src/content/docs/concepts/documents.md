@@ -30,11 +30,12 @@ see [Open existing documents](#open-existing-documents).
 The direct change API returns a promise: handle rejection before telling the
 user a save succeeded. A successful local operation is not a durable
 acknowledgment from every other replica. A change that is committed locally
-but whose frame could not be published, or reached no peer, still resolves
-and reaches peers with the next change;
+but whose frame could not be published, or reached no peer known to serve a
+member, still resolves and reaches peers with the next change;
 `document.subscribeDeliveryFailures(id, handler)` reports it, and
-`document.deliveryFailure` holds the latest one until a later local frame
-reaches a peer.
+`document.deliveryFailure` holds the latest one until there is evidence that a member holds the change or was sent it.
+`document.subscribeDeliveryState(id, handler)` reports each change of
+`deliveryFailure`.
 
 ## Open existing documents
 

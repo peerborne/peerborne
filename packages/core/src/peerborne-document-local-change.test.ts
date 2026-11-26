@@ -146,6 +146,7 @@ function publishingDocument(crdtProvider: object = inPlaceProvider): any {
       getWriters: async () => [],
       _closeDocument: jest.fn(async () => undefined),
       _deliveryFailureHandlers: {},
+      _deliveryStateHandlers: {},
       _remoteHandlers: {},
       handled: [] as string[][],
       undelivered: [] as { changeId: string; error: unknown }[],

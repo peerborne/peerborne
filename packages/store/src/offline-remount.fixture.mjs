@@ -88,7 +88,7 @@ async function node() {
   return swarm;
 }
 
-test('with the default GossipSub options, a managed store keeps an edit made with no peers across a remount', async (t) => {
+test('with the default GossipSub options, a managed store keeps an edit made with no member peer across a remount', async (t) => {
   const swarm = await node();
   t.after(() => swarm.heliaNode.stop().catch(() => {}));
   const founding = swarm.doc(path);
@@ -150,11 +150,15 @@ test('with the default GossipSub options, a managed store keeps an edit made wit
       .some((peer) => peer.equals(subscriber.peerId)),
   );
 
-  await store.change((doc) => doc.getMap('data').set('title', 'Delivered'));
-  assert.equal(store.getSnapshot().deliveryFailure, undefined);
+  await store.change((doc) => doc.getMap('data').set('title', 'Sent'));
   await until('the subscriber to receive the frame', () => received.length > 0);
+  const unproven = store.getSnapshot().deliveryFailure;
+  assert.ok(unproven.error instanceof NoDeliveryPeersError);
+  assert.notEqual(unproven, offline);
   remount();
   await delay(20);
+  assert.equal(store.getSnapshot().status, 'ready');
+  await store.stop();
   assert.equal(store.getSnapshot().status, 'closed');
   assert.equal(handles.length, 1);
 });

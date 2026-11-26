@@ -79,11 +79,15 @@ import {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,
   MAX_GOSSIP_SYNC_MESSAGE_BYTES,
-  NoDeliveryPeersError,
   RETAINED_TREE_HIGH_BYTES,
   RETAINED_TREE_KEEP_BYTES,
-  publishedToNoPeer,
 } from './gossip-frame.js';
+import {
+  MemberPeers,
+  NoDeliveryPeersError,
+  publicationRecipients,
+  syncMessageReferences,
+} from './delivery-evidence.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -848,6 +852,11 @@ export interface ChangeDeliveryFailure {
 /** Handler for {@link PeerborneDocument.subscribeDeliveryFailures}. */
 export type PeerborneDocumentDeliveryFailureHandler = (
   failure: ChangeDeliveryFailure,
+) => void;
+
+/** Receives `PeerborneDocument.deliveryFailure` each time it changes. */
+export type PeerborneDocumentDeliveryStateHandler = (
+  failure: ChangeDeliveryFailure | undefined,
 ) => void;
 
 /** Options for {@link PeerborneDocument.removeWriter}. */
@@ -1735,6 +1744,13 @@ export class PeerborneDocument<
     [id: string]: PeerborneDocumentDeliveryFailureHandler;
   } = {};
   private _deliveryFailure?: ChangeDeliveryFailure;
+  private _deliveryStateHandlers: {
+    [id: string]: PeerborneDocumentDeliveryStateHandler;
+  } = {};
+  private _memberPeerLog?: MemberPeers;
+  private get _memberPeers(): MemberPeers {
+    return (this._memberPeerLog ??= new MemberPeers());
+  }
 
   // Handlers registered by users of `PeerborneDocument` that fire on remote changes.
   private _remoteHandlers: {
@@ -4000,7 +4016,7 @@ export class PeerborneDocument<
     data: Iterable<Uint8Array>,
     bootstrapRevision: number,
     admission?: SharedProtocolHandlerAdmission,
-  ): Promise<void> {
+  ): Promise<boolean> {
     for (;;) {
       let conflict: ACLOperationInProgressError | undefined;
       const dispatch = await this._runStateMutation(async () => {
@@ -4018,17 +4034,20 @@ export class PeerborneDocument<
         }
         if (!isSharedProtocolHandlerActive(admission)) return;
         if (!authorized) {
-          return { completion: writeStream(stream, [] as Iterable<Uint8Array>) };
+          return {
+            completion: writeStream(stream, [] as Iterable<Uint8Array>),
+            authorized,
+          };
         }
         this._assertBootstrapResponseRevision(bootstrapRevision);
-        return { completion: writeStream(stream, data) };
+        return { completion: writeStream(stream, data), authorized };
       });
       if (conflict === undefined) {
         await dispatch?.completion;
-        return;
+        return dispatch?.authorized === true;
       }
       await (conflict as ACLOperationInProgressError).waitForSettlement();
-      if (!isSharedProtocolHandlerActive(admission)) return;
+      if (!isSharedProtocolHandlerActive(admission)) return false;
     }
   }
 
@@ -4869,7 +4888,7 @@ export class PeerborneDocument<
     let hashWasKnown = false;
     let commitResolved = false;
     let publishedBytes = 0;
-    let reachedNoPeer = false;
+    let reachedNoMember = false;
     // Every later frame carries this change inline, so one change may use at
     // most half a frame. Refuse it before a block is stored or signed.
     if (kind === crdtDocumentChangeNode) {
@@ -4975,11 +4994,17 @@ export class PeerborneDocument<
           this._topic,
           concatUint8Arrays(documentKeyID, nonce, data),
         );
-      reachedNoPeer = publishedToNoPeer(
+      const recipients = publicationRecipients(
         publication,
         this.swarm.heliaNode.libp2p.peerId?.toString(),
       );
-      if (!reachedNoPeer) this._deliveryFailure = undefined;
+      reachedNoMember =
+        recipients !== undefined && !this._memberPeers.includesAny(recipients);
+      if (!reachedNoMember) this._setDeliveryFailure(undefined);
+      // Recorded once the founder frame is out, so a failure after this point
+      // cannot let a retry found a second document under a new key.
+      if (this._foundingPublication)
+        this.swarm.recordFoundedDocument(this.documentPath);
       // This is the sole live-authorization commit point for staged writer
       // changes: publication has resolved, but no local observer has run yet.
       if (postPublishCommit) {
@@ -5018,7 +5043,7 @@ export class PeerborneDocument<
         throw error;
       this._reportDeliveryFailure(hash, error);
     }
-    if (reachedNoPeer)
+    if (reachedNoMember)
       this._reportDeliveryFailure(hash, new NoDeliveryPeersError());
 
     // Fire change handlers. Once the staged commit above succeeds, handler
@@ -5063,7 +5088,7 @@ export class PeerborneDocument<
       changeId,
       error,
     });
-    this._deliveryFailure = failure;
+    this._setDeliveryFailure(failure);
     const report = () =>
       console.error(`[${this.documentPath}] a delivery failure handler failed.`);
     for (const handler of Object.values(this._deliveryFailureHandlers)) {
@@ -5074,6 +5099,43 @@ export class PeerborneDocument<
         report();
       }
     }
+  }
+
+  private _setDeliveryFailure(next: ChangeDeliveryFailure | undefined): void {
+    if (this._deliveryFailure === next) return;
+    this._deliveryFailure = next;
+    for (const handler of Object.values(this._deliveryStateHandlers)) {
+      try {
+        const result: unknown = handler(next);
+        if (result !== undefined)
+          void Promise.resolve(result).catch(() =>
+            console.error(`[${this.documentPath}] a delivery state handler failed.`),
+          );
+      } catch {
+        console.error(`[${this.documentPath}] a delivery state handler failed.`);
+      }
+    }
+  }
+
+  /** A member holds, or was sent, the state that `covered` was undelivered in. */
+  private _confirmDelivery(covered: ChangeDeliveryFailure | undefined): void {
+    if (covered !== undefined && this._deliveryFailure === covered)
+      this._setDeliveryFailure(undefined);
+  }
+
+  /** `peer` served a member: it sent a member-signed request or a writer frame. */
+  private _noteMemberPeer(peer: string): void {
+    this._antiEntropy?.memberPeer(peer);
+    this._memberPeers.note(peer);
+  }
+
+  /** A verified writer's message that names the undelivered change delivers it. */
+  private _confirmDeliveryByMessage(
+    message: CRDTSyncMessage<ChangesType>,
+  ): void {
+    const pending = this._deliveryFailure;
+    if (pending !== undefined && syncMessageReferences(message, pending.changeId))
+      this._confirmDelivery(pending);
   }
 
   /**
@@ -5625,6 +5687,7 @@ export class PeerborneDocument<
       }
       if (!isSharedProtocolHandlerActive(admission)) return;
 
+      const covered = this._deliveryFailure;
       const loadMessage = await this._createLoadResponsePlan(message, context);
 
       // Sign new message.
@@ -5656,13 +5719,16 @@ export class PeerborneDocument<
       );
       console.log('Sending encrypted shared doc-load response');
 
-      await this._sendAuthorizedLoadResponse(
-        message,
-        stream,
-        [assembled] as Iterable<Uint8Array>,
-        bootstrapRevision,
-        admission,
-      );
+      if (
+        await this._sendAuthorizedLoadResponse(
+          message,
+          stream,
+          [assembled] as Iterable<Uint8Array>,
+          bootstrapRevision,
+          admission,
+        )
+      )
+        this._confirmDelivery(covered);
     } catch {
       console.error('Shared doc-load request handling failed');
       // Ensure the stream is closed so the requester doesn't hang.
@@ -7673,6 +7739,7 @@ export class PeerborneDocument<
   }
 
   private _activationInProgress = false;
+  private _foundingPublication = false;
   private _preOpenAuthorityPathReserved = false;
   private _localCheckpointReady = false;
   private _lastSyncRequestAt = 0;
@@ -7989,7 +8056,7 @@ export class PeerborneDocument<
       return;
     const verified = await role();
     if (verified === undefined || !isCurrent()) return;
-    antiEntropy.memberPeer(request.requesterPeer);
+    this._noteMemberPeer(request.requesterPeer);
     if (held) antiEntropy.retractAdvertisement(request.requester);
     else
       antiEntropy.advertisement(
@@ -8018,6 +8085,17 @@ export class PeerborneDocument<
       const role = () => (verification ??= this._syncRequestRole(request));
       await this._observeSyncRequest(request, now, role, isCurrent);
       if (!isCurrent()) return;
+      const pending = this._deliveryFailure;
+      if (
+        pending !== undefined &&
+        request.knownTips.includes(pending.changeId) &&
+        (await role()) !== undefined
+      ) {
+        this._noteMemberPeer(request.requesterPeer);
+        this._confirmDelivery(pending);
+      }
+      if (!isCurrent()) return;
+      const covered = this._deliveryFailure;
       const previous = this._lastSyncMessage,
         snapshot = this._latestSnapshot;
       const hasChange = !!previous?.changeId && !!previous.changes;
@@ -8038,7 +8116,7 @@ export class PeerborneDocument<
       )
         return;
       if (!(await this._verifySyncRequest(request, verification))) return;
-      this._antiEntropy?.memberPeer(request.requesterPeer);
+      this._noteMemberPeer(request.requesterPeer);
       if ((await this._writers.check(this._userPublicKey)) !== true) return;
       const snapshotKnown =
         !snapshot ||
@@ -8088,7 +8166,7 @@ export class PeerborneDocument<
       this._lastSyncResponseAt = now;
       try {
         message.signature = await this._signAsWriter(message);
-        await this._publishSyncBytes(
+        const publication = await this._publishSyncBytes(
           this._syncMessageSerializer.serializeSyncMessage(message),
           () => {
             const dispatch = this._observeSyncRequestClock();
@@ -8099,6 +8177,12 @@ export class PeerborneDocument<
             );
           },
         );
+        if (
+          publicationRecipients(publication, this._localPeerId())?.includes(
+            request.requesterPeer,
+          )
+        )
+          this._confirmDelivery(covered);
       } finally {
         const settled = this._observeSyncRequestClock();
         if (settled !== undefined) this._lastSyncResponseAt = settled;
@@ -8106,26 +8190,26 @@ export class PeerborneDocument<
     });
   }
 
+  /** Returns the GossipSub publication, or undefined when nothing was sent. */
   private async _publishSyncBytes(
     bytes: Uint8Array,
     isCurrent?: () => boolean,
-  ): Promise<boolean> {
+  ): Promise<unknown> {
     assertSharedProtocolRequestSize(
       bytes.byteLength,
       'Document sync message',
     );
-    if (isCurrent && !isCurrent()) return false;
+    if (isCurrent && !isCurrent()) return undefined;
     const [keyId, key] = await this._keychain.current();
     if (!key) throw new Error('Document has no encryption key');
     const { nonce, data } = await this._authProvider.encrypt(bytes, key);
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
     const frame = concatUint8Arrays(keyId, nonce, data);
-    if (isCurrent && !isCurrent()) return false;
-    await this.swarm.heliaNode.libp2p.services.pubsub.publish(
+    if (isCurrent && !isCurrent()) return undefined;
+    return this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
       frame,
     );
-    return true;
   }
   /**
    * Capture a bounded, self-signed local checkpoint. The payload contains
@@ -8983,7 +9067,10 @@ export class PeerborneDocument<
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
-      if (applied) this._antiEntropy?.memberPeer(sender);
+      if (applied) {
+        this._noteMemberPeer(sender);
+        this._confirmDeliveryByMessage(message);
+      }
     };
     // A kept frame is retried through the full receive path, which repeats
     // every validator check before applying it.
@@ -9068,7 +9155,7 @@ export class PeerborneDocument<
                       if (!receiveAdmission.active)
                         return TopicValidatorResult.Ignore;
                       if (!signatureValid) return TopicValidatorResult.Reject;
-                      this._antiEntropy?.memberPeer(request.requesterPeer);
+                      this._noteMemberPeer(request.requesterPeer);
                       const verified = this._observeSyncRequestClock();
                       return verified !== undefined &&
                         isSyncRequestFresh(request, verified)
@@ -9169,12 +9256,16 @@ export class PeerborneDocument<
           // it only in the creator's in-memory ACL lets first-load peers decrypt
           // document state but leaves them unable to authenticate later writer
           // updates (or write as the same restored identity).
-          await this._publishPreparedWriterChange(
-            founderWriter,
-            'open founder writer',
-          );
+          this._foundingPublication = true;
+          try {
+            await this._publishPreparedWriterChange(
+              founderWriter,
+              'open founder writer',
+            );
+          } finally {
+            this._foundingPublication = false;
+          }
         });
-        this.swarm.recordFoundedDocument(this.documentPath);
       }
     } catch (err) {
       // Clean up any partially-registered state to avoid leaked handlers,
@@ -9309,9 +9400,11 @@ export class PeerborneDocument<
     } catch {
       return false;
     }
-    return this._runStateMutation(() =>
-      this._syncUnlocked(detached, true, 'ordinary-sync-v1'),
-    );
+    return this._runStateMutation(async () => {
+      const applied = await this._syncUnlocked(detached, true, 'ordinary-sync-v1');
+      if (applied) this._confirmDeliveryByMessage(detached);
+      return applied;
+    });
   }
 
   /**
@@ -10037,14 +10130,14 @@ export class PeerborneDocument<
    * Subscribe to local changes that were committed but not delivered, because
    * encrypting or publishing their frame failed, for example when GossipSub
    * has no topic peers and does not allow publishing to none. A frame that is
-   * published but reaches no peer, as by default when no peer has subscribed
-   * to the document topic, is reported with a `NoDeliveryPeersError`.
+   * published but reaches no peer known to serve a member, as by default with
+   * no topic peers or only a relay, is reported with a `NoDeliveryPeersError`.
    * `change()` and `endChange()` still resolve for such a change: it stays in
    * the document, and it reaches peers with the next change's frame or a sync
    * or load response. Do not repeat the edit. A coordinated document reports a
    * delivery failure by rejecting instead, and does not call these handlers.
    *
-   * Until a later frame reaches a peer, the change exists only on this device.
+   * Until a member receives it, the change exists only on this device.
    * Export a checkpoint after a delivery failure: if the instance is later
    * retired, it is reopened from the last checkpoint, and an undelivered
    * change made after that checkpoint is lost.
@@ -10062,13 +10155,38 @@ export class PeerborneDocument<
   }
 
   /**
-   * The latest local change that is committed but was not delivered, as
-   * reported to `subscribeDeliveryFailures()` handlers, until a later local
-   * change's frame reaches a peer and carries it. Local update handlers see
-   * the value after their change. A coordinated document never sets it.
+   * The latest local change that is committed but not known to have reached
+   * a member, as reported to `subscribeDeliveryFailures()` handlers. It is
+   * cleared on evidence that a member holds the change or was sent it: a
+   * later local frame or sync response sent to a peer that recently proved it
+   * serves a member, a load response served to a member, a member's sync
+   * request that names the change, or a writer's frame that names it. This is
+   * evidence of delivery, not an acknowledgment that a member stored it.
+   * Local update handlers see the value after their change. A coordinated
+   * document never sets it.
    */
   public get deliveryFailure(): ChangeDeliveryFailure | undefined {
     return this._deliveryFailure;
+  }
+
+  /**
+   * Call `handler` with `deliveryFailure` each time it is set or cleared.
+   *
+   * @param id An id to remove the handler with `unsubscribeDeliveryState(id)`.
+   * @param handler Called synchronously. A thrown error or rejected promise is
+   *   logged and does not affect the document.
+   */
+  public subscribeDeliveryState(
+    id: string,
+    handler: PeerborneDocumentDeliveryStateHandler,
+  ) {
+    this._assertNoIncompleteBootstrapLoad(true);
+    this._deliveryStateHandlers[id] = handler;
+  }
+
+  /** Remove a handler added with `subscribeDeliveryState()`. */
+  public unsubscribeDeliveryState(id: string) {
+    delete this._deliveryStateHandlers[id];
   }
 
   /**
@@ -10223,10 +10341,10 @@ export class PeerborneDocument<
    * The change is committed locally once its block is stored and it is in the
    * retained change tree. When encrypting or publishing its frame then fails,
    * for example because GossipSub has no topic peers, or the frame reaches
-   * no peer, the call still resolves: the change stays in the document, the
-   * next change's frame carries it inline, and sync and load responses serve
-   * it. The failure is
-   * reported to `subscribeDeliveryFailures()` handlers. A failure from a local
+   * no member's peer, the call still resolves: the change stays in the
+   * document, the next change's frame carries it inline, and sync and load
+   * responses serve it. The failure is reported to
+   * `subscribeDeliveryFailures()` handlers. A failure from a local
    * update handler or compaction rejects the call but also keeps the change.
    *
    * A failure before that point (block storage, signing or the frame size

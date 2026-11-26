@@ -63,4 +63,19 @@ for (const adapter of ['automerge', 'yjs']) {
     await assert.rejects(swarm.doc(path).create(), alreadyCreated);
     await first.helia.stop();
   });
+
+  test(`${adapter}: a create that fails after publishing its founder frame reserves the path`, async () => {
+    const first = await documentFixture({ adapter, path, open: false });
+    const swarm = first.document.swarm;
+    const compaction = new Error('Compaction failed');
+    first.document._maybeCompact = async () => {
+      throw compaction;
+    };
+    await assert.rejects(
+      first.document.create(),
+      (error) => error === compaction,
+    );
+    await assert.rejects(swarm.doc(path).create(), alreadyCreated);
+    await first.helia.stop();
+  });
 }
