@@ -80,7 +80,11 @@ context that peers may lack, in original write order, as new frames in the new
 context with the same native delta. Peers may lack a frame that is still in
 the outbox, or one written after the last frame the author accepted from a
 peer in that context. Earlier frames reached a reachable group and are not
-re-sent, so re-signing does not repeat every epoch. Duplicates are harmless
+re-sent, so re-signing does not repeat every epoch. The controller of the
+retired context commits its successor itself, so it published all its frames
+there while that context was current for every member. It carries only the
+frames still in its outbox, and a member that missed one catches up from the
+controller's checkpoint. Duplicates are harmless
 because native CRDT changes are idempotent. The document keeps each author's
 latest 64 own frames, up to 32 MiB, apart from the shared retention pool. After
 a restart it rebuilds them from the journal entries since its last checkpoint,

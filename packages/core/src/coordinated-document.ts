@@ -2125,6 +2125,9 @@ export class CoordinatedDocument<
   /**
    * Own frames of a retired context that peers may lack: those still in the
    * outbox, and those written after the last frame accepted from a peer there.
+   * The controller of the retired context commits its successor itself, so it
+   * published every one of its frames there while that context was current
+   * for all members; only its unsent frames are carried.
    */
   private carriedRetired(
     retired: CoordinatedDocument<
@@ -2147,9 +2150,17 @@ export class CoordinatedDocument<
       )
     )
       return undefined;
+    const authority = this.options.authority;
+    const controller =
+      authority instanceof DocumentAuthorityLog
+        ? authority.controllerAtHead(retired.context.controlHead)
+        : undefined;
+    const committed =
+      controller !== undefined &&
+      documentBytesEqual(controller, this.options.coordinator.localMemberId);
     const carried = retired.frames.flatMap((frame) => {
       const unsent = outboxHolds(pending, frame.frame);
-      return unsent || frame.order > retired.remoteMark
+      return unsent || (!committed && frame.order > retired.remoteMark)
         ? [{ ...frame, unsent }]
         : [];
     });

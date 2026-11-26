@@ -49,8 +49,8 @@ async function rotate(
     ],
     g.members[0],
   );
-  await g.doc(0).applySecurityAuthorityUpdate(record);
-  return { delivery, record };
+  const controller = await g.doc(0).applySecurityAuthorityUpdate(record);
+  return { delivery, record, controller };
 }
 
 async function setup(keys: string[], { catchUp = false } = {}) {
@@ -238,6 +238,50 @@ test('G: frames already published into the retired epoch are re-signed after the
     await g.close();
   }
 }, 30_000);
+
+test.each([false, true])(
+  'a controller that renews the epoch re-signs none of its published frames (restart: %s)',
+  async (restarted) => {
+    const { g, online } = await setup([]);
+    online();
+    try {
+      const errors: string[] = [];
+      for (const key of ['p', 'q']) {
+        await g.doc(0).change(set(key));
+        for (const publication of g.take())
+          errors.push(...(await g.deliver(publication, [1])));
+      }
+      if (restarted) {
+        await g.doc(0).close();
+        await g.open(0);
+      }
+      const step = await rotate(g, { role: 2 });
+      expect(step.controller).toEqual({
+        resent: 0,
+        waiting: 0,
+        skipped: 2,
+        dropped: 0,
+        diverged: false,
+      });
+      await g.doc(0).retrySecurityPublications();
+      expect(g.take()).toEqual([]);
+      await applyAt1(g, step);
+      await g.doc(0).change(set('r'));
+      const published = g.take();
+      expect(published).toHaveLength(1);
+      errors.push(...(await g.deliver(published[0], [1])));
+      expect(errors).toEqual([]);
+      expect(Object.keys(read(g.doc(1).document)).sort()).toEqual([
+        'p',
+        'q',
+        'r',
+      ]);
+    } finally {
+      await g.close();
+    }
+  },
+  30_000,
+);
 
 const restrict = (g: any, paths: string[][]) =>
   rotate(g, { role: 2, writePaths: paths });
