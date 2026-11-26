@@ -58,8 +58,12 @@ import {
   DurableGroupSecurityRollbackAnchor,
   GroupSecurityRollbackForkPoison,
   GroupSecurityRollbackAnchorValue,
+  GroupSecurityRollbackIntent,
   cloneGroupSecurityRollbackAnchor,
+  cloneGroupSecurityRollbackIntent,
+  cloneGroupSecurityRollbackIntents,
   groupSecurityRollbackAnchorsEqual,
+  groupSecurityRollbackIntentExtends,
 } from './group-security-rollback-anchor.js';
 import {
   GroupSecurityDurableAcceptance,
@@ -103,12 +107,6 @@ const KEY_PACKAGE_REQUEST_DOMAIN = asciiBytes(
 );
 const FORK_POISON_DOMAIN = asciiBytes(
   'peerborne/group-security-fork-poison/v1\0',
-);
-const FORK_AMBIGUITY_DOMAIN = asciiBytes(
-  'peerborne/group-security-fork-ambiguity/v1\0',
-);
-const FIRST_ANCHOR_AMBIGUITY_DOMAIN = asciiBytes(
-  'peerborne/group-security-first-anchor-ambiguity/v1\0',
 );
 
 function asciiBytes(value: string): Uint8Array {
@@ -1330,7 +1328,6 @@ export class GroupSecurityCoordinator {
     let providerTouched = false;
     let joinAttempted = false;
     let storeCommitted = false;
-    let firstAnchorCandidate: GroupSecurityRollbackAnchorValue | undefined;
     try {
       providerTouched = true;
       const importedPackage = cloneKeyPackage(
@@ -1413,12 +1410,14 @@ export class GroupSecurityCoordinator {
           expectedJoinSnapshot,
           this.storeKey,
         );
-      firstAnchorCandidate = rollbackAnchorValue(
-        baseRevision + 1,
+      const revision = baseRevision + 1;
+      const anchorValue = rollbackAnchorValue(
+        revision,
         joinedState,
         verified.finalRecordId,
         expectedJoinCommitment,
       );
+      await this.recordRollbackIntent(undefined, anchorValue, snapshot);
 
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
@@ -1514,7 +1513,6 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         ambiguousStoreFailure = { cause: error };
       }
-      const revision = baseRevision + 1;
       const committed = await this.loadCommittedCoordinatorView(
         revision,
         joinedState,
@@ -1524,12 +1522,6 @@ export class GroupSecurityCoordinator {
         ambiguousStoreFailure,
       );
       storeCommitted = true;
-      const anchorValue = rollbackAnchorValue(
-        revision,
-        committed.view.publicState,
-        committed.view.headRecordId,
-        committed.storeCommitment,
-      );
       await this.advanceRollbackAnchor(undefined, anchorValue);
       this.view = committed.view;
       this.storeRevision = revision;
@@ -1550,11 +1542,7 @@ export class GroupSecurityCoordinator {
       }
       let reconciliationError: unknown;
       try {
-        await this.reconcileControlFork(
-          verified.records,
-          verified.recordIds,
-          firstAnchorCandidate,
-        );
+        await this.reconcileControlFork(verified.records, verified.recordIds);
       } catch (forkError) {
         reconciliationError = forkError;
       }
@@ -1573,6 +1561,7 @@ export class GroupSecurityCoordinator {
   private async restoreInternal(): Promise<void> {
     const loadedAnchor = await this.loadRollbackAnchor();
     this.rejectRollbackTerminalState(loadedAnchor);
+    await this.resolveRollbackIntents(loadedAnchor);
     const snapshot = await this.requireSnapshot();
     if (snapshot.encryptedState === undefined) {
       fail('malformed-state', 'stored group has no encrypted provider state');
@@ -1638,6 +1627,14 @@ export class GroupSecurityCoordinator {
           replay: projectedReplay,
           forkEvidence: snapshot.forkEvidence,
         }, this.storeKey);
+      revision += 1;
+      const nextAnchor = rollbackAnchorValue(
+        revision,
+        encryptedState.state,
+        effectiveView.headRecordId,
+        expectedPrunedCommitment,
+      );
+      await this.recordRollbackIntent(anchorValue, nextAnchor);
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
       let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
@@ -1692,7 +1689,6 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         ambiguousStoreFailure = { cause: error };
       }
-      revision += 1;
       const committed = await this.loadCommittedCoordinatorView(
         revision,
         encryptedState.state,
@@ -1702,12 +1698,6 @@ export class GroupSecurityCoordinator {
         ambiguousStoreFailure,
       );
       effectiveView = committed.view;
-      const nextAnchor = rollbackAnchorValue(
-        revision,
-        effectiveView.publicState,
-        effectiveView.headRecordId,
-        committed.storeCommitment,
-      );
       await this.advanceRollbackAnchor(anchorValue, nextAnchor);
       anchorValue = nextAnchor;
     }
@@ -1879,12 +1869,14 @@ export class GroupSecurityCoordinator {
         ],
         forkEvidence: existing?.forkEvidence,
       }, this.storeKey);
-    const firstAnchorCandidate = rollbackAnchorValue(
-      baseRevision + 1,
+    const revision = baseRevision + 1;
+    const anchorValue = rollbackAnchorValue(
+      revision,
       state,
       recordId,
       expectedBootstrapCommitment,
     );
+    await this.recordRollbackIntent(undefined, anchorValue, existing);
 
     try {
       let transactionInvoked = false;
@@ -1944,7 +1936,6 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         ambiguousStoreFailure = { cause: error };
       }
-      const revision = baseRevision + 1;
       const committed = await this.loadCommittedCoordinatorView(
         revision,
         state,
@@ -1953,23 +1944,13 @@ export class GroupSecurityCoordinator {
         'bootstrap',
         ambiguousStoreFailure,
       );
-      const anchorValue = rollbackAnchorValue(
-        revision,
-        committed.view.publicState,
-        committed.view.headRecordId,
-        committed.storeCommitment,
-      );
       await this.advanceRollbackAnchor(undefined, anchorValue);
       this.view = committed.view;
       this.storeRevision = revision;
       this.rollbackAnchorValue =
         cloneGroupSecurityRollbackAnchor(anchorValue);
     } catch (error) {
-      await this.reconcileControlFork(
-        [record],
-        [recordId],
-        firstAnchorCandidate,
-      );
+      await this.reconcileControlFork([record], [recordId]);
       throw error;
     }
   }
@@ -2302,9 +2283,10 @@ export class GroupSecurityCoordinator {
         this.replayWindowEpochs,
       ).map(toHex),
     );
+    const revision = this.storeRevision + 1;
     const expectedTransitionCommitment =
       await groupSecurityStoreSnapshotCommitment({
-        revision: this.storeRevision + 1,
+        revision,
         encryptedState,
         pendingKeyPackages: baseSnapshot.pendingKeyPackages,
         pendingKeyPackageRequests: baseSnapshot.pendingKeyPackageRequests,
@@ -2315,6 +2297,14 @@ export class GroupSecurityCoordinator {
         ),
         forkEvidence: baseSnapshot.forkEvidence,
       }, this.storeKey);
+    const priorAnchor = this.requireCurrentRollbackAnchor();
+    const anchorValue = rollbackAnchorValue(
+      revision,
+      publicState,
+      recordId,
+      expectedTransitionCommitment,
+    );
+    await this.recordRollbackIntent(priorAnchor, anchorValue);
     let transactionInvoked = false;
     let intendedStoreCommitment: Uint8Array | undefined;
     let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
@@ -2372,7 +2362,6 @@ export class GroupSecurityCoordinator {
     } catch (error) {
       ambiguousStoreFailure = { cause: error };
     }
-    const revision = this.storeRevision + 1;
     const committed = await this.loadCommittedCoordinatorView(
       revision,
       publicState,
@@ -2381,16 +2370,7 @@ export class GroupSecurityCoordinator {
       'group transition',
       ambiguousStoreFailure,
     );
-    const anchorValue = rollbackAnchorValue(
-      revision,
-      committed.view.publicState,
-      committed.view.headRecordId,
-      committed.storeCommitment,
-    );
-    await this.advanceRollbackAnchor(
-      this.requireCurrentRollbackAnchor(),
-      anchorValue,
-    );
+    await this.advanceRollbackAnchor(priorAnchor, anchorValue);
     this.view = committed.view;
     this.storeRevision = revision;
     this.rollbackAnchorValue = cloneGroupSecurityRollbackAnchor(anchorValue);
@@ -2399,7 +2379,6 @@ export class GroupSecurityCoordinator {
   private async reconcileControlFork(
     candidates: ReadonlyArray<MembershipControlRecord>,
     candidateIds: ReadonlyArray<Uint8Array>,
-    firstAnchorCandidate?: GroupSecurityRollbackAnchorValue,
   ): Promise<void> {
     if (
       candidates.length === 0 ||
@@ -2413,23 +2392,14 @@ export class GroupSecurityCoordinator {
         { cause: reason },
       );
     }
-    const terminalCandidate = candidates[candidates.length - 1];
-    const terminalCandidateId = candidateIds[candidateIds.length - 1];
     let snapshot: GroupStateStoreSnapshot | undefined;
     try {
       snapshot = await this.loadValidatedStoreSnapshot();
     } catch (error) {
-      return this.persistReconciliationAmbiguity(
-        terminalCandidate,
-        terminalCandidateId,
-        error,
-        firstAnchorCandidate,
-      );
+      return this.stopUnreconciledCandidate(error);
     }
     if (snapshot?.encryptedState === undefined) {
-      return this.persistReconciliationAmbiguity(
-        terminalCandidate,
-        terminalCandidateId,
+      return this.stopUnreconciledCandidate(
         new Error('durable winner snapshot is unavailable'),
       );
     }
@@ -2449,12 +2419,7 @@ export class GroupSecurityCoordinator {
         await groupSecurityStoreSnapshotCommitment(snapshot, this.storeKey),
       );
     } catch (error) {
-      return this.persistReconciliationAmbiguity(
-        terminalCandidate,
-        terminalCandidateId,
-        error,
-        firstAnchorCandidate,
-      );
+      return this.stopUnreconciledCandidate(error);
     }
     for (let index = 0; index < candidates.length; index++) {
       const candidate = candidates[index];
@@ -2496,133 +2461,17 @@ export class GroupSecurityCoordinator {
     }
   }
 
-  private async persistReconciliationAmbiguity(
-    candidate: MembershipControlRecord,
-    candidateId: Uint8Array,
-    reconciliationError: unknown,
-    firstAnchorCandidate?: GroupSecurityRollbackAnchorValue,
-  ): Promise<never> {
-    const base = this.rollbackAnchorValue;
-    if (base === undefined) {
-      if (
-        firstAnchorCandidate === undefined ||
-        firstAnchorCandidate.forkPoison !== undefined ||
-        firstAnchorCandidate.removal !== undefined ||
-        firstAnchorCandidate.epoch !== candidate.epoch ||
-        !equalBytes(firstAnchorCandidate.controlHead, candidateId)
-      ) {
-        const reason =
-          reconciliationError instanceof Error
-            ? reconciliationError
-            : new Error('authenticated control reconciliation failed');
-        this.poisonedReason = reason;
-        throw new GroupSecurityCoordinatorError(
-          'rollback-failed',
-          'authenticated first-anchor reconciliation failed without a poisonable candidate anchor; coordinator is poisoned',
-          { cause: reason },
-        );
-      }
-      const initial = cloneGroupSecurityRollbackAnchor(firstAnchorCandidate);
-      const ambiguity = await rollbackFirstAnchorAmbiguityPoison(
-        candidate,
-        candidateId,
-        initial,
-      );
-      try {
-        const poisoned = cloneGroupSecurityRollbackAnchor(
-          await this.rollbackAnchor.poison(
-            cloneStoreKey(this.storeKey),
-            ambiguity,
-            initial,
-          ),
-        );
-        if (poisoned.forkPoison === undefined) {
-          throw new Error(
-            'rollback anchor poison did not return a terminal value',
-          );
-        }
-        this.rollbackAnchorValue = cloneGroupSecurityRollbackAnchor(poisoned);
-      } catch (error) {
-        const reason = normalizeFailure(
-          error,
-          'first-anchor ambiguity poison failed with a non-Error value',
-        );
-        this.poisonedReason = reason;
-        throw new GroupSecurityCoordinatorError(
-          'rollback-failed',
-          'authenticated first-anchor ambiguity could not be durably marked; coordinator is poisoned',
-          { cause: reason },
-        );
-      }
-      const error = new GroupSecurityCoordinatorError(
-        'fork-detected',
-        'an authenticated first-anchor candidate could not be reconciled; the rollback anchor is terminally poisoned',
-        {
-          cause:
-            reconciliationError instanceof Error
-              ? reconciliationError
-              : new Error('authenticated control reconciliation failed'),
-        },
-      );
-      this.forkReason = error;
-      throw error;
-    }
-    if (
-      candidate.parentRecordId === undefined ||
-      !equalBytes(candidate.parentRecordId, base.controlHead)
-    ) {
-      const reason =
-        reconciliationError instanceof Error
-          ? reconciliationError
-          : new Error('authenticated control reconciliation failed');
-      this.poisonedReason = reason;
-      throw new GroupSecurityCoordinatorError(
-        'rollback-failed',
-        'authenticated control reconciliation candidate does not extend the active anchor; coordinator is poisoned',
-        { cause: reason },
-      );
-    }
-    const ambiguity = await rollbackAmbiguityPoison(
-      candidate,
-      candidateId,
-      base,
+  private stopUnreconciledCandidate(reconciliationError: unknown): never {
+    const reason = normalizeFailure(
+      reconciliationError,
+      'authenticated control reconciliation failed with a non-Error value',
     );
-    try {
-      const poisoned = cloneGroupSecurityRollbackAnchor(
-        await this.rollbackAnchor.poison(
-          cloneStoreKey(this.storeKey),
-          ambiguity,
-        ),
-      );
-      if (poisoned.forkPoison === undefined) {
-        throw new Error(
-          'rollback anchor poison did not return a terminal value',
-        );
-      }
-    } catch (error) {
-      const reason =
-        error instanceof Error
-          ? error
-          : new Error('rollback anchor poison failed');
-      this.poisonedReason = reason;
-      throw new GroupSecurityCoordinatorError(
-        'rollback-failed',
-        'authenticated control ambiguity could not be durably marked; coordinator is poisoned',
-        { cause: reason },
-      );
-    }
-    const error = new GroupSecurityCoordinatorError(
-      'fork-detected',
-      'an authenticated control candidate could not be reconciled after a durable write conflict; the rollback anchor is terminally poisoned',
-      {
-        cause:
-          reconciliationError instanceof Error
-            ? reconciliationError
-            : new Error('authenticated control reconciliation failed'),
-      },
+    this.poisonedReason = reason;
+    throw new GroupSecurityCoordinatorError(
+      'rollback-failed',
+      'authenticated control reconciliation could not verify durable state; coordinator is poisoned and restore resolves the recorded rollback intents',
+      { cause: reason },
     );
-    this.forkReason = error;
-    throw error;
   }
 
   private async flushOutboxInternal(
@@ -2700,9 +2549,10 @@ export class GroupSecurityCoordinator {
           this.replayWindowEpochs,
         ).map(toHex),
       );
+      const revision = this.storeRevision + 1;
       const expectedAckCommitment =
         await groupSecurityStoreSnapshotCommitment({
-          revision: this.storeRevision + 1,
+          revision,
           encryptedState: ackEncryptedState,
           pendingKeyPackages: ackBaseSnapshot.pendingKeyPackages,
           pendingKeyPackageRequests:
@@ -2715,6 +2565,14 @@ export class GroupSecurityCoordinator {
           ),
           forkEvidence: ackBaseSnapshot.forkEvidence,
         }, this.storeKey);
+      const priorAnchor = this.requireCurrentRollbackAnchor();
+      const anchorValue = rollbackAnchorValue(
+        revision,
+        this.view.publicState,
+        this.view.headRecordId,
+        expectedAckCommitment,
+      );
+      await this.recordRollbackIntent(priorAnchor, anchorValue);
 
       let transactionInvoked = false;
       let intendedStoreCommitment: Uint8Array | undefined;
@@ -2769,7 +2627,6 @@ export class GroupSecurityCoordinator {
       } catch (error) {
         ambiguousStoreFailure = { cause: error };
       }
-      const revision = this.storeRevision + 1;
       const committed = await this.loadCommittedCoordinatorView(
         revision,
         this.view.publicState,
@@ -2778,16 +2635,7 @@ export class GroupSecurityCoordinator {
         'outbox ACK',
         ambiguousStoreFailure,
       );
-      const anchorValue = rollbackAnchorValue(
-        revision,
-        committed.view.publicState,
-        committed.view.headRecordId,
-        committed.storeCommitment,
-      );
-      await this.advanceRollbackAnchor(
-        this.requireCurrentRollbackAnchor(),
-        anchorValue,
-      );
+      await this.advanceRollbackAnchor(priorAnchor, anchorValue);
       this.view = committed.view;
       this.storeRevision = revision;
       this.rollbackAnchorValue = cloneGroupSecurityRollbackAnchor(anchorValue);
@@ -4386,7 +4234,7 @@ export class GroupSecurityCoordinator {
     if (value?.forkPoison === undefined) return;
     const error = new GroupSecurityCoordinatorError(
       'fork-detected',
-      'rollback anchor is irreversibly poisoned by an authenticated control fork or unresolved authenticated candidate',
+      'rollback anchor is irreversibly poisoned by an authenticated control fork',
     );
     this.forkReason = error;
     throw error;
@@ -4425,6 +4273,134 @@ export class GroupSecurityCoordinator {
       );
     }
     return cloneGroupSecurityRollbackAnchor(actual);
+  }
+
+  private async loadRollbackIntents(): Promise<GroupSecurityRollbackIntent[]> {
+    let value: ReadonlyArray<GroupSecurityRollbackIntent>;
+    try {
+      value = await this.rollbackAnchor.loadIntents(
+        cloneStoreKey(this.storeKey),
+      );
+    } catch (error) {
+      fail(
+        'rollback-failed',
+        'rollback anchor intents could not be loaded',
+        error,
+      );
+    }
+    try {
+      return cloneGroupSecurityRollbackIntents(value);
+    } catch (error) {
+      fail('rollback-detected', 'rollback anchor intents are malformed', error);
+    }
+  }
+
+  private async recordRollbackIntent(
+    expected: GroupSecurityRollbackAnchorValue | undefined,
+    next: GroupSecurityRollbackAnchorValue,
+    firstAnchorBase?: GroupStateStoreSnapshot,
+  ): Promise<void> {
+    const intent = cloneGroupSecurityRollbackIntent(
+      expected !== undefined
+        ? {
+            baseRevision: expected.revision,
+            baseStoreCommitment: new Uint8Array(expected.storeCommitment),
+            next,
+          }
+        : {
+            baseRevision: firstAnchorBase?.revision ?? 0,
+            baseStoreCommitment:
+              firstAnchorBase === undefined
+                ? undefined
+                : await groupSecurityStoreSnapshotCommitment(
+                    firstAnchorBase,
+                    this.storeKey,
+                  ),
+            next,
+          },
+    );
+    let recorded: unknown = false;
+    try {
+      recorded = await this.rollbackAnchor.prepare(
+        cloneStoreKey(this.storeKey),
+        expected === undefined
+          ? undefined
+          : cloneGroupSecurityRollbackAnchor(expected),
+        intent,
+      );
+    } catch (error) {
+      fail(
+        'rollback-failed',
+        'rollback anchor intent could not be recorded before the durable commit',
+        error,
+      );
+    }
+    if (recorded !== true) {
+      fail(
+        'store-conflict',
+        'rollback anchor changed before the durable commit intent was recorded',
+      );
+    }
+  }
+
+  private async resolveRollbackIntents(
+    active: GroupSecurityRollbackAnchorValue | undefined,
+  ): Promise<void> {
+    const intents = await this.loadRollbackIntents();
+    if (intents.length === 0) return;
+    if (
+      intents.some(
+        (intent) => !groupSecurityRollbackIntentExtends(active, intent),
+      )
+    ) {
+      fail(
+        'rollback-detected',
+        'rollback anchor intent does not extend its active value',
+      );
+    }
+    const snapshot = await this.loadValidatedStoreSnapshot();
+    if (snapshot === undefined) return;
+    let storeCommitment: Uint8Array;
+    try {
+      storeCommitment = await groupSecurityStoreSnapshotCommitment(
+        snapshot,
+        this.storeKey,
+      );
+    } catch (error) {
+      fail(
+        'rollback-detected',
+        'durable group-state snapshot cannot be bound to its rollback intents',
+        error,
+      );
+    }
+    const completed = intents.find(
+      (intent) =>
+        snapshot.revision === intent.next.revision &&
+        equalBytes(storeCommitment, intent.next.storeCommitment),
+    );
+    if (completed === undefined) return;
+    let advanced: unknown = false;
+    try {
+      advanced = await this.rollbackAnchor.advance(
+        cloneStoreKey(this.storeKey),
+        active === undefined
+          ? undefined
+          : cloneGroupSecurityRollbackAnchor(active),
+        cloneGroupSecurityRollbackAnchor(completed.next),
+      );
+    } catch (error) {
+      fail(
+        'rollback-failed',
+        'rollback anchor intent could not be completed',
+        error,
+      );
+    }
+    if (advanced !== true) {
+      fail(
+        'rollback-detected',
+        'rollback anchor changed while its intent was being completed',
+      );
+    }
   }
 
   private async advanceRollbackAnchor(
@@ -5286,12 +5262,14 @@ function validateCoordinatorConfig(config: GroupSecurityCoordinatorConfig): void
     config.rollbackAnchor === null ||
     typeof config.rollbackAnchor !== 'object' ||
     typeof config.rollbackAnchor.load !== 'function' ||
+    typeof config.rollbackAnchor.loadIntents !== 'function' ||
+    typeof config.rollbackAnchor.prepare !== 'function' ||
     typeof config.rollbackAnchor.advance !== 'function' ||
     typeof config.rollbackAnchor.poison !== 'function' ||
     typeof config.rollbackAnchor.retire !== 'function'
   ) {
     throw new Error(
-      'rollbackAnchor must implement durable load, advance, atomic poison, and retirement',
+      'rollbackAnchor must implement durable load, write-ahead intents, advance, atomic poison, and retirement',
     );
   }
   if (!sameProtocol(config.provider.protocol, config.storeKey.protocol)) {
@@ -6765,87 +6743,6 @@ async function rollbackForkPoison(
     firstRecordId: branches[0].recordId,
     secondRecordId: branches[1].recordId,
     evidenceHash,
-  };
-}
-
-async function rollbackAmbiguityPoison(
-  candidate: MembershipControlRecord,
-  candidateRecordId: Uint8Array,
-  base: GroupSecurityRollbackAnchorValue,
-): Promise<GroupSecurityRollbackForkPoison> {
-  if (
-    candidate.parentRecordId === undefined ||
-    !equalBytes(candidate.parentRecordId, base.controlHead)
-  ) {
-    throw new Error(
-      'authenticated ambiguity candidate is not a child of the observed base anchor',
-    );
-  }
-  const serialized = serializeMembershipControlRecord(candidate);
-  const observationHash = new Uint8Array(
-    await crypto.subtle.digest(
-      'SHA-256',
-      concat([
-        FORK_AMBIGUITY_DOMAIN,
-        u64(candidate.epoch),
-        u64(BigInt(base.revision)),
-        base.controlHead,
-        base.storeCommitment,
-        candidate.parentRecordId,
-        candidateRecordId,
-        bytes32(serialized),
-      ]) as BufferSource,
-    ),
-  );
-  return {
-    reason: 'unreconciled-authenticated-candidate',
-    epoch: candidate.epoch,
-    baseRevision: base.revision,
-    baseControlHead: new Uint8Array(base.controlHead),
-    baseStoreCommitment: new Uint8Array(base.storeCommitment),
-    candidateParentRecordId: new Uint8Array(candidate.parentRecordId),
-    candidateRecordId: new Uint8Array(candidateRecordId),
-    observationHash,
-  };
-}
-
-async function rollbackFirstAnchorAmbiguityPoison(
-  candidate: MembershipControlRecord,
-  candidateRecordId: Uint8Array,
-  initial: GroupSecurityRollbackAnchorValue,
-): Promise<GroupSecurityRollbackForkPoison> {
-  if (
-    initial.forkPoison !== undefined ||
-    initial.removal !== undefined ||
-    initial.epoch !== candidate.epoch ||
-    !equalBytes(initial.controlHead, candidateRecordId)
-  ) {
-    throw new Error(
-      'first-anchor ambiguity candidate does not match its initialization anchor',
-    );
-  }
-  const serialized = serializeMembershipControlRecord(candidate);
-  const observationHash = new Uint8Array(
-    await crypto.subtle.digest(
-      'SHA-256',
-      concat([
-        FIRST_ANCHOR_AMBIGUITY_DOMAIN,
-        u64(candidate.epoch),
-        u64(BigInt(initial.revision)),
-        initial.controlHead,
-        initial.storeCommitment,
-        candidateRecordId,
-        bytes32(serialized),
-      ]) as BufferSource,
-    ),
-  );
-  return {
-    reason: 'unreconciled-first-anchor-candidate',
-    epoch: candidate.epoch,
-    candidateRevision: initial.revision,
-    candidateControlHead: new Uint8Array(initial.controlHead),
-    candidateStoreCommitment: new Uint8Array(initial.storeCommitment),
-    observationHash,
   };
 }
 

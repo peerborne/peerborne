@@ -865,7 +865,7 @@ describe('GroupSecurityCoordinator restore', () => {
     },
   );
 
-  test('poisons the coordinator when rollback-anchor CAS is rejected after commit', async () => {
+  test('poisons the coordinator when rollback-anchor CAS is rejected after commit and restore completes the intent', async () => {
     const value = await context();
     const rollbackAnchor = new ControlledRollbackAnchor();
     value.rollbackAnchor = rollbackAnchor;
@@ -881,16 +881,21 @@ describe('GroupSecurityCoordinator restore', () => {
     expect(snapshot.revision).toBe(beforeAnchor.revision + 1);
     expect(snapshot.encryptedState?.state.epoch).toBe(1n);
     expect(await rollbackAnchor.load(storeKey)).toEqual(beforeAnchor);
+    expect(
+      (await rollbackAnchor.loadIntents(storeKey))[0]?.next.storeCommitment,
+    ).toEqual(await groupSecurityStoreSnapshotCommitment(snapshot, storeKey));
     expect(() => coordinator.publicState).toThrow(/poisoned/);
     expect((await value.provider.getPublicState()).epoch).toBe(1n);
 
-    const provider = new ContractTestProvider();
-    await expect(
-      GroupSecurityCoordinator.restore(
-        config(cloneContextWithProvider(value, provider)),
-      ),
-    ).rejects.toMatchObject({ code: 'rollback-detected' });
-    expect(provider.importCalls).toBe(0);
+    const restored = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(value)),
+    );
+    expect(restored.publicState.epoch).toBe(1n);
+    expect(await rollbackAnchor.load(storeKey)).toMatchObject({
+      revision: snapshot.revision,
+      epoch: 1n,
+    });
+    expect(await rollbackAnchor.loadIntents(storeKey)).toEqual([]);
   });
 
   test('rejects a truthy non-boolean rollback-anchor CAS result', async () => {
@@ -907,7 +912,7 @@ describe('GroupSecurityCoordinator restore', () => {
     expect(value.provider.clearCalls).toBe(0);
   });
 
-  test('fails closed when initial rollback-anchor persistence throws', async () => {
+  test('completes the first-anchor intent on restore when initial rollback-anchor persistence throws', async () => {
     const value = await context();
     const rollbackAnchor = new ControlledRollbackAnchor();
     rollbackAnchor.failNextAdvance = true;
@@ -916,18 +921,24 @@ describe('GroupSecurityCoordinator restore', () => {
     await expect(bootstrap(value)).rejects.toMatchObject({
       code: 'rollback-failed',
     });
-    expect((await value.store.load(storeKey))?.encryptedState).toBeDefined();
+    const snapshot = (await value.store.load(storeKey))!;
+    expect(snapshot.encryptedState).toBeDefined();
     expect(await rollbackAnchor.load(storeKey)).toBeUndefined();
+    expect((await rollbackAnchor.loadIntents(storeKey))[0]).toMatchObject({
+      baseRevision: 0,
+      baseStoreCommitment: undefined,
+      next: { revision: snapshot.revision, epoch: 0n },
+    });
     expect((await value.provider.getPublicState()).epoch).toBe(0n);
     expect(value.provider.clearCalls).toBe(0);
 
-    const provider = new ContractTestProvider();
-    await expect(
-      GroupSecurityCoordinator.restore(
-        config(cloneContextWithProvider(value, provider)),
-      ),
-    ).rejects.toMatchObject({ code: 'rollback-detected' });
-    expect(provider.importCalls).toBe(0);
+    const restored = await GroupSecurityCoordinator.restore(
+      config(cloneContextWithProvider(value)),
+    );
+    expect(restored.publicState.epoch).toBe(0n);
+    expect((await rollbackAnchor.load(storeKey))?.storeCommitment).toEqual(
+      await groupSecurityStoreSnapshotCommitment(snapshot, storeKey),
+    );
   });
 
   test('rejects tampered persisted actor authorization and broken linkage before provider import', async () => {
