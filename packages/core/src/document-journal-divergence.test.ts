@@ -474,7 +474,7 @@ test('recorded operation paths are exact: grants cover the record exactly when t
 });
 
 test.each(['memory', 'indexeddb'] as const)(
-  'a diverged %s journal can be deleted so a rebuild reuses the store with a new anchor',
+  'a diverged %s journal is deleted only once its unsent frames are drained or discarded, and a rebuild reuses the store with a new anchor',
   async (kind) => {
     const s = await setup(kind);
     try {
@@ -486,7 +486,12 @@ test.each(['memory', 'indexeddb'] as const)(
       await journal.markDiverged();
       const stale = s.make();
       await stale.restore();
-      await stale.deleteDiverged();
+      await expect(stale.deleteDiverged()).rejects.toThrow('unsent');
+      expect((await s.store.load(s.storageKey)).entries).toHaveLength(3);
+      if (kind === 'memory') {
+        await stale.publicationSent(new Uint8Array([5]));
+        await stale.deleteDiverged();
+      } else await stale.deleteDiverged({ discardUnsent: true });
       expect((await s.store.load(s.storageKey)).entries).toEqual([]);
       await expect(s.make().restore()).rejects.toThrow('rollback');
       const rebuilt = s.make(

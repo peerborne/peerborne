@@ -425,13 +425,47 @@ test('T5ctl: the same bulk edit sent online is accepted by the controller', asyn
   }
 }, 60_000);
 
-test('an unsent edit that could not be inspected is left to receivers and never diverges the writer', async () => {
-  const { g, online } = await setup(['x'.repeat(1025)]);
+async function bigPaste(restricted: boolean) {
+  const { g, online } = await setup([]);
+  await expect(
+    g.doc(1).change((draft: any) => {
+      draft.t = 'x'.repeat(140_000);
+    }),
+  ).rejects.toThrow('Document change committed');
+  expect(g.doc(1)._coordinated.own.frames.at(-1).paths).toEqual([[]]);
+  const step = restricted
+    ? await restrict(g, [['t']])
+    : await rotate(g, { role: 2 });
+  online();
+  return { g, update: await applyAt1(g, step) };
+}
+
+test('T6: an uninspected unsent edit is denied under a restriction and diverges the writer', async () => {
+  const { g, update } = await bigPaste(true);
   try {
-    expect(g.doc(1)._coordinated.own.frames.at(-1).paths).toEqual([[]]);
-    const step = await restrict(g, [['a']]);
-    online();
-    expect(await applyAt1(g, step)).toEqual({
+    expect(update).toEqual({
+      resent: 0,
+      waiting: 0,
+      skipped: 0,
+      dropped: 1,
+      diverged: true,
+    });
+    await g.doc(1).retrySecurityPublications();
+    expect(g.take()).toEqual([]);
+    await expect(g.doc(1).change(set('t'))).rejects.toThrow(
+      DocumentDivergedError,
+    );
+    await g.doc(1).close().catch(() => {});
+    await expect(g.open(1)).rejects.toThrow(DocumentDivergedError);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 110_000);
+
+test('T6ctl: the same uninspected edit is re-signed and delivered for an unrestricted writer', async () => {
+  const { g, update } = await bigPaste(false);
+  try {
+    expect(update).toEqual({
       resent: 1,
       waiting: 0,
       skipped: 0,
@@ -441,8 +475,36 @@ test('an unsent edit that could not be inspected is left to receivers and never 
     await g.doc(1).retrySecurityPublications();
     const errors: string[] = [];
     await flush(g, errors);
-    expect(errors).toEqual([expect.stringMatching(/exceeds bounds|grants/)]);
-    expect(keys(g)).toEqual([]);
+    await g.doc(1).change(set('after'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    const view = read(g.doc(0).document);
+    expect(view.t).toHaveLength(140_000);
+    expect(view.after).toBe(1);
+  } finally {
+    await g.close().catch(() => {});
+  }
+}, 110_000);
+
+test('an uninspected published edit is skipped under a restriction and the writer keeps writing', async () => {
+  const { g, online } = await setup([]);
+  online();
+  try {
+    const errors: string[] = [];
+    await g.doc(1).change(set('x'.repeat(1025)));
+    await flush(g, errors);
+    expect(g.doc(1)._coordinated.own.frames.at(-1).paths).toEqual([[]]);
+    expect(await applyAt1(g, await restrict(g, [['a']]))).toEqual({
+      resent: 0,
+      waiting: 0,
+      skipped: 1,
+      dropped: 0,
+      diverged: false,
+    });
+    await g.doc(1).change(set('a'));
+    await flush(g, errors);
+    expect(errors).toEqual([]);
+    expect(keys(g)).toEqual(['a', 'x'.repeat(1025)]);
   } finally {
     await g.close().catch(() => {});
   }

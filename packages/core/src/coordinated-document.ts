@@ -150,14 +150,25 @@ export class DocumentDivergedError extends Error {
 const MAX_OWN_FRAMES = 64;
 const MAX_OWN_BYTES = 32 * 1024 * 1024;
 const WHOLE_DOCUMENT: DocumentWritePaths = Object.freeze([Object.freeze([])]);
-/** A whole-document record comes from an inspection that could not finish. */
+/**
+ * A whole-document record comes from an inspection that could not finish.
+ * Receivers of a restricted author inspect within the same bounds, so they
+ * cannot accept it under any grants.
+ */
 const uninspected = (paths: DocumentWritePaths) =>
   paths.some((path) => path.length === 0);
 
+/** Charged in-memory size, with fixed overhead for each path array and segment string. */
 const ownFrameBytes = (frame: OwnFrame) =>
   frame.changes.length +
   (frame.frame?.length ?? 0) +
-  2 * frame.paths.reduce((sum, path) => sum + path.join('').length, 0);
+  frame.paths.reduce(
+    (sum, path) =>
+      sum +
+      64 +
+      path.reduce((bytes, segment) => bytes + 32 + 2 * segment.length, 0),
+    0,
+  );
 
 /** Whether an outbox still holds `frame`, so no peer can have received it. */
 function outboxHolds(
@@ -1609,8 +1620,8 @@ export class CoordinatedDocument<
                   : WHOLE_DOCUMENT;
               } else {
                 // The delta is already local, so check the paths recorded when it was written.
-                // Receivers inspect an uninspected delta themselves, so it is never denied here.
-                if (scope !== undefined && !uninspected(resend.paths)) {
+                if (scope !== undefined) {
+                  if (uninspected(resend.paths)) throw new ResendDeniedError();
                   try {
                     assertDocumentOperationsAllowed(
                       {

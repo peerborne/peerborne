@@ -1139,16 +1139,23 @@ export class DocumentReplayJournal {
   /**
    * Delete a restored diverged journal from its store, so a rebuild can reuse
    * the store. The rollback anchor still holds the diverged head, so the
-   * rebuilt journal needs a new anchor namespace.
+   * rebuilt journal needs a new anchor namespace. Frames re-signed before the
+   * divergence drain only while the diverged document stays open; deletion is
+   * refused while any publication is unsent unless `discardUnsent` is set.
    */
-  async deleteDiverged(): Promise<void> {
-    if (!this.opened || this.active || !this.divergedMarker)
+  async deleteDiverged({ discardUnsent = false } = {}): Promise<void> {
+    if (!this.opened || this.failed || this.active || !this.divergedMarker)
       throw new Error('Only a restored diverged journal can be deleted');
     if (typeof this.store.delete !== 'function')
       throw new Error('Journal store cannot delete a journal');
     this.active = true;
-    this.failed = true;
     try {
+      const unsent = this.store.loadPublications
+        ? await this.store.loadPublications(this.storageKey)
+        : ((await this.store.load(this.storageKey)).publications ?? []);
+      if (unsent.length > 0 && discardUnsent !== true)
+        throw new Error('Diverged journal still holds unsent publications');
+      this.failed = true;
       await this.store.delete(this.storageKey);
     } finally {
       this.active = false;

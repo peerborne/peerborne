@@ -1,5 +1,8 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import type { DocumentMemberAuthority } from './coordinated-document.js';
+import {
+  DocumentDivergedError,
+  type DocumentMemberAuthority,
+} from './coordinated-document.js';
 import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from './group-security-coordinator.js';
 import { documentBytesId } from './internal/document-binary.js';
@@ -156,25 +159,25 @@ describe('coordinated frames from a retired epoch', () => {
     }
   });
 
-  test('leaves uninspected unsent edits to receivers when grants narrow', async () => {
-    const { g, update, published, errors, retry } = await offlineAcrossEpoch(
-      [1, 2],
-      { role: 2, writePaths: [['other']] },
-    );
+  test('closes a writer whose narrowed grants deny its uninspected unsent edits', async () => {
+    const { g, update, published, retry } = await offlineAcrossEpoch([1, 2], {
+      role: 2,
+      writePaths: [['other']],
+    });
     try {
       expect(update).toEqual({
-        resent: 2,
+        resent: 0,
         waiting: 0,
         skipped: 0,
-        dropped: 0,
-        diverged: false,
+        dropped: 2,
+        diverged: true,
       });
       expect(retry).toBe('');
-      expect(published).toHaveLength(2);
-      expect(errors).toEqual([expect.stringContaining('cannot inspect')]);
+      expect(published).toEqual([]);
       expect(g.doc(0).document).toEqual([]);
-      await expect(g.doc(1).change(push(3))).rejects.toThrow('cannot inspect');
-      expect(g.doc(1).document).toEqual([1, 2]);
+      await expect(g.doc(1).change(push(3))).rejects.toThrow(
+        DocumentDivergedError,
+      );
     } finally {
       await g.close();
     }

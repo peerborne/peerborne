@@ -109,8 +109,9 @@ journal entry without a valid path list fails decoding.
 When re-signed, a restricted author's frame is checked against its current
 grants using those recorded paths, including after a restart and for edits
 written before the author was restricted. A whole-document record means the
-edit was never inspected, so the author does not judge it. It is re-signed,
-and receivers inspect the delta itself.
+edit could not be inspected. Receivers of a restricted author inspect within
+the same bounds and cannot accept it, so a restricted author treats it as
+denied under any grants. An unrestricted author re-signs it unchecked.
 
 - A denied frame that was already published is skipped. Peers have it, or the
   author's later frames are held until a catch-up.
@@ -132,8 +133,10 @@ and receivers inspect the delta itself.
   rollback anchor namespace, then request a controller checkpoint. With
   `IndexedDBDocumentJournalStore`, a new store means a new database name, or
   removing the old journal first with `DocumentReplayJournal.deleteDiverged()`
-  after restoring it. The old anchor still holds the diverged head, so it
-  cannot be reused either way. The new journal starts without the marker.
+  after restoring it. That refuses while any publication is still unsent,
+  unless `discardUnsent: true` drops them. The old anchor still holds the
+  diverged head, so it cannot be reused either way. The new journal starts
+  without the marker.
 - A replica never adopts its own receipt from a checkpoint. A rebuild therefore
   works only while the controller holds none of the author's frames in the
   current context. Once the frames re-signed before the denial reach the
