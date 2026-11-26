@@ -265,7 +265,7 @@ export async function history({ full, progress }) {
           : []),
         ...(retainedCIDs > interval * 3
           ? [
-              'History pruning retains every CID in historySize() / the deduplication set. This is not a total-memory bound or removal of CRDT tombstones.',
+              'historySize() / the deduplication set keeps up to two 1,024-CID generations plus the retained tree. This is not a total-memory bound or removal of CRDT tombstones.',
             ]
           : []),
       ],

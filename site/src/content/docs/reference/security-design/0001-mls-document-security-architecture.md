@@ -125,6 +125,12 @@ protected rollback-anchor contract. The marker commits the fork epoch, parent,
 sibling IDs, and a canonical evidence hash; the rollbackable store receives a
 best-effort copy of the full audit evidence afterward. Reconstruction rejects
 the terminal marker before loading the store or importing provider state.
+A failed write whose durable winner cannot be read back or re-verified is not
+fork evidence. The coordinator stops in memory and leaves its write-ahead
+intent (below) for restore. It writes no durable marker. A fork in that case is
+detected only if the sibling is delivered again inside the replay window, so
+after restore the application must re-submit any control delivery that failed
+this way.
 Focused tests share the in-memory anchor across reconstructed coordinators and
 therefore demonstrate only same-process fail-stop behavior; durable restart
 protection requires an application-supplied persistent monotonic backend.
@@ -216,8 +222,45 @@ first-anchor publication. Full audit evidence is only the store's subsequent
 best-effort copy. The active snapshot commitment covers the encrypted provider
 envelope, pending and consumed KeyPackages, outbox, replay, and stored audit
 evidence, so same-revision metadata substitution fails closed before provider
-import. The anchor must not share the group database's rollback domain. The
-repository requires this contract, but its
+import. The anchor must not share the group database's rollback domain.
+
+Every store commit is bracketed by two anchor writes. Before the store
+transaction, `prepare` records a write-ahead intent beside the current value.
+The intent names its base (the active revision and store commitment, or the
+pre-group snapshot for a first anchor) and the exact next value: revision,
+epoch, control head, and store commitment. The next value must pass the same
+one-step rule as an advance. After the commit, `advance` installs that value
+and clears every intent, and so do poison and retirement.
+
+Coordinators that share one store and anchor can prepare against the same
+base. `prepare` therefore adds an intent beside earlier ones rather than
+replacing them. The store's revision check lets at most one of those commits
+land. The anchor keeps up to eight intents per base and drops the oldest
+first. If the second write never happens, restore compares the store with the
+recorded intents:
+
+- a store holding exactly one intended snapshot completes that transition by
+  advancing the anchor;
+- a store still holding the base snapshot is accepted, and the intents remain
+  until the next advance, so a commit by another coordinator that lands later
+  can still complete; and
+- any other store fails closed with the existing rollback checks.
+
+Completion requires the full snapshot commitment, not only the next revision.
+A storage attacker therefore cannot relabel an older snapshot as the next
+revision or drop outbox entries. Once a join is anchored, the attacker also
+cannot restore its consumed KeyPackage. Accepting the base is equivalent to a
+crash before the store commit, because nothing from the uncommitted state
+leaves the device before the anchor advances. A retained intent can still
+complete later only into a snapshot that an honest coordinator authenticated
+as the base's successor.
+
+Before a first anchor exists, the base is the pre-group snapshot. Presenting
+that snapshot again leaves the joined KeyPackage pending, and a new join can
+consume it. This is the existing pre-group rollback limit described below; the
+intent does not close it. More than eight commits racing from one base can
+still drop the intent of the one that lands, which then fails closed as before.
+The repository requires this contract, but its
 `InMemoryGroupSecurityRollbackAnchor` is a same-process test reference and is
 not rollback-resistant storage.
 
@@ -254,12 +297,15 @@ An outbound transition is ordered as follows:
 
 An error before durability restores an active provider checkpoint. Authenticated
 terminal removal never reloads its erased private state. If rollback fails,
-the coordinator is poisoned and stops. After durability, the coordinator
-reloads the snapshot and requires its commitment to equal the transaction it
-already authenticated and authorized, then advances the rollback anchor. It
+the coordinator is poisoned and stops. Before the commit, the coordinator
+records the write-ahead intent for the exact snapshot it authenticated and
+authorized. After durability, it reloads the snapshot and requires its
+commitment to equal that transaction, then advances the rollback anchor. It
 does not run the signature or authorization callbacks again at that point, so
 a callback that refuses or fails after commit cannot leave durable state ahead
-of its anchor. Restore runs both callbacks again over the retained window. In
+of its anchor. If the reload or advance fails, the coordinator is poisoned and
+restore completes the intent. Restore runs both callbacks again over the
+retained window. In
 the target persistent implementation, restart recovery revalidates signed
 control state before the outbox resumes. That process/browser restart behavior
 is not currently tested.

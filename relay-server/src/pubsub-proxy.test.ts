@@ -1,10 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { createLibp2p } from 'libp2p'
 import { tcp } from '@libp2p/tcp'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
 import { gossipsub } from '@libp2p/gossipsub'
-import { loadConfig, relayPubsubOptions } from './config.js'
+import { PUBSUB_PEER_DISCOVERY_TOPIC, loadConfig, relayPubsubOptions } from './config.js'
 
 const topic = '/peerborne/document/v3/proxy-reconnect-regression'
 
@@ -16,11 +17,20 @@ async function waitFor(condition: () => boolean): Promise<void> {
   }
 }
 
-function createPeer(listener = false) {
-  const config = loadConfig({
-    WS_LISTEN: '/ip4/127.0.0.1/tcp/0/ws',
-    TCP_LISTEN: '/ip4/127.0.0.1/tcp/0',
-  })
+const loopbackProxy = {
+  WS_LISTEN: '/ip4/127.0.0.1/tcp/0/ws',
+  TCP_LISTEN: '/ip4/127.0.0.1/tcp/0',
+}
+
+// A public WebSocket listener disables the loopback inference, while the test
+// peers still dial the loopback TCP listener as a proxy on 127.0.0.1 would.
+const publicListener = {
+  WS_LISTEN: '/ip4/0.0.0.0/tcp/0/ws',
+  TCP_LISTEN: '/ip4/127.0.0.1/tcp/0',
+}
+
+function createPeer(listener = false, env: NodeJS.ProcessEnv = loopbackProxy) {
+  const config = loadConfig(env)
   return createLibp2p({
     addresses: { listen: listener ? [config.tcpListen] : [] },
     transports: [tcp()],
@@ -37,8 +47,13 @@ function createPeer(listener = false) {
   })
 }
 
-it('continues subscriptions and signed delivery after 20 loopback-proxied identities', async () => {
-  const relay = await createPeer(true)
+it.each([
+  ['loopback-only listeners', loopbackProxy],
+  ['a public listener with the proxy IP trusted', { ...publicListener, TRUSTED_PROXY_IPS: '127.0.0.1' }],
+  ['a public listener with the proxy range trusted', { ...publicListener, TRUSTED_PROXY_IPS: '127.0.0.0/8' }],
+  ['a public listener with every connection proxied', { ...publicListener, TRUSTED_PROXY_IPS: '*' }],
+])('continues subscriptions and signed delivery after 20 proxied identities with %s', async (_mode, env) => {
+  const relay = await createPeer(true, env)
   relay.services.pubsub.subscribe(topic)
   const received: number[] = []
   relay.services.pubsub.addEventListener('message', event => {
@@ -78,7 +93,64 @@ it('retains IP scoring for public listeners and exempts only proxy loopback addr
     TCP_LISTEN: '/ip4/127.0.0.1/tcp/9002',
   })
   const options = relayPubsubOptions(proxy)
-  expect(options.scoreParams?.IPColocationFactorWhitelist).toEqual(new Set(['127.0.0.1', '::1']))
+  expect([...options.scoreParams!.IPColocationFactorWhitelist!]).toEqual(['127.0.0.1', '::1'])
+  expect(options.scoreParams?.IPColocationFactorWhitelist?.has('192.0.2.1')).toBe(false)
   expect(options.scoreParams?.IPColocationFactorWeight).toBeUndefined()
   expect(relayPubsubOptions({ ...proxy, ipv6Enabled: true }).scoreParams).toBeUndefined()
 })
+
+it('exempts configured proxy addresses or disables colocation scoring behind any proxy', () => {
+  const trusted = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '172.16.0.2,FDAA::3' }))
+  const whitelist = trusted.scoreParams!.IPColocationFactorWhitelist!
+  expect([...whitelist]).toEqual(['172.16.0.2', 'fdaa::3'])
+  expect(whitelist.has('fdaa::3')).toBe(true)
+  expect(whitelist.has('172.16.0.3')).toBe(false)
+  expect(trusted.scoreParams?.IPColocationFactorWeight).toBeUndefined()
+  const ranges = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '10.0.0.0/8,2001:db8::/32' }))
+    .scoreParams!.IPColocationFactorWhitelist!
+  for (const address of ['10.1.2.3', '::ffff:a01:203', '2001:db8:5::1']) {
+    expect(ranges.has(address)).toBe(true)
+  }
+  for (const address of ['11.0.0.1', '2001:db9::1', 'not-an-ip']) {
+    expect(ranges.has(address)).toBe(false)
+  }
+  const combined = relayPubsubOptions(loadConfig({ ...loopbackProxy, TRUSTED_PROXY_IPS: '10.0.0.5' }))
+  expect([...combined.scoreParams!.IPColocationFactorWhitelist!]).toEqual(['10.0.0.5', '127.0.0.1', '::1'])
+  const everyConnection = relayPubsubOptions(loadConfig({ TRUSTED_PROXY_IPS: '*' }))
+  expect(everyConnection.scoreParams).toEqual({ IPColocationFactorWeight: 0 })
+})
+
+function renderEnvironment(): NodeJS.ProcessEnv {
+  const blueprint = readFileSync(new URL('../../render.yaml', import.meta.url), 'utf8')
+  return Object.fromEntries(
+    [...blueprint.matchAll(/- key: (\w+)\n\s+value: '([^']*)'/g)].map(([, key, value]) => [key, value]),
+  )
+}
+
+it('records every subscription within the Render per-peer auto-topic allowance', async () => {
+  const render = renderEnvironment()
+  expect(render).toMatchObject({
+    GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER: expect.stringMatching(/^\d+$/),
+    MAX_AUTO_TOPICS_PER_PEER: expect.stringMatching(/^\d+$/),
+  })
+  const relay = await createPeer(true, {
+    ...loopbackProxy,
+    GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER: render.GOSSIPSUB_MAX_TOPIC_BYTES_PER_PEER,
+  })
+  const peer = await createPeer()
+  const documents = Array.from(
+    { length: Number(render.MAX_AUTO_TOPICS_PER_PEER) },
+    (_, index) => `peerborne/coordinated/v1/${index.toString(16).padStart(64, '0')}`,
+  )
+  const topics = [PUBSUB_PEER_DISCOVERY_TOPIC, ...documents]
+  try {
+    for (const topic of topics) peer.services.pubsub.subscribe(topic)
+    await peer.dial(relay.getMultiaddrs()[0])
+    await waitFor(() => topics.every(topic =>
+      relay.services.pubsub.getSubscribers(topic).some(id => id.equals(peer.peerId)),
+    ))
+  } finally {
+    await peer.stop()
+    await relay.stop()
+  }
+}, 15_000)

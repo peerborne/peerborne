@@ -283,6 +283,12 @@ export interface PeerborneConfig {
    *
    * Helia 7 accepts libp2p creation options here, not an already-created
    * libp2p node.
+   *
+   * Unless `libp2p.privateKey` is set, one running instance uses the libp2p
+   * key persisted in `datastore`, claimed with a Web Lock for IndexedDB
+   * datastores, and every other concurrent instance, such as a second browser
+   * tab, starts with a new Ed25519 key. Stopping the Helia node releases the
+   * claim. Never set one key in two instances running at once.
    */
   helia?: HeliaInit & {
     libp2p?: CreateLibp2pOptions<ServiceMap>;

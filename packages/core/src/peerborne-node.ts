@@ -67,7 +67,8 @@ import {
  *
  * The default blockstore and datastore are process-local and ephemeral. Node
  * applications that require persistence should replace `config.helia`'s
- * stores before starting Peerborne.
+ * stores before starting Peerborne. The datastore persists the libp2p key for
+ * one running instance at a time.
  *
  * The default listen addresses bind no local socket, so the node accepts
  * connections only through a Circuit Relay reservation. To accept direct

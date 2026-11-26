@@ -128,8 +128,35 @@ describe('relay gateway', () => {
     expect(headers()).toEqual({})
   })
 
+  it('closes rejected upgrades that clients leave half-open', async () => {
+    const { gateway } = await fixture()
+    const halfOpen = await Promise.all(Array.from({ length: 64 }, async () => {
+      const socket = connect({ host: '127.0.0.1', port: gateway.port, allowHalfOpen: true })
+      cleanup.push(async () => { socket.destroy() })
+      socket.on('error', () => socket.destroy())
+      await once(socket, 'connect')
+      const response = once(socket, 'data') as Promise<[Buffer]>
+      socket.write([
+        'GET / HTTP/1.1', `Host: ${host}`, 'Connection: Upgrade', 'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: MDEyMzQ1Njc4OTAxMjM0NQ==',
+        ...trusted('not-an-ip'), '', '',
+      ].join('\r\n'))
+      return (await response)[0].toString()
+    }))
+    expect(halfOpen.every(response => response.includes('400'))).toBe(true)
+    const deadline = Date.now() + 5000
+    let status: number | undefined
+    while (status === undefined && Date.now() < deadline) {
+      status = await fetch(`http://127.0.0.1:${gateway.port}/readyz`, {
+        signal: AbortSignal.timeout(1000),
+      }).then(response => response.status, () => undefined)
+      if (status === undefined) await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    expect(status).toBe(200)
+  }, 15_000)
+
   it('rejects repeated connection attempts from one IP', async () => {
-    const { gateway } = await fixture({ ...demoGatewayLimits, attemptsPerIpPerTenSeconds: 1 })
+    const { gateway } = await fixture({ ...demoGatewayLimits, attemptsPerClientPerTenSeconds: 1 })
     const first = await upgrade(gateway.port, trusted())
     expect(first.response).toContain('101')
     first.socket.destroy()

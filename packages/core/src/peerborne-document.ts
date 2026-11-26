@@ -25,6 +25,7 @@ import {
   syncResponseAllowed,
 } from './policy/sync-request.js';
 import {
+  assertCheckpointChangeHistory,
   captureDocumentCheckpoint,
   checkpointDecode,
   checkpointEncode,
@@ -50,7 +51,18 @@ import { loadResponseManifestHash } from './load-response-manifest.js';
 import type { SignerAttributedLoadQuorumVote } from './load-quorum-orchestrator.js';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { verifyMemberSignature } from './internal/signature-verification.js';
-import { GossipReceiveAdmission } from './gossip-receive-admission.js';
+import {
+  GossipReceiveAdmission,
+  type SkippedFrameKind,
+} from './gossip-receive-admission.js';
+import { documentBytesEqual } from './internal/document-binary.js';
+import {
+  GossipFrameLimitError,
+  MAX_CHANGE_FRAME_BYTES,
+  MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+  RETAINED_TREE_HIGH_BYTES,
+  RETAINED_TREE_KEEP_BYTES,
+} from './gossip-frame.js';
 import { snapshotInvitationBootstrapBundle } from './internal/invitation-bootstrap.js';
 import {
   canSafelyObserveNativePromise,
@@ -119,6 +131,11 @@ import {
   treeContainsCid,
   validateRemoteSyncTreeAliases,
 } from './merkle-cross-links.js';
+import {
+  knownChangesNeedTrim,
+  retainedKnownChanges,
+  trimKnownChanges,
+} from './known-changes.js';
 import {
   CRDTSyncMessage,
   type OrdinarySyncMessage,
@@ -265,6 +282,15 @@ export type { HistoryVisibility } from './invitation-policy.js';
 
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
 const loadCandidateResponders = new WeakMap<object, string>();
+
+// Stand-ins of the largest sizes a CID and a signature take in a frame.
+const FRAME_CID_PLACEHOLDER = `bafy${'a'.repeat(60)}`;
+const FRAME_SIGNATURE_PLACEHOLDER = 'A'.repeat(1024);
+
+/** GossipSub publisher of a message, for per-sender receive admission. */
+function gossipSender(message: Message): string {
+  return message.type === 'signed' ? message.from.toString() : '';
+}
 
 function throwIfLoadAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -788,6 +814,8 @@ interface DocumentChangeFetchOptions<DocumentKey> {
   readonly getKey?: (keyID: Uint8Array) => DocumentKey | undefined;
   readonly assertStillActive?: () => void;
   readonly applySnapshotAfterChanges?: boolean;
+  /** Serialized size of the received frame, for size-bound compaction. */
+  readonly frameBytes?: number;
 }
 
 /**
@@ -1348,7 +1376,10 @@ export class PeerborneDocument<
   // Last sync message (for populating load requests).
   private _lastSyncMessage?: CRDTSyncMessage<ChangesType>;
 
-  // Set of already-merged change blocks.
+  // Insertion-ordered set of known change CIDs, used to skip already-merged
+  // changes during sync. `_trimKnownChanges()` keeps it bounded: it keeps the
+  // retained tree, snapshot boundary, recent tips, newest 1,024 frontier heads
+  // and every CID learned in the current generation, and forgets older CIDs.
   private _hashes = new Set<string>();
 
   // Fail-closed bootstrap admission state. A bootstrap load can mutate
@@ -1410,6 +1441,10 @@ export class PeerborneDocument<
   // pruned -- those ancestors are not added to `_referencedAncestors`,
   // which is correct: the snapshot boundary IS the local "oldest" head
   // from the loader's view of the DAG.
+  //
+  // Trimmed with `_hashes`: an older entry stays while it names a retained
+  // CID or a still-known hash, so trimming leaves the frontier unchanged
+  // while it has at most 1,024 heads.
   private _referencedAncestors = new Set<string>();
 
   // Bounded list of recently-known change CIDs paired with their node kind.
@@ -2334,9 +2369,9 @@ export class PeerborneDocument<
    *     is NOT in `_referencedAncestors`, so it correctly appears as a
    *     head.
    *   - Pruned ancestors: irrelevant. Pruning removes CIDs from the
-   *     in-memory change tree but leaves them in `_hashes` for dedup;
-   *     they were already in `_referencedAncestors`, so they remain
-   *     marked as non-heads.
+   *     in-memory change tree, and `_trimKnownChanges()` later forgets
+   *     them from both sets together; they were never heads, and the
+   *     newest 1,024 heads are retained.
    *
    * Returns a fresh array so callers can't mutate internal state. Digest
    * helpers sort independently, so we don't sort here.
@@ -2440,6 +2475,35 @@ export class PeerborneDocument<
    */
   private _trackTip(cid: string, kind: CRDTChangeNodeKind): void {
     trackTipInList(this._recentTips, { cid, kind }, MAX_RECENT_TIPS);
+  }
+
+  /**
+   * Forget known CIDs that are older than one generation and no longer
+   * retained, so `_hashes` and `_referencedAncestors` stay bounded however
+   * long a document is edited. Runs after each remote sync and each snapshot,
+   * including the depth-bound snapshot a writer takes as it keeps editing. A
+   * change whose CID was forgotten is applied again if it is delivered again;
+   * CRDT, ACL and keychain merges are idempotent, exactly as for a peer that
+   * loaded the same snapshot.
+   */
+  private _trimKnownChanges(): void {
+    if (
+      this._isStateApplicationBlocked() ||
+      !knownChangesNeedTrim(this._hashes, this._referencedAncestors)
+    ) {
+      return;
+    }
+    trimKnownChanges(
+      this._hashes,
+      this._referencedAncestors,
+      retainedKnownChanges(
+        this._lastSyncMessage?.changeId,
+        this._lastSyncMessage?.changes,
+        this._latestSnapshot?.lastChangeNodeCID,
+        this._recentTips.map(({ cid }) => cid),
+        this._currentFrontier(),
+      ),
+    );
   }
 
   private async _syncDocumentChanges(
@@ -2869,13 +2933,18 @@ export class PeerborneDocument<
     // through `_recentTips` regardless, so concurrent heads are recovered
     // on the next local write.
     this._refreshLastSyncMessageFromSync(changeId, changes);
+    const adoptedFrameBytes =
+      changeId !== undefined && this._lastSyncMessage?.changeId === changeId
+        ? fetchOptions.frameBytes
+        : undefined;
 
     assertStillActive();
     if (this._isStateApplicationBlocked()) {
       this._bootstrapCompactionDeferred = true;
     } else {
-      await this._maybeCompact();
+      await this._maybeCompact(undefined, adoptedFrameBytes);
     }
+    this._trimKnownChanges();
   }
 
   /**
@@ -4160,6 +4229,26 @@ export class PeerborneDocument<
     kind: CRDTChangeNodeKind = crdtDocumentChangeNode,
     postPublishCommit?: PostPublishCommit,
   ) {
+    try {
+      await this._makeChangeOnce(changes, kind, postPublishCommit);
+    } catch (error) {
+      // A membership change is never refused for retained size: the tree is
+      // compacted and the change published again from scratch.
+      if (
+        !(error instanceof GossipFrameLimitError) ||
+        kind === crdtDocumentChangeNode ||
+        !(await this._compactRetainedTree())
+      )
+        throw error;
+      await this._makeChangeOnce(changes, kind, postPublishCommit);
+    }
+  }
+
+  private async _makeChangeOnce(
+    changes: ChangesType,
+    kind: CRDTChangeNodeKind,
+    postPublishCommit?: PostPublishCommit,
+  ) {
     // A staged ACL change does not mutate live authorization until publication
     // resolves. Every caller supplying `postPublishCommit` owns the shared
     // membership queue, so supported remote sync cannot interleave with these
@@ -4177,13 +4266,19 @@ export class PeerborneDocument<
     // reconcile it. This boundary prevents deterministic local reattachment,
     // not a distributed publish transaction.
     const lastSyncMessageBefore = this._lastSyncMessage;
-    const recentTipsBefore = postPublishCommit
-      ? [...this._recentTips]
-      : undefined;
+    const recentTipsBefore = [...this._recentTips];
     const newlyReferencedAncestors: string[] = [];
     let hash = '';
     let hashWasKnown = false;
     let commitResolved = false;
+    let publishedBytes = 0;
+    // Every later frame carries this change inline, so one change may use at
+    // most half a frame. Refuse it before a block is stored or signed.
+    if (kind === crdtDocumentChangeNode) {
+      const ownFrameBytes = this._changeFrameBytes(changes, kind);
+      if (ownFrameBytes > MAX_CHANGE_FRAME_BYTES)
+        throw new GossipFrameLimitError(ownFrameBytes, MAX_CHANGE_FRAME_BYTES);
+    }
     try {
       // Store changes in blockstore.
       hash = await this._putBlock(changes, kind);
@@ -4249,11 +4344,21 @@ export class PeerborneDocument<
       // Sign new message.
       updateMessage.signature = await this._signAsWriter(updateMessage);
 
+      const serializedUpdate =
+        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
+      // GossipSub would silently drop a longer frame; this happens only when
+      // compaction could not bound the retained tree. It is rolled back below
+      // before the change becomes part of the retained tree.
+      if (serializedUpdate.byteLength > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+        throw new GossipFrameLimitError(
+          serializedUpdate.byteLength,
+          MAX_GOSSIP_SYNC_MESSAGE_BYTES,
+        );
+      }
+      publishedBytes = serializedUpdate.byteLength;
       if (!postPublishCommit) {
         this._lastSyncMessage = updateMessage;
       }
-      const serializedUpdate =
-        this._syncMessageSerializer.serializeSyncMessage(updateMessage);
 
       // Encrypt sync message.
       const [documentKeyID, documentKey] = await this._keychain.current();
@@ -4289,14 +4394,17 @@ export class PeerborneDocument<
       }
       commitResolved = true;
     } catch (error) {
-      if (postPublishCommit && !commitResolved) {
+      if (
+        (postPublishCommit || error instanceof GossipFrameLimitError) &&
+        !commitResolved
+      ) {
         if (hash && !hashWasKnown) {
           this._hashes.delete(hash);
         }
         for (const childCid of newlyReferencedAncestors) {
           this._referencedAncestors.delete(childCid);
         }
-        this._recentTips = recentTipsBefore!;
+        this._recentTips = recentTipsBefore;
         this._lastSyncMessage = lastSyncMessageBefore;
       }
       throw error;
@@ -4321,7 +4429,7 @@ export class PeerborneDocument<
       this._documentChangeCount++;
       this._changesSinceSnapshot++;
     }
-    await this._maybeCompact();
+    await this._maybeCompact(undefined, publishedBytes);
   }
 
   /**
@@ -4402,20 +4510,29 @@ export class PeerborneDocument<
   /**
    * Check if automatic compaction should be triggered based on the config.
    */
-  private async _maybeCompact(signal?: AbortSignal) {
+  private async _maybeCompact(signal?: AbortSignal, frameBytes = 0) {
     // Each local change nests the retained tree one level deeper, so a writer
     // must compact before the tree reaches the serialization depth limit even
     // when periodic compaction is disabled.
-    const depthBound =
+    const canBound =
       !this._snapshotUnsupported &&
       !this._compactionInProgress &&
-      this._lastSyncMessage?.changes !== undefined &&
+      this._lastSyncMessage?.changes !== undefined;
+    const depthBound =
+      canBound &&
       changeTreeDepth(
-        this._lastSyncMessage.changes,
+        this._lastSyncMessage!.changes!,
         CHANGE_TREE_COMPACTION_DEPTH,
       ) >= CHANGE_TREE_COMPACTION_DEPTH;
+    // Every frame carries the retained tree, so it is also kept within half a
+    // GossipSub frame. A writer that adopts a published tree measures the same
+    // frame and prunes it the same way as its author, so their trees, and
+    // load digests, stay identical.
+    const oversized = canBound && frameBytes > RETAINED_TREE_HIGH_BYTES;
+    const sizeBound = oversized && !depthBound;
     if (
       !depthBound &&
+      !sizeBound &&
       !shouldCompact(
         this._compactionConfig.enabled,
         this._snapshotUnsupported,
@@ -4440,12 +4557,82 @@ export class PeerborneDocument<
     throwIfLoadAborted(signal);
     this._compactionInProgress = true;
     try {
-      await this._snapshotUnlocked(signal, depthBound);
+      await this._snapshotUnlocked(
+        signal,
+        depthBound || sizeBound,
+        oversized
+          ? Math.min(CHANGE_TREE_COMPACTION_KEEP, this._sizeBoundKeepCount())
+          : undefined,
+      );
     } catch (error) {
-      // The triggering change is already published. A failed depth-bound
+      // The triggering change is already published. A failed bounded
       // snapshot is retried by the next change instead of rolling it back.
-      if (!depthBound || signal?.aborted) throw error;
-      console.warn(`Depth-bound compaction failed for ${this.documentPath}`);
+      if (!(depthBound || sizeBound) || signal?.aborted) throw error;
+      console.warn(
+        `${depthBound ? 'Depth' : 'Size'}-bound compaction failed for ${this.documentPath}`,
+      );
+    } finally {
+      this._compactionInProgress = false;
+    }
+  }
+
+  /** Serialized size of a frame carrying only `changes`. */
+  private _changeFrameBytes(
+    changes: ChangesType,
+    kind: CRDTChangeNodeKind,
+  ): number {
+    return this._syncMessageSerializer.serializeSyncMessage({
+      documentId: this.documentPath,
+      signatureContext: 'ordinary-sync-v1',
+      changeId: FRAME_CID_PLACEHOLDER,
+      changes: { kind, change: changes },
+      signature: FRAME_SIGNATURE_PLACEHOLDER,
+    }).byteLength;
+  }
+
+  /**
+   * How many inline changes, counted in `_pruneChanges` depth-bound order,
+   * fit `RETAINED_TREE_KEEP_BYTES`. The newest change is always kept. Only the
+   * tree's content decides, so every writer holding it prunes it alike.
+   */
+  private _sizeBoundKeepCount(): number {
+    const root = this._lastSyncMessage?.changes;
+    if (root === undefined) return 1;
+    let bytes = 0;
+    let kept = 0;
+    const queue: CRDTChangeNode<ChangesType>[] = [root];
+    for (let index = 0; index < queue.length; index++) {
+      const node = queue[index]!;
+      if (node.change !== undefined) {
+        bytes += this._changesSerializer.serializeChanges(
+          node.change,
+        ).byteLength;
+        if (kept > 0 && bytes > RETAINED_TREE_KEEP_BYTES) break;
+        kept++;
+      }
+      if (
+        node.children !== undefined &&
+        node.children !== crdtChangeNodeDeferred
+      )
+        queue.push(...Object.values(node.children));
+    }
+    return Math.max(1, kept);
+  }
+
+  /** Size-bound compaction ahead of a membership change; true if it ran. */
+  private async _compactRetainedTree(): Promise<boolean> {
+    if (this._snapshotUnsupported || this._compactionInProgress) return false;
+    this._compactionInProgress = true;
+    try {
+      return (
+        (await this._snapshotUnlocked(
+          undefined,
+          true,
+          this._sizeBoundKeepCount(),
+        )) !== undefined
+      );
+    } catch {
+      return false;
     } finally {
       this._compactionInProgress = false;
     }
@@ -5709,16 +5896,17 @@ export class PeerborneDocument<
             return syncTrackedLoadMessageUnlocked();
           });
         };
-        const unknownLoadCids = async (
-          cids: readonly string[],
-        ): Promise<string[] | undefined> => {
+        // CIDs the sync will skip, with everything beneath them.
+        const knownLoadCids = async (): Promise<Set<string> | undefined> => {
+          if (message.changeId === undefined && message.changes === undefined)
+            return new Set();
           // Snapshot only committed-known hashes while serialized with state
           // mutation. Reading the live Set outside the queue could observe a
           // hash installed by a mutation that later rolls back, skip its
           // prefetch, and let sync partially mutate before discovering the
           // block is unavailable. Invitation catch-up already owns this
           // queue slot, so its direct snapshot is equally stable.
-          const knownHashes = continuingInvitationBootstrap
+          return continuingInvitationBootstrap
             ? canUseCurrentBootstrapState()
               ? new Set(this._hashes)
               : undefined
@@ -5727,9 +5915,6 @@ export class PeerborneDocument<
                   ? new Set(this._hashes)
                   : undefined,
               );
-          return knownHashes === undefined
-            ? undefined
-            : cids.filter((cid) => !knownHashes.has(cid));
         };
         const prefetchLoadBlocks = async (
           cidsToPrefetch: readonly string[],
@@ -5944,15 +6129,20 @@ export class PeerborneDocument<
           // and `load()` report success. After `sync()` we re-check that
           // every captured CID is now in `_hashes`; any missing CID is
           // surfaced as a per-peer bind failure so the loader can retry
-          // the next peer in the agreeing cohort.
+          // the next peer in the agreeing cohort. A CID known before the
+          // sync is not captured, nor is anything beneath it: the merge
+          // stops there, and its older ancestors may have been forgotten.
           const provenSnapshotBoundariesBeforeSync =
             this._latestSnapshot?.lastChangeNodeCID === undefined
               ? new Set<string>()
               : new Set([this._latestSnapshot.lastChangeNodeCID]);
+          const knownBeforeSync = await knownLoadCids();
+          if (knownBeforeSync === undefined) return false;
           const expectedCids = collectInvitationCidsToInstall(
             message.changeId,
             message.changes,
             provenSnapshotBoundariesBeforeSync,
+            knownBeforeSync,
           );
 
           stripInlineChanges(message.changes);
@@ -6026,11 +6216,7 @@ export class PeerborneDocument<
           // the loader. Block bytes are cached locally on success; the
           // subsequent `sync()` call only does local lookups for those
           // CIDs and applies them.
-          const cidsToPrefetch =
-            expectedCids.length > 0
-              ? await unknownLoadCids(expectedCids)
-              : [];
-          if (cidsToPrefetch === undefined) return false;
+          const cidsToPrefetch = expectedCids;
           if (cidsToPrefetch.length > 0) {
             const { missingCids, limitExceeded } =
               await prefetchLoadBlocks(cidsToPrefetch);
@@ -6150,6 +6336,11 @@ export class PeerborneDocument<
 
         const snapshotBoundaryBeforeSync =
           this._latestSnapshot?.lastChangeNodeCID;
+        const knownBeforeSync =
+          requireCompleteCids || trackedBootstrapLoad
+            ? await knownLoadCids()
+            : new Set<string>();
+        if (knownBeforeSync === undefined) return false;
         if (trackedBootstrapLoad) {
           // Tracked loads cannot recover from a partial application, so fetch
           // every hash-only node before state application. A peer whose
@@ -6185,11 +6376,16 @@ export class PeerborneDocument<
           hashOnlyCids = hashOnlyCids.filter(
             (cid) => cid !== servedSnapshotBoundary,
           );
-          const cidsToPrefetch =
-            hashOnlyCids.length > 0
-              ? await unknownLoadCids(hashOnlyCids)
-              : [];
-          if (cidsToPrefetch === undefined) return false;
+          // The merge stops at known CIDs, so nothing at or beneath one is needed.
+          const needed = new Set(
+            collectInvitationCidsToInstall(
+              message.changeId,
+              message.changes,
+              stopBelowNodeIds,
+              knownBeforeSync,
+            ),
+          );
+          const cidsToPrefetch = hashOnlyCids.filter((cid) => needed.has(cid));
           if (cidsToPrefetch.length > 0) {
             const { missingCids, limitExceeded } =
               await prefetchLoadBlocks(cidsToPrefetch);
@@ -6214,6 +6410,7 @@ export class PeerborneDocument<
                   snapshotBoundaryBeforeSync === undefined
                     ? undefined
                     : new Set([snapshotBoundaryBeforeSync]),
+                knownBeforeSync,
                 isSnapshotApplied: () =>
                   this._isLatestSnapshotFrom(message),
               },
@@ -6991,6 +7188,24 @@ export class PeerborneDocument<
         )
       )
         return;
+      const message: CRDTSyncMessage<ChangesType> = {
+        documentId: this.documentPath,
+        signatureContext: 'ordinary-sync-v1',
+        changeId: previous!.changeId,
+        changes: previous!.changes,
+        ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
+      };
+      // A reply GossipSub would drop is not sent, and does not use up the
+      // request's replay entry or the response rate limit.
+      const unsignedBytes =
+        this._syncMessageSerializer.serializeSyncMessage(message).byteLength +
+        FRAME_SIGNATURE_PLACEHOLDER.length;
+      if (unsignedBytes > MAX_GOSSIP_SYNC_MESSAGE_BYTES) {
+        console.warn(
+          `Sync response for ${this.documentPath} exceeds the GossipSub frame limit; the requester must load the document`,
+        );
+        return;
+      }
       const id = JSON.stringify([request.requester, request.requestId]);
       this._syncRequestsSeen = rememberSyncRequest(
         this._syncRequestsSeen,
@@ -7000,13 +7215,6 @@ export class PeerborneDocument<
       );
       this._lastSyncResponseAt = now;
       try {
-        const message: CRDTSyncMessage<ChangesType> = {
-          documentId: this.documentPath,
-          signatureContext: 'ordinary-sync-v1',
-          changeId: previous!.changeId,
-          changes: previous!.changes,
-          ...(snapshot === undefined || snapshotKnown ? {} : { snapshot }),
-        };
         message.signature = await this._signAsWriter(message);
         await this._publishSyncBytes(
           this._syncMessageSerializer.serializeSyncMessage(message),
@@ -7069,6 +7277,7 @@ export class PeerborneDocument<
           ? {}
           : { snapshot: this._latestSnapshot }),
       };
+      assertCheckpointChangeHistory(this.documentPath, message, this._hashes);
       if (this._beekemInitialized && !this._kemKeyPair)
         throw new Error('Checkpoint requires the persistent KEM identity');
       const beekem =
@@ -7246,25 +7455,7 @@ export class PeerborneDocument<
         'ordinary-sync-v1',
       );
       const hashes = new Set(state.hashes);
-      if (
-        message.documentId !== this.documentPath ||
-        !message.changeId ||
-        !message.changes ||
-        !hashes.has(message.changeId)
-      )
-        throw new Error('Invalid checkpoint change root');
-      const tree = snapshotBoundedChangeTree(
-        message.changeId,
-        message.changes,
-        { canonicalizeNodeId: (value) => CID.parse(value).toString() },
-      );
-      validateRemoteSyncTreeAliases(message.changeId, tree.root);
-      if (
-        tree.entries.some(
-          (entry) => entry.nodeId === undefined || !hashes.has(entry.nodeId),
-        )
-      )
-        throw new Error('Checkpoint has incomplete change history');
+      assertCheckpointChangeHistory(this.documentPath, message, hashes);
       const beekem = state.beekem === null ? null : new BeeKEM();
       if (beekem !== null && state.beekem !== null) {
         if (!this._kemKeyPair)
@@ -7604,6 +7795,23 @@ export class PeerborneDocument<
     }
   }
 
+  /** Cheap authenticity check for a frame skipped by receive admission. */
+  private async _checkSkippedGossipFrame(
+    frame: Uint8Array,
+  ): Promise<SkippedFrameKind | undefined> {
+    const keyEnd = this._keychainProvider.keyIDLength;
+    const [currentKeyId] = await this._keychain.current();
+    if (
+      currentKeyId === undefined ||
+      frame.byteLength <= keyEnd ||
+      !documentBytesEqual(frame.subarray(0, keyEnd), currentKeyId)
+    )
+      return undefined;
+    const content = await this._decryptGossipFrame(frame);
+    if (content === undefined) return undefined;
+    return isSyncRequest(content) ? 'request' : 'sync';
+  }
+
   private _decryptGossipFrame(frame: Uint8Array) {
     const keyEnd = this._keychainProvider.keyIDLength;
     const nonceEnd = keyEnd + this._authProvider.nonceBytes;
@@ -7686,55 +7894,77 @@ export class PeerborneDocument<
 
     // Assign pubsub handler AFTER validation succeeds. This ensures close()
     // won't try to unsubscribe if open() failed during validation.
-    const receiveAdmission = new GossipReceiveAdmission();
+    // A frame skipped for capacity is kept only if it decrypts under the
+    // current document key, so non-members and members holding only a
+    // retired epoch key cannot displace a member's frame.
+    const receiveAdmission = new GossipReceiveAdmission(
+      undefined,
+      undefined,
+      (frame) => this._checkSkippedGossipFrame(frame),
+    );
     this._gossipReceiveAdmission = receiveAdmission;
+    const reportReceiveFailure = () => {
+      if (receiveAdmission.active)
+        console.error('Inbound sync message handling failed');
+    };
+    const receiveFrame = async (frame: Uint8Array): Promise<void> => {
+      const rawContent = await this._decryptGossipFrame(frame);
+      if (!rawContent || !receiveAdmission.active) return;
+
+      if (isSyncRequest(rawContent)) {
+        const request = decodeSyncRequest(rawContent);
+        if (request) {
+          await this._handleSyncRequest(
+            request,
+            () => this._subscribed && receiveAdmission.active,
+          );
+        }
+        return;
+      }
+
+      const message = snapshotSyncMessageForContext<ChangesType>(
+        this._syncMessageSerializer.deserializeSyncMessage(rawContent),
+        'ordinary-sync-v1',
+      );
+      if (message.documentId !== this.documentPath) return;
+
+      await this._runStateMutation(async () => {
+        if (!receiveAdmission.active) return;
+        await this._syncUnlocked(
+          message,
+          true,
+          'ordinary-sync-v1',
+          undefined,
+          false,
+          undefined,
+          {
+            assertStillActive: () => {
+              if (!receiveAdmission.active)
+                throw new Error('GossipSub receive subscription closed');
+            },
+            // A reply carrying a snapshot is not a frame the author
+            // published, so it must not trigger size-bound compaction.
+            frameBytes:
+              message.snapshot === undefined ? rawContent.byteLength : undefined,
+          },
+        );
+      });
+    };
+    // A kept frame is retried through the full receive path, which repeats
+    // every validator check before applying it.
+    const retryFrame = (frame: Uint8Array) =>
+      receiveFrame(frame).catch(reportReceiveFailure);
     this._pubsubHandler = (rawMessage) => {
       if (rawMessage.detail.topic !== this._topic) return;
 
       void receiveAdmission
-        .run(rawMessage.detail.data, async (frame) => {
-          const rawContent = await this._decryptGossipFrame(frame);
-          if (!rawContent || !receiveAdmission.active) return;
-
-          if (isSyncRequest(rawContent)) {
-            const request = decodeSyncRequest(rawContent);
-            if (request) {
-              await this._handleSyncRequest(
-                request,
-                () => this._subscribed && receiveAdmission.active,
-              );
-            }
-            return;
-          }
-
-          const message = snapshotSyncMessageForContext<ChangesType>(
-            this._syncMessageSerializer.deserializeSyncMessage(rawContent),
-            'ordinary-sync-v1',
-          );
-          if (message.documentId !== this.documentPath) return;
-
-          await this._runStateMutation(async () => {
-            if (!receiveAdmission.active) return;
-            await this._syncUnlocked(
-              message,
-              true,
-              'ordinary-sync-v1',
-              undefined,
-              false,
-              undefined,
-              {
-                assertStillActive: () => {
-                  if (!receiveAdmission.active)
-                    throw new Error('GossipSub receive subscription closed');
-                },
-              },
-            );
-          });
-        })
-        .catch(() => {
-          if (receiveAdmission.active)
-            console.error('Inbound sync message handling failed');
-        });
+        .run(
+          rawMessage.detail.data,
+          receiveFrame,
+          retryFrame,
+          gossipSender(rawMessage.detail),
+        )
+        .catch(reportReceiveFailure);
     };
 
     // All registration and subscription steps are inside try/catch so that
@@ -7852,6 +8082,8 @@ export class PeerborneDocument<
                       : TopicValidatorResult.Reject;
                   });
                 },
+                retryFrame,
+                gossipSender(message),
               );
               return receiveAdmission.active
                 ? (result ?? TopicValidatorResult.Ignore)
@@ -8761,7 +8993,13 @@ export class PeerborneDocument<
 
       const applied = this._applyLocalChange(composedFn, message);
       failure = applied.failure;
-      await this._makeChange(applied.changes);
+      try {
+        await this._makeChange(applied.changes);
+      } catch (error) {
+        throw error instanceof GossipFrameLimitError
+          ? this._retireAfterOversizedLocalChange(error)
+          : error;
+      }
 
       // The published change, partial or not, ends the transaction.
       this._inTransaction = false;
@@ -8859,9 +9097,31 @@ export class PeerborneDocument<
     try {
       await this._makeChange(changes);
     } catch (error) {
-      throw failure ? partialChangeCommitFailure(failure.error, error) : error;
+      const thrown =
+        error instanceof GossipFrameLimitError
+          ? this._retireAfterOversizedLocalChange(error)
+          : error;
+      throw failure ? partialChangeCommitFailure(failure.error, thrown) : thrown;
     }
     if (failure) throw failure.error;
+  }
+
+  /**
+   * A local change that cannot be published is already in the local
+   * document: Yjs edits in place, and Automerge marks the previous document
+   * outdated. A later change would depend on the unpublished edit, so the
+   * instance is retired, as for an oversized block, and must be reopened
+   * from accepted state. The DAG was rolled back, so nothing reached history.
+   */
+  private _retireAfterOversizedLocalChange(
+    error: GossipFrameLimitError,
+  ): GossipFrameLimitError {
+    this._bootstrapLoadApplicationRevision++;
+    this._oversizedEditClose ??= Promise.resolve().then(() =>
+      this._closeDocument(),
+    );
+    void this._oversizedEditClose.catch(() => {});
+    return new GossipFrameLimitError(error.byteLength, error.limit, true);
   }
 
   /** Publish a partial in-place edit before its change function's error is rethrown. */
@@ -8912,7 +9172,8 @@ export class PeerborneDocument<
    * returned `ChangesType` is the deserialized, decrypted payload.
    *
    * Returns `undefined` when:
-   * - The CID is not in `_hashes` (we have never seen this change).
+   * - The CID is not in `_hashes`: this document never saw the change, or
+   *   forgot it after it left the retained tree (see `hasChange`).
    * - The block is missing from the blockstore (e.g. it was GC'd locally and
    *   no peer has re-served it yet). Callers that need stronger guarantees can
    *   fall back to dialing peers via the existing sync protocols.
@@ -8950,9 +9211,13 @@ export class PeerborneDocument<
    * Note: returning `true` only proves the CID has been observed (it is
    * tracked in `_hashes` for sync-message dedup). It does NOT guarantee the
    * underlying block is locally available -- after `gcAfterPrune` runs, the
-   * CID remains in `_hashes` even though the block has been removed from the
-   * blockstore. Callers should therefore still handle `loadChangeBlock(cid)`
-   * resolving to `undefined` (and may need to fall back to dialing peers).
+   * CID can remain in `_hashes` even though the block has been removed from
+   * the blockstore. Callers should therefore still handle
+   * `loadChangeBlock(cid)` resolving to `undefined` (and may need to fall
+   * back to dialing peers). `_hashes` is bounded: a CID outside the retained
+   * tree, the snapshot boundary, the recent tips and the newest frontier
+   * heads is forgotten once roughly 1,024 to 2,048 newer CIDs are known,
+   * after which this returns `false`.
    */
   public hasChange(cid: string): boolean {
     this._assertNoIncompleteBootstrapLoad();
@@ -8987,6 +9252,7 @@ export class PeerborneDocument<
   private async _snapshotUnlocked(
     signal?: AbortSignal,
     depthBound = false,
+    boundedKeepCount = CHANGE_TREE_COMPACTION_KEEP,
   ): Promise<CRDTSnapshotNode<ChangesType> | undefined> {
     const gcLifecycle = this._gcLifecycle;
     await this._ensureCurrentUserCanWrite();
@@ -9048,9 +9314,7 @@ export class PeerborneDocument<
       // A depth-bound prune keeps a fixed window of inline changes: enough
       // for lagging peers to heal from live traffic, and room to grow again.
       const prunedCIDs = this._pruneChanges(
-        depthBound
-          ? CHANGE_TREE_COMPACTION_KEEP
-          : this._compactionConfig.keepRecentNodes,
+        depthBound ? boundedKeepCount : this._compactionConfig.keepRecentNodes,
         depthBound,
       );
 
@@ -9075,6 +9339,7 @@ export class PeerborneDocument<
       `Created snapshot for ${this.documentPath}: ${snapshotNode.compactedCount} nodes compacted`,
     );
 
+    this._trimKnownChanges();
     return snapshotNode;
   }
 

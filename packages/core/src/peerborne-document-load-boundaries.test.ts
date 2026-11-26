@@ -124,6 +124,7 @@ test.each(['single', 'batch'])(
         },
       },
       _changesSerializer: { serializeChanges: (value: Uint8Array) => value },
+      _syncMessageSerializer: { serializeSyncMessage: () => new Uint8Array(1) },
       _keychain: { current: async () => [new Uint8Array(32), {}] },
       _authProvider: {
         encrypt: async () => ({
@@ -2198,6 +2199,130 @@ describe('document load response boundaries', () => {
       expect(document._hashes).toEqual(new Set(['KNOWN', 'HEAD']));
     },
   );
+
+  test('does not prefetch or require forgotten history beneath a known CID on an established load', async () => {
+    const message = {
+      documentId: '/established-forgotten',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      tips: ['HEAD'],
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+        children: {
+          KNOWN: {
+            kind: crdtDocumentChangeNode,
+            change: { inline: 'retained' },
+            children: {
+              FORGOTTEN: {
+                kind: crdtDocumentChangeNode,
+                change: { inline: 'forgotten' },
+              },
+            },
+          },
+        },
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => ['current-writer'],
+      async () => true,
+      message,
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('KNOWN');
+    document._writers = { users: jest.fn(async () => ['current-writer']) };
+    const get = jest.fn((cid: { toString(): string }) =>
+      (async function* () {
+        if (cid.toString() !== 'HEAD') {
+          throw new Error('forgotten block was garbage-collected');
+        }
+        yield new Uint8Array([1, 2, 3]);
+      })(),
+    );
+    document.swarm.heliaNode = { blockstore: { get } };
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        _context: string,
+        _onStateApplicationStart: (() => void) | undefined,
+        _continuePending: boolean,
+        _onLogicalKeychainChange: (() => void) | undefined,
+        fetchOptions: any,
+      ) => {
+        expect([...fetchOptions.prefetchedBlocks.keys()]).toEqual(['HEAD']);
+        document._hashes.add('HEAD');
+        return true;
+      },
+    );
+    const expectedTipsHash = await fixtureLoadDigest(document, ['HEAD']);
+
+    await expect(
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, undefined), stream, new Uint8Array([1]), expectedTipsHash, 3),
+    ).resolves.toBe(true);
+
+    expect(get.mock.calls.map(([cid]) => cid.toString())).toEqual(['HEAD']);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'HEAD']));
+  });
+
+  test('established pinned catch-up does not prefetch or require forgotten history beneath a known CID', async () => {
+    const message = {
+      documentId: '/load-race',
+      signatureContext: 'load-response-v4',
+      signature: 'AAAA',
+      changeId: 'HEAD',
+      changes: {
+        kind: crdtDocumentChangeNode,
+        change: { inline: 'head' },
+        children: {
+          KNOWN: {
+            kind: crdtDocumentChangeNode,
+            children: { FORGOTTEN: { kind: crdtDocumentChangeNode } },
+          },
+        },
+      },
+    };
+    const { document, stream } = signedLoadHarness(
+      async () => {
+        throw new Error('pinned admission must not read the writer ACL');
+      },
+      async (_raw, key) => key === 'pinned-writer',
+      message,
+    );
+    document._bootstrapLoadApplicationState = 'complete';
+    document._bootstrapLoadApplicationRevision = 2;
+    document._hashes.add('KNOWN');
+    const get = jest.fn(async function* () {
+      throw new Error('forgotten block was garbage-collected');
+    });
+    document.swarm.heliaNode.blockstore.get = get;
+    document._syncUnlocked = jest.fn(
+      async (
+        _message: unknown,
+        _verifySignature: boolean,
+        _context: string,
+        onStateApplicationStart?: () => void,
+      ) => {
+        onStateApplicationStart?.();
+        document._hashes.add('HEAD');
+        return true;
+      },
+    );
+    document._completeBootstrapStateApplicationUnlocked = jest.fn(
+      async () => document._markBootstrapStateApplicationComplete(),
+    );
+
+    await expect(
+      document._sendLoadRequestAndSync(await loadSessionFixture(document, 'pinned-writer'), stream, new Uint8Array([1]), null, undefined, true),
+    ).resolves.toBe(true);
+
+    expect(get).not.toHaveBeenCalled();
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+    expect(document._hashes).toEqual(new Set(['KNOWN', 'HEAD']));
+    expect(document._bootstrapLoadApplicationState).toBe('complete');
+  });
 
   test('does not skip prefetch for a transient hash that a queued mutation rolls back', async () => {
     const message = {
