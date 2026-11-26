@@ -22,6 +22,18 @@ fresh collaboration. A restored reader remains read-only.
 Recovery still requires another member to be online. Missed group-key changes
 and backup across devices remain separate work.
 
+Two editors can type at the same time. Each edit is applied relative to the
+note version the text area was last synchronized with, and edits that arrive
+while you type are merged into the text area without moving your cursor. The
+status line shows the relay connection, online peers, and edits that did not
+reach a peer. Leaving the page with unsaved text asks for confirmation.
+
+The founding browser lists its collaborator's fingerprint and can remove the
+collaborator, which rotates the note key and lets it create a new invitation.
+Use this when a recipient's tab closed after accepting but before the note was
+saved there: that recipient sees an explanation, and the original link cannot
+be claimed again.
+
 ## Run locally
 
 Build the library workspaces from the repository root, then provide a complete,
@@ -45,10 +57,13 @@ yarn test:e2e:peerborne-note
 yarn test:e2e:peerborne-note:relay
 ```
 
-The focused tests cover canonical invitation fragments and the versioned
-IndexedDB identity and encrypted checkpoint boundaries. Chromium tests verify
-note contents after reload, edit/reopen, full browser-process relaunch, damaged
-storage, failed-write retry, and single-tab ownership. The repository's separate NAT-isolated Playwright
+The focused tests cover canonical invitation fragments, the versioned
+IndexedDB identity and encrypted checkpoint boundaries, and rebasing unsaved
+text onto concurrent Automerge edits. Chromium tests verify note contents after
+reload, edit/reopen, full browser-process relaunch, damaged storage,
+failed-write retry, the unload guard, and single-tab ownership. The relay
+variant also covers two editors typing at once and removing and re-inviting a
+collaborator whose tab closed while accepting. The repository's separate NAT-isolated Playwright
 suite is the end-to-end evidence for distinct-identity invitation acceptance
 and bidirectional encrypted convergence; these utility tests do not replace it.
 

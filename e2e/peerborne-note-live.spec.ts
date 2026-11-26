@@ -221,9 +221,7 @@ test('deployed editor invitation converges fresh edits in both directions', asyn
     failOnRuntimeErrors(recipient, recipientErrors);
     const diagnostics = await recoveryDiagnostics(recipient);
     await recipient.goto(new URL(shared.invitationUrl).origin);
-    await recipient
-      .getByRole('button', { name: 'Open saved note 1', exact: true })
-      .click();
+    await recipient.getByRole('button', { name: /^Open note added /u }).click();
     const restoredEditor = recipient.getByRole('textbox', {
       name: 'Note text',
     });
@@ -284,9 +282,7 @@ test('deployed founding browser resumes invitations and live sharing after full 
     founder = await founderContext.newPage();
     failOnRuntimeErrors(founder, founderErrors);
     await founder.goto('/');
-    await founder
-      .getByRole('button', { name: 'Open saved note 1', exact: true })
-      .click();
+    await founder.getByRole('button', { name: /^Open note added /u }).click();
     await expect(
       founder.getByRole('textbox', { name: 'Note text' }),
     ).toHaveValue(initial);
@@ -323,9 +319,7 @@ test('deployed founding browser resumes invitations and live sharing after full 
     founder = await founderContext.newPage();
     failOnRuntimeErrors(founder, founderErrors);
     await founder.goto('/');
-    await founder
-      .getByRole('button', { name: 'Open saved note 1', exact: true })
-      .click();
+    await founder.getByRole('button', { name: /^Open note added /u }).click();
     const restoredEditor = founder.getByRole('textbox', { name: 'Note text' });
     await expect(restoredEditor).toHaveValue(offlineEdit);
     const resumedEdit = `Resumed founder ${crypto.randomUUID()}`;
@@ -391,9 +385,7 @@ test('deployed reader invitation receives edits and remains read-only after a br
     recipient = await recipientContext.newPage();
     failOnRuntimeErrors(recipient, recipientErrors);
     await recipient.goto(new URL(shared.invitationUrl).origin);
-    await recipient
-      .getByRole('button', { name: 'Open saved note 1', exact: true })
-      .click();
+    await recipient.getByRole('button', { name: /^Open note added /u }).click();
     await expect(
       recipient.getByRole('textbox', { name: 'Note text' }),
     ).toHaveValue(offlineEdit);
@@ -413,6 +405,174 @@ test('deployed reader invitation receives edits and remains read-only after a br
       recipient.getByRole('textbox', { name: 'Note text' }),
     ).toHaveValue(resumedEdit);
 
+    expect(founderErrors, 'founder runtime errors').toEqual([]);
+    expect(recipientErrors, 'recipient runtime errors').toEqual([]);
+  } finally {
+    await recipientContext.close();
+    await rm(profile, { recursive: true, force: true });
+    await founderContext.close();
+  }
+});
+
+test('deployed editors keep both edits when one types while the other saves', async ({
+  browser,
+}) => {
+  const founderContext = await browser.newContext();
+  const recipientContext = await browser.newContext();
+  const founder = await founderContext.newPage();
+  const recipient = await recipientContext.newPage();
+  const founderErrors = failOnRuntimeErrors(founder);
+  const recipientErrors = failOnRuntimeErrors(recipient);
+  try {
+    const shared = await createSharedNote(founder, 'Editor');
+    await recipient.goto(shared.invitationUrl);
+    await recipient.getByRole('button', { name: 'Accept invitation' }).click();
+    const recipientEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
+    await expect(recipientEditor).toHaveValue(shared.initial);
+    await expect(
+      recipient.getByText('Connected · 1 peer online', { exact: true }),
+    ).toBeVisible();
+
+    await shared.editor.click();
+    await shared.editor.evaluate((element: HTMLTextAreaElement) =>
+      element.setSelectionRange(0, 0),
+    );
+    await recipientEditor.click();
+    await recipientEditor.evaluate((element: HTMLTextAreaElement) =>
+      element.setSelectionRange(element.value.length, element.value.length),
+    );
+    const founderText = 'a'.repeat(40);
+    const recipientText = ` Remote ${crypto.randomUUID()}`;
+    const founderTyping = shared.editor.pressSequentially(founderText, {
+      delay: 150,
+    });
+    await recipient.waitForTimeout(300);
+    await recipientEditor.pressSequentially(recipientText, { delay: 20 });
+    await expect(
+      recipient.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    await founderTyping;
+
+    const merged = `${founderText}${shared.initial}${recipientText}`;
+    await expect(shared.editor).toHaveValue(merged);
+    await expect(recipientEditor).toHaveValue(merged);
+    await expect(
+      founder.getByText('Saved in this browser', { exact: true }),
+    ).toBeVisible();
+    expect(founderErrors, 'founder runtime errors').toEqual([]);
+    expect(recipientErrors, 'recipient runtime errors').toEqual([]);
+  } finally {
+    await recipientContext.close();
+    await founderContext.close();
+  }
+});
+
+test('deployed founder removes a collaborator whose tab closed while accepting, then invites again', async ({
+  browser,
+}) => {
+  const founderContext = await browser.newContext();
+  const profile = await mkdtemp(join(tmpdir(), 'peerborne-note-interrupted-'));
+  let recipientContext = await browser
+    .browserType()
+    .launchPersistentContext(profile);
+  const founder = await founderContext.newPage();
+  const founderErrors = failOnRuntimeErrors(founder);
+  try {
+    const shared = await createSharedNote(founder, 'Editor');
+    let recipient = await recipientContext.newPage();
+    let noteWriteStarted!: () => void;
+    const noteWrite = new Promise<void>((resolve) => {
+      noteWriteStarted = resolve;
+    });
+    await recipient.exposeFunction('peerborneNoteWriteStarted', () =>
+      noteWriteStarted(),
+    );
+    await recipient.addInitScript(() => {
+      const original = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (
+        ...args: Parameters<IDBObjectStore['put']>
+      ) {
+        if (this.name === 'documents') {
+          void (
+            window as unknown as { peerborneNoteWriteStarted(): Promise<void> }
+          ).peerborneNoteWriteStarted();
+          this.transaction.abort();
+          throw new DOMException('The tab is closing', 'AbortError');
+        }
+        return Reflect.apply(original, this, args);
+      };
+    });
+    await recipient.goto(shared.invitationUrl);
+    await recipient.getByRole('button', { name: 'Accept invitation' }).click();
+    await noteWrite;
+    await recipientContext.close();
+
+    await expect(founder.getByText('Can edit', { exact: true })).toBeVisible();
+    await expect(
+      founder.getByRole('button', { name: 'Remove collaborator', exact: true }),
+    ).toBeVisible();
+
+    recipientContext = await browser
+      .browserType()
+      .launchPersistentContext(profile);
+    recipient = await recipientContext.newPage();
+    const recipientErrors = failOnRuntimeErrors(recipient);
+    await recipient.goto(new URL(shared.invitationUrl).origin);
+    await expect(recipient.getByRole('status')).toContainText(
+      'interrupted before its note was saved here',
+    );
+    await expect(
+      recipient.getByRole('button', { name: /^Open note added /u }),
+    ).toHaveCount(0);
+    await recipient.goto('about:blank');
+    await recipient.goto(shared.invitationUrl);
+    await recipient.getByRole('button', { name: 'Accept invitation' }).click();
+    await expect(recipient.getByRole('alert')).toContainText(
+      'already accepted this invitation',
+    );
+
+    await founder.reload();
+    await founder.getByRole('button', { name: /^Open note added /u }).click();
+    await expect(
+      founder.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue(shared.initial);
+    await expect(
+      founder.getByRole('button', { name: 'Create 15-minute link' }),
+    ).toHaveCount(0);
+    await founder
+      .getByRole('button', { name: 'Remove collaborator', exact: true })
+      .click();
+    await founder
+      .getByRole('button', { name: 'Confirm removal', exact: true })
+      .click();
+    await founder
+      .getByRole('button', { name: 'Create 15-minute link', exact: true })
+      .click();
+    const link = founder.getByRole('textbox', { name: 'Invitation link' });
+    await expect(link).toBeVisible();
+
+    await recipient.goto('about:blank');
+    await recipient.goto(await link.inputValue());
+    await recipient.getByRole('button', { name: 'Accept invitation' }).click();
+    const recipientEditor = recipient.getByRole('textbox', {
+      name: 'Note text',
+    });
+    await expect(recipientEditor).toHaveValue(shared.initial);
+    await expect(
+      founder.getByRole('button', { name: 'Remove collaborator', exact: true }),
+    ).toBeVisible();
+    const rejoinedEdit = `Rejoined ${crypto.randomUUID()}`;
+    await recipientEditor.fill(rejoinedEdit);
+    await expect(
+      founder.getByRole('textbox', { name: 'Note text' }),
+    ).toHaveValue(rejoinedEdit);
+    await recipient.reload();
+    await expect(
+      recipient.getByRole('button', { name: /^Open note added /u }),
+    ).toBeVisible();
+    await expect(recipient.getByRole('status')).toHaveCount(0);
     expect(founderErrors, 'founder runtime errors').toEqual([]);
     expect(recipientErrors, 'recipient runtime errors').toEqual([]);
   } finally {

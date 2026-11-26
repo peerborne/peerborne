@@ -111,8 +111,11 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   inside the last 30 seconds. If no acceptance was produced by expiry, the
   founder removes the claimant, which rotates the document key. A founder that
   restarts before expiry loses that timer; if its checkpoint already recorded
-  the claimant, remove it with `removeWriter()` and `removeReader()`. Note has
-  no control for that, so such a note cannot be shared again.
+  the claimant, remove it with `removeWriter()` and `removeReader()`. A
+  claimant whose acceptance was produced but that stopped before storing the
+  note is not removed automatically, and the same identity cannot claim the
+  offer again from a new process. Note's founder can remove such a
+  collaborator and invite again.
 - **Invitation bootstraps are bounded to one attested provider profile.** The
   bundled Automerge JSON CRDT, ACL, and keychain adapters with P-384/SHA-384
   SubtleCrypto declare the profile that Peerborne tests. Other providers reject
@@ -191,10 +194,11 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **Peerborne Note has a bounded sharing and recovery profile.** It supports
   one founder and one reader/editor, retained signing/KEM/storage keys, encrypted
   checkpoints, automatic relay reconnection after reopening a note, and tested
-  same-epoch history repair after a relay outage. Account/key recovery,
-  authenticated collaborator discovery, offline invitation acceptance, larger
-  groups, revocation UX, delivery guarantees and public-service availability
-  remain outside that profile.
+  same-epoch history repair after a relay outage. Its founder can remove the
+  collaborator and invite a replacement. Account/key recovery, authenticated
+  collaborator discovery, offline invitation acceptance, larger groups,
+  delivery guarantees and public-service availability remain outside that
+  profile.
 - **Cookbook snippets are not validated.** Code examples in documentation may drift from the actual API. There is no CI check that documentation code blocks compile against the current source.
 - **No changelog.** Release notes and version history are not published.
 

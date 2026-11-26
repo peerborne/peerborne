@@ -13,6 +13,17 @@ export interface BrowserIdentity {
   storageKey: CryptoKey;
 }
 
+export interface SavedDocument {
+  readonly path: string;
+  readonly createdAtMs?: number;
+}
+
+function validCreatedAt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
 interface StoredDocument {
   version: 1;
   owner: string;
@@ -278,22 +289,28 @@ export function createBrowserCheckpointStorage(
       readonly owner: string,
     ) {}
 
-    async listDocuments(): Promise<string[]> {
-      const records = await transaction<{ owner: string; path: string }[]>(
-        'vaults',
-        'readonly',
-        (objects, result) => {
-          const request = objects.getAll();
-          request.onsuccess = () => result(request.result);
-        },
-      );
+    /** Saved documents, oldest first. */
+    async listDocuments(): Promise<SavedDocument[]> {
+      const records = await transaction<
+        { owner: string; path: string; createdAtMs?: unknown }[]
+      >('vaults', 'readonly', (objects, result) => {
+        const request = objects.getAll();
+        request.onsuccess = () => result(request.result);
+      });
       return records
         .filter(
           (record) =>
             record?.owner === this.owner && typeof record.path === 'string',
         )
-        .map((record) => record.path)
-        .sort();
+        .map((record) => ({
+          path: record.path,
+          createdAtMs: validCreatedAt(record.createdAtMs),
+        }))
+        .sort(
+          (a, b) =>
+            (a.createdAtMs ?? -1) - (b.createdAtMs ?? -1) ||
+            (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+        );
     }
 
     async load(
@@ -426,10 +443,28 @@ export function createBrowserCheckpointStorage(
                 } satisfies StoredDocument,
                 path,
               );
-              if (isVault)
-                objects.transaction
-                  .objectStore('vaults')
-                  .put({ owner: this.owner, path }, path);
+              if (isVault) {
+                const vaults = objects.transaction.objectStore('vaults');
+                const listing = vaults.get(path);
+                listing.onsuccess = () => {
+                  try {
+                    vaults.put(
+                      {
+                        owner: this.owner,
+                        path,
+                        createdAtMs:
+                          validCreatedAt(listing.result?.createdAtMs) ??
+                          Date.now(),
+                      },
+                      path,
+                    );
+                  } catch {
+                    try {
+                      listing.transaction!.abort();
+                    } catch {}
+                  }
+                };
+              }
             } catch {
               try {
                 request.transaction!.abort();
