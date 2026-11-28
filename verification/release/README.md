@@ -5,6 +5,11 @@ outside the checkout. It checks their package identities, lockfile integrity,
 and every packed file's SHA-512 digest before and after browser acceptance,
 rejects workspace symlinks, and audits production dependencies before adding any
 application tooling. The browser applications have a separate dependency audit.
+Before adding that tooling, the consumer must pass the strict
+`large-catch-up-load` scenario with the installed tarballs. The case uses two
+Node peers and an owned Circuit Relay with one trusted load responder. It
+requires automatic recovery of history too large for a GossipSub reply, with
+no follow-up edit needed to trigger it.
 The clean production graphs fail on any npm advisory, including informational,
 low and moderate findings. The application and plain-app graphs with added
 test and build tooling are audited after acceptance and fail on high or
@@ -60,7 +65,8 @@ PEERBORNE_RELEASE_BROWSERS=chromium,firefox,webkit \
 
 Linux requires the browser system dependencies; use `playwright install` with
 `--with-deps`, as the Release workflow does. That workflow runs all three engines
-and uploads only metadata evidence under `verification/results/release/`.
+and uploads only metadata evidence under `verification/results/release/`,
+including `large-catch-up-load.json`.
 Invitations are excluded from traces, screenshots and recordings; diagnostic
 URLs have their fragments redacted. Reports contain case status, timing, selected
 engines, dependency findings and the consumer lockfile hash, without application

@@ -1,9 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packages } from './release-packages.mjs';
-import { prepareBrowserConsumer } from '../verification/release/consumer.mjs';
+import {
+  assertInstalledArtifacts,
+  prepareBrowserConsumer,
+} from '../verification/release/consumer.mjs';
 import { auditConsumer } from '../verification/release/audit.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -52,6 +55,8 @@ try {
   );
   run('npm', ['install', '--no-audit', '--no-fund', ...tarballs], consumer);
   await auditConsumer(consumer, 'production-audit', true);
+  await assertInstalledArtifacts(consumer, release.artifacts);
+  await verifyLargeCatchUp(consumer);
   run(
     'npm',
     [
@@ -162,6 +167,36 @@ for (const specifier of ${JSON.stringify(specifiers)}) {
 } finally {
   if (process.env.PEERBORNE_RELEASE_KEEP_CONSUMER !== '1')
     await rm(consumer, { recursive: true, force: true });
+}
+
+async function verifyLargeCatchUp(consumer) {
+  const files = [
+    'verification/fixtures.mjs',
+    'verification/advanced/run.mjs',
+    'verification/advanced/catalog.mjs',
+    'verification/advanced/catalog/catch-up.json',
+    'verification/advanced/node/catch-up.mjs',
+  ];
+  await Promise.all(
+    files.map((file) => cp(resolve(root, file), resolve(consumer, file))),
+  );
+  run(
+    process.execPath,
+    [
+      '--expose-gc',
+      'verification/advanced/run.mjs',
+      '--scenario',
+      'large-catch-up-load',
+      '--profile',
+      'smoke',
+      '--strict',
+      '--timeout-ms',
+      '240000',
+      '--output',
+      resolve(root, 'verification/results/release/large-catch-up-load.json'),
+    ],
+    consumer,
+  );
 }
 
 function run(command, commandArgs, cwd) {
