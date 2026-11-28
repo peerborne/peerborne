@@ -1,38 +1,33 @@
-# Peerborne Production Multi-Server Deployment
+# Peerborne two-relay identity routing example
 #
-# Runs multiple relay nodes with TLS termination via Caddy reverse proxy.
-# For a real production deployment, run each relay on a separate server.
-# This compose file demonstrates the architecture on a single machine.
+# Caddy routes a distinct WSS hostname to each relay's persistent identity.
+# Both relays run on one machine. Inter-relay peering is configured separately.
 #
 # Usage:
 #   docker compose -f guides/docker/docker-compose.production.yaml up -d
 #
 # Prerequisites:
-#   - Set RELAY_DOMAIN environment variable to your domain
-#   - Ensure DNS A records point to your server
-#   - Ports 80 and 443 must be open for Caddy's automatic TLS
+#   - The default hostnames are relay-1.localhost and relay-2.localhost
+#   - Public staging requires two unique DNS names (RELAY_1_DOMAIN and
+#     RELAY_2_DOMAIN), a public RELAY_BIND_ADDRESS, and access to ports 80/443
 #   - The 172.30.0.0/24 network below must not overlap another Docker network;
 #     if it does, change the subnet, Caddy's address and TRUSTED_PROXY_IPS
 
 services:
-  # Reverse proxy with automatic TLS (Let's Encrypt)
+  # Reverse proxy with automatic TLS
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:80:80"
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    depends_on:
-      relay-1:
-        condition: service_healthy
-      relay-2:
-        condition: service_healthy
     environment:
-      - RELAY_DOMAIN=${RELAY_DOMAIN:-relay.localhost}
+      - RELAY_1_DOMAIN
+      - RELAY_2_DOMAIN
     networks:
       relay:
         # The relays exempt only this address from GossipSub IP scoring.
@@ -45,7 +40,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "9002:9002"   # TCP (node-to-node, inter-relay mesh)
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:9002:9002"
     volumes:
       - relay-1-data:/shared
     networks:
@@ -62,14 +57,14 @@ services:
       retries: 10
       start_period: 10s
 
-  # Secondary relay node (run on a separate server in production)
+  # Secondary relay with its own persistent identity
   relay-2:
     build:
       context: ../../relay-server
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "9012:9002"   # TCP (offset ports for single-machine demo)
+      - "${RELAY_BIND_ADDRESS:-127.0.0.1}:9012:9002"
     volumes:
       - relay-2-data:/shared
     networks:

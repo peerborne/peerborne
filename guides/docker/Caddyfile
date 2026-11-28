@@ -1,17 +1,12 @@
 # Caddy reverse proxy for Peerborne relay servers
 #
-# Terminates TLS and proxies WebSocket connections to the relay.
-# Caddy automatically obtains and renews Let's Encrypt certificates.
-#
-# Set RELAY_DOMAIN environment variable or replace {$RELAY_DOMAIN} below.
+# Route each hostname to the relay that owns its advertised libp2p peer ID.
+# Caddy uses its local CA for .localhost and automatic HTTPS for public DNS.
 
-{$RELAY_DOMAIN} {
-	reverse_proxy relay-1:9001 relay-2:9001 {
-		# Load balance across relay nodes
-		lb_policy round_robin
+{$RELAY_1_DOMAIN:relay-1.localhost} {
+	reverse_proxy relay-1:9001
+}
 
-		# WebSocket support
-		header_up Connection {>Connection}
-		header_up Upgrade {>Upgrade}
-	}
+{$RELAY_2_DOMAIN:relay-2.localhost} {
+	reverse_proxy relay-2:9001
 }
