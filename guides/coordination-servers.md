@@ -686,7 +686,7 @@ Ready-to-use Docker configurations are provided in `guides/docker/`.
 | File | Purpose |
 |------|---------|
 | `docker-compose.single.yaml` | All-in-one single server deployment |
-| `docker-compose.production.yaml` | Production multi-relay deployment |
+| `docker-compose.production.yaml` | Local example with two identity-pinned WSS endpoints |
 | `Dockerfile.relay` | Circuit relay / bootstrap node |
 | `Dockerfile.bootstrap` | DHT bootstrap node (for large deployments) |
 
@@ -706,7 +706,7 @@ docker compose -f guides/docker/docker-compose.single.yaml logs -f relay
 docker compose -f guides/docker/docker-compose.single.yaml down
 ```
 
-### 6.3 Production Deployment
+### 6.3 Two-relay routing rehearsal
 
 ```bash
 # Start all services
@@ -716,11 +716,9 @@ docker compose -f guides/docker/docker-compose.production.yaml up -d
 docker compose -f guides/docker/docker-compose.production.yaml ps
 ```
 
-> **Scaling:** The production compose file defines individually named relay services
-> (`relay-1`, `relay-2`) rather than a single scalable `relay` service, because each
-> relay node needs unique port mappings and may run on separate hosts. To add more
-> relay nodes, duplicate a `relay-N` service block in the compose file with
-> appropriate port offsets.
+The example gives each relay a separate local hostname and identity volume.
+For public staging and inter-relay peering, follow the
+[multi-server deployment procedure](../docs/deployment.md#production-multi-server-deployment).
 
 See individual Dockerfile documentation in `guides/docker/` for build instructions.
 

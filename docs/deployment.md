@@ -423,101 +423,64 @@ and [rate-limit plan availability](https://developers.cloudflare.com/waf/rate-li
 
 ## Production Multi-Server Deployment
 
-For reliability, run two or more relay servers with TLS. The `guides/docker/`
-directory contains an example Compose file and Caddy configuration, but it is
-**not** a drop-in production setup for multiple relays behind a single
-load-balanced hostname.
+Give each relay its own hostname, persistent identity volume, and advertised
+libp2p multiaddr. Caddy routes each hostname to one specific backend. A shared
+round-robin hostname can route a dial to the wrong peer ID and fail the libp2p
+handshake.
 
-Each relay has its own libp2p peer ID, so clients must be able to dial a
-specific relay address. With the current relay implementation, a single shared
-hostname that load-balances across multiple relays will break dialing (see the
-"Important" callout below). For production, use **one public DNS name per
-relay** (e.g. `relay-1.example.com`, `relay-2.example.com`) so each hostname
-consistently resolves to exactly one relay. The provided `guides/docker/`
-config is a starting point -- treat the single-hostname `round_robin` example
-as a demo, and adapt it to one DNS name per relay (or implement stable peer
-IDs + sticky sessions) before deploying to production.
+The Compose example runs two relays on one host to verify identity routing.
+It assigns a separate volume to each relay and binds published ports to
+`127.0.0.1` by default.
 
-### Prerequisites
-
-1. Public DNS names for each relay server, with A/AAAA records pointing to the
-   host that serves that relay (e.g. `relay-1.example.com` and
-   `relay-2.example.com`).
-2. Ports 80 and 443 open for Caddy's automatic Let's Encrypt certificates.
-3. For inter-relay peering in a real multi-host deployment, expose TCP port
-   `9002` on each relay server (see "Inter-Relay Peering" below). The
-   `guides/docker/` single-host demo may remap a second relay to a different
-   host port such as `9012:9002` only to avoid local port conflicts; that
-   offset is for the demo host layout and does not change the relay's actual
-   service port.
-
-> **Limitation:** By default each relay server is standalone -- it does not
-> configure bootstrap peers or attempt to discover other relays. Clients
-> connected to different relays will **not** see each other's pubsub messages
-> unless the relays are manually peered (e.g. by dialing each other's TCP
-> multiaddr at startup). A future release may add automatic inter-relay
-> discovery.
-
-### Deploy
+### Rehearse locally
 
 ```bash
-export RELAY_DOMAIN=relay.example.com
+relay_demo() {
+  docker compose -p peerborne-relay-routing -f guides/docker/docker-compose.production.yaml "$@"
+}
 
-docker compose -f guides/docker/docker-compose.production.yaml up -d
+relay_demo config
+relay_demo up -d --wait
+relay_demo exec relay-1 node -p 'require("/shared/relay-info.json").peerId'
+relay_demo exec relay-2 node -p 'require("/shared/relay-info.json").peerId'
 ```
 
-This starts:
-
-- **Caddy** -- Reverse proxy on ports 80/443. Terminates TLS and load-balances
-  WebSocket connections across relay nodes with round-robin.
-- **relay-1** -- Primary relay / bootstrap node.
-- **relay-2** -- Secondary relay node.
-
-Browser clients connect using a libp2p multiaddr through the TLS-terminated
-proxy.
-
-> **Important:** A single load-balanced hostname does **not** work as a libp2p
-> multiaddr because each relay generates a unique peer ID. A connection to
-> `/dns4/relay.example.com/tcp/443/wss/p2p/<peerId-of-relay-1>` will fail if the
-> load balancer routes the TCP connection to relay-2 instead. Use:
->
-> 1. **One multiaddr per relay.** Give each relay its own DNS name (e.g.
->    `relay-1.example.com`, `relay-2.example.com`) and configure clients with
->    all of them.
-
-There is no supported single-hostname load-balancing alternative. Source-IP
-hashing does not pin a libp2p peer ID and can still route the same multiaddr to
-the wrong relay. Use one hostname/SNI route per durable relay identity.
-
-The multiaddr format for each relay is:
+The two IDs should differ. Use them in the corresponding WSS multiaddrs.
 
 ```text
-/dns4/relay-1.example.com/tcp/443/wss/p2p/<relay-1-peerId>
+/dns4/relay-1.localhost/tcp/443/wss/p2p/<relay-1-peerId>
+/dns4/relay-2.localhost/tcp/443/wss/p2p/<relay-2-peerId>
 ```
 
-This replaces the raw WebSocket multiaddr used in the single-server setup.
+Caddy uses its local CA for these names. Trust the local root certificate from
+`/data/caddy/pki/authorities/local/root.crt` inside the Caddy container in the
+test client before dialing. Confirm that each client dials the expected peer ID.
+Stop `relay-1` and confirm that `relay-2` still accepts its own pinned address.
+Recreate `relay-1` with its volume retained and confirm that its peer ID and
+pinned address still work. Stop the local project with `relay_demo down`
+and retain its volumes for the next run.
+[Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https#local-https)
 
-### Scaling Beyond Two Relays
+### Configure public staging
 
-Add more relay services to `docker-compose.production.yaml` and include them in
-the Caddyfile's `reverse_proxy` upstream list:
+Set `RELAY_1_DOMAIN` and `RELAY_2_DOMAIN` to distinct DNS names and set
+`RELAY_BIND_ADDRESS` to the intended listen address. Point each name's A or AAAA
+record at its TLS endpoint and allow ports 80 and 443 for Caddy certificates.
+Assign each additional relay a hostname, an upstream route and its own
+identity volume. Use separate hosts when rehearsing independent host failure.
 
-```caddyfile
-# Caddyfile
-{$RELAY_DOMAIN} {
-    reverse_proxy relay-1:9001 relay-2:9001 relay-3:9001 {
-        # This single-hostname block is illustrative only and cannot preserve
-        # libp2p peer-ID routing. Production needs one hostname/SNI route per
-        # relay identity, with clients configured with all relay multiaddrs.
-        lb_policy round_robin
-        header_up Connection {>Connection}
-        header_up Upgrade {>Upgrade}
-    }
-}
-```
+### Inter-relay peering
 
-In a true production deployment, run each relay on a separate server and point
-Caddy (or your own load balancer) at their IP addresses.
+Each relay starts with its own GossipSub mesh. The Compose example exposes a
+TCP listener for each relay and leaves peering to the deployment. Configure the
+relays to dial each other's pinned TCP multiaddrs and reconnect after restarts
+before expecting pubsub forwarding across relays. The local example maps host
+ports `9002` and `9012` to each relay's container port `9002`.
+
+Applications also need to discover and reconnect through more than one
+configured relay for client failover. Peerborne Note currently accepts a single
+relay multiaddr. Exercise cross-relay pubsub forwarding and bidirectional edits
+after relay loss in staging before counting the topology as failover coverage.
 
 ### Hardening Checklist
 
