@@ -24,7 +24,6 @@ jest.mock('./helia-node.js', () => ({
 import { Peerborne } from './peerborne.js';
 import { createAndStartHeliaNode } from './helia-node.js';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
-import { p384SignatureTwin } from './__testutils__/ecdsa-signature-twin.js';
 import {
   INVITATION_ID_LENGTH,
   type InvitationAcceptanceV1,
@@ -533,8 +532,8 @@ describe('unsent invitation acceptance rollback', () => {
   );
 });
 
-describe('invitation join signature twins', () => {
-  test('answers a signature twin and the genuine request with one acceptance the recipient accepts', async () => {
+describe('invitation join retries', () => {
+  test('returns one acceptance when the recipient signs the same request twice', async () => {
     const auth = new SubtleCrypto();
     const generate = () =>
       crypto.subtle.generateKey(
@@ -568,7 +567,7 @@ describe('invitation join signature twins', () => {
       encryptedBootstrap: new Uint8Array(64).fill(7),
     }));
     const document = {
-      documentPath: '/signature-twins',
+      documentPath: '/signed-retry',
       historyVisibility: 'full_history',
       readerRevocationCount: 0,
       assertCanCreateInitialInvitation: async () => {},
@@ -597,22 +596,25 @@ describe('invitation join signature twins', () => {
       recipientKeys.publicKey,
       auth,
     );
-    const twin: InvitationJoinRequestV1 = {
-      ...request,
-      signature: p384SignatureTwin(request.signature),
-    };
+    const retried = await signInvitationJoinRequest(
+      request,
+      recipientKeys.privateKey,
+      recipientKeys.publicKey,
+      auth,
+    );
+    expect(retried.signature).not.toEqual(request.signature);
     await expect(
-      verifyInvitationJoinRequest(twin, recipientKeys.publicKey, auth),
+      verifyInvitationJoinRequest(retried, recipientKeys.publicKey, auth),
     ).resolves.toBe(true);
 
     const process = (joinRequest: InvitationJoinRequestV1) =>
       (founder as any)._processInvitationJoin(
         joinRequest,
       ) as Promise<InvitationAcceptanceV1>;
-    const fromTwin = await process(twin);
+    const fromRetry = await process(retried);
     const fromRequest = await process(request);
 
-    expect(fromRequest).toBe(fromTwin);
+    expect(fromRequest).toBe(fromRetry);
     expect(buildInvitationBootstrap).toHaveBeenCalledTimes(1);
     await expect(
       assertInvitationAcceptanceMatches(fromRequest, offer, request),

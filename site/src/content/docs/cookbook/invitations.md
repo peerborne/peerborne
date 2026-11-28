@@ -198,11 +198,9 @@ freed slot. The removed member keeps whatever it already received.
 - Offers and replay protection are in memory. An inviter restart invalidates
   outstanding links. A lost response can be retried only from the same
   recipient `Peerborne` process, which reuses the exact signed request. The
-  founder identifies a request by its signed fields, not its signature bytes.
-  Anyone who sees a request can derive a second valid ECDSA signature for it,
-  and that copy receives the same acceptance instead of claiming the offer
-  away from the recipient. The request-cache behavior is unit-tested; a
-  dropped-response retry is not yet a browser acceptance test.
+  founder uses the signed request fields as its identity. Signing those same
+  fields again returns the original acceptance. Unit tests cover the request
+  cache. Browser coverage of a dropped-response retry is still pending.
 - Membership onboarding is not transactional. Once a valid signed request
   begins mutation, a later ACL publication, Welcome sealing, signing,
   encryption, stream, or expiry failure can leave partial or complete founder-

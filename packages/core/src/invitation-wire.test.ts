@@ -1,7 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 
 import { SubtleCrypto } from './auth-subtlecrypto.js';
-import { p384SignatureTwin } from './__testutils__/ecdsa-signature-twin.js';
 import {
   assertInvitationBootstrapEpochBinding,
   DEFAULT_INVITATION_CLOCK_SKEW_MS,
@@ -722,14 +721,17 @@ describe('public invitation expiry and binding', () => {
     const recipient = await signingIdentity();
     const offer = await makeOffer(issuer);
     const request = await makeJoinRequest(offer, recipient);
-    const requestTwin = {
-      ...request,
-      signature: p384SignatureTwin(request.signature),
-    };
+    const retriedRequest = await signInvitationJoinRequest(
+      request,
+      recipient.keys.privateKey,
+      recipient.keys.publicKey,
+      auth,
+    );
+    expect(retriedRequest.signature).not.toEqual(request.signature);
     await expect(
-      verifyInvitationJoinRequest(requestTwin, recipient.keys.publicKey, auth),
+      verifyInvitationJoinRequest(retriedRequest, recipient.keys.publicKey, auth),
     ).resolves.toBe(true);
-    expect(await digestInvitationJoinRequest(requestTwin)).toEqual(
+    expect(await digestInvitationJoinRequest(retriedRequest)).toEqual(
       await digestInvitationJoinRequest(request),
     );
     const otherRequest = await makeJoinRequest(offer, recipient, {
@@ -739,18 +741,21 @@ describe('public invitation expiry and binding', () => {
       await digestInvitationJoinRequest(request),
     );
 
-    const acceptance = await makeAcceptance(offer, requestTwin, issuer);
+    const acceptance = await makeAcceptance(offer, retriedRequest, issuer);
     await expect(
       assertInvitationAcceptanceMatches(acceptance, offer, request),
     ).resolves.toBeUndefined();
-    const acceptanceTwin = {
-      ...acceptance,
-      signature: p384SignatureTwin(acceptance.signature),
-    };
+    const repeatedAcceptance = await signInvitationAcceptance(
+      acceptance,
+      issuer.keys.privateKey,
+      issuer.keys.publicKey,
+      auth,
+    );
+    expect(repeatedAcceptance.signature).not.toEqual(acceptance.signature);
     await expect(
-      verifyInvitationAcceptance(acceptanceTwin, issuer.keys.publicKey, auth),
+      verifyInvitationAcceptance(repeatedAcceptance, issuer.keys.publicKey, auth),
     ).resolves.toBe(true);
-    expect(await digestInvitationAcceptance(acceptanceTwin)).toEqual(
+    expect(await digestInvitationAcceptance(repeatedAcceptance)).toEqual(
       await digestInvitationAcceptance(acceptance),
     );
     expect(() =>
