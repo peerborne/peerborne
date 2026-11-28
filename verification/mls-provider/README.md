@@ -168,6 +168,28 @@ reconstruction. Production source and built-module hashes are recorded with
 the evidence. The test page allows `wasm-unsafe-eval` for Automerge's native Wasm;
 its CSP still prohibits external scripts and connections.
 
+Node also runs `network-document-tests.ts` with three application identities
+on signed GossipSub over loopback WebSockets, Noise and Yamux. A previously
+authorized writer receives a new-epoch ciphertext but cannot apply it. After
+the application delivers the authenticated removal, the writer cannot access
+the document or restore its previous provider state. A surviving writer that
+missed the edit reconstructs its provider and journal, reconnects with a new
+libp2p identity through an owned Circuit Relay v2, and requests an authenticated
+encrypted checkpoint on the document topic. The test observes the request and
+checkpoint on GossipSub, verifies that catch-up retains the survivor's earlier
+edit, and checks live edits in both directions. The survivor's test transport
+ignores duplicate deliveries of the exact missed publication so only the
+checkpoint can recover that edit. The test reconstructs the survivor again to
+verify that the recovered content persists.
+The report records bounded loopback reconnect and catch-up times.
+
+This scenario uses Automerge and the experimental MLS adapter. It models
+ordered application delivery of signed membership and role updates and
+keeps the in-memory reference stores and anchors across reconstruction.
+It covers loopback Node transport and same-process recovery. Browser process
+restart, persistent device anchors, installed package acceptance, the default
+BeeKEM path and cross-NAT behavior require separate evidence.
+
 See [coordinated document security](../../docs/coordinated-document-security.md)
 for setup, formal/runtime boundaries and the remaining content recovery,
 physical storage, crypto and performance qualification work.

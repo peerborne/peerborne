@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { platform, arch } from 'node:os';
 import { resolve } from 'node:path';
 import { runChecks } from './checks.mjs';
+import { runNetworkDocumentChecks } from './network-document-tests.ts';
 
 const root = import.meta.dirname;
 const evidencePaths = [
@@ -48,6 +49,8 @@ const evidencePaths = [
   'packages/core/dist/esm/src/policy/document-journal.js',
   'packages/core/src/peerborne-document.ts',
   'packages/core/dist/esm/src/peerborne-document.js',
+  'packages/core/src/peerborne.ts',
+  'packages/core/dist/esm/src/peerborne.js',
   'packages/automerge/src/peerborne-automerge.ts',
   'packages/automerge/dist/esm/src/peerborne-automerge.js',
   'packages/yjs/src/peerborne-yjs.ts',
@@ -57,7 +60,9 @@ const evidencePaths = [
   'packages/core/src/group-security-provider.ts',
   'packages/core/dist/esm/src/group-security-provider.js',
   'verification/mls-provider/provider.ts',
+  'verification/mls-provider/coordinated-fixture.ts',
   'verification/mls-provider/document-tests.ts',
+  'verification/mls-provider/network-document-tests.ts',
   'packages/core/src/group-security-coordinator.ts',
   'packages/core/src/group-document-operation.ts',
   'packages/core/src/policy/document-admission.ts',
@@ -83,7 +88,10 @@ const evidenceHashes = async () =>
   );
 const firstPartySources = await evidenceHashes();
 await rm(resolve(root, 'report.json'), { force: true });
-const node = await runChecks();
+const node = {
+  ...(await runChecks()),
+  networkDocument: await runNetworkDocumentChecks(),
+};
 const optional = [
   '@hpke/chacha20poly1305',
   '@hpke/hybridkem-x-wing',

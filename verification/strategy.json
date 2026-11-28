@@ -418,7 +418,7 @@
     },
     {
       "id": "coordinated-topic-catch-up",
-      "formalBoundary": "Topic requests carry receipts in the same canonical receipt codec, and their checkpoints are merged through the same proved receipt admission and runtime suffix verification as relayed checkpoints. Request and checkpoint framing, the separate encryption domains, the GossipSub sender binding, issue-time freshness and replay, controller-only answers, the application authorization callback, signed refusals, the oversized-snapshot cache, the per-member interval, the per-document share of the process checkpoint budget, outstanding challenges, triggers and backoff are runtime state over network timing, so generated encodings and native scenarios exercise them. Real GossipSub delivery, clock skew between members, peer scoring and traffic analysis remain outside these checks.",
+      "formalBoundary": "Topic requests carry receipts in the same canonical receipt codec, and their checkpoints are merged through the same proved receipt admission and runtime suffix verification as relayed checkpoints. Request and checkpoint framing, the separate encryption domains, the GossipSub sender binding, issue-time freshness and replay, controller-only answers, the application authorization callback, signed refusals, the oversized-snapshot cache, the per-member interval, the per-document share of the process checkpoint budget, outstanding challenges, triggers and backoff are runtime state over network timing, so generated encodings and native scenarios exercise them. A separate Node loopback integration exercises a relayed request and checkpoint during a surviving member’s recovery after revocation. Clock skew between members, peer scoring and traffic analysis remain outside these checks.",
       "evidence": [
         "packages/core/src/coordinated-document-topic-catch-up.test.ts"
       ],
@@ -596,6 +596,13 @@
     }
   ],
   "integrationBoundaries": [
+    {
+      "boundary": "Coordinated MLS revocation and survivor recovery over signed GossipSub and an owned Node Circuit Relay with same-process reference stores",
+      "evidence": [
+        ".github/workflows/mls-provider.yml",
+        "verification/mls-provider/network-document-tests.ts"
+      ]
+    },
     {
       "boundary": "Local BeeKEM fork quarantine with persistence, process restart and native pinned checkpoint admission",
       "evidence": [
