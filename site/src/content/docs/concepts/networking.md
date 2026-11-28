@@ -379,16 +379,14 @@ behind in the same way.
 A reply carries the responder's retained tree and, when the requester lacks
 it, the snapshot. If that does not fit a GossipSub frame, no reply arrives
 and a detected gap stays open; a writer's own request still names its head.
-Once the gap outlives the first request by 15 s (`loadAfterMs`), the document
-runs the authenticated V4 `load()` if the evidence is strong enough: local
-evidence (pending CRDT state or an unfetched change), for at most three loads
-per gap, or a head that at least two members advertise. One member, honest
-or not, can make replicas ask over gossip but not load. The load prefers the
-newest connected writer that named the head. Every load rule applies. It needs
-`resolveLoadSecurityCommitments`, and with the quorum enabled the agreeing
-peers decide what is served, so a single peer that is ahead of the others is
-not loaded from unless `loadQuorumAllowSinglePeer` or a disabled quorum allows
-it. Readers are never load targets, because they cannot sign load responses.
+Once the gap outlives the first request by 15 s (`loadAfterMs`), a head that
+two members advertise can trigger an authenticated V4 load. Local evidence
+(pending CRDT state or an unfetched change) or a fresh signed advertisement
+from the connected sole writer can trigger up to three loads per gap. For a
+sole-writer advertisement, the load checks the current writer roster and
+queries only the advertising peer. Other loads prefer the newest connected
+writer that named the head. All paths require `resolveLoadSecurityCommitments`
+and enforce the configured quorum. Readers cannot sign load responses.
 A load that leaves an advertised head unknown penalizes its advertisers, and
 an unfetched change it does not reveal is not escalated again for an hour.
 Each load that leaves anything unresolved doubles the delay before the next,

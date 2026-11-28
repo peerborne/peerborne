@@ -43,6 +43,15 @@ security certification. CI runs both Node and browser smoke catalogs, collects
 the reports and uploads the existing verification artifact. Manual workflow
 dispatch selects full workloads.
 
+CI and installed release acceptance also run `large-catch-up-load` in strict
+mode. Two Node peers use an owned Circuit Relay and one trusted load responder.
+The recovery must succeed automatically when the missing history is too large
+for a GossipSub reply.
+
+```sh
+yarn verify:advanced --scenario large-catch-up-load --profile smoke --strict --timeout-ms 240000
+```
+
 ## Crypto and access control probes
 
 | ID                 | Workload and safety assertions                                                                                                                                                                                                                                                  | Evidence boundary                                                                                                                                                                                |
