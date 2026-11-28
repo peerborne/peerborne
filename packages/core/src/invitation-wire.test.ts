@@ -25,6 +25,7 @@ import {
   decodeInvitationAcceptance,
   decodeInvitationJoinRequest,
   decodeInvitationOffer,
+  digestInvitationAcceptance,
   digestInvitationJoinRequest,
   digestInvitationOffer,
   encodeInvitationAcceptance,
@@ -713,6 +714,53 @@ describe('public invitation expiry and binding', () => {
       () => assertInvitationJoinMatchesOffer(wrongRole, offer),
       'binding-mismatch',
     );
+  });
+
+  test('identifies join requests and acceptances independently of signature bytes', async () => {
+    const issuer = await signingIdentity();
+    const recipient = await signingIdentity();
+    const offer = await makeOffer(issuer);
+    const request = await makeJoinRequest(offer, recipient);
+    const retriedRequest = await signInvitationJoinRequest(
+      request,
+      recipient.keys.privateKey,
+      recipient.keys.publicKey,
+      auth,
+    );
+    expect(retriedRequest.signature).not.toEqual(request.signature);
+    await expect(
+      verifyInvitationJoinRequest(retriedRequest, recipient.keys.publicKey, auth),
+    ).resolves.toBe(true);
+    expect(await digestInvitationJoinRequest(retriedRequest)).toEqual(
+      await digestInvitationJoinRequest(request),
+    );
+    const otherRequest = await makeJoinRequest(offer, recipient, {
+      requestId: bytes(32, 9),
+    });
+    expect(await digestInvitationJoinRequest(otherRequest)).not.toEqual(
+      await digestInvitationJoinRequest(request),
+    );
+
+    const acceptance = await makeAcceptance(offer, retriedRequest, issuer);
+    await expect(
+      assertInvitationAcceptanceMatches(acceptance, offer, request),
+    ).resolves.toBeUndefined();
+    const repeatedAcceptance = await signInvitationAcceptance(
+      acceptance,
+      issuer.keys.privateKey,
+      issuer.keys.publicKey,
+      auth,
+    );
+    expect(repeatedAcceptance.signature).not.toEqual(acceptance.signature);
+    await expect(
+      verifyInvitationAcceptance(repeatedAcceptance, issuer.keys.publicKey, auth),
+    ).resolves.toBe(true);
+    expect(await digestInvitationAcceptance(repeatedAcceptance)).toEqual(
+      await digestInvitationAcceptance(acceptance),
+    );
+    expect(() =>
+      digestInvitationJoinRequest({ ...request, signature: new Uint8Array() }),
+    ).toThrow(InvitationWireError);
   });
 
   test('binds acceptance to recipient identity, KEM key, and offer lifetime', async () => {

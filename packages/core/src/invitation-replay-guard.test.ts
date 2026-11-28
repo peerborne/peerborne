@@ -121,6 +121,29 @@ describe('InMemoryInvitationReplayGuard', () => {
     expect(guard.size).toBe(1);
   });
 
+  test('treats a second signature over the same signed fields as a replay', async () => {
+    const invitation = offer(38);
+    const request = await joinRequest(invitation, 39);
+    const requestTwin = { ...request, signature: bytes(96, 0xaa) };
+    const accepted = await acceptance(invitation, request, 40);
+    const acceptedTwin = { ...accepted, signature: bytes(96, 0xbb) };
+    const guard = new InMemoryInvitationReplayGuard();
+
+    await expect(
+      guard.observeJoin(invitation, requestTwin, NOW),
+    ).resolves.toBe('accepted');
+    await expect(guard.observeJoin(invitation, request, NOW)).resolves.toBe(
+      'replay',
+    );
+    await expect(
+      guard.observeAcceptance(invitation, request, acceptedTwin, NOW),
+    ).resolves.toBe('accepted');
+    await expect(
+      guard.observeAcceptance(invitation, requestTwin, accepted, NOW),
+    ).resolves.toBe('replay');
+    expect(guard.size).toBe(1);
+  });
+
   test('serializes concurrent observations into one accept and one replay', async () => {
     const invitation = offer(4);
     const request = await joinRequest(invitation, 5);

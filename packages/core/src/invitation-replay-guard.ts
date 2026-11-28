@@ -61,10 +61,11 @@ export class InvitationReplayError extends Error {
  * `observeJoin` lets an inviter claim an offer for exactly one signed join
  * request. `observeAcceptance` additionally enforces every recipient,
  * KEM-key, role, document, issuer, digest, and lifetime binding before it
- * records a single acceptance. Byte-identical repeats return `replay`, so an
- * integration can return or apply its cached result without repeating ACL or
- * key mutations. Reuse of an identifier with different signed bytes, or a
- * second request/acceptance for the same offer, fails closed.
+ * records a single acceptance. A repeat of the same signed fields returns
+ * `replay`, even under a different valid signature, so an integration can
+ * return or apply its cached result without repeating ACL or key mutations.
+ * Reuse of an identifier with different signed fields, or a second
+ * request/acceptance for the same offer, fails closed.
  *
  * This guard intentionally does not verify signatures. Callers MUST verify
  * the offer, join request, and acceptance with their bound public identities
@@ -120,9 +121,9 @@ export class InMemoryInvitationReplayGuard {
   /**
    * Record a recipient's signed request for a usable offer.
    *
-   * A byte-identical request is idempotent and returns `replay`. A different
-   * request for the same offer, including one that changes only recipient or
-   * KEM key, is rejected.
+   * A request with the same signed fields is idempotent and returns `replay`,
+   * whatever its signature bytes. A different request for the same offer,
+   * including one that changes only recipient or KEM key, is rejected.
    */
   async observeJoin(
     offer: InvitationOfferV1,
@@ -154,10 +155,11 @@ export class InMemoryInvitationReplayGuard {
   /**
    * Record an issuer acceptance after checking its complete recipient binding.
    *
-   * A byte-identical acceptance is idempotent and returns `replay`. A second
-   * acceptance for the offer or reuse of an acceptance ID with other bytes is
-   * rejected. This method also records the matching join claim when called on
-   * a fresh recipient-side guard.
+   * An acceptance with the same signed fields is idempotent and returns
+   * `replay`, whatever its signature bytes. A second acceptance for the offer
+   * or reuse of an acceptance ID with other signed fields is rejected. This
+   * method also records the matching join claim when called on a fresh
+   * recipient-side guard.
    */
   async observeAcceptance(
     offer: InvitationOfferV1,
@@ -223,7 +225,7 @@ export class InMemoryInvitationReplayGuard {
     if (acceptanceDecision === 'acceptance-id-conflict')
       throw new InvitationReplayError(
         'acceptance-id-conflict',
-        'acceptance ID was already used by different signed bytes',
+        'acceptance ID was already used by different signed fields',
       );
     if (acceptanceDecision === 'offer-already-consumed')
       throw new InvitationReplayError(
@@ -309,7 +311,7 @@ export class InMemoryInvitationReplayGuard {
       'invitation-id-conflict':
         'invitation ID was already used by a different signed offer',
       'request-id-conflict':
-        'request ID was already used by different signed bytes',
+        'request ID was already used by different signed fields',
       'offer-already-claimed':
         'offer was already claimed by a different join request',
       'capacity-exceeded': 'invitation replay guard is at capacity',
