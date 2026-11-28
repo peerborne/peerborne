@@ -14,11 +14,11 @@
   "scripts": {
     "tsc": "tsc -b",
     "prepublishOnly": "yarn tsc",
-    "test": "jest",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "tsc-watch": "tsc -w -p tsconfig.json",
     "doc": "typedoc --excludePrivate --excludeProtected --excludeInternal",
     "benchmark": "tsx src/__benchmarks__/run.ts",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "yarn test --coverage"
   },
   "main": "dist/esm/src/index.js",
   "types": "dist/esm/src/index.d.ts",
@@ -67,8 +67,11 @@
     "node": ">=26.13.1"
   },
   "devDependencies": {
-    "@peculiar/webcrypto": "^1.7.2",
+    "@peculiar/asn1-schema": "^3.0.0",
+    "@peculiar/json-schema": "^3.0.0",
+    "@peculiar/webcrypto": "^2.0.0",
     "@types/node": "^26.6.7",
+    "asn1js": "^4.0.0",
     "eslint": "^10.15.0",
     "fake-indexeddb": "^6.2.8",
     "fast-check": "^4.11.0",
@@ -77,7 +80,8 @@
     "ts-node": "^10.9.2",
     "tsx": "4.23.15",
     "typedoc": "^0.28.20",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "webcrypto-core": "^2.0.0"
   },
   "resolutions": {
     "jest": "^30.5.2",
@@ -150,7 +154,7 @@
       "__benchmarks__"
     ],
     "setupFiles": [
-      "<rootDir>/jest.setup.js"
+      "<rootDir>/jest.setup.cjs"
     ],
     "moduleNameMapper": {
       "^(.{1,2}/.*).js$": "$1"

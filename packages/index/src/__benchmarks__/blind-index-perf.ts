@@ -8,11 +8,6 @@
  * - Scaling with number of indexed fields
  * - Field key derivation time (HKDF)
  */
-import { Crypto } from '@peculiar/webcrypto';
-
-if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
-  (globalThis as any).crypto = new Crypto();
-}
 
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './paper-benchmark-runner.js';
 import { SubtleBlindIndexProvider } from '../subtle-blind-index-provider.js';
