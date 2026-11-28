@@ -192,7 +192,9 @@ application can also relay the exchange itself:
    the encrypted response to the requester.
 3. Call `applySecurityCatchUpCheckpoint(checkpoint)` on the returning document.
    The prepared merge becomes visible after journal acceptance and a fresh
-   authority check.
+   authority check. If journal acceptance is uncertain or authority changes
+   before the live merge, reopen to recover from the authenticated journal
+   under the current authority.
 
 Both messages are encrypted and signed. The current epoch, pinned genesis,
 document path, role head, recipient and one-shot request challenge bind the
