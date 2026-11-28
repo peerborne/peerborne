@@ -6,6 +6,7 @@ import {
 import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from './group-security-coordinator.js';
 import { bytesToHex } from './internal/hex.js';
+import { splitDocumentPublication } from './document-security-wire.js';
 import { testCRDT, testChanges } from './__testutils__/coordinated-document.js';
 import { coordinatedGroupFixture } from './__testutils__/coordinated-group.js';
 
@@ -108,7 +109,7 @@ async function offlineAcrossEpoch(
 }
 
 describe('coordinated frames from a retired epoch', () => {
-  test('re-signs a full outbox of unsent frames in order as outbox space frees', async () => {
+  test('re-signs a coalesced offline backlog in order and sends only the re-signed publication', async () => {
     const values = Array.from({ length: 16 }, (_, index) => index + 1);
     const { g, update, published, errors, retry } = await offlineAcrossEpoch(
       values,
@@ -116,17 +117,17 @@ describe('coordinated frames from a retired epoch', () => {
     );
     try {
       expect(update).toEqual({
-        resent: 0,
-        waiting: 16,
+        resent: 16,
+        waiting: 0,
         skipped: 0,
         dropped: 0,
         diverged: false,
       });
       expect(retry).toBe('');
-      // The retired frames go out first and free their slots for the re-signed ones.
-      expect(published).toHaveLength(32);
-      expect(errors).toHaveLength(16);
-      for (const error of errors) expect(error).toContain('epoch is unavailable');
+      // The retired publication was rewritten away as its frames were re-signed.
+      expect(published).toHaveLength(1);
+      expect(splitDocumentPublication(published[0].data)).toHaveLength(16);
+      expect(errors).toEqual([]);
       expect(g.doc(0).document).toEqual(values);
       await g.doc(1).change(push(17));
       expect(await g.deliver(g.take()[0], [0])).toEqual([]);

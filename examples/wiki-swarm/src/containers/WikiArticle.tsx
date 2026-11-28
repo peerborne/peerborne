@@ -1,29 +1,21 @@
 import React from 'react';
 import { connect } from 'react-redux';
-import { ThunkDispatch } from 'redux-thunk';
-import { Doc } from '@automerge/automerge';
-import type { PeerborneConfig } from '@peerborne/core';
-import {
-  defaultConfig,
-  defaultBootstrapConfig,
-} from '@peerborne/core';
-import {
-  changeDocumentAsync,
-  openDocumentAsync,
-  closeDocumentAsync,
-  initializeAsync,
-} from '@peerborne/redux';
+import { Doc, splice } from '@automerge/automerge';
 import { WikiSwarmArticle } from '../models';
-import { RootState, selectAutomergeSwarmState } from '../reducers';
+import { RootState } from '../reducers';
+import type { ArticleSaveStatus } from '../actions';
+import {
+  ArticleExistsError,
+  changeArticle,
+  openArticle,
+  retryArticleSave,
+  type WikiDispatch,
+} from '../articles';
 import dayjs from 'dayjs';
 import Spinner from 'react-bootstrap/Spinner';
 import { SlateInput } from '../components/SlateInput';
 import { initialValue } from '../components/Slate';
-import {
-  AutomergeSwarm,
-  AutomergeSwarmActions,
-  AutomergeSwarmDocument,
-} from '../utils';
+import { AutomergeSwarmDocument } from '../utils';
 
 /**
  * Set `updatedOn` to now and back-fill `createdOn` / `createdBy` if they
@@ -40,6 +32,31 @@ function stampTimestamps(doc: WikiSwarmArticle) {
   }
 }
 
+/** The single splice that turns `before` into `after`. */
+function textEdit(before: string, after: string) {
+  let prefix = 0;
+  while (
+    prefix < before.length &&
+    prefix < after.length &&
+    before[prefix] === after[prefix]
+  ) {
+    prefix++;
+  }
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  return {
+    index: prefix,
+    remove: before.length - prefix - suffix,
+    insert: after.slice(prefix, after.length - suffix),
+  };
+}
+
 interface WikiArticleOwnProps {
   documentId: string;
   create?: boolean;
@@ -50,22 +67,24 @@ interface WikiArticleOwnProps {
 interface WikiArticleProps extends WikiArticleOwnProps {
   document: WikiSwarmArticle | null;
   documentRef: AutomergeSwarmDocument<WikiSwarmArticle> | null;
+  saveStatus?: ArticleSaveStatus;
 
-  onInitialize: (config: PeerborneConfig) => Promise<AutomergeSwarm>;
   onDocumentOpen: (
     documentPath: string,
-    initialization?: 'open' | 'create',
-  ) => Promise<AutomergeSwarmDocument<WikiSwarmArticle> | null>;
-  onDocumentClose: (documentPath: string) => Promise<void>;
+    initialization: 'open' | 'create',
+  ) => Promise<void>;
   onDocumentChange: (
     documentPath: string,
     changeFn: (current: WikiSwarmArticle) => void,
-    message?: string,
-  ) => Promise<Doc<WikiSwarmArticle>>;
+  ) => Promise<void>;
+  onSaveRetry: (documentPath: string) => Promise<void>;
 }
 
 interface WikiArticleState {
   loadError?: string;
+  editFailed?: boolean;
+  /** The title as typed, kept while its edits are still being applied. */
+  titleDraft?: string;
   aclReaders: string[];
   aclWriters: string[];
 }
@@ -77,6 +96,8 @@ class WikiArticle extends React.Component<
 > {
   private _mounted = false;
   private _refreshCounter = 0;
+  private _titleEdits = 0;
+  private _titleDraft?: string;
 
   constructor(public props: WikiArticleProps) {
     super(props);
@@ -137,22 +158,12 @@ class WikiArticle extends React.Component<
 
   private _activate() {
     const create = Boolean(this.props.create);
-    console.log('Loading article at:', this.props.documentId);
-    // Get relay/bootstrap address from env. The relay multiaddr
-    // (e.g. /ip4/.../tcp/9001/ws/p2p/...) is used as a bootstrap peer
-    // for libp2p peer discovery — NOT as a listen address.
-    const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
-    const bootstrapPeers = relayAddr ? [relayAddr] : [];
-    const config = defaultConfig(defaultBootstrapConfig(bootstrapPeers));
     this.props
-      .onInitialize(config)
-      .then(() =>
-        this.props.onDocumentOpen(this.props.documentId, create ? 'create' : 'open'),
-      )
+      .onDocumentOpen(this.props.documentId, create ? 'create' : 'open')
       .then(() => {
         if (this._mounted && this.props.create) this.props.onCreated?.();
       })
-      .catch(() => {
+      .catch((error) => {
         if (!this._mounted) return;
         if (Boolean(this.props.create) !== create) {
           this._activate();
@@ -160,34 +171,88 @@ class WikiArticle extends React.Component<
         }
         this.setState({
           loadError:
-            'Unable to open this article. Check its invitation and connection.',
+            error instanceof ArticleExistsError
+              ? 'An article with this ID already exists in this browser. Use Search to open it.'
+              : 'Unable to open this article. Check its invitation and connection.',
         });
       });
   }
 
   componentWillUnmount() {
+    // The article stays open for this tab so it can be reopened here.
     this._mounted = false;
-    // Close this article upon component unmount.
-    if (this.props.onDocumentClose && this.props.documentId) {
-      console.log('Closing article at:', this.props.documentId);
-      this.props.onDocumentClose(this.props.documentId);
-    }
+  }
+
+  private _change(changeFn: (current: WikiSwarmArticle) => void) {
+    return this.props
+      .onDocumentChange(this.props.documentId, changeFn)
+      .catch(() => {
+        if (this._mounted) this.setState({ editFailed: true });
+      });
+  }
+
+  private _editTitle(title: string) {
+    const edit = textEdit(
+      this._titleDraft ?? this.props.document?.title ?? '',
+      title,
+    );
+    this._titleDraft = title;
+    this._titleEdits++;
+    this.setState({ titleDraft: title, editFailed: false });
+    void this._change((current) => {
+      if (typeof current.title !== 'string') current.title = '';
+      const index = Math.min(edit.index, current.title.length);
+      splice(
+        current as Doc<WikiSwarmArticle>,
+        ['title'],
+        index,
+        Math.min(edit.remove, current.title.length - index),
+        edit.insert,
+      );
+      stampTimestamps(current);
+    }).finally(() => {
+      if (--this._titleEdits > 0) return;
+      this._titleDraft = undefined;
+      if (this._mounted) this.setState({ titleDraft: undefined });
+    });
   }
 
   // https://caffeinecoding.com/react-redux-draftjs/
   render() {
     if (this.state.loadError) return <p role="alert">{this.state.loadError}</p>;
     if (this.props.document) {
-      if (!this.props.document.content) {
-        console.warn(
-          'this.props.document.content is empty!',
-          this.props.document,
-        );
-      }
       // A newly created article has no title until its first edit.
-      const currentTitle = this.props.document.title?.toString() ?? '';
+      const currentTitle =
+        this.state.titleDraft ?? this.props.document.title?.toString() ?? '';
       return (
         <div className="m-3">
+          {this.props.saveStatus === 'failed' ? (
+            <div role="alert" className="alert alert-danger">
+              This article could not be saved in this browser. Keep this tab
+              open and retry.{' '}
+              <button
+                className="btn btn-sm btn-outline-danger"
+                onClick={() => {
+                  void this.props
+                    .onSaveRetry(this.props.documentId)
+                    .catch(() => undefined);
+                }}
+              >
+                Retry saving
+              </button>
+            </div>
+          ) : (
+            <p role="status" className="small text-muted mb-2">
+              {this.props.saveStatus === 'saving'
+                ? 'Saving…'
+                : 'Saved in this browser.'}
+            </p>
+          )}
+          {this.state.editFailed && (
+            <p role="alert" className="text-danger">
+              An edit could not be applied. Check the article and try again.
+            </p>
+          )}
           <label htmlFor="wiki-article-title" className="visually-hidden">
             Article title
           </label>
@@ -197,33 +262,18 @@ class WikiArticle extends React.Component<
             className="form-control form-control-lg mb-2"
             placeholder="Article title"
             value={currentTitle}
-            onChange={(e) => {
-              const newTitle = e.target.value;
-              this.props.onDocumentChange(
-                this.props.documentId,
-                (currentDocument) => {
-                  // Automerge 3 models collaborative text with native strings.
-                  // This whole-value assignment matches the previous example's
-                  // replacement semantics; richer editors should use splice().
-                  currentDocument.title = newTitle;
-                  stampTimestamps(currentDocument);
-                },
-              );
-            }}
+            onChange={(e) => this._editTitle(e.target.value)}
           />
           <div>
             <SlateInput
               value={this.props.document.content || initialValue}
               placeholder="Enter run notes here..."
               onChange={(content) => {
-                // Your Redux action
-                this.props.onDocumentChange(
-                  this.props.documentId,
-                  (currentDocument) => {
-                    stampTimestamps(currentDocument);
-                    currentDocument.content = content;
-                  },
-                );
+                this.setState({ editFailed: false });
+                void this._change((currentDocument) => {
+                  stampTimestamps(currentDocument);
+                  currentDocument.content = content;
+                });
               }}
             />
           </div>
@@ -271,36 +321,20 @@ function mapStateToProps(state: RootState, ownProps: WikiArticleOwnProps) {
   return {
     document: documentState ? documentState.document : null,
     documentRef: documentState ? documentState.documentRef : null,
+    saveStatus: state.wikiApp.saves[ownProps.documentId],
   };
 }
 
-function mapDispatchToProps(
-  dispatch: ThunkDispatch<
-    RootState,
-    unknown,
-    AutomergeSwarmActions<WikiSwarmArticle>
-  >,
-) {
+function mapDispatchToProps(dispatch: WikiDispatch) {
   return {
-    onInitialize: (config: PeerborneConfig) =>
-      dispatch(initializeAsync(config, selectAutomergeSwarmState)),
-    onDocumentOpen: (documentId: string, initialization: 'open' | 'create' = 'open') =>
-      dispatch(openDocumentAsync(documentId, selectAutomergeSwarmState, initialization)),
-    onDocumentClose: (documentId: string) =>
-      dispatch(closeDocumentAsync(documentId, selectAutomergeSwarmState)),
+    onDocumentOpen: (documentId: string, initialization: 'open' | 'create') =>
+      dispatch(openArticle(documentId, initialization)),
     onDocumentChange: (
       documentId: string,
-      changeFn: (current: any) => void,
-      message?: string,
-    ) =>
-      dispatch(
-        changeDocumentAsync(
-          documentId,
-          changeFn,
-          message,
-          selectAutomergeSwarmState,
-        ),
-      ),
+      changeFn: (current: WikiSwarmArticle) => void,
+    ) => dispatch(changeArticle(documentId, changeFn)),
+    onSaveRetry: (documentId: string) =>
+      dispatch(retryArticleSave(documentId)),
   };
 }
 

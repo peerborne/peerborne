@@ -44,7 +44,7 @@ const release = store.connect();
 function render() {
   const snapshot = store.getSnapshot();
   output.textContent =
-    snapshot.status === 'ready'
+    snapshot.status === 'ready' && snapshot.data
       ? String(snapshot.data.getMap('data').get('title') ?? 'Untitled')
       : snapshot.status;
 }
@@ -59,14 +59,22 @@ await store.stop();
 await document.close();
 ```
 
-`create()` founds the path. Opening an existing path from peers instead needs
-`resolveLoadSecurityCommitments`; see
+`create()` founds the path, once per node. Opening an existing path from peers
+instead needs `resolveLoadSecurityCommitments`; see
 [Open existing documents](../../concepts/documents/#open-existing-documents).
 `subscribe` does not open anything. `connect` opens and retains the shared
-document until the last consumer releases it. Imperative applications can
-instead `await store.start()` and `await store.stop()`. Every mutation returns a
-promise; catch it to report authorization, storage, or publication failures.
-Use `snapshot.error` for subscription-driven error UI.
+document until the last consumer releases it, and longer while
+`snapshot.deliveryFailure` reports a change not known to have reached a
+member, up to `undeliveredCloseDelay`.
+Imperative applications can instead `await store.start()` and
+`await store.stop()`. `store.change` never opens the document; it rejects with
+`Document store is closed` after the store closes. Every mutation returns a
+promise; catch it to report authorization, storage, or signing failures. A
+change that is committed but not delivered resolves, and
+`snapshot.deliveryFailure` reports it.
+Use `snapshot.error` for subscription-driven error UI. A `retired` status means
+the document refused a change it could not roll back and must be reopened; see
+[Local changes that fail before publication](../../concepts/local-first/#local-changes-that-fail-before-publication).
 
 Snapshots change identity when mutable CRDT state changes. The wrapper and
 membership arrays are readonly, but `snapshot.data` is the actual CRDT: route
@@ -86,7 +94,9 @@ as the Vite example does. No published CDN URL or standalone prebundled runtime
 is provided. Build tooling is separate from framework choice.
 
 The example generates a fresh signing identity on reload and has no bootstrap
-peers. Durable identity/key storage and new-member onboarding are application
-work; a document path does not grant access. See
+peers, and its Yjs document cannot be shared with another identity. Durable
+identity/key storage, [encrypted checkpoints](../../concepts/storage/#local-checkpoints)
+for reopening after a reload, and new-member onboarding are application work;
+a document path does not grant access. See
 [Identities](../../concepts/identities/) and
 [integration evidence](../../reference/integration-status/).

@@ -10,12 +10,15 @@
  */
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { SubtleCrypto } from '../auth-subtlecrypto.js';
+import { documentPayloadAAD } from '../document-payload-aad.js';
 import { JSONSerializer } from '../json-serializer.js';
 import {
   generateSigningKeyPair,
   generateEncryptionKey,
   generatePayload,
 } from './crypto-setup.js';
+
+const PAYLOAD_AAD = documentPayloadAAD('/benchmark', new Uint8Array(16), 'frame');
 
 const PAYLOAD_SIZES: Array<{ label: string; bytes: number }> = [
   { label: '1kb', bytes: 1024 },
@@ -64,26 +67,26 @@ export async function runCrdtSyncLatencyBenchmarks(
 
     // --- Encrypt ---
     await runner.run(`encrypt-${label}`, async () => {
-      await auth.encrypt(payload, encryptionKey);
+      await auth.encrypt(payload, encryptionKey, PAYLOAD_AAD);
     }, iterations);
 
     // --- Decrypt ---
-    const encrypted = await auth.encrypt(payload, encryptionKey);
+    const encrypted = await auth.encrypt(payload, encryptionKey, PAYLOAD_AAD);
     await runner.run(`decrypt-${label}`, async () => {
-      await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce);
+      await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce, PAYLOAD_AAD);
     }, iterations);
 
     // --- Full pipeline: sign + encrypt ---
     await runner.run(`sign-encrypt-${label}`, async () => {
       const sig = await auth.sign(payload, signingKeyPair.privateKey);
-      await auth.encrypt(payload, encryptionKey);
+      await auth.encrypt(payload, encryptionKey, PAYLOAD_AAD);
       // Prevent optimization
       void sig.length;
     }, iterations);
 
     // --- Full pipeline: decrypt + verify ---
     await runner.run(`decrypt-verify-${label}`, async () => {
-      const decrypted = await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce);
+      const decrypted = await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce, PAYLOAD_AAD);
       const valid = await auth.verify(decrypted, signingKeyPair.publicKey, signature);
       if (!valid) {
         throw new Error(`Signature verification failed for decrypt-verify-${label}`);

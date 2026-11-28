@@ -12,7 +12,10 @@ Build collaborative applications with Yjs shared types. This package provides th
 
 ## Choose this package
 
-Use this adapter for Yjs-backed collaborative documents. It works with:
+Use this adapter for Yjs-backed documents. In the default document mode a Yjs
+document cannot be shared with another identity: invitations require the
+Automerge provider profile, so only the founder's identity can open it. Use
+`@peerborne/automerge` for documents that collaborators join. It works with:
 
 - `@peerborne/core`, included as a package dependency
 - `yjs`, required as a peer dependency

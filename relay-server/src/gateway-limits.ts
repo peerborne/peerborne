@@ -1,5 +1,6 @@
 import { isIPv4, isIPv6 } from 'node:net'
 import { performance } from 'node:perf_hooks'
+import { RefillingBucket } from './refilling-bucket.js'
 
 export const demoGatewayLimits = {
   maxConnections: 16,
@@ -8,8 +9,10 @@ export const demoGatewayLimits = {
   attemptsPerClientPerMinute: 6,
   attemptsPerClientPerTenSeconds: 3,
   maxTrackedClients: 512,
-  sessionBytes: 2 * 1024 * 1024,
-  totalBytes: 32 * 1024 * 1024,
+  sessionBytes: 8 * 1024 * 1024,
+  windowMs: 10 * 60 * 1000,
+  windowBytes: 128 * 1024 * 1024,
+  clientWindowBytes: 32 * 1024 * 1024,
   bytesPerSecond: 64 * 1024,
   burstBytes: 128 * 1024,
   sessionMs: 10 * 60 * 1000,
@@ -26,13 +29,14 @@ interface Window {
 interface ClientRecord {
   minute: Window
   burst: Window
+  share: RefillingBucket
 }
 
 export interface GatewaySession {
-  client: string
+  readonly client: string
   bytes: number
-  tokens: number
-  refilledAt: number
+  readonly rate: RefillingBucket
+  readonly share: RefillingBucket
 }
 
 function ipv6Groups(address: string): number[] {
@@ -66,17 +70,22 @@ export function clientKey(address: string): string {
 }
 
 export class GatewayLimiter {
-  /** Rate windows by client, least recently seen first. */
+  /** Rate windows and traffic shares by client, least recently seen first. */
   private readonly clients = new Map<string, ClientRecord>()
   private readonly sessions = new Set<GatewaySession>()
   private readonly newClients = { start: -Infinity, clients: new Set<string>() }
-  private bytes = 0
-  private exhausted = false
+  private readonly window: RefillingBucket
 
   constructor(
     readonly limits: GatewayLimits = demoGatewayLimits,
     private readonly now: () => number = () => performance.now(),
-  ) {}
+  ) {
+    this.window = this.windowBucket(limits.windowBytes, now())
+  }
+
+  private windowBucket(bytes: number, now: number): RefillingBucket {
+    return new RefillingBucket(bytes, bytes / this.limits.windowMs, now)
+  }
 
   private increment(window: Window, duration: number): number {
     const now = this.now()
@@ -87,12 +96,17 @@ export class GatewayLimiter {
     return ++window.count
   }
 
+  /** Whether the shared window holds less than one session's burst. */
   get budgetExhausted(): boolean {
-    return this.exhausted
+    return this.window.available(this.now()) < this.limits.burstBytes
   }
 
-  private evictIdleClient(): boolean {
-    const active = new Set([...this.sessions].map((session) => session.client))
+  /** Time until the shared window admits sessions again. */
+  get budgetRetryAfterMs(): number {
+    return this.window.msUntil(this.limits.burstBytes, this.now())
+  }
+
+  private evictIdleClient(active: Set<string>): boolean {
     for (const client of this.clients.keys()) {
       if (!active.has(client)) {
         this.clients.delete(client)
@@ -103,11 +117,18 @@ export class GatewayLimiter {
   }
 
   admit(ip: string): GatewaySession | undefined {
-    if (this.exhausted) return undefined
+    if (this.budgetExhausted) return undefined
     const client = clientKey(ip)
     const now = this.now()
+    const active = new Set([...this.sessions].map((session) => session.client))
     for (const [tracked, record] of this.clients) {
-      if (now - record.minute.start >= 60_000) this.clients.delete(tracked)
+      if (
+        !active.has(tracked) &&
+        now - record.minute.start >= 60_000 &&
+        record.share.available(now) >= record.share.capacity
+      ) {
+        this.clients.delete(tracked)
+      }
     }
     let record = this.clients.get(client)
     if (record) {
@@ -115,12 +136,13 @@ export class GatewayLimiter {
     } else {
       // A full registry must not lock out unseen clients: forget the least
       // recently seen client that holds no session instead.
-      if (this.clients.size >= this.limits.maxTrackedClients && !this.evictIdleClient()) {
+      if (this.clients.size >= this.limits.maxTrackedClients && !this.evictIdleClient(active)) {
         return undefined
       }
       record = {
         minute: { start: now, count: 0 },
         burst: { start: now, count: 0 },
+        share: this.windowBucket(this.limits.clientWindowBytes, now),
       }
     }
     this.clients.set(client, record)
@@ -129,13 +151,14 @@ export class GatewayLimiter {
     if (
       minute > this.limits.attemptsPerClientPerMinute ||
       burst > this.limits.attemptsPerClientPerTenSeconds ||
+      record.share.available(now) < this.limits.burstBytes ||
       [...this.sessions].filter((session) => session.client === client).length >=
         this.limits.maxConnectionsPerClient ||
       this.sessions.size >= this.limits.maxConnections
     ) {
       return undefined
     }
-    // The shared budget counts distinct clients, not sessions: reconnects are
+    // The new-client budget counts distinct clients, not sessions: reconnects are
     // bounded per client above, so a few clients cannot spend it by churning.
     if (now - this.newClients.start >= 60_000) {
       this.newClients.start = now
@@ -149,38 +172,57 @@ export class GatewayLimiter {
     const session = {
       client,
       bytes: 0,
-      tokens: this.limits.burstBytes,
-      refilledAt: now,
+      rate: new RefillingBucket(this.limits.burstBytes, this.limits.bytesPerSecond / 1000, now),
+      share: record.share,
     }
     this.sessions.add(session)
     return session
   }
 
   consume(session: GatewaySession, bytes: number): boolean {
-    if (!this.sessions.has(session) || this.exhausted) return false
+    if (!this.sessions.has(session)) return false
     if (!Number.isSafeInteger(bytes) || bytes < 0) return false
-    if (bytes > this.limits.totalBytes - this.bytes) {
-      this.exhausted = true
-      return false
-    }
-    // Count rejected session traffic too: it already reached this process.
-    this.bytes += bytes
-    session.bytes += bytes
-    if (this.bytes >= this.limits.totalBytes) this.exhausted = true
     const now = this.now()
-    session.tokens = Math.min(
-      this.limits.burstBytes,
-      session.tokens +
-        Math.max(0, now - session.refilledAt) * this.limits.bytesPerSecond / 1000,
-    )
-    session.refilledAt = now
-    session.tokens -= bytes
-    return !this.exhausted &&
-      session.bytes <= this.limits.sessionBytes &&
-      session.tokens >= 0
+    // Count rejected session traffic too: it already reached this process.
+    session.bytes += bytes
+    const paced = session.rate.spend(bytes, now)
+    const withinShare = session.share.spend(bytes, now)
+    const withinWindow = this.window.spend(bytes, now)
+    return paced && withinShare && withinWindow && session.bytes <= this.limits.sessionBytes
   }
 
   release(session: GatewaySession): void {
     this.sessions.delete(session)
   }
+}
+
+function windowBytesFromEnv(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+): number {
+  const value = env[name]
+  if (value === undefined) return fallback
+  const bytes = /^[1-9]\d*$/.test(value) ? Number(value) : NaN
+  if (!Number.isSafeInteger(bytes)) throw new Error(`${name} must be a positive integer`)
+  return bytes
+}
+
+export function gatewayLimitsFromEnv(
+  env: NodeJS.ProcessEnv,
+  limits: GatewayLimits = demoGatewayLimits,
+): GatewayLimits {
+  const windowBytes = windowBytesFromEnv(env, 'RELAY_GATEWAY_WINDOW_BYTES', limits.windowBytes)
+  const clientWindowBytes = windowBytesFromEnv(
+    env,
+    'RELAY_GATEWAY_CLIENT_WINDOW_BYTES',
+    limits.clientWindowBytes,
+  )
+  if (clientWindowBytes < limits.burstBytes || clientWindowBytes > windowBytes) {
+    throw new Error(
+      'RELAY_GATEWAY_CLIENT_WINDOW_BYTES must be at least one session burst ' +
+        'and at most RELAY_GATEWAY_WINDOW_BYTES',
+    )
+  }
+  return { ...limits, windowBytes, clientWindowBytes }
 }

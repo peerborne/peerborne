@@ -100,6 +100,87 @@ async function strictRosterFixture(persistPublications = false, includeReader = 
   };
 }
 
+describe('strict group roster default', () => {
+  type RosterFixture = Awaited<ReturnType<typeof strictRosterFixture>>;
+  const coordinated = (
+    f: RosterFixture,
+    options: { requireGroupRosterMatch?: boolean } = {},
+  ) =>
+    new CoordinatedDocument(
+      f.log.documentId,
+      [],
+      testCRDT,
+      testChanges,
+      f.auth,
+      f.own,
+      f.own,
+      { coordinator: f.coordinator, authority: f.log, ...options },
+    );
+  const write = (value: number) => (draft: number[]) => {
+    draft.push(value);
+  };
+
+  test('a signed authority log whose provider reports its members is strict by default', async () => {
+    const f = await strictRosterFixture();
+    expect(f.coordinator.reportsAuthenticatedMembers).toBe(true);
+    const document = coordinated(f);
+    try {
+      expect(() => document.document).toThrow('Document activation is not complete');
+      await document.activate();
+      await document.change(write(1));
+      expect(document.document).toEqual([1]);
+      expect(f.reads()).toBeGreaterThan(0);
+    } finally {
+      await document.close();
+    }
+  });
+
+  test('by default an unlisted decrypting member blocks activation unless the document opts out', async () => {
+    const f = await strictRosterFixture();
+    f.reportMemberIds([f.own.slice(), f.reader.slice()]);
+    const strict = coordinated(f);
+    try {
+      await expect(strict.activate()).rejects.toThrow(
+        'Document authority does not match the authenticated group roster',
+      );
+      await expect(strict.change(write(1))).rejects.toThrow();
+    } finally {
+      await strict.close();
+    }
+    const optedOut = coordinated(f, { requireGroupRosterMatch: false });
+    try {
+      await optedOut.activate();
+      await optedOut.change(write(2));
+      expect(optedOut.document).toEqual([2]);
+    } finally {
+      await optedOut.close();
+    }
+  });
+
+  test('a provider that cannot report its members leaves the default off', async () => {
+    const f = await strictRosterFixture();
+    f.reportMemberIds(undefined);
+    expect(f.coordinator.reportsAuthenticatedMembers).toBe(false);
+    const document = coordinated(f);
+    try {
+      expect(document.document).toEqual([]);
+      await document.activate();
+      await document.change(write(3));
+      expect(document.document).toEqual([3]);
+    } finally {
+      await document.close();
+    }
+    const strict = coordinated(f, { requireGroupRosterMatch: true });
+    try {
+      await expect(strict.activate()).rejects.toThrow(
+        'Group provider cannot authenticate the document roster',
+      );
+    } finally {
+      await strict.close();
+    }
+  });
+});
+
 describe('causal document controller authority', () => {
   test.each([0, 1, 2, 3, 4, 5])(
     'checks pinned roots, role signatures, causal heads and controller transfer across generated histories (batch %s)',

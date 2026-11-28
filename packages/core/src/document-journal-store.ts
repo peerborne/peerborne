@@ -54,6 +54,24 @@ function publicationIndex(
   }));
 }
 
+/** The queue with publication `id` replaced in its position by `next`. */
+function replacedPublicationIndex(
+  publications: readonly JournalPublicationIndex[],
+  id: string,
+  next: JournalPublicationIndex,
+): JournalPublicationIndex[] {
+  const position = publications.findIndex((value) => value.id === id);
+  if (position === -1) throw new Error('Document publication is not queued');
+  if (publications.some((value) => value.id === next.id && value.id !== id))
+    throw new Error('Document publication is already queued');
+  const result = publications.map((value, index) =>
+    index === position ? { id: next.id, bytes: next.bytes } : value,
+  );
+  if (result.reduce((sum, value) => sum + value.bytes, 0) > 16 * 1024 * 1024)
+    throw new DocumentJournalCapacityError();
+  return result;
+}
+
 function requirePublicationPlan(
   plan: JournalPublicationPlan,
 ): JournalPublicationPlan {
@@ -208,7 +226,39 @@ function ownStagedPublication(
   return {
     id: copyUnsharedUint8Array(value.id, 32, 32, 'publication id'),
     bytes,
+    ...(value.replaces === undefined
+      ? {}
+      : {
+          replaces: copyUnsharedUint8Array(
+            value.replaces,
+            32,
+            32,
+            'replaced publication id',
+          ),
+        }),
   };
+}
+
+/**
+ * The queue a staged publication joins: without the publication it replaces,
+ * which must still be queued.
+ */
+function publicationBase(
+  publications: readonly JournalPublicationIndex[],
+  publication: DocumentJournalStagedPublication,
+): readonly JournalPublicationIndex[] {
+  if (publication.replaces === undefined) return publications;
+  const plan = requirePublicationPlan(
+    planJournalPublication(
+      publications,
+      bytesToHex(publication.replaces),
+      0,
+      false,
+    ),
+  );
+  if (plan.publications.length === publications.length)
+    throw new Error('Replaced document publication is not queued');
+  return plan.publications;
 }
 
 function staged(
@@ -233,7 +283,7 @@ function staged(
   if (publication)
     requirePublicationPlan(
       planJournalPublication(
-        publicationIndex(current.publications ?? []),
+        publicationBase(publicationIndex(current.publications ?? []), publication),
         bytesToHex(publication.id),
         publication.bytes,
         true,
@@ -293,7 +343,16 @@ function committed(
       MAX_DOCUMENT_JOURNAL_BYTES
   )
     throw new Error('Journal storage bound exceeded');
-  const before = current.publications ?? [];
+  const replaces = current.pending.publication?.replaces;
+  const before = (current.publications ?? []).filter(
+    (publication) =>
+      replaces === undefined || !equalBytes(publication.id, replaces),
+  );
+  if (
+    replaces !== undefined &&
+    before.length === (current.publications ?? []).length
+  )
+    throw new Error('Replaced document publication is not queued');
   const publications = acceptedPublication
     ? [
         ...requirePublicationPlan(
@@ -306,7 +365,7 @@ function committed(
         ).retained.map((index) => before[index]),
         acceptedPublication,
       ]
-    : before;
+    : current.publications ?? [];
   return {
     revision: revision + 1,
     entries,
@@ -424,6 +483,27 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
   }
   async delete(key: string): Promise<void> {
     this.documents.delete(key);
+  }
+  async replacePublication(
+    key: string,
+    id: Uint8Array,
+    publication: DocumentJournalPublication,
+  ): Promise<void> {
+    const ownId = copyUnsharedUint8Array(id, 32, 32, 'publication id'),
+      next = ownPublication(publication),
+      current = cloneInMemory(this.documents.get(key)),
+      before = current.publications ?? [];
+    replacedPublicationIndex(
+      publicationIndex(before),
+      bytesToHex(ownId),
+      { id: bytesToHex(next.id), bytes: next.frame.length },
+    );
+    this.documents.set(key, {
+      ...current,
+      publications: before.map((value) =>
+        equalBytes(value.id, ownId) ? next : value,
+      ),
+    });
   }
   async discard(key: string, token: Uint8Array): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
@@ -809,7 +889,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
       if (ownedPublication)
         requirePublicationPlan(
           planJournalPublication(
-            head.publications,
+            publicationBase(head.publications, ownedPublication),
             bytesToHex(ownedPublication.id),
             ownedPublication.bytes,
             true,
@@ -898,7 +978,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             const publications = publication
               ? requirePublicationPlan(
                   planJournalPublication(
-                    head.publications,
+                    publicationBase(head.publications, reservation!),
                     bytesToHex(publication.id),
                     publication.frame.length,
                     true,
@@ -910,6 +990,10 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             if (checkpoint)
               for (const old of head.revisions)
                 transaction.objectStore('entries').delete([key, old]);
+            if (reservation?.replaces)
+              transaction
+                .objectStore('publications')
+                .delete([key, bytesToHex(reservation.replaces)]);
             if (publication)
               transaction
                 .objectStore('publications')
@@ -961,6 +1045,27 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         },
         key,
       );
+    });
+  }
+
+  replacePublication(
+    key: string,
+    id: Uint8Array,
+    publication: DocumentJournalPublication,
+  ): Promise<void> {
+    const owned = bytesToHex(
+        copyUnsharedUint8Array(id, 32, 32, 'publication id'),
+      ),
+      next = ownPublication(publication),
+      nextId = bytesToHex(next.id);
+    return this.update(key, ['publications'], (head, transaction) => {
+      const publications = replacedPublicationIndex(head.publications, owned, {
+        id: nextId,
+        bytes: next.frame.length,
+      });
+      transaction.objectStore('publications').delete([key, owned]);
+      transaction.objectStore('publications').put(next, [key, nextId]);
+      transaction.objectStore('heads').put({ ...head, publications }, key);
     });
   }
 

@@ -44,6 +44,7 @@ async function envelope(
   const encrypted = await fixture.auth.encrypt(
     fixture.serializer.serializeSyncMessage(message),
     key,
+    fixture.document._payloadAAD(epoch, 'frame'),
   );
   const frame = new Uint8Array(
     epoch.length + encrypted.nonce.length + encrypted.data.length,

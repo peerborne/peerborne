@@ -88,7 +88,7 @@ export const claims = [
     checked:
       'The guard admits the exact next generation only with current parent and writer inputs. A blanked leaf slot cannot be reused. Finite histories preserve both guarantees across restart when the authenticated checkpoint matches an independently trusted current pin.',
     limit:
-      'The application must protect checkpoint contents and keep the independent pin fresh. Peerborne Note and the password-manager example omit the SDK pin. Browser-app rollback protection and group-wide exclusion remain open.',
+      'The application must keep checkpoints encrypted, since they hold document keys and plaintext state, and keep the independent pin fresh. Peerborne Note and the password-manager example omit the SDK pin. Browser-app rollback protection and group-wide exclusion remain open.',
     proof: [
       'packages/core/src/policy/beekem-transition.ts',
       'canCommitBeeKEMPathUpdate_ensures',
@@ -334,13 +334,14 @@ export const claims = [
     title: 'Reassemble encrypted UnixFS files within read limits',
     rule: 'Bound traversal and accumulated ciphertext. Check the complete ciphertext before deserializing changes.',
     checked:
-      'The reservation policy charges the exact admitted prefix and stops at the first byte or count rejection. A Chromium profile relaunch restores and edits a document with at least 50 MiB of encoded history.',
+      'The reservation policy charges the exact admitted prefix. UnixFS assembly writes each admitted byte at most twice into its own buffers. A Chromium profile relaunch restores and edits a document with at least 50 MiB of encoded history.',
     limit:
       'The browser fixture restores an application-held checkpoint and supplies the signed missing history. Renderer memory and latency depend on the workload and device.',
     proof: [
       'packages/core/src/policy/document-admission.ts',
       'canReserveDocumentOperation_ensures',
       'AdmittedBlockChunks',
+      'admittedBlockCopyBound',
     ],
     source: 'packages/core/src/document-block-reader.ts',
     tests: [

@@ -55,6 +55,39 @@ libp2p.addresses = {
 };
 ```
 
+### Dial policy
+
+Peers learn each other's addresses from identify and the discovery topic, and
+Peerborne dials them during loads and catch-up. Both defaults therefore refuse
+addresses outside the public internet, so a remote peer cannot make a node
+connect to services on its host or network:
+
+- `defaultNodeConfig` installs `denyLocalNetworkDial`. It refuses loopback,
+  private, shared (CGNAT), link-local (including the `169.254.169.254` cloud
+  metadata service), unique-local and other special-purpose IP addresses, Unix
+  sockets, and DNS names that cannot be public, such as `localhost`,
+  `*.local`, `*.internal` and single-label names. A public DNS name that
+  resolves to a private address is not detected.
+- `defaultConfig` keeps libp2p's browser connection gater, which refuses
+  private and loopback addresses and insecure `/ws` WebSockets.
+- The background upgrade of a relayed connection dials only public addresses.
+
+A node that dials the loopback listener above, a LAN peer, a Docker network
+or a relay on `127.0.0.1` or plain `/ws` opts in with the third argument of
+either builder:
+
+```ts
+const config = defaultNodeConfig(defaultBootstrapConfig([]), undefined, {
+  allowLocalNetworkDials: true,
+});
+```
+
+The option admits every address and sets
+`PeerborneConfig.allowLocalNetworkDials`, which also lets relayed connections
+upgrade over local addresses. A custom libp2p config chooses its own
+`connectionGater`; `denyLocalNetworkDial` and `isLocalNetworkAddress` are
+exported for it.
+
 ## PubSub: GossipSub
 
 Document updates are announced and delivered via **GossipSub** — a pubsub protocol built on libp2p. Each document has a corresponding pubsub topic derived from its document ID:
@@ -132,6 +165,24 @@ snapshot, is not sent and does not use up the request or the response rate
 limit. The responder logs a warning, and the requester loads the document
 instead; see [large catch-up](#large-catch-up).
 
+### IP colocation scoring
+
+By default GossipSub penalizes every peer ID beyond the tenth that it has seen
+from one IP address, and keeps a departed peer's score for an hour. Peers behind
+one NAT share an address, and so do peers reached through a Circuit Relay
+addressed by `/ip4`, which count at the relay's address. After enough churn, the
+14th such peer fell below the graylist threshold: its subscriptions were
+ignored and it received no frames.
+
+`defaultConfig()` and `defaultNodeConfig()` therefore set GossipSub's
+`IPColocationFactorWeight` to 0. Document frames do not depend on that score:
+they are encrypted and signed, and [receive capacity](#receive-capacity) bounds
+what any sender can hold. A custom libp2p configuration that builds its own
+GossipSub service keeps the penalty unless it passes
+`scoreParams: { IPColocationFactorWeight: 0 }` or lists the shared addresses in
+`IPColocationFactorWhitelist`. Relays have their own setting; see
+[running a relay](../../cookbook/running-a-relay/).
+
 ## Peer discovery
 
 Peerborne peers find each other through several mechanisms:
@@ -167,7 +218,7 @@ A relay node bridges traffic between two peers behind NAT:
 
 ![Two NAT-isolated Chromium peers loading encrypted document history through Circuit Relay after the test gives peer B peer A's relayed circuit address; an optional direct path is shown as unverified.](../../../assets/diagrams/browser-relay-path.svg "The cross-NAT path is verified through Circuit Relay; a direct path remains unverified.")
 
-**Evidence boundary:** The solid relay path represents the narrow CI-backed result: one user identity runs in two NAT-isolated Chromium processes, the document key is restored to the second device out of band, and that device loads existing encrypted document history through Circuit Relay. The test reads peer A's `/p2p-circuit/` address and has peer B dial it explicitly; it does not establish a separate bootstrap-discovery proof edge. The topology has app servers and a relay but no application database service. It does not demonstrate live post-load synchronization, invitation delivery, direct WebRTC/DCUtR, relay failover, or production deployment behavior.
+**Evidence boundary:** The solid relay path represents the narrow CI-backed result: two NAT-isolated Chromium processes with separate signing identities connect only through Circuit Relay. Peer A creates an Automerge document and a signed editor invitation; peer B accepts it by dialing the circuit rendezvous address the offer carries, loads the encrypted bootstrap, and then both peers make fresh edits that converge in each direction. A second document checks that a reader invitation grants read access and that the reader's edit is refused. The test does not establish a separate bootstrap-discovery proof edge. The topology has app servers and a relay but no application database service. It does not demonstrate Yjs or Loro documents, which cannot be shared, direct WebRTC/DCUtR, relay failover, or production deployment behavior.
 
 The relay forwards encrypted packets. It sees metadata (peer IDs, timing, data volume) but cannot decrypt document content.
 
@@ -299,32 +350,36 @@ behind in the same way.
   requests a gap or a new peer triggered, and the periodic interval stretches
   with the number of open documents so that they plan at most half of the
   rate (beyond about 90 documents at the default interval). At most one
-  catch-up load runs at a time, and at most one per peer every 10 s.
+  catch-up load runs at a time, and at most one per peer every 10 s. A
+  catch-up load is aborted after 5 minutes, and its slot is released then
+  even if the load has not stopped.
 - Responders keep the existing limits: one reply per document every 2 s, a
   60 s freshness window and a 128-entry replay ledger, however many members
   ask.
 - Change blocks a frame cites without carrying are fetched within that
   frame's bounded fetches; the ones left unfetched, failed or waiting out a
-  retry delay are reported to catch-up as missing changes. A cross-linked
-  change whose inline copy sits below a change the replica already holds,
-  such as a snapshot boundary, is taken from the frame instead of being
-  fetched.
+  retry delay are reported to catch-up as missing changes. A missing change
+  is not held, and neither is a change that references it, so the gap stays
+  open and later replies are walked down to it until it arrives. A
+  cross-linked change whose inline copy sits below a change the replica
+  already holds, such as a snapshot boundary, is taken from the frame instead
+  of being fetched. A writer carries a concurrent branch it received inline
+  in its next change, so a reply repairs that branch after its author leaves;
+  see [which blocks a replica can serve](../storage/#which-blocks-a-replica-can-serve).
 
 ### Large catch-up
 
 A reply carries the responder's retained tree and, when the requester lacks
 it, the snapshot. If that does not fit a GossipSub frame, no reply arrives
 and a detected gap stays open; a writer's own request still names its head.
-Once the gap outlives the first request by 15 s (`loadAfterMs`), the document
-runs the authenticated V4 `load()` if the evidence is strong enough: local
-evidence (pending CRDT state or an unfetched change), for at most three loads
-per gap, or a head that at least two members advertise. One member, honest
-or not, can make replicas ask over gossip but not load. The load prefers the
-newest connected writer that named the head. Every load rule applies. It needs
-`resolveLoadSecurityCommitments`, and with the quorum enabled the agreeing
-peers decide what is served, so a single peer that is ahead of the others is
-not loaded from unless `loadQuorumAllowSinglePeer` or a disabled quorum allows
-it. Readers are never load targets, because they cannot sign load responses.
+Once the gap outlives the first request by 15 s (`loadAfterMs`), a head that
+two members advertise can trigger an authenticated V4 load. Local evidence
+(pending CRDT state or an unfetched change) or a fresh signed advertisement
+from the connected sole writer can trigger up to three loads per gap. For a
+sole-writer advertisement, the load checks the current writer roster and
+queries only the advertising peer. Other loads prefer the newest connected
+writer that named the head. All paths require `resolveLoadSecurityCommitments`
+and enforce the configured quorum. Readers cannot sign load responses.
 A load that leaves an advertised head unknown penalizes its advertisers, and
 an unfetched change it does not reveal is not escalated again for an hour.
 Each load that leaves anything unresolved doubles the delay before the next,
@@ -343,15 +398,16 @@ document.subscribeToAntiEntropy('status', (event, status) => {
 ```
 
 Events are `gap`, `request`, `load`, `repaired` and `abandoned`. Catch-up runs only for
-signed documents on a node with a libp2p identity; coordinated documents use
-their [controller catch-up](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#resume-with-a-controller-checkpoint).
+signed documents on a node with a libp2p identity; coordinated documents
+request their [controller checkpoint on the document topic](https://github.com/Peerborne/peerborne/blob/main/docs/coordinated-document-security.md#automatic-catch-up-on-the-document-topic).
 `requestSync()` still sends a request at once, within its 2 s rate limit, and
 restarts the periodic delay.
 
 ## Resume a saved document
 
-An application restoring an authenticated checkpoint reconnects its transport
-and opens the restored document; catch-up then requests missed updates.
+An application restoring an [encrypted checkpoint](../storage/#local-checkpoints)
+reconnects its transport and opens the restored document; catch-up then
+requests missed updates.
 Fresh nonces, timestamp bounds, recent-request deduplication and response
 throttling bound replay and amplification, and known roots avoid repeatedly
 sending an already received update. Catch-up requires an online member that

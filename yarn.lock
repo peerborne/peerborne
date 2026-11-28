@@ -4141,6 +4141,7 @@ __metadata:
     "@libp2p/peer-id": "npm:^6.0.18"
     "@libp2p/ping": "npm:^3.1.18"
     "@libp2p/pubsub-peer-discovery": "npm:^12.0.0"
+    "@libp2p/utils": "npm:^7.4.6"
     "@libp2p/webrtc": "npm:^7.0.3"
     "@libp2p/websockets": "npm:^10.1.26"
     "@libp2p/webtransport": "npm:^6.0.45"
@@ -4472,7 +4473,7 @@ __metadata:
     typescript: "npm:^6.0.3"
     vue: "npm:^3.5.46"
   peerDependencies:
-    vue: ^3.2.25
+    vue: ^3.3.0
   languageName: unknown
   linkType: soft
 

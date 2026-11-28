@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import type { AesAlgorithmName } from './auth-provider.js';
+import { EncryptionUsageCounter } from './encryption-usage.js';
 
 const nativeCryptoDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -22,6 +23,7 @@ afterAll(() => {
 });
 
 const auth = new SubtleCrypto();
+const AAD = new Uint8Array([7, 7, 7]);
 
 const privateKeyData1 = {
   key_ops: ['sign'],
@@ -210,11 +212,11 @@ describe('encrypt and decrypt', () => {
       const key = await generateKey(alg);
       const plaintext = new Uint8Array([43, 99, 250, 83, 89, 90, 111]);
 
-      const { data: encrypted, nonce } = await instance.encrypt(plaintext, key);
+      const { data: encrypted, nonce } = await instance.encrypt(plaintext, key, AAD);
       expect(encrypted.length).toBeGreaterThan(0);
       expect(nonce.length).toBe(instance.nonceBytes);
 
-      const decrypted = await instance.decrypt(encrypted, key, nonce);
+      const decrypted = await instance.decrypt(encrypted, key, nonce, AAD);
       expect(decrypted).toStrictEqual(plaintext);
     },
   );
@@ -225,8 +227,8 @@ describe('encrypt and decrypt', () => {
       const key = await importKey(keyData, ['encrypt', 'decrypt'], 'AES-GCM');
       const plaintext = new Uint8Array([43, 99, 250, 83]);
 
-      const { data: encrypted, nonce } = await auth.encrypt(plaintext, key);
-      const decrypted = await auth.decrypt(encrypted, key, nonce);
+      const { data: encrypted, nonce } = await auth.encrypt(plaintext, key, AAD);
+      const decrypted = await auth.decrypt(encrypted, key, nonce, AAD);
       expect(decrypted).toStrictEqual(plaintext);
     },
   );
@@ -235,8 +237,8 @@ describe('encrypt and decrypt', () => {
     const key = await generateKey('AES-GCM');
     const plaintext = new Uint8Array([]);
 
-    const { data: encrypted, nonce } = await auth.encrypt(plaintext, key);
-    const decrypted = await auth.decrypt(encrypted, key, nonce);
+    const { data: encrypted, nonce } = await auth.encrypt(plaintext, key, AAD);
+    const decrypted = await auth.decrypt(encrypted, key, nonce, AAD);
     expect(decrypted).toStrictEqual(plaintext);
   });
 });
@@ -262,7 +264,7 @@ describe('nonce size', () => {
     async (alg) => {
       const instance = new SubtleCrypto(undefined, alg);
       const key = await generateKey(alg);
-      const result = await instance.encrypt(new Uint8Array([1, 2, 3]), key);
+      const result = await instance.encrypt(new Uint8Array([1, 2, 3]), key, AAD);
       expect(result.nonce.length).toBe(instance.nonceBytes);
     },
   );
@@ -278,12 +280,12 @@ describe('HMAC tamper detection (CTR/CBC)', () => {
       const key = await generateKey(alg);
       const plaintext = new Uint8Array([10, 20, 30, 40, 50]);
 
-      const { data, nonce } = await instance.encrypt(plaintext, key);
+      const { data, nonce } = await instance.encrypt(plaintext, key, AAD);
       // Flip a byte in the ciphertext portion (before the 32-byte HMAC tag)
       const tampered = new Uint8Array(data);
       tampered[0] ^= 0xff;
 
-      await expect(instance.decrypt(tampered, key, nonce)).rejects.toThrow(
+      await expect(instance.decrypt(tampered, key, nonce, AAD)).rejects.toThrow(
         'HMAC verification failed',
       );
     },
@@ -296,12 +298,12 @@ describe('HMAC tamper detection (CTR/CBC)', () => {
       const key = await generateKey(alg);
       const plaintext = new Uint8Array([10, 20, 30, 40, 50]);
 
-      const { data, nonce } = await instance.encrypt(plaintext, key);
+      const { data, nonce } = await instance.encrypt(plaintext, key, AAD);
       // Flip the last byte (inside the HMAC tag)
       const tampered = new Uint8Array(data);
       tampered[tampered.length - 1] ^= 0xff;
 
-      await expect(instance.decrypt(tampered, key, nonce)).rejects.toThrow(
+      await expect(instance.decrypt(tampered, key, nonce, AAD)).rejects.toThrow(
         'HMAC verification failed',
       );
     },
@@ -314,7 +316,7 @@ describe('HMAC tamper detection (CTR/CBC)', () => {
       const key = await generateKey(alg);
 
       await expect(
-        instance.decrypt(new Uint8Array(10), key, new Uint8Array(16)),
+        instance.decrypt(new Uint8Array(10), key, new Uint8Array(16), AAD),
       ).rejects.toThrow('Ciphertext too short');
     },
   );
@@ -323,11 +325,11 @@ describe('HMAC tamper detection (CTR/CBC)', () => {
 describe('AES-GCM tamper detection', () => {
   test('flipping a ciphertext byte causes GCM auth failure', async () => {
     const key = await generateKey('AES-GCM');
-    const { data, nonce } = await auth.encrypt(new Uint8Array([1, 2, 3]), key);
+    const { data, nonce } = await auth.encrypt(new Uint8Array([1, 2, 3]), key, AAD);
     const tampered = new Uint8Array(data);
     tampered[0] ^= 0xff;
 
-    await expect(auth.decrypt(tampered, key, nonce)).rejects.toThrow();
+    await expect(auth.decrypt(tampered, key, nonce, AAD)).rejects.toThrow();
   });
 });
 
@@ -391,9 +393,9 @@ describe('cross-algorithm failure', () => {
       ),
     );
 
-    const { data, nonce } = await gcm.encrypt(new Uint8Array([1, 2, 3]), gcmKey);
+    const { data, nonce } = await gcm.encrypt(new Uint8Array([1, 2, 3]), gcmKey, AAD);
     // Same key material but different algorithm = failure
-    await expect(ctr.decrypt(data, ctrKey, nonce)).rejects.toThrow();
+    await expect(ctr.decrypt(data, ctrKey, nonce, AAD)).rejects.toThrow();
   });
 });
 
@@ -410,6 +412,29 @@ describe('public identity serialization', () => {
     const signature = await auth.sign(payload, pair.privateKey);
 
     await expect(auth.verify(payload, restored, signature)).resolves.toBe(true);
+  });
+
+  test('serves an identity whose private key cannot be exported', async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' },
+      false,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const payload = new Uint8Array([4, 8, 15, 16, 23, 42]);
+
+    expect(pair.privateKey.extractable).toBe(false);
+    await expect(
+      crypto.subtle.exportKey('jwk', pair.privateKey),
+    ).rejects.toThrow();
+    const restored = await auth.deserializePublicKey(
+      await auth.serializePublicKey(pair.publicKey),
+    );
+    await expect(
+      auth.verify(payload, restored, await auth.sign(payload, pair.privateKey)),
+    ).resolves.toBe(true);
+    expect(
+      auth.supportsInitialInvitationCapacity(pair.privateKey, pair.publicKey),
+    ).toBe(true);
   });
 
   test.each([
@@ -508,5 +533,99 @@ describe('initial invitation capacity profile', () => {
         p256Pair.publicKey,
       ),
     ).toBe(false);
+  });
+});
+
+describe('associated data', () => {
+  const algorithms: AesAlgorithmName[] = ['AES-GCM', 'AES-CTR', 'AES-CBC'];
+
+  test.each(algorithms)(
+    '%s authenticates the associated data with the ciphertext',
+    async (alg) => {
+      const instance = new SubtleCrypto(undefined, alg);
+      const key = await generateKey(alg);
+      const plaintext = new Uint8Array([5, 6, 7, 8]);
+      const { data, nonce } = await instance.encrypt(plaintext, key, AAD);
+
+      await expect(instance.decrypt(data, key, nonce, AAD)).resolves.toEqual(
+        plaintext,
+      );
+      for (const other of [
+        new Uint8Array(),
+        new Uint8Array([7, 7, 6]),
+        new Uint8Array([7, 7, 7, 0]),
+        new Uint8Array([7, 7]),
+      ]) {
+        await expect(
+          instance.decrypt(data, key, nonce, other),
+        ).rejects.toThrow();
+      }
+    },
+  );
+
+  test.each(['AES-CTR', 'AES-CBC'] as AesAlgorithmName[])(
+    '%s length-prefixes the associated data in the MAC input',
+    async (alg) => {
+      const instance = new SubtleCrypto(undefined, alg);
+      const key = await generateKey(alg);
+      const { data, nonce } = await instance.encrypt(
+        new Uint8Array(32),
+        key,
+        new Uint8Array([9]),
+      );
+      // Without a length prefix these split the same MAC input differently.
+      const shiftedAAD = new Uint8Array([9, nonce[0]!]);
+      const shiftedNonce = new Uint8Array([...nonce.subarray(1), data[0]!]);
+
+      await expect(
+        instance.decrypt(data.subarray(1), key, shiftedNonce, shiftedAAD),
+      ).rejects.toThrow('HMAC verification failed');
+    },
+  );
+
+  test.each(algorithms)(
+    '%s rejects missing or non-byte associated data',
+    async (alg) => {
+      const instance = new SubtleCrypto(undefined, alg);
+      const key = await generateKey(alg);
+      const { data, nonce } = await instance.encrypt(
+        new Uint8Array([1]),
+        key,
+        AAD,
+      );
+      for (const invalid of [undefined, 'aad', [7, 7, 7], AAD.buffer]) {
+        await expect(
+          instance.encrypt(new Uint8Array([1]), key, invalid as never),
+        ).rejects.toThrow(TypeError);
+        await expect(
+          instance.decrypt(data, key, nonce, invalid as never),
+        ).rejects.toThrow(TypeError);
+      }
+    },
+  );
+});
+
+describe('encryption usage limit', () => {
+  test('warns once and then refuses encryption under a key past its limit', async () => {
+    const instance = new SubtleCrypto();
+    (instance as unknown as { _encryptionUsage: unknown })._encryptionUsage =
+      new EncryptionUsageCounter<CryptoKey>(2, 3);
+    const key = await generateKey('AES-GCM');
+    const other = await generateKey('AES-GCM');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let index = 0; index < 3; index++)
+        await instance.encrypt(new Uint8Array([index]), key, AAD);
+      expect(warn).toHaveBeenCalledTimes(1);
+      await expect(
+        instance.encrypt(new Uint8Array([3]), key, AAD),
+      ).rejects.toThrow('rotate the document key');
+      await expect(
+        instance.encrypt(new Uint8Array([4]), other, AAD),
+      ).resolves.toBeDefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

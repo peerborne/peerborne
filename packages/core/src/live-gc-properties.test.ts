@@ -161,62 +161,82 @@ test('overlapping GC requests coalesce without losing newly queued candidates', 
   );
 });
 
-test('deletion keeps its queue slot until I/O settles and reports provider failures without inspecting them', async () => {
+test('deletion keeps its queue slot until I/O settles and reports a provider failure without trusting it', async () => {
   const diagnostic = jest
     .spyOn(console, 'error')
     .mockImplementation(() => undefined);
   try {
     await fc.assert(
-      fc.asyncProperty(fc.boolean(), async (fail) => {
-        diagnostic.mockClear();
-        const { document, deleted } = fixture(new Set());
-        const entered = deferred(),
-          release = deferred();
-        let inspected = 0,
-          mutated = false;
-        const failure = new Proxy(
-          {},
-          {
-            get() {
-              inspected++;
-              throw new Error('foreign error inspected');
-            },
-          },
-        );
-        document.swarm.heliaNode.blockstore.delete = async (cid: {
-          toString(): string;
-        }) => {
-          deleted.push(cid.toString());
-          entered.resolve();
-          await release.promise;
-          if (fail) throw failure;
-        };
-        const collecting = document._gcPrunedBlocks(
-          new Set(['first', 'retained']),
-        );
-        await entered.promise;
-        const mutation = document._mutationQueue.run(async () => {
-          mutated = true;
-          document._lastSyncMessage = {
-            changeId: 'new-root',
-            changes: {
-              kind: crdtDocumentChangeNode,
-              children: { retained: { kind: crdtDocumentChangeNode } },
-            },
+      fc.asyncProperty(
+        fc.constantFrom('none', 'foreign', 'error'),
+        async (fail) => {
+          diagnostic.mockClear();
+          const { document, deleted } = fixture(new Set());
+          const entered = deferred(),
+            release = deferred();
+          let inspected = 0,
+            mutated = false;
+          const failure =
+            fail === 'error'
+              ? Object.assign(new Error('No content routers available'), {
+                  name: 'NoContentRoutersError',
+                })
+              : new Proxy(
+                  {},
+                  {
+                    get() {
+                      inspected++;
+                      throw new Error('foreign error inspected');
+                    },
+                  },
+                );
+          document.swarm.heliaNode.blockstore.delete = async (cid: {
+            toString(): string;
+          }) => {
+            deleted.push(cid.toString());
+            entered.resolve();
+            await release.promise;
+            if (fail !== 'none') throw failure;
           };
-        });
-        await Promise.resolve();
-        expect(mutated).toBe(false);
-        release.resolve();
-        await Promise.all([collecting, mutation]);
-        expect(mutated).toBe(true);
-        expect(deleted).toEqual(['first']);
-        expect(inspected).toBe(0);
-        expect(diagnostic.mock.calls).toEqual(
-          fail ? [['Document block garbage collection failed']] : [],
-        );
-      }),
-      { seed: 2012205, numRuns: 16 },
+          const collecting = document._gcPrunedBlocks(
+            new Set(['first', 'retained']),
+          );
+          await entered.promise;
+          const mutation = document._mutationQueue.run(async () => {
+            mutated = true;
+            document._lastSyncMessage = {
+              changeId: 'new-root',
+              changes: {
+                kind: crdtDocumentChangeNode,
+                children: { retained: { kind: crdtDocumentChangeNode } },
+              },
+            };
+          });
+          await Promise.resolve();
+          expect(mutated).toBe(false);
+          release.resolve();
+          await Promise.all([collecting, mutation]);
+          expect(mutated).toBe(true);
+          expect(deleted).toEqual(['first']);
+          expect(inspected).toBe(0);
+          expect(diagnostic.mock.calls).toEqual(
+            fail === 'none'
+              ? []
+              : [
+                  [
+                    fail === 'error'
+                      ? 'Document block garbage collection failed: NoContentRoutersError: No content routers available'
+                      : 'Document block garbage collection failed: non-Error failure',
+                  ],
+                ],
+          );
+        },
+      ),
+      {
+        seed: 2012205,
+        numRuns: 16,
+        examples: [['none'], ['foreign'], ['error']],
+      },
     );
   } finally {
     diagnostic.mockRestore();
@@ -611,56 +631,140 @@ test('garbage collection rechecks current tree and snapshot protection before de
   }
 });
 
-test('a mutation between deletion slots invalidates the remaining stale plan', async () => {
+test('a mutation between deletion slots replaces the stale plan and collection continues under the new one', async () => {
   const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
   try {
     await fc.assert(
-      fc.asyncProperty(fc.integer({ min: 1, max: 8 }), async (count) => {
-        const ids = Array.from(
-          { length: count },
-          (_, index) => `retained-${index}`,
-        );
-        const { document, deleted } = fixture(new Set());
-        const entered = deferred(),
-          release = deferred();
-        const pause = async (cid: { toString(): string }) => {
-          if (cid.toString() === 'first') {
-            entered.resolve();
-            await release.promise;
-          }
-        };
-        document.swarm.heliaNode.pins.isPinned = async (cid: {
-          toString(): string;
-        }) => {
-          await pause(cid);
-          return false;
-        };
-        document.swarm.heliaNode.pins.rm = async function* (cid: {
-          toString(): string;
-        }) {
-          await pause(cid);
-        };
-        const collecting = document._gcPrunedBlocks(new Set(['first', ...ids]));
-        await entered.promise;
-        const mutation = document._mutationQueue.run(async () => {
-          document._lastSyncMessage = {
-            changeId: 'new-root',
-            changes: {
-              kind: crdtDocumentChangeNode,
-              children: Object.fromEntries(
-                ids.map((id) => [id, { kind: crdtDocumentChangeNode }]),
-              ),
-            },
+      fc.asyncProperty(
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 8 }),
+        async (flags) => {
+          const candidates = flags.map((_, index) => `block-${index}`);
+          const ids = candidates.filter((_, index) => flags[index]);
+          const { document, deleted } = fixture(new Set());
+          const entered = deferred(),
+            release = deferred();
+          const pause = async (cid: { toString(): string }) => {
+            if (cid.toString() === 'first') {
+              entered.resolve();
+              await release.promise;
+            }
           };
-        });
-        await Promise.resolve();
-        release.resolve();
-        await Promise.all([collecting, mutation]);
-        expect(deleted).toEqual(['first']);
-      }),
-      { seed: 2012203, numRuns: 20 },
+          document.swarm.heliaNode.pins.isPinned = async (cid: {
+            toString(): string;
+          }) => {
+            await pause(cid);
+            return false;
+          };
+          document.swarm.heliaNode.pins.rm = async function* (cid: {
+            toString(): string;
+          }) {
+            await pause(cid);
+          };
+          const collecting = document._gcPrunedBlocks(
+            new Set(['first', ...candidates]),
+          );
+          await entered.promise;
+          const mutation = document._mutationQueue.run(async () => {
+            document._lastSyncMessage = {
+              changeId: 'new-root',
+              changes: {
+                kind: crdtDocumentChangeNode,
+                children: Object.fromEntries(
+                  ids.map((id) => [id, { kind: crdtDocumentChangeNode }]),
+                ),
+              },
+            };
+          });
+          await Promise.resolve();
+          release.resolve();
+          await Promise.all([collecting, mutation]);
+          expect(deleted).toEqual([
+            'first',
+            ...candidates.filter((id) => !ids.includes(id)),
+          ]);
+          expect(document._gcCandidates).toEqual(new Set(ids));
+        },
+      ),
+      {
+        seed: 2012203,
+        numRuns: 20,
+        examples: [[[true]], [[false, true, false]]],
+      },
     );
   } finally {
     log.mockRestore();
+  }
+});
+
+test('an edit after every deletion slot cannot stop collection from draining unreferenced blocks', async () => {
+  await fc.assert(
+    fc.asyncProperty(fc.integer({ min: 2, max: 24 }), async (count) => {
+      const ids = Array.from({ length: count }, (_, index) => `block-${index}`);
+      const { document, deleted } = fixture(new Set());
+      const edits: Promise<void>[] = [];
+      document.swarm.heliaNode.pins.isPinned = async () => {
+        edits.push(
+          document._mutationQueue.run(async () => {
+            document._lastSyncMessage = {
+              changeId: `root-${edits.length}`,
+              changes: { kind: crdtDocumentChangeNode },
+            };
+          }),
+        );
+        return false;
+      };
+      await document._gcPrunedBlocks(new Set(ids));
+      await Promise.all(edits);
+      expect(edits.length).toBe(count);
+      expect(deleted).toEqual(ids);
+      expect(document._gcCandidates.size).toBe(0);
+    }),
+    { seed: 2012217, numRuns: 20 },
+  );
+});
+
+test('every candidate is tried once per pass and the first failure is reported once', async () => {
+  const diagnostic = jest
+    .spyOn(console, 'error')
+    .mockImplementation(() => undefined);
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }),
+        async (failures) => {
+          diagnostic.mockClear();
+          const ids = failures.map((_, index) => `block-${index}`);
+          const { document, deleted } = fixture(new Set());
+          const attempts: string[] = [];
+          document.swarm.heliaNode.blockstore.delete = async (cid: {
+            toString(): string;
+          }) => {
+            const id = cid.toString();
+            attempts.push(id);
+            if (failures[ids.indexOf(id)]) throw new Error(`failed ${id}`);
+            deleted.push(id);
+          };
+          await document._gcPrunedBlocks(new Set(ids));
+          expect(attempts).toEqual(ids);
+          expect(deleted).toEqual(ids.filter((_, index) => !failures[index]));
+          expect(document._gcCandidates).toEqual(
+            new Set(ids.filter((_, index) => failures[index])),
+          );
+          const first = ids.find((_, index) => failures[index]);
+          expect(diagnostic.mock.calls).toEqual(
+            first === undefined
+              ? []
+              : [
+                  [
+                    `Document block garbage collection failed: Error: failed ${first}`,
+                  ],
+                ],
+          );
+        },
+      ),
+      { seed: 2012218, numRuns: 30, examples: [[[true, true, false, true]]] },
+    );
+  } finally {
+    diagnostic.mockRestore();
   }
 });

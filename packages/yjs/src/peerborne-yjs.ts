@@ -1,5 +1,8 @@
 import {
   ACL,
+  ACLActorBinding,
+  ACLActorUnavailableError,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   ACLProvider,
@@ -505,13 +508,15 @@ function updateClients(update: Uint8Array): ReadonlySet<string> {
   return clients;
 }
 
+function yjsActorFromDigest(digest: Uint8Array): string {
+  let clientID = digest[0]! & 0x1f;
+  for (let index = 1; index < 7; index++)
+    clientID = clientID * 256 + digest[index]!;
+  return String(clientID);
+}
+
 const yjsActorBinding: CRDTActorBinding<Doc, Uint8Array> = {
-  actorFromDigest(digest) {
-    let clientID = digest[0]! & 0x1f;
-    for (let index = 1; index < 7; index++)
-      clientID = clientID * 256 + digest[index]!;
-    return String(clientID);
-  },
+  actorFromDigest: yjsActorFromDigest,
   localActor: (document) => String(document.clientID),
   setLocalActor(document, actor) {
     document.clientID = Number(actor);
@@ -1214,6 +1219,29 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
   // The bounded reservation budget is per ACL instance.
   private readonly _stagedAdditionOperations = new Set<string>();
   private readonly _stagedAdditionClientIDs = new Set<number>();
+  // Set once a document binds this ACL's changes to its signer. A bound ACL
+  // never falls back to an unbound client ID.
+  private _boundClientID?: number;
+
+  /** Client IDs are 53-bit values derived from the signer and an instance nonce. */
+  readonly actorBinding: ACLActorBinding<Uint8Array> = {
+    actorFromDigest: yjsActorFromDigest,
+    setLocalActor: (actor) => {
+      const clientID = Number(actor);
+      if (
+        !Number.isSafeInteger(clientID) ||
+        clientID < 0 ||
+        String(clientID) !== actor
+      ) {
+        throw new TypeError('Yjs ACL actor must be a canonical client ID');
+      }
+      this._boundClientID = clientID;
+      this._acl.clientID = clientID;
+    },
+    changeActors: updateClients,
+    attach: attachCRDTActorPrefix,
+    detach: detachCRDTActorPrefix,
+  };
 
   private _runMutation<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this._mutationTail;
@@ -1267,6 +1295,70 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     }
   }
 
+  // Name exactly what a refused update needs from the live ACL, so it is
+  // merged again only once the live ACL holds all of it: for each client the
+  // update writes, every clock before its last run; every origin and parent
+  // outside the update; and every deleted struct the update does not carry.
+  // Yjs records only a lower bound for a missing origin, which any later
+  // struct of that client would satisfy.
+  private _missingDependencies(change: Uint8Array): ACLMergeDependencyError {
+    const { structs, ds } = decodeUpdateV2(change);
+    const runs = new Map<number, Array<[number, number]>>();
+    for (const struct of structs) {
+      if (struct instanceof Skip) continue;
+      const list = runs.get(struct.id.client) ?? [];
+      list.push([struct.id.clock, struct.id.clock + struct.length]);
+      runs.set(struct.id.client, list);
+    }
+    for (const list of runs.values()) {
+      list.sort((left, right) => left[0] - right[0]);
+      for (let index = list.length - 1; index > 0; index--) {
+        if (list[index - 1]![1] >= list[index]![0]) {
+          list[index - 1]![1] = Math.max(list[index - 1]![1], list[index]![1]);
+          list.splice(index, 1);
+        }
+      }
+    }
+    const required = new Map<number, number>();
+    const require = (client: number, state: number) => {
+      if (state > (required.get(client) ?? 0)) required.set(client, state);
+    };
+    for (const [client, list] of runs) require(client, list.at(-1)![0]);
+    const carried = (client: number, clock: number) =>
+      runs
+        .get(client)
+        ?.some(([first, end]) => clock >= first && clock < end) === true;
+    const external = (id: ID | null) => {
+      if (id !== null && !carried(id.client, id.clock))
+        require(id.client, id.clock + 1);
+    };
+    for (const struct of structs) {
+      if (!(struct instanceof Item)) continue;
+      external(struct.origin);
+      external(struct.rightOrigin);
+      if (struct.parent instanceof ID) external(struct.parent);
+    }
+    for (const [client, ranges] of ds.clients) {
+      for (const { clock, len } of ranges) {
+        let from = clock;
+        const to = clock + len;
+        for (const [first, end] of runs.get(client) ?? []) {
+          if (first >= to) break;
+          if (end <= from) continue;
+          if (first > from) require(client, first);
+          from = Math.max(from, end);
+        }
+        if (from < to) require(client, to);
+      }
+    }
+    return new ACLMergeDependencyError(() => {
+      const store = this._acl.store;
+      for (const [client, state] of required)
+        if (getState(store, client) < state) return false;
+      return true;
+    });
+  }
+
   private _reserveStagedAdditionClientID(
     base: Doc,
     fallbackClientID: number,
@@ -1281,6 +1373,8 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     let clock = getState(base.store, clientID);
     let operationID = `${clientID}:${clock}`;
     if (this._stagedAdditionOperations.has(operationID)) {
+      if (this._boundClientID !== undefined)
+        throw new ACLActorUnavailableError();
       clientID = fallbackClientID;
       let attempts = 0;
       while (
@@ -1482,7 +1576,11 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
     try {
       return this._mergeStaged(change);
     } catch (error) {
-      if (error instanceof ACLOperationInProgressError || this._acl !== base) {
+      if (
+        error instanceof ACLOperationInProgressError ||
+        error instanceof ACLMergeDependencyError ||
+        this._acl !== base
+      ) {
         throw error;
       }
       throw new ACLMergeRejectedError(error);
@@ -1525,6 +1623,12 @@ export class YjsACL implements ACL<Uint8Array, CryptoKey> {
       this._acl !== base
     ) {
       throw new Error('ACL changed while remote changes were being merged');
+    }
+    if (
+      staged.store.pendingStructs !== null ||
+      staged.store.pendingDs !== null
+    ) {
+      throw this._missingDependencies(detachedChange);
     }
     if (compareBytes(baseState, stagedState) === 0) return false;
     this._acl = staged;

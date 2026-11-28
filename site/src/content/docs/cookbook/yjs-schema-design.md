@@ -44,7 +44,7 @@ await swarmDoc.change((doc: Y.Doc) => {
 });
 ```
 
-A Yjs transaction does not make network publication transactional, does not span Peerborne documents, and does not roll back an in-place Yjs mutation if later asynchronous storage/publication fails.
+A Yjs transaction does not make network delivery transactional and does not span Peerborne documents. Peerborne cannot roll back an in-place Yjs mutation: if storing or signing the change fails, the call rejects and the instance is retired, while a publication failure after the change is committed resolves and is reported to `subscribeDeliveryFailures()` handlers.
 
 What a change function that throws leaves behind depends on the document mode. A coordinated document (`peerborne.doc(path, { security })`) runs the function on a private copy of the Y.Doc and discards that copy, so the change rejects and the document is unchanged. A document opened without `security` edits the Y.Doc in place, which Yjs cannot roll back: Peerborne publishes the edits made before the throw and then rejects with the function's own error, so peers keep applying later updates. If committing that partial edit also fails, the change rejects with an `AggregateError` that holds both errors. In that mode, validate input before the first edit when a rejected change must leave the document untouched.
 

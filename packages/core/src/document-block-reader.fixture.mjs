@@ -8,6 +8,7 @@ import * as raw from 'multiformats/codecs/raw';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { SubtleCrypto } from './auth-subtlecrypto.ts';
 import {
+  assembleUnixFSOutput,
   DocumentBlockReadLimitError,
   MAX_DOCUMENT_BLOCK_BYTES,
   readDocumentBlock,
@@ -52,6 +53,47 @@ function rejectionOnlyDocument(blockstore) {
   });
 }
 
+test('UnixFS assembly owns reused fragments and returns an exact fixed-size buffer', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.uint8Array({ maxLength: 128 }), { maxLength: 48 }),
+      fc.integer({ min: 1, max: 16 }),
+      fc.boolean(),
+      async (parts, padding, useBuffer) => {
+        const largest = parts.reduce((max, part) => Math.max(max, part.length), 0);
+        const backing = new Uint8Array(largest + 2 * padding);
+        async function* reusedFragments() {
+          for (const part of parts) {
+            const view = useBuffer
+              ? Buffer.from(backing.buffer, padding, part.length)
+              : backing.subarray(padding, padding + part.length);
+            view.set(part);
+            yield view;
+            backing.fill(255);
+          }
+        }
+
+        const output = await assembleUnixFSOutput(reusedFragments());
+        const expected = Uint8Array.from(parts.flatMap((part) => Array.from(part)));
+        assert.deepEqual(output, expected);
+        assert.notEqual(output.buffer, backing.buffer);
+        assert.equal(output.byteOffset, 0);
+        assert.equal(output.buffer.byteLength, expected.byteLength);
+        assert.equal(output.buffer.resizable, false);
+      },
+    ),
+    {
+      seed: 832009,
+      numRuns: 50,
+      examples: [
+        [[], 1, false],
+        [[Uint8Array.of(1, 2, 3)], 2, true],
+        [[Uint8Array.of(), Uint8Array.of(1), Uint8Array.of()], 1, false],
+      ],
+    },
+  );
+});
+
 test('the document reader reconstructs native UnixFS ciphertext and authenticates before decoding', async () => {
   const generateKey = () => crypto.subtle.generateKey(
     { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
@@ -81,6 +123,7 @@ test('the document reader reconstructs native UnixFS ciphertext and authenticate
           },
         };
         const document = Object.assign(Object.create(PeerborneDocument.prototype), {
+          documentPath: '/block-reader',
           swarm: { heliaNode: { blockstore: readStore } },
           heliaFs: {
             addBytes: (bytes) => fs.addBytes(bytes, {
@@ -90,6 +133,14 @@ test('the document reader reconstructs native UnixFS ciphertext and authenticate
           _authProvider: auth,
           _keychain: { current: async () => [keyId, key] },
           _keychainProvider: { keyIDLength: keyId.length },
+          _decodeBlock(cid, block, signal, getKey) {
+            assert.equal(block.byteOffset, 0);
+            assert.equal(block.byteLength, storedLength);
+            assert.equal(block.buffer.byteLength, storedLength);
+            return PeerborneDocument.prototype._decodeBlock.call(
+              this, cid, block, signal, getKey,
+            );
+          },
           _changesSerializer: {
             serializeChanges: (bytes) => bytes,
             deserializeChanges: (bytes) => {
@@ -122,6 +173,16 @@ test('the document reader reconstructs native UnixFS ciphertext and authenticate
           document._getBlock(hash, undefined, () => otherKey),
           /Failed to decrypt block/,
         );
+        const otherDocument = Object.assign(
+          Object.create(PeerborneDocument.prototype),
+          document,
+          { documentPath: '/other-block-reader' },
+        );
+        await assert.rejects(
+          otherDocument._getBlock(hash, undefined, lookup),
+          /Failed to decrypt block/,
+        );
+        assert.equal(decodes, 1);
         const earlierLoadBytes = 17;
         let aggregate = earlierLoadBytes;
         await assert.rejects(document._getBlock(hash, {
@@ -345,6 +406,7 @@ test('UnixFS cancellation closes an in-flight child before opening its siblings'
 
 test('the writer does not persist a ciphertext file larger than the reader can open', async () => {
   const document = Object.assign(Object.create(PeerborneDocument.prototype), {
+    documentPath: '/oversized',
     _keychain: { current: async () => [new Uint8Array(32), {}] },
     _changesSerializer: { serializeChanges: (bytes) => bytes },
     _authProvider: {

@@ -50,8 +50,11 @@ libp2p.addresses = {
 };
 ```
 
-Another node can then `connect()` to
-`/ip4/127.0.0.1/tcp/4010/ws/p2p/<peer-id>`. Bind a non-loopback interface only
+Another node built with `allowLocalNetworkDials: true` can then `connect()` to
+`/ip4/127.0.0.1/tcp/4010/ws/p2p/<peer-id>`. By default both builders refuse to
+dial loopback, private, link-local and other non-public addresses, so a remote
+peer cannot make a node connect to local services; in browsers the default
+also refuses insecure `/ws` WebSockets. Bind a non-loopback interface only
 when the process should be reachable from the network.
 
 Opening an existing document from peers also needs trusted-load configuration;
@@ -80,7 +83,11 @@ transport still needs its relay reservation before it can serve as a rendezvous.
 
 ## Resume a saved document
 
-After restoring and opening an authenticated checkpoint, connect to the relay.
+Restore the document's latest checkpoint with
+`restoreEncryptedCheckpoint(saved, storageKey)` on a fresh instance, open it,
+and connect to the relay. Save checkpoints with
+`exportEncryptedCheckpoint(storageKey)`: a checkpoint holds the document's
+plaintext state and keys, so keep it encrypted and never transmit it.
 Open documents request missed updates automatically on open, on reconnect, on
 detected gaps and every 30 to 60 s; `document.requestSync()` sends the same
 request at once, and `antiEntropy: { enabled: false }` turns the automatic

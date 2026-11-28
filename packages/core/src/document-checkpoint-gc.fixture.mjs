@@ -41,11 +41,11 @@ test('a restored checkpoint deletes blocks pruned before it was exported', async
   assert.ok(pruned.length > 0);
   for (const cid of pruned)
     assert.equal(await options.blockstore.has(CID.parse(cid)), true);
-  const checkpoint = await writer.document.exportCheckpoint();
+  const checkpoint = await writer.document.exportPlaintextCheckpoint();
   await writer.close();
 
   const restored = await documentFixture({ ...options, open: false });
-  await restored.document.restoreCheckpoint(checkpoint);
+  await restored.document.restorePlaintextCheckpoint(checkpoint);
   await restored.document.open();
   assert.deepEqual([...restored.document._gcCandidates], pruned);
   await restored.document.collectGarbage();

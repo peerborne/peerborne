@@ -33,7 +33,7 @@ async function reopen(previous, adapter, checkpoint, index) {
     datastore: previous.datastore,
     open: false,
   });
-  await next.document.restoreCheckpoint(checkpoint);
+  await next.document.restorePlaintextCheckpoint(checkpoint);
   await next.document.open();
   return next;
 }
@@ -104,7 +104,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         const writer = await fixture(adapter, { index: 1 });
         await edit(writer, adapter, 'a', 1);
         const replica = await replicaOf(writer, 2, { adapter });
-        const accepted = await writer.document.exportCheckpoint();
+        const accepted = await writer.document.exportPlaintextCheckpoint();
         const failure = failureFor();
         inject(writer, failure);
         const undelivered = [];
@@ -124,21 +124,29 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
             undelivered[0].changeId,
             writer.document._lastSyncMessage.changeId,
           );
+          assert.equal(writer.document.deliveryFailure, undelivered[0]);
+          assert.equal(writer.document.retired, false);
         } else {
           const error = await edit(writer, adapter, 'b', 2, entry).then(
             () => assert.fail('the failed change resolved'),
             (reason) => reason,
           );
           assert.deepEqual(undelivered, []);
+          assert.equal(writer.document.deliveryFailure, undefined);
           if (adapter === 'automerge') {
             assert.equal(error, failure);
             assert.deepEqual(rootOf(writer, adapter), { a: 1 });
+            assert.equal(writer.document.retired, false);
           } else {
             // An in-place edit cannot be undone, so the instance retires.
             assert.match(error.message, /could not be rolled back/);
             assert.equal(error.cause, failure);
+            assert.equal(writer.document.retired, true);
             await assert.rejects(edit(writer, adapter, 'c', 3), /retired/);
-            await assert.rejects(writer.document.exportCheckpoint(), /retired/);
+            await assert.rejects(
+              writer.document.exportPlaintextCheckpoint(),
+              /retired/,
+            );
             await writer.close();
             author = await reopen(writer, adapter, accepted, 3);
             assert.deepEqual(rootOf(author, adapter), { a: 1 });
@@ -150,6 +158,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
           ['d', 4],
         ]) {
           await edit(author, adapter, key, value, entry);
+          assert.equal(author.document.deliveryFailure, undefined);
           assert.equal(
             await receiveEncrypted(replica, author.stats.lastFrame),
             true,
@@ -162,7 +171,7 @@ for (const adapter of ['automerge', 'yjs', 'loro']) {
         assert.deepEqual(rootOf(author, adapter), expected);
         assert.deepEqual(rootOf(replica, adapter), expected);
 
-        const checkpoint = await author.document.exportCheckpoint();
+        const checkpoint = await author.document.exportPlaintextCheckpoint();
         await author.close();
         const restored = await reopen(author, adapter, checkpoint, 4);
         assert.deepEqual(rootOf(restored, adapter), expected);

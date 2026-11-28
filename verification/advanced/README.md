@@ -43,13 +43,22 @@ security certification. CI runs both Node and browser smoke catalogs, collects
 the reports and uploads the existing verification artifact. Manual workflow
 dispatch selects full workloads.
 
+CI and installed release acceptance also run `large-catch-up-load` in strict
+mode. Two Node peers use an owned Circuit Relay and one trusted load responder.
+The recovery must succeed automatically when the missing history is too large
+for a GossipSub reply.
+
+```sh
+yarn verify:advanced --scenario large-catch-up-load --profile smoke --strict --timeout-ms 240000
+```
+
 ## Crypto and access control probes
 
 | ID                 | Workload and safety assertions                                                                                                                                                                                                                                                  | Evidence boundary                                                                                                                                                                                |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `epoch-fork`       | Three BeeKEM members partition; two partitions independently revoke the third. Rejected sibling transitions preserve both roots. Subsequent signed document frames are tested against the divergent keys. Fuzz 48/512 invalid v2 wire values and runtime generation boundaries. | Rejection alone is not explicit fork identification or graceful resolution. No automatic epoch-DAG recovery is invented.                                                                         |
 | `key-compromise`   | Compare a sole AES epoch-key leak, a retained historical keychain, and a complete cloned member ratchet. Other-member updates remain readable by the compromised member; test whether that member's own fresh ratchet excludes the clone.                                       | Legacy BeeKEM component evidence, not MLS or durable erasure. Same-epoch historical ciphertext and retained historical keys remain distinct attack surfaces.                                     |
-| `document-replay`  | Two documents share a signing authority and encryption material. Reinject exact ciphertext, rebind document IDs, alter parents, switch signature contexts, and fuzz 32/512 bit flips plus truncated header/tag boundaries.                                                      | Signed routing rejection is reported separately from AEAD decryption binding.                                                                                                                    |
+| `document-replay`  | Two documents share a signing authority and encryption material. Reinject exact ciphertext, rebind document IDs, alter parents, switch signature contexts, and fuzz 32/512 bit flips plus truncated header/tag boundaries.                                                      | Associated data rejects the frame at decryption in the other document; signed routing rejection is checked separately.                                                                           |
 | `traffic-metadata` | Deliver an actual encrypted document frame over native ordered RTC. Search for synthetic document/operation/signer canaries; inspect the epoch prefix, publication routing label and native signaling structure.                                                                | Pubsub publication is inspected before Noise; SDP is inspected before signaling encryption. This is not a packet capture of the complete shipped libp2p path. Only counts/booleans are reported. |
 
 The crypto probes use native Web Crypto and production BeeKEM, wire codecs,

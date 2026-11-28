@@ -5,6 +5,7 @@ import { TopicValidatorResult } from '@libp2p/gossipsub';
 import { Base64 } from 'js-base64';
 import { PeerborneDocument } from './peerborne-document.ts';
 import { SubtleCrypto } from './auth-subtlecrypto.ts';
+import { documentPayloadAAD } from './document-payload-aad.ts';
 import { JSONSerializer } from './json-serializer.ts';
 import {
   decodeSyncRequest,
@@ -84,6 +85,8 @@ function harness(identity = writer) {
     _lastSyncResponseAt: 0,
     _syncRequestsSeen: new Map(),
     _syncRequestClock: 0,
+    _writerKeysVersion: 1,
+    _writerMutationsInFlight: 0,
     _writers: {
       users: async () => [writer.publicKey],
       check: async (key) => key === writer.publicKey,
@@ -127,6 +130,7 @@ async function plaintext(bytes) {
     bytes.subarray(keyId.length + auth.nonceBytes),
     encryptionKey,
     bytes.subarray(keyId.length, keyId.length + auth.nonceBytes),
+    documentPayloadAAD('/resume', keyId, 'frame'),
   );
 }
 
@@ -179,7 +183,10 @@ async function registeredValidator(document) {
 }
 
 let requestFrameSequence = 0;
-async function encryptedRequest(signed) {
+async function encryptedRequest(
+  signed,
+  additionalData = documentPayloadAAD('/resume', keyId, 'frame'),
+) {
   const nonce = new Uint8Array(auth.nonceBytes);
   new DataView(nonce.buffer).setUint32(
     nonce.length - 4,
@@ -187,7 +194,7 @@ async function encryptedRequest(signed) {
   );
   const data = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: nonce },
+      { name: 'AES-GCM', iv: nonce, additionalData },
       encryptionKey,
       encodeSyncRequest(signed),
     ),
@@ -869,13 +876,22 @@ test('a verified member request with an unknown head records the member and the 
   const writerKey = await auth.serializePublicKey(writer.publicKey);
   const readerKey = await auth.serializePublicKey(reader.publicKey);
   const { document, published, work, calls, antiEntropy } = observedHarness();
-  await handle(
-    document,
-    await request(writer, { knownTips: [otherRoot, root] }),
-  );
+  const signed = await request(writer, { knownTips: [otherRoot, root] });
+  await handle(document, signed);
   assert.deepEqual(calls.advertisements, [
-    [writerKey, writerPeer, otherRoot, true],
+    [writerKey, writerPeer, otherRoot, true, {
+      writerVersion: 1,
+      issuedAtMs: signed.issuedAtMs,
+    }],
   ]);
+  const witness = {
+    ...calls.advertisements[0][4],
+    member: writerKey,
+    peer: writerPeer,
+  };
+  assert.equal(document._canLoadFromSoleWriter(witness), true);
+  document._writerKeysVersion++;
+  assert.equal(document._canLoadFromSoleWriter(witness), false);
   assert.equal(antiEntropy.status().gap, true);
   assert.equal(published.length, 0);
   assert.equal(work.verifications, 1);
@@ -884,7 +900,7 @@ test('a verified member request with an unknown head records the member and the 
   const responder = observedHarness();
   await handle(responder.document, await request(reader));
   assert.deepEqual(responder.calls.advertisements, [
-    [readerKey, readerPeer, otherRoot, false],
+    [readerKey, readerPeer, otherRoot, false, undefined],
   ]);
   assert.equal(responder.published.length, 1);
   assert.equal(responder.work.verifications, 1);
@@ -919,6 +935,34 @@ test('a request is ignored unless the PeerId it signs published it', async () =>
     await validate({}, gossipMessage(frame)),
     TopicValidatorResult.Accept,
   );
+});
+
+test('a frame sealed as another payload kind, document or key ID is ignored before verification', async () => {
+  const signed = await request(reader);
+  const validated = harness();
+  const validate = await registeredValidator(validated.document);
+  const otherKeyId = new Uint8Array(keyId.length).fill(2);
+  for (const additionalData of [
+    documentPayloadAAD('/resume', keyId, 'block'),
+    documentPayloadAAD('/resume', keyId, 'response'),
+    documentPayloadAAD('/resume', keyId, 'invitation-bootstrap'),
+    documentPayloadAAD('/other', keyId, 'frame'),
+    documentPayloadAAD('/resume', otherKeyId, 'frame'),
+    new Uint8Array(),
+  ])
+    assert.equal(
+      await validate(
+        {},
+        gossipMessage(await encryptedRequest(signed, additionalData)),
+      ),
+      TopicValidatorResult.Ignore,
+    );
+  assert.equal(validated.work.verifications, 0);
+  assert.equal(
+    await validate({}, gossipMessage(await encryptedRequest(signed))),
+    TopicValidatorResult.Accept,
+  );
+  assert.equal(validated.work.verifications, 1);
 });
 
 test('requests matching the local head postpone the periodic request without verification', async () => {

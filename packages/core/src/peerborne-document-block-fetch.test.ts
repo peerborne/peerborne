@@ -2,7 +2,10 @@ import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { crdtDocumentChangeNode } from './crdt-change-node.js';
 import { InvitationMembershipQueue } from './invitation-membership.js';
 import { PeerborneDocument } from './peerborne-document.js';
-import { RemoteBlockFetches } from './remote-block-fetch.js';
+import {
+  LOAD_BLOCK_FETCH_DEADLINE_MS,
+  RemoteBlockFetches,
+} from './remote-block-fetch.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
 jest.mock(
@@ -73,6 +76,10 @@ function fakeDocument(fields: Record<string, unknown> = {}): any {
     _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
     _refreshLastSyncMessageFromSync: jest.fn(),
     _maybeCompact: jest.fn(async () => undefined),
+    _syncMessageSerializer: {
+      serializeSyncMessage: (message: unknown) =>
+        new TextEncoder().encode(JSON.stringify(message)),
+    },
     _remoteBlockFetches: new RemoteBlockFetches({ deadlineMs: 20 }),
     ...fields,
   });
@@ -99,7 +106,7 @@ async function boundedSync(document: any, root: string, changes: unknown) {
 }
 
 describe('an ordinary sync citing a block that no reachable peer holds', () => {
-  test('applies its inline changes once the fetch deadline passes and skips the block while it backs off', async () => {
+  test('applies its inline changes once the fetch deadline passes, and holds the changes citing the block only once it arrives', async () => {
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     const document = fakeDocument({
       _getBlock: jest.fn((_cid: unknown, options: any) =>
@@ -109,8 +116,10 @@ describe('an ordinary sync citing a block that no reachable peer holds', () => {
 
     await boundedSync(document, 'ROOT', tree('inline', 'MISSING'));
     expect(document._document).toEqual(['inline']);
-    expect(document._hashes.has('ROOT')).toBe(true);
+    expect(document._hashes.has('ROOT')).toBe(false);
+    expect(document._isWaiting('ROOT')).toBe(true);
     expect(document._hashes.has('MISSING')).toBe(false);
+    expect(document._holdsChange('MISSING')).toBe(false);
     expect(document._getBlock).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledWith(
       'Failed to fetch missing change from blockstore:',
@@ -120,7 +129,16 @@ describe('an ordinary sync citing a block that no reachable peer holds', () => {
     await boundedSync(document, 'NEXT', tree('next', 'MISSING'));
     expect(document._getBlock).toHaveBeenCalledTimes(1);
     expect(document._document).toEqual(['inline', 'next']);
+    expect(document._isWaiting('NEXT')).toBe(true);
+
+    document._getBlock = jest.fn(async () => ['missing']);
+    await document._syncDocumentChanges('NEXT', tree('next', 'MISSING'), {});
+    expect(document._document).toEqual(['inline', 'next', 'missing']);
+    expect(document._hashes.has('MISSING')).toBe(true);
     expect(document._hashes.has('NEXT')).toBe(true);
+    await document._syncDocumentChanges('ROOT', tree('inline', 'MISSING'), {});
+    expect(document._hashes.has('ROOT')).toBe(true);
+    expect(document._document).toEqual(['inline', 'next', 'missing']);
   });
 
   test('reports a block that fails or waits out its retry delay to catch-up', async () => {
@@ -158,7 +176,8 @@ describe('an ordinary sync citing a block that no reachable peer holds', () => {
     await fetching;
     await document.close();
     await expect(syncing).resolves.toBeUndefined();
-    expect(document._hashes.has('ROOT')).toBe(true);
+    expect(document._document).toEqual(['inline']);
+    expect(document._hashes.has('ROOT')).toBe(false);
     expect(fetches.isBackedOff('MISSING')).toBe(false);
   });
 });
@@ -188,6 +207,97 @@ describe('a load or invitation sync citing blocks', () => {
       ['inline', ...deferred].sort(),
     );
     for (const cid of deferred) expect(document._hashes.has(cid)).toBe(true);
+  });
+
+  test('gives up on a block nobody holds at its own deadline', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.useFakeTimers();
+    try {
+      const document = fakeDocument({
+        _getBlock: jest.fn((_cid: unknown, options: any) =>
+          wantBlock(options.signal),
+        ),
+      });
+      const syncing = document._syncDocumentChanges(
+        'ROOT',
+        tree('inline', 'MISSING'),
+        { signal: new AbortController().signal },
+      );
+      await jest.advanceTimersByTimeAsync(LOAD_BLOCK_FETCH_DEADLINE_MS);
+      await syncing;
+      expect(document._document).toEqual(['inline']);
+      expect(document._isWaiting('ROOT')).toBe(true);
+      expect(document._holdsChange('MISSING')).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('serving a tree that cites a block this replica does not store', () => {
+  const served = {
+    documentId: '/block-fetch',
+    signatureContext: 'ordinary-sync-v1',
+    changeId: 'ROOT',
+    changes: tree('inline', 'MISSING'),
+  };
+
+  test('a writer covers it with a snapshot first', async () => {
+    const document = fakeDocument({
+      _lastSyncMessage: served,
+      _holdsBlock: jest.fn(async (cid: string) => cid === 'KNOWN'),
+      _writers: { check: jest.fn(async () => true) },
+    });
+    document._snapshotUnlocked = jest.fn(async () => {
+      document._latestSnapshot = { lastChangeNodeCID: 'ROOT' };
+    });
+    await expect(document._coverUnservableChangesUnlocked()).resolves.toBe(0);
+    expect(document._snapshotUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('an invitation also needs every held change the tree does not convey', async () => {
+    const document = fakeDocument({
+      _lastSyncMessage: {
+        ...served,
+        changes: { kind: crdtDocumentChangeNode, change: ['root'] },
+      },
+      _holdsBlock: jest.fn(async () => false),
+      _writers: { check: jest.fn(async () => true) },
+    });
+    document._hashes.add('ROOT');
+    document._hashes.add('LOST');
+    await expect(document._unservableChanges()).resolves.toBe(0);
+    await expect(document._unservableChanges(true)).resolves.toBe(2);
+    document._snapshotUnlocked = jest.fn(async () => {
+      document._latestSnapshot = { lastChangeNodeCID: 'ROOT' };
+      document._snapshotCovered = new Set(document._hashes);
+    });
+    await expect(document._coverUnservableChangesUnlocked(true)).resolves.toBe(
+      0,
+    );
+    expect(document._snapshotUnlocked).toHaveBeenCalledTimes(1);
+  });
+
+  test('a replica that cannot take a snapshot declines the load', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const document = fakeDocument({
+      _lastSyncMessage: served,
+      _holdsBlock: jest.fn(async (cid: string) => cid === 'KNOWN'),
+      _writers: { check: jest.fn(async () => false) },
+      _snapshotUnlocked: jest.fn(),
+      _keychainChangesForVisibility: jest.fn(),
+    });
+    await expect(
+      document._createLoadResponsePlan(
+        { documentId: '/block-fetch', loadChallenge: new Uint8Array(32) },
+        'load-response-v4',
+      ),
+    ).rejects.toThrow('Load response names changes it cannot serve');
+    expect(document._snapshotUnlocked).not.toHaveBeenCalled();
+    expect(document._keychainChangesForVisibility).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[/block-fetch] Declining a load: this replica cannot serve 1 of the changes its tree names',
+    );
   });
 });
 
@@ -238,7 +348,7 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     deliver(block);
     await receiving;
     expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
-    const options = document._syncUnlocked.mock.calls[0][6];
+    const options = document._syncUnlocked.mock.calls[0][5];
     expect([...options.prefetchedBlocks]).toEqual([['MISSING', block]]);
     expect(options.remoteFetches.signal.aborted).toBe(true);
   });
@@ -254,7 +364,7 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     await document._syncGossipMessage(message, () => true, 123);
     expect(document._verifyOrdinarySyncSignature).not.toHaveBeenCalled();
     expect(document._readBlock).not.toHaveBeenCalled();
-    const options = document._syncUnlocked.mock.calls[0][6];
+    const options = document._syncUnlocked.mock.calls[0][5];
     expect(options.prefetchedBlocks).toBe(undefined);
     expect(options.frameBytes).toBe(123);
   });

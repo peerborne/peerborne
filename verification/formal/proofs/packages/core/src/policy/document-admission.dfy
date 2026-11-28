@@ -234,10 +234,42 @@ method blockStreamBudget_domain()
   assert AdmittedBlockChunks(DocumentBudgetState(1, 4), [4, 1], 3, 8) == [4];
 }
 
+// The assembler owns each admitted segment and writes it once at its prefix
+// offset. Empty segments advance neither the output offset nor the byte cost.
+function BlockCopyOffsets(chunks: seq<nat>, offset: nat): seq<nat>
+  ensures |BlockCopyOffsets(chunks, offset)| == |chunks| + 1
+  ensures BlockCopyOffsets(chunks, offset)[0] == offset
+  ensures BlockCopyOffsets(chunks, offset)[|chunks|] == offset + BlockStreamBytes(chunks)
+  ensures forall i :: 0 <= i < |chunks| ==>
+    BlockCopyOffsets(chunks, offset)[i + 1] == BlockCopyOffsets(chunks, offset)[i] + chunks[i]
+  decreases |chunks|
+{
+  if |chunks| == 0 then [offset] else
+    [offset] + BlockCopyOffsets(chunks[1..], offset + chunks[0])
+}
+
+lemma admittedBlockCopyBound(s: DocumentBudgetState, chunks: seq<nat>, countLimit: int, byteLimit: int)
+  requires ValidDocumentBudget(s, countLimit, byteLimit)
+  requires forall i :: 0 <= i < |chunks| ==> chunks[i] <= 9007199254740991
+  ensures var admitted := AdmittedBlockChunks(s, chunks, countLimit, byteLimit);
+    var total := BlockStreamBytes(admitted);
+    BlockCopyOffsets(admitted, 0)[|admitted|] == total &&
+    total <= byteLimit - s.bytes &&
+    total + total <= 2 * (byteLimit - s.bytes)
+{
+}
+
+method blockCopy_domain()
+{
+  assert BlockCopyOffsets([3, 0, 5], 0) == [0, 3, 3, 8];
+  admittedBlockCopyBound(DocumentBudgetState(0, 0), [3, 0, 5, 2], 4, 8);
+}
+
 method documentAdmission_domain()
 {
   preparedChange_domain();
   blockStreamBudget_domain();
+  blockCopy_domain();
   assert canReserveDocumentOperation(0, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(1, 0, 0, 1, 1);
   assert !canReserveDocumentOperation(0, 1, 1, 1, 1);

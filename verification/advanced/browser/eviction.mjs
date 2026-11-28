@@ -119,11 +119,7 @@ function bind(value) {
         return;
       }
       const frame = bytes.slice(1);
-      const raw = await fixture.document._decryptBlock(
-        frame.slice(0, 32),
-        frame.slice(32, 44),
-        frame.slice(44),
-      );
+      const raw = await fixture.document._decryptGossipFrame(frame);
       if (raw === undefined) {
         rejected++;
         return;
@@ -208,6 +204,7 @@ export async function sendSnapshot() {
   const encrypted = await fixture.auth.encrypt(
     fixture.serializer.serializeSyncMessage(message),
     key,
+    fixture.document._payloadAAD(epoch, 'frame'),
   );
   const frame = new Uint8Array(
     1 + epoch.length + encrypted.nonce.length + encrypted.data.length,
@@ -244,11 +241,7 @@ export async function restore(path) {
   let restored = false;
   if (saved) {
     const frame = new Uint8Array(saved.frame);
-    const raw = await fixture.document._decryptBlock(
-      frame.slice(0, 32),
-      frame.slice(32, 44),
-      frame.slice(44),
-    );
+    const raw = await fixture.document._decryptGossipFrame(frame);
     assert(
       raw !== undefined,
       'persisted snapshot must decrypt before eviction',

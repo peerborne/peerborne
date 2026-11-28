@@ -91,6 +91,8 @@ async function victimWithMallory(node, options = {}) {
 
 async function attack({ victim, attacker }, mode, target) {
   if (mode === 'deferred') {
+    // A writer may cite any CID, whether or not it can serve the block.
+    attacker.document._holdsBlock = async () => true;
     attacker.document._trackTip(target, 'document');
     await attacker.document.change((doc) => doc.getMap('root').set('m', 1));
     return receiveEncrypted(victim, attacker.stats.lastFrame);
@@ -132,11 +134,13 @@ for (const mode of ['deferred', 'inline'])
       const run = await victimWithMallory(node);
       try {
         assert.equal(await attack(run, mode, cid), true);
-        assert.equal(treeNames(run.victim.document, cid), true);
+        // The victim cannot decrypt a cited block of other data, so it is
+        // missing and the change citing it waits outside the retained tree.
+        assert.equal(treeNames(run.victim.document, cid), mode === 'inline');
         for (let index = 1; index <= 12; index++) await run.edit(`a${index}`);
         await run.victim.document.collectGarbage();
 
-        assert.equal(run.pruned.has(cid), true);
+        assert.equal(run.pruned.has(cid), mode === 'inline');
         assert.equal(await present(node.blockstore, cid), true);
         assert.equal(run.victim.document._ownBlocks.has(cid), false);
         assert.equal(run.victim.document._gcCandidates.has(cid), false);
@@ -173,12 +177,12 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
   let forged;
   let victimOpen = true;
   try {
-    assert.equal(await attack(run, 'deferred', cid), true);
+    assert.equal(await attack(run, 'inline', cid), true);
     for (let index = 1; index <= 12; index++) await run.edit(`a${index}`);
     await run.victim.document.collectGarbage();
     assert.equal(run.pruned.has(cid), true);
 
-    const checkpoint = await run.victim.document.exportCheckpoint();
+    const checkpoint = await run.victim.document.exportPlaintextCheckpoint();
     const state = JSON.parse(new TextDecoder().decode(checkpoint.payload));
     assert.ok(state.gcCandidates.length > 0);
     assert.equal(state.ownBlocks.includes(cid), false);
@@ -200,7 +204,7 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
       open: false,
     });
     await assert.rejects(
-      forged.document.restoreCheckpoint({
+      forged.document.restorePlaintextCheckpoint({
         payload,
         signature: await forged.auth.sign(payload, node.identity.privateKey),
       }),
@@ -215,7 +219,7 @@ test('a restored checkpoint keeps the ownership check on waiting candidates', as
       compaction,
       open: false,
     });
-    await restored.document.restoreCheckpoint(checkpoint);
+    await restored.document.restorePlaintextCheckpoint(checkpoint);
     await restored.document.open();
     assert.deepEqual([...restored.document._gcCandidates], state.gcCandidates);
     await restored.document.collectGarbage();

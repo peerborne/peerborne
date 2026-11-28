@@ -29,7 +29,7 @@ void crypto.subtle
       name: 'ECDSA',
       namedCurve: 'P-384',
     },
-    true,
+    false,
     ['sign', 'verify'],
   )
   .then(async (keypair) => {

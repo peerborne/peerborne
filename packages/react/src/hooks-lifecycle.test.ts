@@ -2,6 +2,7 @@ import { describe, expect, test, jest, afterEach } from '@jest/globals';
 import React, { useState } from 'react';
 import { render, act, cleanup, waitFor } from '@testing-library/react';
 import { usePeerborneDocumentState } from './hooks.js';
+import { getPeerborneHookCaches } from './hooks-cache.js';
 import {
   resetCaches,
   getCacheSizes,
@@ -705,5 +706,181 @@ describe('usePeerborneDocumentState return value', () => {
     expect(typeof acl.addWriter).toBe('function');
     expect(typeof acl.removeWriter).toBe('function');
     expect(typeof acl.setKemKeyPair).toBe('function');
+  });
+});
+
+describe('documents this hook created', () => {
+  afterEach(() => {
+    cleanup();
+    resetCaches();
+  });
+
+  const created = (mockSwarm: any, captureRef: { current: any }) =>
+    React.createElement(
+      TestProvider,
+      null,
+      React.createElement(TestConsumer, {
+        peerborne: mockSwarm,
+        documentPath: '/created-once',
+        initialization: 'create',
+        captureRef,
+      }),
+    );
+
+  const undelivered = {
+    documentPath: '/created-once',
+    changeId: 'cid-1',
+    error: new Error('NoDeliveryPeersError'),
+  };
+
+  test('a remount reuses a created document whose change has not reached a member', async () => {
+    const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Hello ' }));
+    view.unmount();
+    await act(async () => {});
+    expect(mockDoc.close).not.toHaveBeenCalled();
+    expect(getCacheSizes(mockSwarm)).toEqual({
+      openTasks: 1,
+      openTaskResults: 0,
+      subscriberCounts: 0,
+    });
+
+    mockDoc.getReaders.mockResolvedValue(['reader1', 'reader2']);
+    const remount = { current: null as any };
+    render(created(mockSwarm, remount));
+    await waitFor(() =>
+      expect(remount.current.acl.readers).toEqual(['reader1', 'reader2']),
+    );
+    expect(remount.current.docData).toEqual({ text: 'Hello ' });
+    expect(mockSwarm.doc).toHaveBeenCalledTimes(1);
+    expect(mockDoc.create).toHaveBeenCalledTimes(1);
+    expect(mockDoc.open).not.toHaveBeenCalled();
+    expect(mockDoc.close).not.toHaveBeenCalled();
+  });
+
+  test('a retained created document closes once its change reaches a member', async () => {
+    const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Hello ' }));
+    view.unmount();
+    await act(async () => {});
+    expect(mockDoc.close).not.toHaveBeenCalled();
+    const retained = mockDoc._deliveryHandlers.get(
+      'usePeerborneDocumentState-retained',
+    );
+    mockDoc.deliveryFailure = undefined;
+    act(() => retained(undefined));
+    expect(mockDoc.close).toHaveBeenCalledTimes(1);
+    expect(mockDoc._deliveryHandlers.size).toBe(0);
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+  });
+
+  test('a retained created document closes after retainedCloseDelayMs even while undelivered', async () => {
+    const mockDoc = createMockDocument({ text: 'Hello ' });
+    mockDoc.deliveryFailure = undelivered;
+    const mockSwarm = createMockPeerborne(mockDoc);
+    getPeerborneHookCaches(mockSwarm).retainedCloseDelayMs = 30;
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Hello ' }));
+    view.unmount();
+    await act(async () => {});
+    expect(mockDoc.close).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockDoc.close).toHaveBeenCalledTimes(1));
+    expect(mockDoc._deliveryHandlers.size).toBe(0);
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+  });
+
+  test('a delivered created document closes on unmount, and a later mount opens the path', async () => {
+    const createdDoc = createMockDocument({ text: 'Created' });
+    const openedDoc = createMockDocument({ text: 'Opened' });
+    const docs = [createdDoc, openedDoc];
+    const mockSwarm = { doc: jest.fn(() => docs.shift()) } as any;
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Created' }));
+    view.unmount();
+    await waitFor(() => expect(createdDoc.close).toHaveBeenCalledTimes(1));
+
+    const remount = { current: null as any };
+    render(created(mockSwarm, remount));
+    await waitFor(() => expect(remount.current.docData).toEqual({ text: 'Opened' }));
+    expect(openedDoc.open).toHaveBeenCalledTimes(1);
+    expect(openedDoc.create).not.toHaveBeenCalled();
+  });
+
+  test('a retired created document closes on unmount, and a later mount opens the path', async () => {
+    const retiredDoc = createMockDocument({ text: 'Retired' });
+    retiredDoc.deliveryFailure = undelivered;
+    const freshDoc = createMockDocument({ text: 'Opened' });
+    const docs = [retiredDoc, freshDoc];
+    const mockSwarm = { doc: jest.fn(() => docs.shift()) } as any;
+    const first = { current: null as any };
+    const view = render(created(mockSwarm, first));
+    await waitFor(() => expect(first.current.docData).toEqual({ text: 'Retired' }));
+    retiredDoc.retired = true;
+    view.unmount();
+    await waitFor(() => expect(retiredDoc.close).toHaveBeenCalledTimes(1));
+    expect(getCacheSizes(mockSwarm).openTasks).toBe(0);
+
+    const remount = { current: null as any };
+    render(created(mockSwarm, remount));
+    await waitFor(() => expect(remount.current.docData).toEqual({ text: 'Opened' }));
+    expect(freshDoc.open).toHaveBeenCalledTimes(1);
+    expect(freshDoc.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('delivery failures', () => {
+  afterEach(() => {
+    cleanup();
+    resetCaches();
+  });
+
+  test('reports a delivery failure until the document clears it', async () => {
+    const mockDoc = createMockDocument();
+    const mockSwarm = createMockPeerborne(mockDoc);
+    const consumer = (captureRef: { current: any }) =>
+      React.createElement(TestConsumer, {
+        peerborne: mockSwarm,
+        documentPath: '/delivery',
+        captureRef,
+      });
+    const first = { current: null as any };
+    const view = render(React.createElement(TestProvider, null, consumer(first)));
+    await waitFor(() => expect(first.current.docData).toEqual({ test: 'data' }));
+    expect(first.current.deliveryFailure).toBeUndefined();
+
+    const failure = {
+      documentPath: '/delivery',
+      changeId: 'cid-1',
+      error: new Error('NoPeersSubscribedToTopic'),
+    };
+    mockDoc.deliveryFailure = failure;
+    const [subscriptionId, onDeliveryState] =
+      mockDoc.subscribeDeliveryState.mock.calls[0];
+    act(() => onDeliveryState(failure));
+    expect(first.current.deliveryFailure).toBe(failure);
+
+    const second = { current: null as any };
+    view.rerender(
+      React.createElement(TestProvider, null, consumer(first), consumer(second)),
+    );
+    await waitFor(() => expect(second.current.deliveryFailure).toBe(failure));
+
+    mockDoc.deliveryFailure = undefined;
+    act(() => onDeliveryState(undefined));
+    expect(first.current.deliveryFailure).toBeUndefined();
+
+    view.unmount();
+    expect(mockDoc.unsubscribeDeliveryState).toHaveBeenCalledWith(subscriptionId);
+    expect(mockDoc._deliveryHandlers.size).toBe(0);
   });
 });

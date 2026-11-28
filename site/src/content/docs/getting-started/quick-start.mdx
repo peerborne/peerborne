@@ -8,9 +8,10 @@ import SyncDemo from '../../../components/SyncDemo.astro';
 
 <Aside type="note" title="Packages are not published yet">
 The `@peerborne/*` packages are not currently available from npm. This guide
-uses the repository workspaces and only includes commands that work today.
-Published-package installation and a standalone application template will be
-added before the first npm release.
+uses the repository workspaces and only includes commands that work today. To
+use the packages in a separate project, install tarballs packed from the
+checkout; see
+[Use the packages in another project](../react-workspace/#use-the-packages-in-another-project).
 </Aside>
 
 In about five minutes, you will build the eleven Peerborne library workspaces and
@@ -122,7 +123,9 @@ encryption key.
 
 The repository also contains heavier acceptance suites:
 
-- `yarn test:e2e` builds and smoke-tests all four browser examples.
+- `yarn test:e2e` builds and smoke-tests the browser-test, wiki-swarm,
+  password-manager and Peerborne Note examples, Note's relay suite, and the
+  framework-free, framework, editor and SSR integration examples.
 - `yarn test:integration` exercises the integration topology after its Docker
   Compose services are running.
 - `yarn test:nat` exercises NAT traversal after its Docker Compose topology is
@@ -179,7 +182,7 @@ yarn test
 ```
 
 Run the [documentation build](../../community/contributing/#build-and-test-commands)
-with the Node runtime pinned in `site/.tool-versions`.
+with the Node runtime pinned in the repository's `.tool-versions`.
 
 Run the focused browser or Docker-backed suite as well when changing the behavior
 it covers.

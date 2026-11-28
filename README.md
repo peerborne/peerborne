@@ -64,7 +64,7 @@ export function Workspace({ peerborne }: { peerborne: WorkspaceNode }) {
 }
 ```
 
-Copy the [complete setup, context, and entry point](https://peerborne.io/getting-started/react-workspace/) alongside this component. `WorkspaceNode` is an application type from that setup; `usePeerborneDocumentState` is the shipped hook. The mutation uses Automerge underneath, with Peerborne handling document encryption and publication. The hook currently returns `void` and drops mutation rejections; use the direct `await document.change(...)` API when the UI needs to report failures. Identity persistence, relay configuration, and onboarding another identity remain explicit application work.
+Copy the [complete setup, context, and entry point](https://peerborne.io/getting-started/react-workspace/) alongside this component. `WorkspaceNode` is an application type from that setup; `usePeerborneDocumentState` is the shipped hook. The mutation uses Automerge underneath, with Peerborne handling document encryption and publication. The hook's mutation callback returns `void` and does not catch the change's promise, so a rejection becomes an unhandled promise rejection; use the direct `await document.change(...)` API when the UI needs to report failures. Identity persistence, relay configuration, and onboarding another identity remain explicit application work.
 
 ## Runtime architecture
 
@@ -126,7 +126,7 @@ See the [framework-free browser guide](https://peerborne.io/getting-started/vani
 | [`@peerborne/vue`](packages/vue) | Vue 3 composables over shared document stores |
 | [`@peerborne/store`](packages/store) | Framework-independent subscriptions, snapshots, and document ownership |
 
-Try [`peerborne-note`](examples/peerborne-note) for the [invitation demo](https://try.peerborne.io/), [`browser-test`](examples/browser-test) for a minimal Automerge/Redux document, [`wiki-swarm`](examples/wiki-swarm) for an editor, or [`password-manager`](examples/password-manager) for Yjs/React access-control UI. `yarn test:e2e` builds and tests all four with Chromium, including local restart recovery for Note and the password manager. The initial invitation path is online-only and founder-plus-one; hostile-peer revocation, automatic reconnect, and relay failover need stronger system-level evidence.
+Try [`peerborne-note`](examples/peerborne-note) for the [invitation demo](https://try.peerborne.io/), [`browser-test`](examples/browser-test) for a minimal Automerge/Redux document, [`wiki-swarm`](examples/wiki-swarm) for an editor, or [`password-manager`](examples/password-manager) for Yjs/React access-control UI. `yarn test:e2e` builds and tests these four with Chromium, including local restart recovery from encrypted checkpoints for Note and the password manager, and also runs the framework, editor and SSR integration examples. The initial invitation path is online-only and founder-plus-one; hostile-peer revocation, automatic reconnect, and relay failover need stronger system-level evidence.
 
 ## Build with us
 

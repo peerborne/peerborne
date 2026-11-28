@@ -74,6 +74,8 @@ const MAX_MANIFEST_REGISTRATIONS = MAX_CRDT_ACTOR_BINDINGS;
 const ACTOR_DOMAIN = 'peerborne/crdt-actor/v1\0';
 const REGISTRATION_DOMAIN = 'peerborne/crdt-actor-registration/v1\0';
 const SIGNATURE_DOMAIN = 'peerborne/crdt-change-author/v1\0';
+const ACL_ACTOR_DOMAIN = 'peerborne/acl-actor/v1\0';
+const ACL_SIGNATURE_DOMAIN = 'peerborne/acl-change-author/v1\0';
 const WRAP_MAGIC = [0x50, 0x42, 0x57, 0x31];
 const ENVELOPE_MAGIC = [0x50, 0x42, 0x41, 0x31];
 const MANIFEST_MAGIC = [0x50, 0x42, 0x4d, 0x31];
@@ -220,6 +222,29 @@ export async function deriveCRDTActorDigest(
   );
 }
 
+/**
+ * Derive the digest that selects a registration's native actor in one of a
+ * document's ACLs. The ACL is part of the derivation, so the actor differs
+ * from the one the same registration selects in the document or the other ACL.
+ */
+export async function deriveACLActorDigest(
+  documentPath: string,
+  acl: string,
+  registration: CRDTActorRegistration,
+): Promise<Uint8Array> {
+  assertNonce(registration.nonce);
+  const input = new Writer()
+    .bytes(encode(ACL_ACTOR_DOMAIN))
+    .lengthPrefixed(encode(documentPath))
+    .lengthPrefixed(encode(acl))
+    .lengthPrefixed(signerBytes(registration.signer))
+    .bytes(registration.nonce)
+    .finish();
+  return new Uint8Array(
+    await crypto.subtle.digest('SHA-256', input as Uint8Array<ArrayBuffer>),
+  );
+}
+
 /** Bytes a signer signs to register one actor for a document. */
 export function crdtActorRegistrationPayload(
   documentPath: string,
@@ -244,6 +269,28 @@ export function crdtChangeAuthorPayload(
   return new Writer()
     .bytes(encode(SIGNATURE_DOMAIN))
     .lengthPrefixed(encode(documentPath))
+    .lengthPrefixed(signerBytes(registration.signer))
+    .bytes(registration.nonce)
+    .lengthPrefixed(changeBytes)
+    .finish();
+}
+
+/**
+ * Bytes an author signs for one change to a document's ACL. The ACL is
+ * signed too, so a change cannot be replayed into the document or the other
+ * ACL.
+ */
+export function aclChangeAuthorPayload(
+  documentPath: string,
+  acl: string,
+  registration: CRDTActorRegistration,
+  changeBytes: Uint8Array,
+): Uint8Array {
+  assertNonce(registration.nonce);
+  return new Writer()
+    .bytes(encode(ACL_SIGNATURE_DOMAIN))
+    .lengthPrefixed(encode(documentPath))
+    .lengthPrefixed(encode(acl))
     .lengthPrefixed(signerBytes(registration.signer))
     .bytes(registration.nonce)
     .lengthPrefixed(changeBytes)

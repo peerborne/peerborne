@@ -1,5 +1,6 @@
 import type { DocumentReplayReceipt } from './document-replay-journal.js';
 import {
+  assertDocumentPeer,
   readDocumentReceipts,
   writeDocumentReceipts,
   type DocumentCatchUpBinding,
@@ -23,7 +24,6 @@ const MAGIC = Uint8Array.from(
 export const DOCUMENT_REDELIVERY_MARKER = Uint8Array.of(0x50, 0x42, 0x44, 2);
 export const MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES = 32 * 1024;
 const MAX_PEER_LENGTH = 128;
-const PEER = /^[1-9A-HJ-NP-Za-km-z]+$/;
 /** Held frames a request names so responders do not resend them. */
 export const MAX_DOCUMENT_REDELIVERY_HELD = 64;
 
@@ -66,20 +66,10 @@ export function documentRedeliveryAAD(value: DocumentCatchUpBinding): Uint8Array
   return bindingWriter(value).finish();
 }
 
-function assertPeer(value: string): void {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > MAX_PEER_LENGTH ||
-    !PEER.test(value)
-  )
-    throw new TypeError('Invalid document redelivery peer');
-}
-
 export function encodeDocumentRedeliveryRequest(
   value: DocumentRedeliveryRequest,
 ): Uint8Array {
-  assertPeer(value.requesterPeer);
+  assertDocumentPeer(value.requesterPeer);
   const writer = bindingWriter(value)
     .fixed(copyUnsharedUint8Array(value.requesterId, 32, 32, 'redelivery member'))
     .text(value.requesterPeer, MAX_PEER_LENGTH)
@@ -118,7 +108,7 @@ export function decodeDocumentRedeliveryRequest(
     context = readDocumentContext(reader),
     requesterId = reader.fixed(32),
     requesterPeer = reader.text(MAX_PEER_LENGTH);
-  assertPeer(requesterPeer);
+  assertDocumentPeer(requesterPeer);
   const nonce = reader.fixed(16);
   const issuedAt = reader.number(8);
   const receipts = readDocumentReceipts(reader);

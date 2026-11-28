@@ -14,6 +14,7 @@ import {
 } from './internal/document-binary.js';
 import { bytesToHex } from './internal/hex.js';
 import {
+  documentContextsMatch,
   readDocumentContext,
   writeDocumentContext,
 } from './document-security-wire.js';
@@ -51,6 +52,8 @@ export interface DocumentJournalPublication {
 export interface DocumentJournalStagedPublication {
   readonly id: Uint8Array;
   readonly bytes: number;
+  /** A queued publication the accepted one replaces in the same commit. */
+  readonly replaces?: Uint8Array;
 }
 export interface DocumentJournalRecoverySnapshot {
   readonly revision: number;
@@ -96,6 +99,12 @@ export interface DocumentJournalStore {
   publicationSent?(key: string, id: Uint8Array): Promise<void>;
   /** Remove every record stored under `key`. */
   delete?(key: string): Promise<void>;
+  /** Replace the unsent publication `id` in its queue position. */
+  replacePublication?(
+    key: string,
+    id: Uint8Array,
+    publication: DocumentJournalPublication,
+  ): Promise<void>;
 }
 export interface DocumentReplayReceipt {
   readonly memberId: Uint8Array;
@@ -116,6 +125,26 @@ export interface DocumentJournalItem {
    * bounded operation paths of a local entry's changes, `[]` for a peer's.
    */
   readonly operationPaths?: DocumentWritePaths;
+  /**
+   * The nonce of a local entry's encrypted frame, which identifies the frame
+   * inside a coalesced publication. Absent on checkpoints and peers' entries.
+   */
+  readonly frameNonce?: Uint8Array;
+  /** Only on checkpoints: the unsent local frames whose entries they fold. */
+  readonly carriedFrames?: ReadonlyArray<DocumentJournalCarriedFrame>;
+  /**
+   * A queued publication that `outboundFrame` replaces when the entry is
+   * accepted. It is not stored with the entry.
+   */
+  readonly replacesPublication?: Uint8Array;
+}
+/** An unsent local frame a checkpoint keeps re-signable after folding its entry. */
+export interface DocumentJournalCarriedFrame {
+  readonly context: GroupSecurityDocumentContext;
+  readonly sequence: number;
+  readonly nonce: Uint8Array;
+  readonly changes: Uint8Array;
+  readonly operationPaths: DocumentWritePaths;
 }
 export interface PreparedDocumentJournal {
   commit(): Promise<void>;
@@ -126,8 +155,16 @@ const DOMAIN = Uint8Array.from(
   'peerborne/document-replay-journal/v1\0',
   (value) => value.charCodeAt(0),
 );
+/** Frames a checkpoint carries: a full outbox of 16 publications of 1,024 frames, and its own. */
+export const MAX_DOCUMENT_JOURNAL_CARRIED_FRAMES = 16 * 1024 + 1;
+/**
+ * Encoded bound of carried frames: an outbox of changes and the frame being
+ * written, twice the 4 MiB of unsent paths for a re-sign in progress, and
+ * framing.
+ */
+const MAX_CARRIED_BYTES = 26 * 1024 * 1024;
 const MAX_SNAPSHOT = 64 * 1024 * 1024,
-  MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024;
+  MAX_ENTRY = MAX_SNAPSHOT + 17 * 1024 * 1024 + MAX_CARRIED_BYTES;
 export const DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD = 32;
 export const DOCUMENT_PUBLICATION_OVERHEAD = 72;
 export const MAX_DOCUMENT_STORED_PUBLICATION_BYTES =
@@ -227,17 +264,75 @@ function encodeItem(
       .integer(binding.revision, 8);
   }
   if (item.checkpoint) {
-    if (item.operationPaths !== undefined)
+    if (item.operationPaths !== undefined || item.frameNonce !== undefined)
       throw new Error('Journal checkpoints carry no operation paths');
-  } else {
-    const paths = copyRecordedOperationPaths(item.operationPaths);
-    writer.integer(paths.length, 2);
-    for (const path of paths) {
-      writer.integer(path.length, 1);
-      for (const segment of path) writer.text(segment, 4096);
+    const carried = item.carriedFrames ?? [];
+    if (
+      !Array.isArray(carried) ||
+      carried.length > MAX_DOCUMENT_JOURNAL_CARRIED_FRAMES
+    )
+      throw new Error('Invalid journal carried frames');
+    writer.integer(carried.length, 2);
+    let previous: GroupSecurityDocumentContext | undefined,
+      total = 0;
+    for (const frame of carried) {
+      if (!Number.isSafeInteger(frame.sequence) || frame.sequence < 1)
+        throw new Error('Invalid journal carried frames');
+      const same =
+        previous !== undefined &&
+        documentContextsMatch(previous, frame.context);
+      const part = new DocumentBinaryWriter(MAX_CARRIED_BYTES).integer(
+        same ? 1 : 0,
+        1,
+      );
+      if (!same) writeDocumentContext(part, frame.context);
+      previous = frame.context;
+      part
+        .integer(frame.sequence, 8)
+        .fixed(copyUnsharedUint8Array(frame.nonce, 12, 12, 'frame nonce'))
+        .bytes(frame.changes, 512 * 1024);
+      writePaths(part, frame.operationPaths);
+      const bytes = part.finish();
+      total += bytes.length;
+      if (total > MAX_CARRIED_BYTES) throw new DocumentJournalCapacityError();
+      writer.fixed(bytes);
     }
+  } else {
+    if (item.carriedFrames !== undefined)
+      throw new Error('Only journal checkpoints carry frames');
+    writePaths(writer, item.operationPaths);
+    writer.integer(item.frameNonce === undefined ? 0 : 1, 1);
+    if (item.frameNonce !== undefined)
+      writer.fixed(
+        copyUnsharedUint8Array(item.frameNonce, 12, 12, 'frame nonce'),
+      );
   }
   return writer.finish();
+}
+
+function writePaths(writer: DocumentBinaryWriter, value: unknown): void {
+  const paths = copyRecordedOperationPaths(value);
+  writer.integer(paths.length, 2);
+  for (const path of paths) {
+    writer.integer(path.length, 1);
+    for (const segment of path) writer.text(segment, 4096);
+  }
+}
+
+function readPaths(reader: DocumentBinaryReader): DocumentWritePaths {
+  const pathCount = reader.number(2);
+  if (pathCount > MAX_RECORDED_OPERATION_PATHS)
+    throw new Error('Invalid journal operation paths');
+  const paths: string[][] = [];
+  for (let index = 0; index < pathCount; index++) {
+    const depth = reader.number(1);
+    if (depth > 32) throw new Error('Invalid journal operation paths');
+    const path: string[] = [];
+    for (let segment = 0; segment < depth; segment++)
+      path.push(reader.text(4096));
+    paths.push(path);
+  }
+  return copyRecordedOperationPaths(paths);
 }
 
 function decodeItem(
@@ -283,21 +378,43 @@ function decodeItem(
       token: reader.fixed(32),
       revision: reader.number(8),
     });
-  let operationPaths: DocumentWritePaths | undefined;
+  let operationPaths: DocumentWritePaths | undefined,
+    frameNonce: Uint8Array | undefined,
+    carriedFrames: DocumentJournalCarriedFrame[] | undefined;
   if (!checkpoint) {
-    const pathCount = reader.number(2);
-    if (pathCount > MAX_RECORDED_OPERATION_PATHS)
-      throw new Error('Invalid journal operation paths');
-    const paths: string[][] = [];
-    for (let index = 0; index < pathCount; index++) {
-      const depth = reader.number(1);
-      if (depth > 32) throw new Error('Invalid journal operation paths');
-      const path: string[] = [];
-      for (let segment = 0; segment < depth; segment++)
-        path.push(reader.text(4096));
-      paths.push(path);
+    operationPaths = readPaths(reader);
+    const flag = reader.number(1);
+    if (flag > 1) throw new Error('Invalid journal frame nonce');
+    if (flag === 1) frameNonce = reader.fixed(12);
+  } else {
+    const carried = reader.number(2);
+    if (carried > MAX_DOCUMENT_JOURNAL_CARRIED_FRAMES)
+      throw new Error('Invalid journal carried frames');
+    carriedFrames = [];
+    let previous: GroupSecurityDocumentContext | undefined;
+    for (let index = 0; index < carried; index++) {
+      const same = reader.number(1);
+      if (same > 1 || (same === 1 && previous === undefined))
+        throw new Error('Invalid journal carried frames');
+      const frameContext: GroupSecurityDocumentContext =
+        same === 1 ? previous! : readDocumentContext(reader);
+      if (
+        same === 0 &&
+        previous !== undefined &&
+        documentContextsMatch(previous, frameContext)
+      )
+        throw new Error('Invalid journal carried frames');
+      previous = frameContext;
+      const sequence = reader.number(8);
+      if (!sequence) throw new Error('Invalid journal carried frames');
+      carriedFrames.push({
+        context: frameContext,
+        sequence,
+        nonce: reader.fixed(12),
+        changes: reader.bytes(512 * 1024),
+        operationPaths: readPaths(reader),
+      });
     }
-    operationPaths = copyRecordedOperationPaths(paths);
   }
   reader.end();
   return {
@@ -309,6 +426,8 @@ function decodeItem(
     authorityHead,
     authorityRecords,
     ...(operationPaths ? { operationPaths } : {}),
+    ...(frameNonce ? { frameNonce } : {}),
+    ...(carriedFrames?.length ? { carriedFrames } : {}),
   };
 }
 
@@ -643,6 +762,21 @@ export class DocumentReplayJournal {
             1024 * 1024,
             'outbound document frame',
           );
+    const replaced =
+      item.replacesPublication === undefined
+        ? undefined
+        : await digest(
+            copyUnsharedUint8Array(
+              item.replacesPublication,
+              1,
+              1024 * 1024,
+              'replaced document frame',
+            ),
+          );
+    const replacedBinding =
+      replaced && this.pendingPublicationBindings.get(bytesToHex(replaced));
+    if (replaced && (!outboundFrame || !replacedBinding))
+      throw new Error('Replaced document publication is not queued');
     if (
       !this.opened ||
       this.failed ||
@@ -666,18 +800,16 @@ export class DocumentReplayJournal {
         outboundFrame === undefined
           ? undefined
           : { token: crypto.getRandomValues(new Uint8Array(32)), revision };
+      const kept = [...this.pendingPublicationBindings.values()].filter(
+        (value) => value !== replacedBinding,
+      );
       const bindings = checkpoint
-        ? [
-            ...this.pendingPublicationBindings.values(),
-            ...(binding ? [binding] : []),
-          ]
+        ? [...kept, ...(binding ? [binding] : [])]
         : binding
           ? [binding]
           : [];
       if (checkpoint) {
-        const pending = [...this.pendingPublicationBindings.values()].map(
-          (value) => bytesToHex(value.token),
-        );
+        const pending = kept.map((value) => bytesToHex(value.token));
         if (!canRetainDocumentPublicationBindings(beforeBindings, pending, 16))
           throw new Error('Invalid pending publication bindings');
         candidateBindings = retainDocumentPublicationBindings(
@@ -734,6 +866,7 @@ export class DocumentReplayJournal {
         publication && {
           id: publication.id.slice(),
           bytes: publication.bytes,
+          ...(replaced ? { replaces: replaced.slice() } : {}),
         },
         checkpoint,
       );
@@ -766,6 +899,8 @@ export class DocumentReplayJournal {
                 candidateBindings,
                 true,
               );
+            if (replaced)
+              this.pendingPublicationBindings.delete(bytesToHex(replaced));
             if (publication && binding)
               this.pendingPublicationBindings.set(
                 bytesToHex(publication.id),
@@ -1167,6 +1302,39 @@ export class DocumentReplayJournal {
     const id = await digest(frame);
     await this.store.publicationSent(this.storageKey, id);
     this.pendingPublicationBindings.delete(bytesToHex(id));
+  }
+
+  /**
+   * Replace an unsent publication with `next`, which keeps its binding to the
+   * accepted entry and its place in the queue.
+   */
+  async replacePublication(frame: Uint8Array, next: Uint8Array): Promise<void> {
+    if (!this.opened || this.failed || this.active)
+      throw new Error('Document journal is unavailable');
+    if (!this.store.replacePublication)
+      throw new Error('Journal store cannot replace a publication');
+    const owned = copyUnsharedUint8Array(
+      next,
+      1,
+      1024 * 1024,
+      'outbound document frame',
+    );
+    const id = await digest(frame),
+      binding = this.pendingPublicationBindings.get(bytesToHex(id));
+    if (!binding) throw new Error('Publication is not queued');
+    const nextId = await digest(owned);
+    const sealed = await this.sealPublication(
+      binding.revision,
+      nextId,
+      binding.token,
+      owned,
+    );
+    await this.store.replacePublication(this.storageKey, id, {
+      id: nextId,
+      frame: sealed,
+    });
+    this.pendingPublicationBindings.delete(bytesToHex(id));
+    this.pendingPublicationBindings.set(bytesToHex(nextId), binding);
   }
 
   private acceptanceAAD(revision: number, commitment: Uint8Array): Uint8Array {

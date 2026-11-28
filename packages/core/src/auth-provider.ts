@@ -15,14 +15,21 @@ export interface AuthProvider<PrivateKey, PublicKey, DocumentKey = string> {
     publicKey: PublicKey,
     signature: Uint8Array,
   ): Promise<boolean>;
+  /**
+   * Encrypt `data` and authenticate `associatedData` with it. The document
+   * layer passes a value naming the document, the key ID and the payload
+   * kind; `decrypt` must fail unless it receives the same bytes.
+   */
   encrypt(
     data: Uint8Array,
     documentKey: DocumentKey,
+    associatedData: Uint8Array,
   ): Promise<EncryptionResult>;
   decrypt(
     data: Uint8Array,
     documentKey: DocumentKey,
-    nonce?: Uint8Array,
+    nonce: Uint8Array | undefined,
+    associatedData: Uint8Array,
   ): Promise<Uint8Array>;
 
   /**

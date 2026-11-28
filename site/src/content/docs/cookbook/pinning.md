@@ -15,7 +15,7 @@ A remotely initiated pinning protocol needs an authenticated envelope with an ex
 
 The normal document commit path does not publish document announcements. There is also no integrated generic IPFS pinning-service client, packaged pinning service, supported CLI, or hosted service.
 
-The default Node configuration uses the repository's IndexedDB-backed stores. Durable restart/recovery for a Node pinning process has not been validated, including stable storage paths, process identity, graph restoration, subscriptions, keys, and serving retained data after restart.
+`defaultNodeConfig()` uses a process-local, in-memory blockstore and datastore, so a Node process loses its blocks when it exits. A pinning process must replace `config.helia`'s stores with persistent ones. Durable restart/recovery for a Node pinning process has not been validated, including stable storage paths, process identity, graph restoration, subscriptions, keys, and serving retained data after restart.
 
 ## Why blocks alone are insufficient
 

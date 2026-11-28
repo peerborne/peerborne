@@ -1633,6 +1633,27 @@ method mapOperand_domain()
       'canExposeDocumentJournalRecovery_ensures',
     ],
     [
+      'document-checkpoint-exposes-unanchored-stage',
+      'document-journal.ts',
+      "if (phase === 'anchored' && event === 'expose') return 'visible';",
+      "if ((phase === 'authorized' || phase === 'anchored') && event === 'expose') return 'visible';",
+      'advanceDocumentCheckpoint_ensures',
+    ],
+    [
+      'document-checkpoint-ignores-failed-current-check',
+      'document-journal.ts',
+      'if (!checksPassed) return phase;',
+      "if (!checksPassed && event !== 'expose') return phase;",
+      'advanceDocumentCheckpoint_ensures',
+    ],
+    [
+      'document-checkpoint-reactivates-without-current-lease',
+      'document-journal.ts',
+      'return recovered && usable && authorityCurrent;',
+      'return recovered && usable;',
+      'canActivateRecoveredDocument_ensures',
+    ],
+    [
       'document-authority-epoch-rollback',
       'document-journal.ts',
       'return next > previous && sameGroup && headChanged;',

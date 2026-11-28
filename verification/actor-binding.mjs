@@ -74,6 +74,8 @@ export function actorBindingScenarios(adapter) {
       },
       registerDocument() {},
       unregisterDocument() {},
+      hasLocalDocument: () => false,
+      recordFoundedDocument() {},
     };
     const document = new PeerborneDocument(
       swarm,
@@ -93,11 +95,7 @@ export function actorBindingScenarios(adapter) {
 
   async function lastMessage(source) {
     const bytes = source.frames.at(-1);
-    const raw = await source.document._decryptBlock(
-      bytes.slice(0, 32),
-      bytes.slice(32, 44),
-      bytes.slice(44),
-    );
+    const raw = await source.document._decryptGossipFrame(bytes);
     return source.document._syncMessageSerializer.deserializeSyncMessage(raw);
   }
 
@@ -415,8 +413,8 @@ export function actorBindingScenarios(adapter) {
     assert.deepEqual(json(carol), json(alice));
 
     const restored = replica(alice.identity);
-    await restored.document.restoreCheckpoint(
-      await alice.document.exportCheckpoint(),
+    await restored.document.restorePlaintextCheckpoint(
+      await alice.document.exportPlaintextCheckpoint(),
     );
     await restored.document.open();
 

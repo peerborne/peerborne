@@ -41,6 +41,7 @@ import {
   testChanges,
 } from './__testutils__/coordinated-document.js';
 import {
+  ContractTestProvider,
   config,
   context,
   control,
@@ -419,6 +420,13 @@ async function setup() {
     return stageTarget(...args);
   };
   let beforeTargetAcceptance: (() => Promise<void>) | undefined;
+  let afterTargetAuthorization: (() => Promise<void>) | undefined;
+  const targetDocumentOperation =
+    targetCoordinator.runDocumentOperation.bind(targetCoordinator);
+  targetCoordinator.runDocumentOperation = async (...args) => {
+    await targetDocumentOperation(...args);
+    await afterTargetAuthorization?.();
+  };
   const journal = (index: number) =>
     new DocumentReplayJournal(
       path,
@@ -436,11 +444,31 @@ async function setup() {
         },
       },
     );
+  let failNativeMerge = false;
+  const targetCRDT: typeof mergeCRDT = {
+    ...mergeCRDT,
+    createDocumentSession(initial) {
+      const session = mergeCRDT.createDocumentSession!(initial);
+      const prepareMerge = session.prepareMergeSnapshot!.bind(session);
+      return Object.assign(session, {
+        prepareMergeSnapshot(snapshot: number[]) {
+          const plan = prepareMerge(snapshot);
+          return {
+            ...plan,
+            commit() {
+              plan.commit();
+              if (failNativeMerge) throw new Error('Interrupted native merge');
+            },
+          };
+        },
+      });
+    },
+  };
   const open = async (index: number) => {
     const document = new CoordinatedDocument(
       path,
       [],
-      mergeCRDT,
+      index === 1 ? targetCRDT : mergeCRDT,
       testChanges,
       auth,
       members[index],
@@ -453,8 +481,13 @@ async function setup() {
         enableAuthenticatedCatchUp: true,
       },
     );
-    await document.activate();
-    return document;
+    try {
+      await document.activate();
+      return document;
+    } catch (error) {
+      await document.close();
+      throw error;
+    }
   };
   const renew = async () => {
     await sourceCoordinator.createCommit(
@@ -473,24 +506,29 @@ async function setup() {
       members[0],
     );
   };
-  const pauseTargetAcceptance = () => {
-    let pause!: () => void;
+  const pauseTargetAcceptance = (
+    stage: 'authorization' | 'anchor' = 'anchor',
+  ) => {
+    let pause!: (interrupted: boolean) => void;
     let entered!: () => void;
     const ready = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    const paused = new Promise<void>((resolve) => {
+    const paused = new Promise<boolean>((resolve) => {
       pause = resolve;
     });
-    beforeTargetAcceptance = () => {
+    const hold = async () => {
       entered();
-      return paused;
+      if (await paused) throw new Error('Interrupted anchor write');
     };
+    if (stage === 'anchor') beforeTargetAcceptance = hold;
+    else afterTargetAuthorization = hold;
     return {
       ready,
-      resume() {
+      resume(interrupted = false) {
         beforeTargetAcceptance = undefined;
-        pause();
+        afterTargetAuthorization = undefined;
+        pause(interrupted);
       },
     };
   };
@@ -557,6 +595,20 @@ async function setup() {
   return {
     open,
     renew,
+    applyTargetAuthority: (record: Uint8Array) =>
+      targetLog.applyUpdate(targetCoordinator, record),
+    failTargetMerge: () => {
+      failNativeMerge = true;
+    },
+    restoreTargetCoordinator: async () => {
+      const provider = new ContractTestProvider();
+      provider.getAuthenticatedMemberIds = async () =>
+        members.map((member) => member.slice());
+      coordinators[1] = await GroupSecurityCoordinator.restore({
+        ...targetConfig,
+        provider,
+      });
+    },
     pauseTargetAcceptance,
     forgeControllerCheckpoint,
     resealAsController,
@@ -696,6 +748,80 @@ test('catch-up merges durably, keeps local receipts and rejects conflicting or s
       examples: [
         [20, true, false],
         [40, false, true],
+      ],
+    },
+  );
+}, 30_000);
+
+test('an interrupted or retired checkpoint stays private until authorized recovery', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.integer({ min: 1, max: 10_000 }),
+      fc.constantFrom(
+        'interrupted-anchor',
+        'failed-merge',
+        'rotated-during-anchor',
+        'rotated-before-acceptance',
+      ),
+      async (value, fault) => {
+        const fixture = await setup();
+        const source = await fixture.open(0);
+        let target = await fixture.open(1);
+        try {
+          await target.change((draft) => draft.push(-value));
+          await source.change((draft) => draft.push(value));
+          const request = await target.createCatchUpRequest();
+          const checkpoint = await source.createCatchUpCheckpoint(request);
+          const beforeAcceptance = fault === 'rotated-before-acceptance';
+          const anchor = fixture.pauseTargetAcceptance(
+            beforeAcceptance ? 'authorization' : 'anchor',
+          );
+          const applying = target.applyCatchUpCheckpoint(checkpoint);
+          let renewal: Uint8Array | undefined;
+          let writes = 0;
+          try {
+            await Promise.race([
+              anchor.ready,
+              applying.then(() => {
+                throw new Error('Catch-up completed before the anchor');
+              }),
+            ]);
+            expect(target.document).toEqual([-value]);
+            writes = fixture.targetJournalWrites();
+            if (fault === 'failed-merge') fixture.failTargetMerge();
+            if (fault === 'rotated-during-anchor' || beforeAcceptance)
+              renewal = await fixture.renew();
+          } finally {
+            anchor.resume(fault === 'interrupted-anchor');
+          }
+          await expect(applying).rejects.toThrow();
+          expect(() => target.document).toThrow();
+          if (beforeAcceptance) expect(fixture.targetJournalWrites()).toBe(writes);
+
+          await target.close();
+          if (fault === 'failed-merge') await fixture.restoreTargetCoordinator();
+          if (renewal) {
+            await expect(fixture.open(1)).rejects.toThrow();
+            await fixture.applyTargetAuthority(renewal);
+          }
+          target = await fixture.open(1);
+          expect([...target.document].sort((a, b) => a - b)).toEqual(
+            beforeAcceptance ? [-value] : [-value, value],
+          );
+          await expect(target.applyCatchUpCheckpoint(checkpoint)).rejects.toThrow();
+        } finally {
+          await Promise.all([source.close(), target.close()]);
+        }
+      },
+    ),
+    {
+      seed: 202611273,
+      numRuns: 8,
+      examples: [
+        [7, 'interrupted-anchor'],
+        [8, 'failed-merge'],
+        [9, 'rotated-during-anchor'],
+        [11, 'rotated-before-acceptance'],
       ],
     },
   );
