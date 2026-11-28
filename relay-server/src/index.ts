@@ -228,7 +228,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Failed to start relay server:', err)
+main().catch(() => {
+  // Startup errors can contain environment values and identity paths.
+  console.error(
+    'Failed to start relay server. Check relay configuration, listener ports, and identity file permissions.',
+  )
   process.exit(1)
 })
