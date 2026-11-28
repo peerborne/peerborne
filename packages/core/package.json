@@ -67,21 +67,17 @@
     "node": ">=26.13.1"
   },
   "devDependencies": {
-    "@peculiar/asn1-schema": "^3.0.0",
-    "@peculiar/json-schema": "^3.0.0",
-    "@peculiar/webcrypto": "^2.0.0",
     "@types/node": "^26.6.7",
-    "asn1js": "^4.0.0",
     "eslint": "^10.15.0",
     "fake-indexeddb": "^6.2.8",
     "fast-check": "^4.11.0",
     "jest": "^30.5.2",
+    "peerborne-webcrypto-test-provider": "workspace:*",
     "ts-jest": "^29.4.15",
     "ts-node": "^10.9.2",
     "tsx": "4.23.15",
     "typedoc": "^0.28.20",
-    "typescript": "^6.0.3",
-    "webcrypto-core": "^2.0.0"
+    "typescript": "^6.0.3"
   },
   "resolutions": {
     "jest": "^30.5.2",

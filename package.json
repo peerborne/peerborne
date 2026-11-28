@@ -19,7 +19,8 @@
     "examples/integrations",
     "examples/nextjs",
     "examples/tanstack-start",
-    "site"
+    "site",
+    "verification/webcrypto-provider"
   ],
   "resolutions": {
     "@peculiar/asn1-schema@npm:^2.4.0": "^2.11.1",

@@ -4183,11 +4183,7 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.26"
     "@libp2p/webtransport": "npm:^6.0.45"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@peculiar/asn1-schema": "npm:^3.0.0"
-    "@peculiar/json-schema": "npm:^3.0.0"
-    "@peculiar/webcrypto": "npm:^2.0.0"
     "@types/node": "npm:^26.6.7"
-    asn1js: "npm:^4.0.0"
     blockstore-core: "npm:^7.0.1"
     blockstore-idb: "npm:^4.0.1"
     datastore-core: "npm:^12.0.1"
@@ -4202,13 +4198,13 @@ __metadata:
     js-base64: "npm:^3.9.7"
     libp2p: "npm:^3.5.2"
     multiformats: "npm:^14.0.7"
+    peerborne-webcrypto-test-provider: "workspace:*"
     ts-jest: "npm:^29.4.15"
     ts-node: "npm:^10.9.2"
     tsx: "npm:4.23.15"
     typedoc: "npm:^0.28.20"
     typescript: "npm:^6.0.3"
     uint8arraylist: "npm:^3.0.2"
-    webcrypto-core: "npm:^2.0.0"
   languageName: unknown
   linkType: soft
 
@@ -12741,6 +12737,18 @@ __metadata:
   checksum: 10/01e9a69928f39087d96e1751ce7d6d50da8c39abf9a12e0ac2389c42c83bc76f78c45a475bd9026a02e6a6f79be63acc75667df855862fe567d99a00a540d23d
   languageName: node
   linkType: hard
+
+"peerborne-webcrypto-test-provider@workspace:*, peerborne-webcrypto-test-provider@workspace:verification/webcrypto-provider":
+  version: 0.0.0-use.local
+  resolution: "peerborne-webcrypto-test-provider@workspace:verification/webcrypto-provider"
+  dependencies:
+    "@peculiar/asn1-schema": "npm:^3.0.0"
+    "@peculiar/json-schema": "npm:^3.0.0"
+    "@peculiar/webcrypto": "npm:^2.0.0"
+    asn1js: "npm:^4.0.0"
+    webcrypto-core: "npm:^2.0.0"
+  languageName: unknown
+  linkType: soft
 
 "piccolore@npm:^0.1.3":
   version: 0.1.3
