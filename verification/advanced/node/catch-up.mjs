@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
@@ -440,15 +441,15 @@ export async function droppedFinalFrameCatchUp({ full }) {
 }
 
 /**
- * The reader misses changes whose snapshot no gossip reply can carry, so the
- * writer does not answer its request. The writer's next frame leaves the
- * reader's CRDT waiting for dependencies, which is local evidence for a load
- * over the V4 stream path.
+ * The reader misses an entire burst that does not fit in a gossip reply.
+ * The sole writer's periodic advertisement must trigger authenticated V4
+ * catch-up even if there is no later edit to reveal the missing dependencies.
  */
-export async function largeCatchUpLoad() {
+export async function largeCatchUpLoad({ progress }) {
   const session = await pair({
     founder: {
       antiEntropy: { intervalMs: 5_000, minRequestIntervalMs: 2_000 },
+      loadQuorumTimeoutMs: 30_000,
     },
     reader: {
       antiEntropy: {
@@ -457,9 +458,7 @@ export async function largeCatchUpLoad() {
         loadAfterMs: 4_000,
         loadIntervalMs: 10_000,
       },
-      loadQuorumAllowSinglePeer: true,
-      // Applying 5 MB can outlast the default response deadline on a loaded
-      // host; a failed load is retried after the load interval.
+      // Allow headroom for signing and serializing on a loaded CI runner.
       loadQuorumTimeoutMs: 30_000,
     },
   });
@@ -468,42 +467,77 @@ export async function largeCatchUpLoad() {
     const values = Array.from({ length: 12 }, (_, i) =>
       syntheticText(400_000, 70 + i),
     );
-    session.inbound.drop = session.inbound.fromFounder;
-    for (const [i, value] of values.entries())
-      await session.source.change((draft) => {
-        draft[`large${i}`] = value;
-      });
-    session.inbound.drop = () => false;
+    const pubsub = session.founder.swarm.libp2p.services.pubsub;
+    const publish = pubsub.publish;
+    const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    const missed = new Set();
+    pubsub.publish = function (topic, data, options) {
+      missed.add(digest(data));
+      return publish.call(this, topic, data, options);
+    };
+    session.inbound.drop = (event) =>
+      session.inbound.fromFounder(event) &&
+      missed.has(digest(event.detail.data));
+    try {
+      for (const [i, value] of values.entries())
+        await session.source.change((draft) => {
+          draft[`large${i}`] = value;
+        });
+    } finally {
+      pubsub.publish = publish;
+    }
+    assert(missed.size >= values.length, 'the writer must publish the burst');
+    assert(
+      values.every(
+        (_, i) => session.target.document[`large${i}`] === undefined,
+      ),
+    );
+    assert.equal(session.target.antiEntropyStatus.loads, 0);
     session.clock.since = performance.now();
-    // The next edit's frame carries only the newest changes, so the reader's
-    // CRDT waits for the ones it missed.
-    await session.source.change((draft) => {
-      draft.after = 'large';
-    });
+    progress(
+      `waiting for advertised recovery of ${values.length} missed edits`,
+    );
+    session.target.subscribeToAntiEntropy(
+      'large-catch-up-progress',
+      (event) => {
+        if (event.type === 'gap') progress(`gap: ${event.trigger}`);
+        if (event.type === 'load') progress(`load: ${event.outcome}`);
+      },
+    );
     const convergedMs = await until(
       () =>
-        session.target.document.after === 'large' &&
+        session.target.antiEntropyStatus.lastLoad?.outcome === 'loaded' &&
         values.every(
           (value, i) => session.target.document[`large${i}`] === value,
         ),
       120_000,
     );
+    await session.source.change((draft) => {
+      draft.after = 'large';
+    });
+    const followUpMs = await until(
+      () => session.target.document.after === 'large',
+      30_000,
+    );
     const metrics = {
       values: values.length,
       valueBytes: values[0].length,
       convergedMs,
+      followUpMs,
       lastLoad: session.target.antiEntropyStatus.lastLoad?.outcome,
+      droppedFrames: session.inbound.dropped,
       ...(await summary(session)),
     };
     assert(metrics.loads >= 1, 'the repair must use the load path');
+    assert(metrics.droppedFrames > 0, 'the reader must miss document frames');
+    assert.equal(metrics.lastLoad, 'loaded');
+    assert.equal(metrics.gapOpen, false);
     assert.equal(metrics.manualRequests, 0);
     return {
       scope:
-        'A WebSocket relay and two real Peerborne nodes over Circuit Relay with locally pinned load security commitments. The reader drops the writer frames carrying twelve 400 KB changes, then loads them from the advertising writer because a gossip reply with the snapshot cannot fit a frame.',
+        'A WebSocket relay and two real Peerborne nodes over Circuit Relay with locally pinned load security commitments. The reader misses twelve 400 KB changes and uses the authenticated V4 load from the sole writer before any further edit. Multi-writer quorum is outside this case.',
       metrics: { ...metrics, converged: true },
-      gaps: [
-        'A single responder is accepted with loadQuorumAllowSinglePeer; quorum-bound catch-up with several peers that disagree is not exercised.',
-      ],
+      gaps: [],
     };
   } finally {
     await session.close();

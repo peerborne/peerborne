@@ -85,6 +85,8 @@ function harness(identity = writer) {
     _lastSyncResponseAt: 0,
     _syncRequestsSeen: new Map(),
     _syncRequestClock: 0,
+    _writerKeysVersion: 1,
+    _writerMutationsInFlight: 0,
     _writers: {
       users: async () => [writer.publicKey],
       check: async (key) => key === writer.publicKey,
@@ -874,13 +876,22 @@ test('a verified member request with an unknown head records the member and the 
   const writerKey = await auth.serializePublicKey(writer.publicKey);
   const readerKey = await auth.serializePublicKey(reader.publicKey);
   const { document, published, work, calls, antiEntropy } = observedHarness();
-  await handle(
-    document,
-    await request(writer, { knownTips: [otherRoot, root] }),
-  );
+  const signed = await request(writer, { knownTips: [otherRoot, root] });
+  await handle(document, signed);
   assert.deepEqual(calls.advertisements, [
-    [writerKey, writerPeer, otherRoot, true],
+    [writerKey, writerPeer, otherRoot, true, {
+      writerVersion: 1,
+      issuedAtMs: signed.issuedAtMs,
+    }],
   ]);
+  const witness = {
+    ...calls.advertisements[0][4],
+    member: writerKey,
+    peer: writerPeer,
+  };
+  assert.equal(document._canLoadFromSoleWriter(witness), true);
+  document._writerKeysVersion++;
+  assert.equal(document._canLoadFromSoleWriter(witness), false);
   assert.equal(antiEntropy.status().gap, true);
   assert.equal(published.length, 0);
   assert.equal(work.verifications, 1);
@@ -889,7 +900,7 @@ test('a verified member request with an unknown head records the member and the 
   const responder = observedHarness();
   await handle(responder.document, await request(reader));
   assert.deepEqual(responder.calls.advertisements, [
-    [readerKey, readerPeer, otherRoot, false],
+    [readerKey, readerPeer, otherRoot, false, undefined],
   ]);
   assert.equal(responder.published.length, 1);
   assert.equal(responder.work.verifications, 1);
