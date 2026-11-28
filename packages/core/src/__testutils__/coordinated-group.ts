@@ -569,6 +569,8 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     offline,
     open,
     doc,
+    /** An untracked document instance, for restart and fencing assertions. */
+    makeDocument,
     addMember,
     renew,
     applyRenewal,

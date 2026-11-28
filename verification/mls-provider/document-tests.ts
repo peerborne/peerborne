@@ -551,7 +551,7 @@ export async function runProductionDocumentChecks() {
       survivorRoster,
       f.signing[0].privateKey,
     );
-    if (backend === 'automerge') {
+    {
       await rejects(() =>
         makeDocument(0).applySecurityAuthorityUpdateBeforeOpen(revokeRole),
       );
@@ -596,8 +596,6 @@ export async function runProductionDocumentChecks() {
       check(blockedCallbacks === 0, 'authority recovery retains the activation fence');
       await docs[0].open();
       check(read(docs[0]).retry === 7, 'authority recovery retains accepted local content');
-    } else {
-      await docs[0].applySecurityAuthorityUpdate(revokeRole);
     }
     await rejects(() => docs[0].receiveSecurityFrame(partitioned.data));
     check(read(docs[0]).offlineDraft === undefined, 'the current epoch excludes old-epoch edits');
@@ -660,7 +658,7 @@ export async function runProductionDocumentChecks() {
       revokedCatchUpDenied: true,
       delayedRevocationBlocksOldEpoch: true,
       revokedDocumentCannotReopen: true,
-      authorityRecoveryBeforeOpen: backend === 'automerge',
+      authorityRecoveryBeforeOpen: true,
       indexedDB: typeof indexedDB !== 'undefined',
     };
   }

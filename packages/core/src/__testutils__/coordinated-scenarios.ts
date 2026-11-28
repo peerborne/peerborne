@@ -414,3 +414,69 @@ export async function retiredEpochScenario<Document, Changes, Change>(
     await g.close();
   }
 }
+
+/**
+ * A controller that stops with a role update pending must recover that
+ * authority before it may expose recovered content, and must stay fenced
+ * until then.
+ */
+export async function authorityRecoveryBeforeOpenScenario<
+  Document,
+  Changes,
+  Change,
+>(adapter: ScenarioAdapter<Document, Changes, Change>) {
+  const g = await coordinatedGroupFixture(adapter.crdt, adapter.serializer, {
+    members: 2,
+  });
+  const errors: string[] = [];
+  try {
+    await g.addMember(1);
+    await g.open(0);
+    await g.open(1);
+    await g.doc(0).change(adapter.edit('c0'));
+    await g.doc(1).change(adapter.edit('m1'));
+    for (const publication of g.take())
+      errors.push(...(await g.deliver(publication, [0, 1])));
+    const expected = adapter.read(g.doc(0).document);
+    await g.doc(0).close();
+
+    // The controller moved to a new epoch with a fresh control head while the
+    // document was closed, so its journal holds the older accepted authority.
+    const renewal = await g.renew();
+
+    // Without the pending role record the restarted replica must fail closed.
+    const unrecovered = g.makeDocument(0);
+    let openRejected = false;
+    try {
+      await unrecovered.open();
+    } catch {
+      openRejected = true;
+    } finally {
+      await unrecovered.close();
+    }
+
+    const recovered = g.makeDocument(0);
+    try {
+      let fenced = false;
+      try {
+        await recovered.change(adapter.edit('beforeOpen'));
+      } catch {
+        fenced = true;
+      }
+      await recovered.applySecurityAuthorityUpdateBeforeOpen(renewal.record);
+      await recovered.open();
+      const view = adapter.read(recovered.document);
+      let reapplyRejected = false;
+      try {
+        await recovered.applySecurityAuthorityUpdateBeforeOpen(renewal.record);
+      } catch {
+        reapplyRejected = true;
+      }
+      return { errors, expected, view, openRejected, fenced, reapplyRejected };
+    } finally {
+      await recovered.close();
+    }
+  } finally {
+    await g.close();
+  }
+}

@@ -2,6 +2,7 @@ import { expect, jest, test } from '@jest/globals';
 import type { Doc } from 'yjs';
 import { YjsJSONSerializer, YjsProvider } from './peerborne-yjs.js';
 import {
+  authorityRecoveryBeforeOpenScenario,
   joinCatchUpScenario,
   lostFrameRedeliveryScenario,
   missedTailCatchUpScenario,
@@ -77,4 +78,13 @@ test('re-signs a Yjs edit written offline across an epoch change', async () => {
   expect(result.leftover).toBe(0);
   for (const view of result.views)
     expect(view).toEqual(['afterReturn', 'c0', 'm1a', 'offlineEdit']);
+}, 30_000);
+
+test('a Yjs controller recovers pending authority before it exposes content', async () => {
+  const result = await authorityRecoveryBeforeOpenScenario(adapter);
+  expect(result.errors).toEqual([]);
+  expect(result.openRejected).toBe(true);
+  expect(result.fenced).toBe(true);
+  expect(result.reapplyRejected).toBe(true);
+  expect(result.view).toEqual(result.expected);
 }, 30_000);
