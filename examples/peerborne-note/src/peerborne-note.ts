@@ -171,7 +171,6 @@ export class PeerborneNoteSession {
   private pendingChanges = 0;
   private storageFailed = false;
   private storageEvicted = false;
-  private deliveryFailures = 0;
   private undelivered = false;
   private sharingActive = false;
   private sharingTimer?: ReturnType<typeof setTimeout>;
@@ -506,7 +505,6 @@ export class PeerborneNoteSession {
     this.emitStorage();
     try {
       const previous = lastLocalChange(document.document)?.hash;
-      const failures = this.deliveryFailures;
       let failure: { error: unknown } | undefined;
       try {
         await document.change((draft) => {
@@ -528,10 +526,6 @@ export class PeerborneNoteSession {
       if (failure || !version) {
         await this.detectEviction();
         return { kind: 'failed', version };
-      }
-      if (this.undelivered && this.deliveryFailures === failures) {
-        this.undelivered = false;
-        this.emitNetwork();
       }
       await this.persistDocument().catch(() => undefined);
       return { kind: 'saved', version };
@@ -624,7 +618,7 @@ export class PeerborneNoteSession {
     this.peerborne.unsubscribeFromPeerDisconnect(PEER_SUBSCRIBER_ID);
     if (this.document) {
       this.document.unsubscribe(NOTE_SUBSCRIBER_ID);
-      this.document.unsubscribeDeliveryFailures(NOTE_SUBSCRIBER_ID);
+      this.document.unsubscribeDeliveryState(NOTE_SUBSCRIBER_ID);
       await this.writes.catch(() => undefined);
       await this.document.close();
       this.document = undefined;
@@ -762,9 +756,10 @@ export class PeerborneNoteSession {
       },
       'all',
     );
-    document.subscribeDeliveryFailures(NOTE_SUBSCRIBER_ID, () => {
-      this.deliveryFailures++;
-      this.undelivered = true;
+    this.undelivered = document.deliveryFailure !== undefined;
+    document.subscribeDeliveryState(NOTE_SUBSCRIBER_ID, (failure) => {
+      if (this.undelivered === (failure !== undefined)) return;
+      this.undelivered = failure !== undefined;
       this.emitNetwork();
     });
     this.emitNote(noteVersion(document.document));

@@ -405,7 +405,10 @@ export interface PeerborneConfig {
    * document sends the existing signed sync request when it opens, when a
    * peer subscribed to its topic connects, when the CRDT waits for missing
    * dependencies, when a frame names a change that cannot be fetched, when a
-   * member advertises a head it lacks, and every 30-60 s. A gap that outlives
+   * member advertises a head it lacks, one to two seconds after a frame adds
+   * a change, and every 30-60 s. The request after a frame names the change,
+   * so its author's `deliveryFailure` clears even when the frame reached
+   * members only through a relay. A gap that outlives
    * a request is repaired with the authenticated V4 load path when the CRDT
    * itself shows the gap, two members advertise the same head, or the
    * connected sole writer sends a fresh signed advertisement. This requires

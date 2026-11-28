@@ -8,7 +8,8 @@
  * advertises a head it does not hold, and periodically with jitter. When a
  * detected gap outlives a request and the evidence is strong enough, it
  * loads through the authenticated V4 load path, preferring a writer that
- * advertised newer state.
+ * advertised newer state. A request also follows a frame that added a
+ * change, so that its author learns a member holds it.
  */
 
 /** Why a catch-up request was scheduled. */
@@ -18,6 +19,7 @@ export type AntiEntropyTrigger =
   | 'pending-changes'
   | 'missing-change'
   | 'advertised-state'
+  | 'acknowledgment'
   | 'periodic';
 
 /** Tuning for automatic catch-up. Every field is optional in `PeerborneConfig`. */
@@ -31,8 +33,9 @@ export interface AntiEntropyConfig {
   intervalMs: number;
   /**
    * Minimum delay between this document's requests. It doubles while a
-   * detected gap persists, up to `intervalMs`. Default: 5000 ms; at least the
-   * 2000 ms sync-request rate limit.
+   * detected gap persists, up to `intervalMs`. A request that acknowledges
+   * an applied change waits only the 2000 ms sync-request rate limit.
+   * Default: 5000 ms; at least that rate limit.
    */
   minRequestIntervalMs: number;
   /**
@@ -237,6 +240,8 @@ const systemClock: AntiEntropyClock = {
 const RESERVED_REQUEST_TOKENS = 4;
 // Share of the request rate that periodic requests are planned for.
 const PERIODIC_REQUEST_SHARE = 0.5;
+// An acknowledgment follows the first change it covers by one to two seconds.
+const ACKNOWLEDGMENT_DELAY_MS = 1_000;
 
 /**
  * Work shared by every document of one Peerborne instance: a token bucket for
@@ -431,6 +436,8 @@ export class AntiEntropy {
   private requestRetryAt = 0;
   private lastRequestAt?: number;
   private requestBackoff = 0;
+  private acknowledgmentAt?: number;
+  private acknowledgments = 0;
   private readonly peerSignals = new Map<string, number>();
   private readonly memberPeers = new Map<string, number>();
   private readonly advertised = new Map<string, Advertisement>();
@@ -540,6 +547,22 @@ export class AntiEntropy {
     if (this.refreshGap() && this.host.hasPendingChanges())
       this.trigger('pending-changes');
     else this.arm();
+  }
+
+  /**
+   * A frame added a change that this replica did not hold. A request follows
+   * one to two seconds later, and at least two seconds after the previous
+   * request, so the change's author sees a request signed by this member,
+   * from its own PeerId, that names the change, even when GossipSub carried
+   * the frame only through a relay. Changes applied before that request
+   * share it.
+   */
+  acknowledge(): void {
+    if (this.closed) return;
+    this.acknowledgments++;
+    this.acknowledgmentAt ??=
+      this.clock.now() + ACKNOWLEDGMENT_DELAY_MS * (1 + this.clock.random());
+    this.arm();
   }
 
   /** A frame named a change that could not be fetched. */
@@ -658,6 +681,7 @@ export class AntiEntropy {
   manualRequest(): void {
     if (this.closed) return;
     const now = this.clock.now();
+    this.acknowledgmentAt = undefined;
     this.lastRequestAt = now;
     this.periodicAt = now + this.jitteredInterval();
     this.arm();
@@ -776,7 +800,18 @@ export class AntiEntropy {
         : this.gapSince !== undefined
           ? earliest
           : this.periodicAt;
-    return Math.max(wanted, earliest, this.requestRetryAt);
+    const at = Math.max(wanted, earliest, this.requestRetryAt);
+    if (this.acknowledgmentAt === undefined) return at;
+    return Math.min(
+      at,
+      Math.max(
+        this.acknowledgmentAt,
+        this.lastRequestAt === undefined
+          ? 0
+          : this.lastRequestAt + MIN_REQUEST_INTERVAL_MS,
+        this.requestRetryAt,
+      ),
+    );
   }
 
   private nextLoadAt(): number | undefined {
@@ -836,10 +871,17 @@ export class AntiEntropy {
       this.waitingForToken = false;
       this.budget.wait(false);
     }
+    const acknowledging = this.acknowledgmentAt !== undefined;
+    const acknowledgments = this.acknowledgments;
     const triggers: AntiEntropyTrigger[] =
       this.triggers.size > 0
         ? [...this.triggers]
-        : [this.gapSince !== undefined ? this.gapTrigger : 'periodic'];
+        : this.gapSince !== undefined
+          ? [this.gapTrigger]
+          : acknowledging
+            ? []
+            : ['periodic'];
+    if (acknowledging) triggers.push('acknowledgment');
     this.triggers.clear();
     this.phase = 'requesting';
     let outcome: AntiEntropyRequestOutcome | 'failed';
@@ -852,6 +894,8 @@ export class AntiEntropy {
     }
     if (this.closed) return;
     const at = this.clock.now();
+    if (this.acknowledgments === acknowledgments)
+      this.acknowledgmentAt = undefined;
     if (outcome === 'sent') this.requests++;
     this.lastRequestAt = at;
     this.periodicAt = at + this.jitteredInterval();

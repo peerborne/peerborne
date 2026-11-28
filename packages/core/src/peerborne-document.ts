@@ -8474,10 +8474,10 @@ export class PeerborneDocument<
       throw new Error(
         'Legacy document operations are unavailable in coordinated mode',
       );
-    const outcome = await this._runStateMutation(() =>
-      this._publishSyncRequest(true),
-    );
-    if (outcome === 'sent') this._antiEntropy?.manualRequest();
+    await this._runStateMutation(async () => {
+      if ((await this._publishSyncRequest(true)) === 'sent')
+        this._antiEntropy?.manualRequest();
+    });
   }
 
   private async _publishSyncRequest(
@@ -10028,7 +10028,7 @@ export class PeerborneDocument<
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
-      if (applied) {
+      if (applied && receiveAdmission.active) {
         this._antiEntropy?.memberPeer(sender);
         this._confirmDeliveryByMessage(message);
       }
@@ -10429,7 +10429,13 @@ export class PeerborneDocument<
       }
       return await this._runStateMutation(async () => {
         if (!isActive()) return false;
-        return this._syncUnlocked(
+        const antiEntropy = this._antiEntropy;
+        const { changeId } = message;
+        const newlyHeld =
+          antiEntropy !== undefined &&
+          changeId !== undefined &&
+          !this._holdsChange(changeId);
+        const applied = await this._syncUnlocked(
           message,
           true,
           'ordinary-sync-v1',
@@ -10445,6 +10451,9 @@ export class PeerborneDocument<
             remoteFetches,
           },
         );
+        if (applied && newlyHeld && isActive() && this._holdsChange(changeId))
+          antiEntropy.acknowledge();
+        return applied;
       });
     } finally {
       remoteFetches?.end();
@@ -11149,7 +11158,10 @@ export class PeerborneDocument<
    * a sync request signed by a member's key that names that peer as its
    * publisher. This is evidence of delivery, not an acknowledgment that a
    * member stored it. A load served to a member is not evidence until the
-   * member's next sync request names the change.
+   * member's next sync request names the change. A member with automatic
+   * catch-up sends that request one to two seconds after a frame adds a
+   * change, so a change that reaches members only through a relay clears
+   * within a few seconds.
    * Local update handlers see the value after their change. A coordinated
    * document never sets it.
    */

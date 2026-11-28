@@ -556,7 +556,7 @@
     },
     {
       "id": "automatic-catch-up-scheduling",
-      "formalBoundary": "Generated signal histories with fake time cover timer, request spacing and load scheduling bounds. The scheduler property for an uncorroborated advertisement varies connection state, writer status, freshness and authorization revision. Signed native and real relay tests cover the runtime identity binding and authenticated load; the scheduler properties have no corresponding proof.",
+      "formalBoundary": "Generated signal histories with fake time cover timer counts, request spacing, bounded and coalesced acknowledgments for applied changes, and load scheduling. The property for an uncorroborated advertisement varies connection state, writer status, freshness and authorization revision. Signed native and real relay tests cover runtime identity binding, acknowledgment after a local apply and authenticated loads. The scheduler properties have no corresponding proof.",
       "evidence": [
         "packages/core/src/anti-entropy-properties.test.ts",
         "packages/core/src/anti-entropy.test.ts"

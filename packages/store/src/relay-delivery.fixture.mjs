@@ -102,6 +102,7 @@ async function startPeer(
   trustedWriters,
   identity,
   antiEntropy = { enabled: false },
+  blocked = new Set(),
 ) {
   identity ??= await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-384' },
@@ -144,7 +145,14 @@ async function startPeer(
             globalSignaturePolicy: 'StrictSign',
           }),
         },
-        connectionGater: { denyDialMultiaddr: async () => false },
+        connectionGater: {
+          denyDialMultiaddr: async () => false,
+          denyDialPeer: async (peer) => blocked.has(peer.toString()),
+          denyInboundEncryptedConnection: async (peer) =>
+            blocked.has(peer.toString()),
+          denyOutboundEncryptedConnection: async (peer) =>
+            blocked.has(peer.toString()),
+        },
       },
     },
     pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
@@ -346,4 +354,86 @@ test('a relay that republishes a member frame under its own PeerId is not a prov
 
 test('a relay that only holds a member frame is not a proven member', async () => {
   await republishScenario('/relay-delivery/control', false);
+});
+
+test('through a forwarding relay alone, a member acknowledges each edit within seconds, and a relay replaying the acknowledgment proves nothing', async () => {
+  const path = '/relay-delivery/acknowledged';
+  const topic = documentTopic(path, DEFAULT_DOCUMENT_TOPIC_PREFIX);
+  const { relay, address } = await startRelay({ autoSubscribe: true });
+  const writers = [];
+  const a = await startPeer(address, writers, undefined, {});
+  writers.push(a.identity.publicKey);
+  const document = a.swarm.doc(path);
+  await document.create();
+  await document.change(set('n', 0));
+  const blocked = new Set();
+  const b = await startPeer(address, writers, a.identity, {}, blocked);
+  const replica = b.swarm.doc(path);
+  replica._keychain.merge(document._keychain.history());
+  await replica._keychain.keys();
+  await b.swarm.connect([a.circuit]);
+  assert.equal(await replica.open(), true);
+  blocked.add(a.libp2p.peerId.toString());
+  for (const connection of b.libp2p.getConnections(a.libp2p.peerId))
+    await connection.close();
+  await until(
+    'the link between A and B to close',
+    () => a.libp2p.getConnections(b.libp2p.peerId).length === 0,
+  );
+  let acknowledgment;
+  relay.services.pubsub.addEventListener('message', (event) => {
+    if (
+      event.detail.topic === topic &&
+      String(event.detail.from) === b.libp2p.peerId.toString()
+    )
+      acknowledgment = event.detail.data;
+  });
+  await until('the relay to see B on the topic', () =>
+    relay.services.pubsub
+      .getSubscribers(topic)
+      .some((peer) => peer.equals(b.libp2p.peerId)),
+  );
+
+  for (let n = 1; n <= 3; n++) {
+    await delay(2_500);
+    await document.change(set('n', n));
+    assert.ok(undelivered(document));
+    assert.deepEqual(
+      a.libp2p.services.pubsub.getSubscribers(topic).map(String),
+      [relay.peerId.toString()],
+    );
+    await until(`B to receive edit ${n}`, () => valueOf(replica, 'n') === n);
+    await until(
+      `B to acknowledge edit ${n}`,
+      () => document.deliveryFailure === undefined,
+      5_000,
+    );
+  }
+
+  assert.ok(acknowledgment);
+  await replica.close();
+  await b.swarm.heliaNode.stop();
+  await until(
+    'the relay to drop B',
+    () =>
+      !relay.services.pubsub
+        .getSubscribers(topic)
+        .some((peer) => peer.equals(b.libp2p.peerId)),
+  );
+  await document.change(set('n', 4));
+  assert.ok(undelivered(document));
+  let replayed = 0;
+  a.libp2p.services.pubsub.addEventListener('message', (event) => {
+    if (
+      event.detail.topic === topic &&
+      String(event.detail.from) === relay.peerId.toString()
+    )
+      replayed++;
+  });
+  await relay.services.pubsub.publish(topic, acknowledgment);
+  await until('A to receive the replayed acknowledgment', () => replayed > 0);
+  await delay(6_000);
+  assert.ok(undelivered(document));
+  await document.change(set('n', 5));
+  assert.ok(undelivered(document));
 });

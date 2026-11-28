@@ -368,4 +368,46 @@ describe('a GossipSub frame citing a block this replica lacks', () => {
     expect(options.prefetchedBlocks).toBe(undefined);
     expect(options.frameBytes).toBe(123);
   });
+
+  test('acknowledges a newly held change once across concurrent frame deliveries', async () => {
+    const acknowledge = jest.fn();
+    const document = fakeDocument({
+      _antiEntropy: { acknowledge },
+      _syncUnlocked: jest.fn(async () => {
+        document._hashes.add('ROOT');
+        return true;
+      }),
+    });
+    document._hashes.add('MISSING');
+
+    await Promise.all([
+      document._syncGossipMessage(message, () => true),
+      document._syncGossipMessage(message, () => true),
+    ]);
+    expect(document._syncUnlocked).toHaveBeenCalledTimes(2);
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['rejected', 'missing', 'closed'] as const)(
+    'does not acknowledge an ordinary frame that is %s during apply',
+    async (result) => {
+      let active = true;
+      const acknowledge = jest.fn();
+      const document = fakeDocument({
+        _antiEntropy: { acknowledge },
+        _syncUnlocked: jest.fn(async () => {
+          if (result === 'closed') {
+            document._hashes.add('ROOT');
+            active = false;
+          }
+          return result !== 'rejected';
+        }),
+      });
+      document._hashes.add('MISSING');
+
+      await document._syncGossipMessage(message, () => active);
+      expect(document._syncUnlocked).toHaveBeenCalledTimes(1);
+      expect(acknowledge).not.toHaveBeenCalled();
+    },
+  );
 });
