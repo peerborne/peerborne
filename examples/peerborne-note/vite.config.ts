@@ -49,6 +49,7 @@ export default defineConfig(({ mode }) => {
   const renderedPagesHeaders = renderPagesHeaders(
     readFileSync(new URL('./public/_headers', import.meta.url), 'utf8'),
     relayConnectSource,
+    mode === 'deployment',
   );
   return {
     plugins: [
