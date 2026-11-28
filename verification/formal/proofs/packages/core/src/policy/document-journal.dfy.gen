@@ -3,7 +3,52 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+datatype DocumentCheckpointPhase = private | authorized | anchored | visible | poisoned
+
+datatype DocumentCheckpointEvent = authorize | anchor | expose | fail
+
 datatype DocumentJournalReadPlan = DocumentJournalReadPlan(entries: int, publications: int, pending: bool, pendingToken: bool, rowReads: int)
+
+function advanceDocumentCheckpoint(phase: DocumentCheckpointPhase, event: DocumentCheckpointEvent, checksPassed: bool): DocumentCheckpointPhase
+{
+  if event.fail? then
+    if phase.private? then
+      phase
+    else
+      DocumentCheckpointPhase.poisoned
+  else
+    if !(checksPassed) then
+      phase
+    else
+      if (phase.private? && event.authorize?) then
+        DocumentCheckpointPhase.authorized
+      else
+        if (phase.authorized? && event.anchor?) then
+          DocumentCheckpointPhase.anchored
+        else
+          if (phase.anchored? && event.expose?) then
+            DocumentCheckpointPhase.visible
+          else
+            phase
+}
+
+lemma advanceDocumentCheckpoint_ensures(phase: DocumentCheckpointPhase, event: DocumentCheckpointEvent, checksPassed: bool)
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).poisoned? <==> (phase.poisoned? || (event.fail? && (!phase.private?))))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).visible? <==> ((phase.visible? && (!event.fail?)) || ((phase.anchored? && event.expose?) && checksPassed)))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).anchored? <==> (((phase.anchored? && (!event.fail?)) && !((event.expose? && checksPassed))) || ((phase.authorized? && event.anchor?) && checksPassed)))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).authorized? <==> (((phase.authorized? && (!event.fail?)) && !((event.anchor? && checksPassed))) || ((phase.private? && event.authorize?) && checksPassed)))
+{
+}
+
+function canActivateRecoveredDocument(recovered: bool, usable: bool, authorityCurrent: bool): bool
+{
+  ((recovered && usable) && authorityCurrent)
+}
+
+lemma canActivateRecoveredDocument_ensures(recovered: bool, usable: bool, authorityCurrent: bool)
+  ensures (canActivateRecoveredDocument(recovered, usable, authorityCurrent) <==> ((recovered && usable) && authorityCurrent))
+{
+}
 
 function planDocumentJournalRead(entries: int, publications: int, hasPending: bool, recovery: bool): DocumentJournalReadPlan
   requires (0 <= entries)

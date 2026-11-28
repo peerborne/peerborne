@@ -3,7 +3,52 @@
 
 datatype DocumentJournalRecovery = current | finish_anchor | reject
 
+datatype DocumentCheckpointPhase = private | authorized | anchored | visible | poisoned
+
+datatype DocumentCheckpointEvent = authorize | anchor | expose | fail
+
 datatype DocumentJournalReadPlan = DocumentJournalReadPlan(entries: int, publications: int, pending: bool, pendingToken: bool, rowReads: int)
+
+function advanceDocumentCheckpoint(phase: DocumentCheckpointPhase, event: DocumentCheckpointEvent, checksPassed: bool): DocumentCheckpointPhase
+{
+  if event.fail? then
+    if phase.private? then
+      phase
+    else
+      DocumentCheckpointPhase.poisoned
+  else
+    if !(checksPassed) then
+      phase
+    else
+      if (phase.private? && event.authorize?) then
+        DocumentCheckpointPhase.authorized
+      else
+        if (phase.authorized? && event.anchor?) then
+          DocumentCheckpointPhase.anchored
+        else
+          if (phase.anchored? && event.expose?) then
+            DocumentCheckpointPhase.visible
+          else
+            phase
+}
+
+lemma advanceDocumentCheckpoint_ensures(phase: DocumentCheckpointPhase, event: DocumentCheckpointEvent, checksPassed: bool)
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).poisoned? <==> (phase.poisoned? || (event.fail? && (!phase.private?))))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).visible? <==> ((phase.visible? && (!event.fail?)) || ((phase.anchored? && event.expose?) && checksPassed)))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).anchored? <==> (((phase.anchored? && (!event.fail?)) && !((event.expose? && checksPassed))) || ((phase.authorized? && event.anchor?) && checksPassed)))
+  ensures (advanceDocumentCheckpoint(phase, event, checksPassed).authorized? <==> (((phase.authorized? && (!event.fail?)) && !((event.anchor? && checksPassed))) || ((phase.private? && event.authorize?) && checksPassed)))
+{
+}
+
+function canActivateRecoveredDocument(recovered: bool, usable: bool, authorityCurrent: bool): bool
+{
+  ((recovered && usable) && authorityCurrent)
+}
+
+lemma canActivateRecoveredDocument_ensures(recovered: bool, usable: bool, authorityCurrent: bool)
+  ensures (canActivateRecoveredDocument(recovered, usable, authorityCurrent) <==> ((recovered && usable) && authorityCurrent))
+{
+}
 
 function planDocumentJournalRead(entries: int, publications: int, hasPending: bool, recovery: bool): DocumentJournalReadPlan
   requires (0 <= entries)
@@ -306,9 +351,98 @@ lemma journalRecovery_exposure(stored: int, anchored: int, commitmentMatches: bo
   canExposeDocumentJournalRecovery_ensures(recovery, finalAnchorMatches);
 }
 
+datatype CheckpointObservation = CheckpointObservation(event: DocumentCheckpointEvent, passed: bool)
+
+// The flags describe earlier successful transitions in the same attempt.
+predicate CheckpointHistorySafe(
+    phase: DocumentCheckpointPhase, observations: seq<CheckpointObservation>,
+    authorized: bool, anchored: bool, exposed: bool)
+  decreases |observations|
+{
+  |observations| == 0 ||
+    (var observation := observations[0];
+     var next := advanceDocumentCheckpoint(phase, observation.event, observation.passed);
+     (next.anchored? && !phase.anchored? ==> authorized) &&
+     (next.visible? && !phase.visible? ==> authorized && anchored && !exposed) &&
+     CheckpointHistorySafe(next, observations[1..],
+       authorized || next.authorized?, anchored || next.anchored?, exposed || next.visible?))
+}
+
+lemma documentCheckpoint_all_histories(
+    phase: DocumentCheckpointPhase, observations: seq<CheckpointObservation>,
+    authorized: bool, anchored: bool, exposed: bool)
+  requires phase.authorized? || phase.anchored? || phase.visible? ==> authorized
+  requires phase.anchored? || phase.visible? ==> anchored
+  requires phase.visible? <==> exposed && !phase.poisoned?
+  ensures CheckpointHistorySafe(phase, observations, authorized, anchored, exposed)
+  decreases |observations|
+{
+  if |observations| > 0 {
+    var observation := observations[0];
+    advanceDocumentCheckpoint_ensures(phase, observation.event, observation.passed);
+    var next := advanceDocumentCheckpoint(phase, observation.event, observation.passed);
+    documentCheckpoint_all_histories(next, observations[1..],
+      authorized || next.authorized?, anchored || next.anchored?, exposed || next.visible?);
+  }
+}
+
+lemma documentCheckpoint_restart(
+    stored: int, anchor: int, priorAccepted: int,
+    commitmentMatches: bool, parentMatches: bool, markerAuthenticated: bool,
+    finalAnchorMatches: bool, authorityHistoryExtends: bool,
+    diverged: bool, documentUsable: bool, leaseCurrent: bool)
+  requires 0 <= stored <= 9007199254740991
+  requires 0 <= priorAccepted <= anchor <= 9007199254740991
+  ensures canActivateRecoveredDocument(
+    canExposeDocumentJournalRecovery(
+      classifyDocumentJournalRecovery(stored, anchor, commitmentMatches, parentMatches, markerAuthenticated),
+      finalAnchorMatches) && authorityHistoryExtends && !diverged, documentUsable, leaseCurrent)
+    <==> (markerAuthenticated && finalAnchorMatches && authorityHistoryExtends &&
+      !diverged && documentUsable && leaseCurrent &&
+      ((stored == anchor && commitmentMatches) || (stored == anchor + 1 && parentMatches)))
+  ensures stored < priorAccepted ==> !canActivateRecoveredDocument(
+    canExposeDocumentJournalRecovery(
+      classifyDocumentJournalRecovery(stored, anchor, commitmentMatches, parentMatches, markerAuthenticated),
+      finalAnchorMatches) && authorityHistoryExtends && !diverged, documentUsable, leaseCurrent)
+{
+  var classification := classifyDocumentJournalRecovery(stored, anchor, commitmentMatches, parentMatches, markerAuthenticated);
+  journalRecovery_exposure(stored, anchor, commitmentMatches, parentMatches, markerAuthenticated, finalAnchorMatches);
+  canActivateRecoveredDocument_ensures(
+    canExposeDocumentJournalRecovery(classification, finalAnchorMatches) && authorityHistoryExtends && !diverged,
+    documentUsable, leaseCurrent);
+}
+
+method documentCheckpoint_domain()
+{
+  var observations := [
+    CheckpointObservation(DocumentCheckpointEvent.expose, true),
+    CheckpointObservation(DocumentCheckpointEvent.authorize, true),
+    CheckpointObservation(DocumentCheckpointEvent.anchor, true),
+    CheckpointObservation(DocumentCheckpointEvent.expose, false),
+    CheckpointObservation(DocumentCheckpointEvent.expose, true),
+    CheckpointObservation(DocumentCheckpointEvent.fail, true),
+    CheckpointObservation(DocumentCheckpointEvent.expose, true)
+  ];
+  documentCheckpoint_all_histories(DocumentCheckpointPhase.private, observations, false, false, false);
+  var authorized := advanceDocumentCheckpoint(DocumentCheckpointPhase.private, DocumentCheckpointEvent.authorize, true);
+  var anchored := advanceDocumentCheckpoint(authorized, DocumentCheckpointEvent.anchor, true);
+  assert advanceDocumentCheckpoint(anchored, DocumentCheckpointEvent.expose, true).visible?;
+  assert !advanceDocumentCheckpoint(authorized, DocumentCheckpointEvent.expose, true).visible?;
+  assert !advanceDocumentCheckpoint(anchored, DocumentCheckpointEvent.expose, false).visible?;
+  var poisoned := advanceDocumentCheckpoint(anchored, DocumentCheckpointEvent.fail, true);
+  assert advanceDocumentCheckpoint(poisoned, DocumentCheckpointEvent.expose, true).poisoned?;
+  documentCheckpoint_restart(2, 1, 1, false, true, true, true, true, false, true, true);
+  documentCheckpoint_restart(0, 1, 1, false, true, true, true, true, false, true, true);
+  documentCheckpoint_restart(1, 1, 1, true, false, true, true, false, false, true, true);
+  documentCheckpoint_restart(1, 1, 1, true, false, true, true, true, true, true, true);
+  assert canActivateRecoveredDocument(true, true, true);
+  assert !canActivateRecoveredDocument(true, true, false);
+}
+
 method documentJournal_domain()
 {
   publicationLedger_domain();
+  documentCheckpoint_domain();
   assert isAcceptedDocumentPublication(1, 1, 1);
   assert !isAcceptedDocumentPublication(1, 1, 0);
   assert !isAcceptedDocumentPublication(2, 1, 2);
