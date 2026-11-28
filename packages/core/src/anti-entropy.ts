@@ -196,8 +196,22 @@ export interface AntiEntropyHost {
   /** An authenticated load can be attempted. */
   canLoad(): boolean;
   isConnected(peer: string): boolean;
+  /** Check that the writer authorization and advertisement are still current. */
+  canLoadFromSoleWriter?(writer: SoleWriterAdvertisement): boolean;
   /** Run the authenticated load, preferring `peer`, until `signal` aborts. */
-  load(peer: string | undefined, signal: AbortSignal): Promise<boolean>;
+  load(
+    peer: string | undefined,
+    signal: AbortSignal,
+    soleWriter?: SoleWriterAdvertisement,
+  ): Promise<boolean>;
+}
+
+/** A verified sync request from the document's sole writer. */
+export interface SoleWriterAdvertisement {
+  readonly member: string;
+  readonly peer: string;
+  readonly writerVersion: number;
+  readonly issuedAtMs: number;
 }
 
 export interface AntiEntropyClock {
@@ -339,9 +353,9 @@ const MAX_REQUEST_BACKOFF = 8;
 const MAX_LOAD_BACKOFF = 64;
 const MAX_ADVERTISEMENT_CHECKS = 4;
 const ADVERTISEMENT_CHECK_REFILL_MS = 2_000;
-// A head is loaded for only when this many members advertise it.
+// This many equivalent advertisements substitute for local evidence.
 const CORROBORATING_MEMBERS = 2;
-// Loads one gap may start from local evidence alone.
+// Loads one gap may start without corroboration.
 const MAX_LOCAL_GAP_LOADS = 3;
 const MEMBER_PEER_TTL_MS = 60 * 60 * 1000;
 const UNRESOLVED_CHANGE_TTL_MS = 60 * 60 * 1000;
@@ -366,6 +380,7 @@ interface Advertisement {
   readonly head: string;
   readonly writer: boolean;
   readonly at: number;
+  readonly soleWriter?: SoleWriterAdvertisement;
 }
 
 /** Settle with `work`, or reject once `signal` aborts, whichever is first. */
@@ -550,7 +565,13 @@ export class AntiEntropy {
    */
   admitAdvertisement(member: string, head: string): boolean {
     if (this.closed || this.host.isKnown(head)) return false;
-    if (this.advertised.get(member)?.head === head) return false;
+    const previous = this.advertised.get(member);
+    if (
+      previous?.head === head &&
+      (previous.soleWriter === undefined ||
+        this.canLoadFromSoleWriter(previous.soleWriter))
+    )
+      return false;
     const now = this.clock.now();
     const penalty = this.penalties.get(member);
     if (
@@ -574,12 +595,20 @@ export class AntiEntropy {
     peer: string,
     head: string,
     writer: boolean,
+    soleWriter?: Pick<SoleWriterAdvertisement, 'writerVersion' | 'issuedAtMs'>,
   ): void {
     if (this.closed || this.host.isKnown(head)) return;
     remember(
       this.advertised,
       member,
-      { peer, head, writer, at: this.clock.now() },
+      {
+        peer,
+        head,
+        writer,
+        at: this.clock.now(),
+        soleWriter:
+          writer && soleWriter ? { ...soleWriter, member, peer } : undefined,
+      },
       MAX_ADVERTISERS,
     );
     this.gap('advertised-state', member);
@@ -859,12 +888,32 @@ export class AntiEntropy {
     return undefined;
   }
 
+  private canLoadFromSoleWriter(writer: SoleWriterAdvertisement): boolean {
+    return (
+      this.host.isConnected(writer.peer) &&
+      this.host.canLoadFromSoleWriter?.(writer) === true
+    );
+  }
+
   private async runLoad(now: number): Promise<void> {
     const corroborated = this.corroboratedHead();
+    const mayLoadWithoutCorroboration =
+      this.localGapLoads < MAX_LOCAL_GAP_LOADS;
     const localGap =
-      this.localGapLoads < MAX_LOCAL_GAP_LOADS &&
+      mayLoadWithoutCorroboration &&
       (this.missing.size > 0 || this.host.hasPendingChanges());
-    if (!this.host.canLoad() || (corroborated === undefined && !localGap)) {
+    const soleWriter =
+      mayLoadWithoutCorroboration && corroborated === undefined && !localGap
+        ? [...this.advertised.values()].find(
+            ({ soleWriter }) =>
+              soleWriter !== undefined &&
+              this.canLoadFromSoleWriter(soleWriter),
+          )?.soleWriter
+        : undefined;
+    if (
+      !this.host.canLoad() ||
+      (corroborated === undefined && !localGap && soleWriter === undefined)
+    ) {
       // Without the load path or enough evidence, unfetched changes escalate
       // no further and advertisements wait for corroboration or expiry.
       if (!this.host.canLoad()) this.abandonMissing(now);
@@ -873,6 +922,7 @@ export class AntiEntropy {
       return;
     }
     const peer =
+      soleWriter?.peer ??
       this.loadTarget(corroborated?.members ?? []) ??
       this.loadTarget(this.advertised.keys());
     const release = this.budget.acquireLoad(peer, now);
@@ -891,7 +941,7 @@ export class AntiEntropy {
     let outcome: AntiEntropyLoadOutcome;
     try {
       outcome = (await untilAborted(
-        this.host.load(peer, loading.signal),
+        this.host.load(peer, loading.signal, soleWriter),
         loading.signal,
       ))
         ? 'loaded'

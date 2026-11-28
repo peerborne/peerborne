@@ -206,6 +206,12 @@ jobs:
       - name: Run advanced crypto and adversarial diagnostics
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node --expose-gc verification/advanced/run.mjs --profile "$PEERBORNE_VERIFY_PROFILE"
+      - name: Require large-document recovery over Circuit Relay
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >-
+          node --expose-gc verification/advanced/run.mjs
+          --scenario large-catch-up-load --profile smoke --strict --timeout-ms 240000
+          --output verification/results/acceptance/large-catch-up-load.json
       - name: Install Chromium
         id: chromium
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
