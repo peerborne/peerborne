@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
-import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
+import { Crypto as PeculiarCrypto } from 'peerborne-webcrypto-test-provider';
 import { SubtleCrypto } from './auth-subtlecrypto.js';
 import type { AesAlgorithmName } from './auth-provider.js';
 import { importSymmetricKey } from './utils.js';

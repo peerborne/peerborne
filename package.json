@@ -19,10 +19,14 @@
     "examples/integrations",
     "examples/nextjs",
     "examples/tanstack-start",
-    "site"
+    "site",
+    "verification/webcrypto-provider"
   ],
   "resolutions": {
-    "@peculiar/asn1-schema": "^2.11.1",
+    "@peculiar/asn1-schema@npm:^2.4.0": "^2.11.1",
+    "@peculiar/asn1-schema@npm:^2.6.0": "^2.11.1",
+    "@peculiar/asn1-schema@npm:^2.7.0": "^2.11.1",
+    "@peculiar/asn1-schema@npm:^2.11.0": "^2.11.1",
     "dompurify": "3.5.0",
     "glob": "14.0.6",
     "minimatch": "11.0.9",

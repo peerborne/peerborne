@@ -52,7 +52,6 @@
     "node": ">=26.13.1"
   },
   "devDependencies": {
-    "@peculiar/webcrypto": "^1.7.2",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.3.1",

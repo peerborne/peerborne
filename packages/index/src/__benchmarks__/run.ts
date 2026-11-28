@@ -8,14 +8,8 @@
 import * as fs from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
-import { Crypto } from '@peculiar/webcrypto';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-
-// Install WebCrypto polyfill for Node.js
-if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
-  (globalThis as any).crypto = new Crypto();
-}
 
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './paper-benchmark-runner.js';
 import { runIndexQueryScalingBenchmarks } from './index-query-scaling.js';

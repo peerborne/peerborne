@@ -25,6 +25,7 @@ RUN mkdir -p /app/examples/browser-test
 RUN mkdir -p /app/examples/wiki-swarm
 RUN mkdir -p /app/examples/password-manager
 COPY packages/core/package.json /app/packages/core/package.json
+COPY verification/webcrypto-provider/package.json /app/verification/webcrypto-provider/package.json
 COPY packages/automerge/package.json /app/packages/automerge/package.json
 COPY packages/yjs/package.json /app/packages/yjs/package.json
 COPY packages/store/package.json /app/packages/store/package.json

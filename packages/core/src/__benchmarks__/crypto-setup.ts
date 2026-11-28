@@ -1,15 +1,4 @@
 /**
- * Shared crypto setup for benchmarks.
- * Uses @peculiar/webcrypto polyfill for Node.js environments.
- */
-import { Crypto } from '@peculiar/webcrypto';
-
-// Install polyfill if needed
-if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
-  (globalThis as any).crypto = new Crypto();
-}
-
-/**
  * Generate an ECDSA P-384 key pair for signing/verification benchmarks.
  */
 export async function generateSigningKeyPair(): Promise<CryptoKeyPair> {

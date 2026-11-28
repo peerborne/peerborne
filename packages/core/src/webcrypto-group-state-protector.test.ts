@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
+import { Crypto as PeculiarCrypto } from 'peerborne-webcrypto-test-provider';
 import { runInNewContext } from 'node:vm';
 
 import {

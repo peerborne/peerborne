@@ -1,3 +1,6 @@
-const { Crypto } = require("@peculiar/webcrypto");
+const { webcrypto } = require("node:crypto");
 
-globalThis.crypto = new Crypto();
+Object.defineProperty(globalThis, "crypto", {
+  configurable: true,
+  value: webcrypto,
+});

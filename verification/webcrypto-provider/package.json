@@ -1,0 +1,17 @@
+{
+  "name": "peerborne-webcrypto-test-provider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./index.js",
+  "installConfig": {
+    "hoistingLimits": "workspaces"
+  },
+  "dependencies": {
+    "@peculiar/asn1-schema": "^3.0.0",
+    "@peculiar/json-schema": "^3.0.0",
+    "@peculiar/webcrypto": "^2.0.0",
+    "asn1js": "^4.0.0",
+    "webcrypto-core": "^2.0.0"
+  }
+}

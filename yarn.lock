@@ -3950,6 +3950,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-schema@npm:^3.0.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-schema@npm:3.1.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    asn1js: ^4.0.0
+  checksum: 10/0de593fb1d5fc5762d9095c96126545804681a041166ff1e75197d8a0a5dbb217decf29b13f9dd78cc8a60c289396bf0307b612f1dd9e29565981abcef2afea5
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-x509-attr@npm:^2.11.1":
   version: 2.11.1
   resolution: "@peculiar/asn1-x509-attr@npm:2.11.1"
@@ -3996,6 +4007,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/json-schema@npm:^3.0.0":
+  version: 3.0.0
+  resolution: "@peculiar/json-schema@npm:3.0.0"
+  checksum: 10/eb0a3eeeeafd859c962f22571d7c1ceb33e7d621ea95598b1bd59ca8083db047fa20d66ff0cb1fd63053802d6169218e8793a6c76d4ad07376c65439eba182ff
+  languageName: node
+  linkType: hard
+
 "@peculiar/utils@npm:^2.0.2":
   version: 2.0.3
   resolution: "@peculiar/utils@npm:2.0.3"
@@ -4005,7 +4023,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@peculiar/webcrypto@npm:^1.5.0, @peculiar/webcrypto@npm:^1.7.2":
+"@peculiar/utils@npm:^4.1.0":
+  version: 4.1.1
+  resolution: "@peculiar/utils@npm:4.1.1"
+  checksum: 10/25c3f475a1cfb964440b0100ad812d050aea4d4bf6e41c2df4be182ee4ef93cb0ea9cc206b0e1df6a5e633661d469db08573f0fd73a434a789d21fba149a0719
+  languageName: node
+  linkType: hard
+
+"@peculiar/webcrypto@npm:^1.5.0":
   version: 1.7.2
   resolution: "@peculiar/webcrypto@npm:1.7.2"
   dependencies:
@@ -4015,6 +4040,19 @@ __metadata:
     tslib: "npm:^2.8.1"
     webcrypto-core: "npm:^1.9.2"
   checksum: 10/fbd0ac47179f7b0b481267c7ee70b05c05d1575d7482f44f40a2018411a23b74b60fa0eaf9a7da4805a891e78fd76e6afb21cc746fbf69676c8ef3747ce5be7a
+  languageName: node
+  linkType: hard
+
+"@peculiar/webcrypto@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@peculiar/webcrypto@npm:2.0.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.0.0
+    "@peculiar/json-schema": ^3.0.0
+    webcrypto-core: ^2.0.0
+  checksum: 10/2d44aa512b4ed5801c3d622a3458243927de8aaf4881bcfd25fb1e6795bfe92b4f82fa62256fa2c600c5101d325f17034accfbef42885193322bc6275a021f92
   languageName: node
   linkType: hard
 
@@ -4061,7 +4099,6 @@ __metadata:
   resolution: "@peerborne/automerge@workspace:packages/automerge"
   dependencies:
     "@automerge/automerge": "npm:^3.5.0"
-    "@peculiar/webcrypto": "npm:^1.7.2"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.7"
     eslint: "npm:^10.15.0"
@@ -4146,7 +4183,6 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.26"
     "@libp2p/webtransport": "npm:^6.0.45"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@peculiar/webcrypto": "npm:^1.7.2"
     "@types/node": "npm:^26.6.7"
     blockstore-core: "npm:^7.0.1"
     blockstore-idb: "npm:^4.0.1"
@@ -4162,6 +4198,7 @@ __metadata:
     js-base64: "npm:^3.9.7"
     libp2p: "npm:^3.5.2"
     multiformats: "npm:^14.0.7"
+    peerborne-webcrypto-test-provider: "workspace:*"
     ts-jest: "npm:^29.4.15"
     ts-node: "npm:^10.9.2"
     tsx: "npm:4.23.15"
@@ -4175,7 +4212,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/index@workspace:packages/index"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
     "@peerborne/core": "workspace:^"
     "@testing-library/dom": "npm:^10.4.2"
     "@testing-library/react": "npm:^16.3.3"
@@ -4338,7 +4374,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/react@workspace:packages/react"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
     "@peerborne/core": "workspace:^"
     "@peerborne/store": "workspace:^"
     "@testing-library/dom": "npm:^10.4.2"
@@ -4517,7 +4552,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@peerborne/yjs@workspace:packages/yjs"
   dependencies:
-    "@peculiar/webcrypto": "npm:^1.7.2"
     "@peerborne/core": "workspace:^"
     "@types/node": "npm:^26.6.7"
     eslint: "npm:^10.15.0"
@@ -6673,6 +6707,15 @@ __metadata:
     pvutils: "npm:^1.2.0"
     tslib: "npm:^2.8.1"
   checksum: 10/bc08cdd2ad0bd03606719f2153660ba0641d548c40ee137c79369fddcccaf3e2a0a0e4c5893e677ae74b21e2356d177654464efaee519a30f2f2891de9dc6471
+  languageName: node
+  linkType: hard
+
+"asn1js@npm:^4.0.0":
+  version: 4.1.0
+  resolution: "asn1js@npm:4.1.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  checksum: 10/3795c8c1062af009aeace0fe5d8f5f9920968464da288e920e6de87645c4883ff6cee70b08e98265ae81f5b9d39e056314e9199aaeffbe735566e6528198efa3
   languageName: node
   linkType: hard
 
@@ -12695,6 +12738,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"peerborne-webcrypto-test-provider@workspace:*, peerborne-webcrypto-test-provider@workspace:verification/webcrypto-provider":
+  version: 0.0.0-use.local
+  resolution: "peerborne-webcrypto-test-provider@workspace:verification/webcrypto-provider"
+  dependencies:
+    "@peculiar/asn1-schema": "npm:^3.0.0"
+    "@peculiar/json-schema": "npm:^3.0.0"
+    "@peculiar/webcrypto": "npm:^2.0.0"
+    asn1js: "npm:^4.0.0"
+    webcrypto-core: "npm:^2.0.0"
+  languageName: unknown
+  linkType: soft
+
 "piccolore@npm:^0.1.3":
   version: 0.1.3
   resolution: "piccolore@npm:0.1.3"
@@ -15747,6 +15802,19 @@ __metadata:
     asn1js: "npm:^3.0.10"
     tslib: "npm:^2.8.1"
   checksum: 10/bb9a21bbd7dc1c2fa7ea0bd049e424af333e795c1e57d6c97517a98643517748569ee623a91776c2a3dc4c572f2c49b0c94582889ad8e50ed292b36c3cea48a2
+  languageName: node
+  linkType: hard
+
+"webcrypto-core@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "webcrypto-core@npm:2.0.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.0.0
+    "@peculiar/json-schema": ^3.0.0
+    asn1js: ^4.0.0
+  checksum: 10/3eb91cc9b1732edf37202f35266acd159fcd77ed707ab40a362c23f0ebe46dc33c4d9f3f5b3ac30f36f2661003f8f7c662456513109d6d49dc5c3c5b0ab593d7
   languageName: node
   linkType: hard
 

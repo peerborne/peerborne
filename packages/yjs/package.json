@@ -54,7 +54,6 @@
     "node": ">=26.13.1"
   },
   "devDependencies": {
-    "@peculiar/webcrypto": "^1.7.2",
     "@types/node": "^26.6.7",
     "eslint": "^10.15.0",
     "fast-check": "^4.11.0",
