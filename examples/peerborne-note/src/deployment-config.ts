@@ -59,6 +59,7 @@ export function relayConnectSourceFromMultiaddr(
 export function renderPagesHeaders(
   template: string,
   relayConnectSource: string,
+  deployment = false,
 ): string {
   if (!template.includes(relayConnectSourcePlaceholder)) {
     throw new Error(
@@ -74,8 +75,6 @@ export function renderPagesHeaders(
     .replaceAll(relayConnectSourcePlaceholder, relayConnectSource)
     .replaceAll(
       upgradeInsecureRequestsPlaceholder,
-      relayConnectSource.startsWith('wss://')
-        ? 'upgrade-insecure-requests'
-        : '',
+      deployment ? 'upgrade-insecure-requests' : '',
     );
 }

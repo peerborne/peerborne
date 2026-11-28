@@ -78,13 +78,24 @@ describe('deployment configuration', () => {
     ).toThrow(/Deployment requires/);
   });
 
-  it('pins the rendered CSP to the configured relay host', () => {
+  it('pins the deployment CSP to the configured relay host', () => {
     const rendered = renderPagesHeaders(
       "connect-src 'self' __PEERBORNE_RELAY_CONNECT_SOURCE__; __PEERBORNE_UPGRADE_INSECURE_REQUESTS__",
       'wss://relay.example.com',
+      true,
     );
     expect(rendered).toBe(
       "connect-src 'self' wss://relay.example.com; upgrade-insecure-requests",
+    );
+  });
+
+  it('does not upgrade local preview assets when the relay uses WSS', () => {
+    const rendered = renderPagesHeaders(
+      "connect-src 'self' __PEERBORNE_RELAY_CONNECT_SOURCE__; __PEERBORNE_UPGRADE_INSECURE_REQUESTS__",
+      'wss://relay.peerborne.io',
+    );
+    expect(rendered).toBe(
+      "connect-src 'self' wss://relay.peerborne.io; ",
     );
   });
 
