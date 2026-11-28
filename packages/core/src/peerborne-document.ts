@@ -8444,10 +8444,10 @@ export class PeerborneDocument<
       throw new Error(
         'Legacy document operations are unavailable in coordinated mode',
       );
-    const outcome = await this._runStateMutation(() =>
-      this._publishSyncRequest(true),
-    );
-    if (outcome === 'sent') this._antiEntropy?.manualRequest();
+    await this._runStateMutation(async () => {
+      if ((await this._publishSyncRequest(true)) === 'sent')
+        this._antiEntropy?.manualRequest();
+    });
   }
 
   private async _publishSyncRequest(
@@ -9977,8 +9977,6 @@ export class PeerborneDocument<
       );
       if (message.documentId !== this.documentPath) return;
 
-      const { changeId } = message;
-      const added = changeId !== undefined && !this._holdsChange(changeId);
       const applied = await this._syncGossipMessage(
         message,
         () => receiveAdmission.active,
@@ -9986,11 +9984,9 @@ export class PeerborneDocument<
         // so it must not trigger size-bound compaction.
         message.snapshot === undefined ? rawContent.byteLength : undefined,
       );
-      if (applied) {
+      if (applied && receiveAdmission.active) {
         this._antiEntropy?.memberPeer(sender);
         this._confirmDeliveryByMessage(message);
-        if (added && this._holdsChange(changeId))
-          this._antiEntropy?.acknowledge();
       }
     };
     // A kept frame is retried through the full receive path, which repeats
@@ -10389,7 +10385,13 @@ export class PeerborneDocument<
       }
       return await this._runStateMutation(async () => {
         if (!isActive()) return false;
-        return this._syncUnlocked(
+        const antiEntropy = this._antiEntropy;
+        const { changeId } = message;
+        const newlyHeld =
+          antiEntropy !== undefined &&
+          changeId !== undefined &&
+          !this._holdsChange(changeId);
+        const applied = await this._syncUnlocked(
           message,
           true,
           'ordinary-sync-v1',
@@ -10405,6 +10407,9 @@ export class PeerborneDocument<
             remoteFetches,
           },
         );
+        if (applied && newlyHeld && isActive() && this._holdsChange(changeId))
+          antiEntropy.acknowledge();
+        return applied;
       });
     } finally {
       remoteFetches?.end();

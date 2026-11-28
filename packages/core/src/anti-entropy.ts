@@ -652,6 +652,7 @@ export class AntiEntropy {
   manualRequest(): void {
     if (this.closed) return;
     const now = this.clock.now();
+    this.acknowledgmentAt = undefined;
     this.lastRequestAt = now;
     this.periodicAt = now + this.jitteredInterval();
     this.arm();

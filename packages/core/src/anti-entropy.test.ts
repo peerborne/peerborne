@@ -369,6 +369,21 @@ describe('anti-entropy triggering', () => {
     expect(state.requestTimes).toHaveLength(3);
   });
 
+  test('a sent manual request covers pending acknowledgments and keeps later changes eligible', async () => {
+    const { time, state, antiEntropy } = setup();
+    antiEntropy.start();
+    await time.to(1_000);
+    await time.to(10_000);
+    antiEntropy.acknowledge();
+    await time.to(11_000);
+    antiEntropy.manualRequest();
+    await time.to(20_000);
+    expect(state.requestTimes).toEqual([1_000]);
+    antiEntropy.acknowledge();
+    await time.to(21_500);
+    expect(state.requestTimes).toEqual([1_000, 21_500]);
+  });
+
   test('an acknowledgment that cannot be sent is not retried, and none is scheduled once closed', async () => {
     const { time, state, host, antiEntropy } = setup();
     antiEntropy.start();
