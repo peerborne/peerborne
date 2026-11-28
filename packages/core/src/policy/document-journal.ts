@@ -1,5 +1,40 @@
 export type DocumentJournalRecovery = 'current' | 'finish-anchor' | 'reject';
 
+export type DocumentCheckpointPhase =
+  'private' | 'authorized' | 'anchored' | 'visible' | 'poisoned';
+
+export type DocumentCheckpointEvent =
+  'authorize' | 'anchor' | 'expose' | 'fail';
+
+/** Coordinate the acceptance and visibility of one authenticated checkpoint. */
+export function advanceDocumentCheckpoint(
+  phase: DocumentCheckpointPhase,
+  event: DocumentCheckpointEvent,
+  checksPassed: boolean,
+): DocumentCheckpointPhase {
+  //@ verify
+  //@ ensures (\result === "poisoned") <==> phase === "poisoned" || (event === "fail" && phase !== "private")
+  //@ ensures (\result === "visible") <==> (phase === "visible" && event !== "fail") || (phase === "anchored" && event === "expose" && checksPassed)
+  //@ ensures (\result === "anchored") <==> (phase === "anchored" && event !== "fail" && !(event === "expose" && checksPassed)) || (phase === "authorized" && event === "anchor" && checksPassed)
+  //@ ensures (\result === "authorized") <==> (phase === "authorized" && event !== "fail" && !(event === "anchor" && checksPassed)) || (phase === "private" && event === "authorize" && checksPassed)
+  if (event === 'fail') return phase === 'private' ? phase : 'poisoned';
+  if (!checksPassed) return phase;
+  if (phase === 'private' && event === 'authorize') return 'authorized';
+  if (phase === 'authorized' && event === 'anchor') return 'anchored';
+  if (phase === 'anchored' && event === 'expose') return 'visible';
+  return phase;
+}
+
+export function canActivateRecoveredDocument(
+  recovered: boolean,
+  usable: boolean,
+  authorityCurrent: boolean,
+): boolean {
+  //@ verify
+  //@ ensures \result <==> recovered && usable && authorityCurrent
+  return recovered && usable && authorityCurrent;
+}
+
 export interface DocumentJournalReadPlan {
   readonly entries: number;
   readonly publications: number;

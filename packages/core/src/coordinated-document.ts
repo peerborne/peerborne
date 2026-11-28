@@ -52,6 +52,11 @@ import {
 } from './policy/document-content.js';
 import { admitDocumentCatchUpReceipt } from './policy/document-catch-up.js';
 import {
+  advanceDocumentCheckpoint,
+  canActivateRecoveredDocument,
+  type DocumentCheckpointPhase,
+} from './policy/document-journal.js';
+import {
   decodeDocumentCatchUpCheckpoint,
   decodeDocumentCatchUpRefusal,
   decodeDocumentCatchUpRequest,
@@ -1095,7 +1100,11 @@ export class CoordinatedDocument<
             : undefined;
           return {
             isAuthorizationCurrent: () =>
-              !this.closed && !this.failed && lease.isCurrent(),
+              canActivateRecoveredDocument(
+                this.recovered,
+                !this.closed && !this.failed,
+                lease.isCurrent(),
+              ),
             commit: () => {
               this.rosterBinding = roster;
               this.activated = true;
@@ -3261,7 +3270,11 @@ export class CoordinatedDocument<
   ): Promise<void> {
     let plan: PreparedDocumentChange<Changes> | undefined;
     let journal: PreparedDocumentJournal | undefined;
-    let accepting = false;
+    let phase: DocumentCheckpointPhase = 'private';
+    const failAttempt = () => {
+      phase = advanceDocumentCheckpoint(phase, 'fail', true);
+      if (phase === 'poisoned') this.failed = true;
+    };
     try {
       const { context, receipts, lease } = await this.runCatchUp(
         input,
@@ -3327,9 +3340,20 @@ export class CoordinatedDocument<
       // before the authenticated journal and its independent anchor agree.
       if (!isPending())
         throw new Error('Document catch-up response has no matching request');
-      accepting = true;
+      phase = advanceDocumentCheckpoint(
+        phase,
+        'authorize',
+        !this.closed &&
+          !this.failed &&
+          this.rosterBinding === pending.roster &&
+          lease.isCurrent() &&
+          documentContextsMatch(context, this.options.coordinator.documentContext),
+      );
+      if (phase !== 'authorized')
+        throw new Error('Document catch-up authority changed before acceptance');
       consume();
       await journal!.commit();
+      phase = advanceDocumentCheckpoint(phase, 'anchor', true);
       await this.runCatchUp(new Uint8Array(), async (stage) => {
         if (stage.roster !== pending.roster || !lease.isCurrent())
           throw new Error(
@@ -3339,7 +3363,20 @@ export class CoordinatedDocument<
           value: undefined,
           isCurrent: () => plan!.isCurrent(),
           commit: () => {
-            plan!.commit();
+            // Authorize only the synchronous native commit below.
+            phase = advanceDocumentCheckpoint(
+              phase,
+              'expose',
+              stage.roster === pending.roster && lease.isCurrent(),
+            );
+            if (phase !== 'visible')
+              throw new Error('Document catch-up authority changed after acceptance');
+            try {
+              plan!.commit();
+            } catch (error) {
+              failAttempt();
+              throw error;
+            }
             this.receipts = receipts;
             this.receiptsContext = context;
             this.persistedAuthorityLease = lease.isCurrent;
@@ -3350,7 +3387,7 @@ export class CoordinatedDocument<
         };
       });
     } catch (error) {
-      if (accepting) this.failed = true;
+      failAttempt();
       throw error;
     } finally {
       plan?.discard();

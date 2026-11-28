@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 169 production functions in 42 proof units. The runtime calls
+LemmaScript checks 171 production functions in 42 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -564,6 +564,20 @@ holds that identity check pending and covers successful activation, a changed
 lease, a failed identity lookup, and closing before activation commits.
 The queue-order property covers change callbacks and publication access before
 activation, and confirms that work queued behind successful activation resumes.
+
+The [checkpoint phase proof](../verification/formal/proofs/packages/core/src/policy/document-journal.dfy)
+checks that each authenticated catch-up attempt can expose a live merge at most
+once, after initial authorization, journal acceptance and a fresh authority
+check. A failing synchronous merge poisons the live document. The restart
+theorem composes journal recovery and activation. An older
+revision, an unrelated role history or a journal with a divergence marker
+cannot activate. The model trusts the authenticated journal and role-history
+results, the independently maintained anchor and the current lease observation.
+Signed checkpoint properties interrupt the anchor write, fail the native merge
+or rotate the epoch before or during acceptance, then reconstruct the accepted
+history. The existing BeeKEM restart fence has a separate
+[lease proof](../verification/formal/proofs/packages/core/src/policy/beekem-fork-anchor.dfy)
+with an independently protected durable store.
 
 Yjs keychain history validation now indexes predecessor links and consumes each
 reachable item once. The actual ordering helper proves a distinct rooted prefix,
