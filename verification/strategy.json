@@ -555,9 +555,10 @@
     },
     {
       "id": "automatic-catch-up-scheduling",
-      "formalBoundary": "No scheduler contract is proved. Generated signal histories with fake time check that at most one timer is armed, requests stay at least the minimum interval apart, quiet periods are never longer than four thirds of the periodic interval, loads stay a load interval apart, follow a request by the load delay and target only connected writer advertisers, and nothing loads without the commitment resolver. Real timers, the shared budget across documents, signature verification of advertisements and the authenticated load itself are covered by example, native and real-node tests; network delivery, UI latency and many-peer traffic are outside this evidence.",
+      "formalBoundary": "Generated signal histories with fake time cover timer, request spacing and load scheduling bounds. The scheduler property for an uncorroborated advertisement varies connection state, writer status, freshness and authorization revision. Signed native and real relay tests cover the runtime identity binding and authenticated load; the scheduler properties have no corresponding proof.",
       "evidence": [
-        "packages/core/src/anti-entropy-properties.test.ts"
+        "packages/core/src/anti-entropy-properties.test.ts",
+        "packages/core/src/anti-entropy.test.ts"
       ],
       "sources": [
         "packages/core/src/anti-entropy.ts"
