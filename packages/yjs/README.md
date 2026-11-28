@@ -27,7 +27,20 @@ Automerge provider profile, so only the founder's identity can open it. Use
 
 ## Authenticated ACL history
 
-`YjsACL` retains deleted membership values with Yjs garbage collection disabled so the complete ACL history remains auditable. A history produced by a GC-enabled ACL is rejected if it contains an erased membership value: the original value cannot be authenticated safely. Peerborne does not repair that history; resynchronize from a complete non-GC ACL history or create a fresh document instance from independently authenticated membership.
+`YjsACL` records each revocation as an immutable receipt. A grant is effective
+when it covers every retained revocation for that member. A grant issued
+during a partition can therefore be displaced by a revocation it had yet to
+observe. A subsequent grant that includes all receipts can restore the member.
+The ACL evaluates the retained grants, including those overwritten in Yjs,
+so the native map conflict order does not select the effective grant.
+
+The adapter disables Yjs garbage collection for this history and rejects
+erased membership values. Reopening requires the full authenticated ACL
+history. Encoded updates and retained state are capped at 4 MiB, with at most
+8,192 structures and 4,096 member identities. Receipts occupy that budget for
+the life of the ACL, and regrant size grows with the target member's receipt
+count. Membership checks use the accepted member index. Merge and local
+staging validate the bounded retained history.
 
 ## Start here
 

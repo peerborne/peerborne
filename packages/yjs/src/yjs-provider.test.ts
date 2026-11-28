@@ -81,28 +81,13 @@ async function makeOutOfOrderRemovalUpdates(
   removedKey: CryptoKey,
   transientKey: CryptoKey,
 ): Promise<{ predecessor: Uint8Array; dependent: Uint8Array }> {
-  const source = new Doc();
-  applyUpdateV2(source, current);
-  const users = source.getMap('users');
-  const [serializedRemovedKey, serializedTransientKey] = await Promise.all([
-    serializeKey(removedKey),
-    serializeKey(transientKey),
+  const source = new YjsACL();
+  source.merge(current);
+  const predecessor = mergeUpdatesV2([
+    await source.remove(removedKey),
+    await source.add(transientKey),
   ]);
-  const updates: Uint8Array[] = [];
-  source.on('updateV2', (update) => {
-    updates.push(new Uint8Array(update));
-  });
-  source.transact(() => {
-    users.delete(serializedRemovedKey);
-    users.set(serializedTransientKey, true);
-  });
-  source.transact(() => {
-    users.delete(serializedTransientKey);
-  });
-  const [predecessor, dependent] = updates;
-  if (!predecessor || !dependent) {
-    throw new Error('Expected two Yjs ACL updates');
-  }
+  const dependent = await source.remove(transientKey);
   return { predecessor, dependent };
 }
 
@@ -445,20 +430,20 @@ describe('YjsACL', () => {
     const internals = acl as unknown as {
       _acl: Doc;
       _revision: number;
-      _stagedAdditionOperations: Set<string>;
-      _stagedAdditionClientIDs: Set<number>;
+      _stagedOperations: Set<string>;
+      _stagedClientIDs: Set<number>;
     };
     const liveACL = internals._acl;
     const prepared = await acl.prepareAdd(key1);
-    const operations = new Set(internals._stagedAdditionOperations);
-    const clientIDs = new Set(internals._stagedAdditionClientIDs);
+    const operations = new Set(internals._stagedOperations);
+    const clientIDs = new Set(internals._stagedClientIDs);
 
     const claim = prepared.claimCommit();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(0);
-    expect(internals._stagedAdditionOperations).toEqual(operations);
-    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(internals._stagedOperations).toEqual(operations);
+    expect(internals._stagedClientIDs).toEqual(clientIDs);
     expect(await acl.check(key1)).toBe(false);
     expect(() => prepared.claimCommit()).toThrow(
       /already committed or claimed/,
@@ -469,8 +454,8 @@ describe('YjsACL', () => {
     claim.finalize();
     expect(internals._acl).not.toBe(liveACL);
     expect(internals._revision).toBe(1);
-    expect(internals._stagedAdditionOperations).toEqual(operations);
-    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(internals._stagedOperations).toEqual(operations);
+    expect(internals._stagedClientIDs).toEqual(clientIDs);
     expect(await acl.check(key1)).toBe(true);
   });
 
@@ -499,42 +484,42 @@ describe('YjsACL', () => {
     const acl = new YjsACL();
     const internals = acl as unknown as {
       _revision: number;
-      _stagedAdditionOperations: Set<string>;
-      _stagedAdditionClientIDs: Set<number>;
+      _stagedOperations: Set<string>;
+      _stagedClientIDs: Set<number>;
     };
     const abandoned = await acl.prepareAdd(key1);
-    const firstOperations = new Set(internals._stagedAdditionOperations);
-    const firstClientIDs = new Set(internals._stagedAdditionClientIDs);
+    const firstOperations = new Set(internals._stagedOperations);
+    const firstClientIDs = new Set(internals._stagedClientIDs);
 
     abandoned.claimCommit();
     expect(internals._revision).toBe(0);
     expect(await acl.check(key1)).toBe(false);
 
     const retry = await acl.prepareAdd(key1);
-    expect(internals._stagedAdditionOperations.size).toBe(
+    expect(internals._stagedOperations.size).toBe(
       firstOperations.size + 1,
     );
-    expect(internals._stagedAdditionClientIDs.size).toBe(
+    expect(internals._stagedClientIDs.size).toBe(
       firstClientIDs.size + 1,
     );
     for (const operation of firstOperations) {
-      expect(internals._stagedAdditionOperations.has(operation)).toBe(true);
+      expect(internals._stagedOperations.has(operation)).toBe(true);
     }
     for (const clientID of firstClientIDs) {
-      expect(internals._stagedAdditionClientIDs.has(clientID)).toBe(true);
+      expect(internals._stagedClientIDs.has(clientID)).toBe(true);
     }
 
     const operationsBeforeFinalize = new Set(
-      internals._stagedAdditionOperations,
+      internals._stagedOperations,
     );
     const clientIDsBeforeFinalize = new Set(
-      internals._stagedAdditionClientIDs,
+      internals._stagedClientIDs,
     );
     retry.claimCommit().finalize();
-    expect(internals._stagedAdditionOperations).toEqual(
+    expect(internals._stagedOperations).toEqual(
       operationsBeforeFinalize,
     );
-    expect(internals._stagedAdditionClientIDs).toEqual(
+    expect(internals._stagedClientIDs).toEqual(
       clientIDsBeforeFinalize,
     );
     expect(await acl.check(key1)).toBe(true);
@@ -568,34 +553,34 @@ describe('YjsACL', () => {
     await acl.add(key2);
     const internals = acl as unknown as {
       _acl: Doc;
-      _stagedAdditionOperations: Set<string>;
-      _stagedAdditionClientIDs: Set<number>;
+      _stagedOperations: Set<string>;
+      _stagedClientIDs: Set<number>;
     };
     internals._acl
       .getArray('padding')
       .insert(0, new Array(MAX_YJS_ACL_STRUCTURES - 1).fill(true));
     const exposedOperations = new Set(
-      internals._stagedAdditionOperations,
+      internals._stagedOperations,
     );
-    const exposedClientIDs = new Set(internals._stagedAdditionClientIDs);
+    const exposedClientIDs = new Set(internals._stagedClientIDs);
 
     await expect(acl.prepareAdd(key1)).rejects.toThrow(
       `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
     );
-    expect(internals._stagedAdditionOperations).toEqual(exposedOperations);
-    expect(internals._stagedAdditionClientIDs).toEqual(exposedClientIDs);
+    expect(internals._stagedOperations).toEqual(exposedOperations);
+    expect(internals._stagedClientIDs).toEqual(exposedClientIDs);
 
-    internals._stagedAdditionOperations.add(
+    internals._stagedOperations.add(
       `${internals._acl.clientID}:${MAX_YJS_ACL_STRUCTURES}`,
     );
     for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 3; index++) {
-      internals._stagedAdditionOperations.add(`reserved:${index}`);
+      internals._stagedOperations.add(`reserved:${index}`);
     }
     for (let index = 0; index < MAX_YJS_ACL_STRUCTURES - 2; index++) {
-      internals._stagedAdditionClientIDs.add(-(index + 1));
+      internals._stagedClientIDs.add(-(index + 1));
     }
-    const retainedOperations = new Set(internals._stagedAdditionOperations);
-    const retainedClientIDs = new Set(internals._stagedAdditionClientIDs);
+    const retainedOperations = new Set(internals._stagedOperations);
+    const retainedClientIDs = new Set(internals._stagedClientIDs);
     expect(retainedOperations.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
     expect(retainedClientIDs.size).toBe(MAX_YJS_ACL_STRUCTURES - 1);
 
@@ -603,10 +588,10 @@ describe('YjsACL', () => {
       await expect(acl.prepareAdd(key1)).rejects.toThrow(
         `${MAX_YJS_ACL_STRUCTURES}-structure limit`,
       );
-      expect(internals._stagedAdditionOperations).toEqual(
+      expect(internals._stagedOperations).toEqual(
         retainedOperations,
       );
-      expect(internals._stagedAdditionClientIDs).toEqual(
+      expect(internals._stagedClientIDs).toEqual(
         retainedClientIDs,
       );
     }
@@ -620,10 +605,10 @@ describe('YjsACL', () => {
     internals._acl = freshACL;
     const prepared = await acl.prepareAdd(key1);
     expect(prepared.changes.length).toBeGreaterThan(0);
-    expect(internals._stagedAdditionOperations.size).toBe(
+    expect(internals._stagedOperations.size).toBe(
       MAX_YJS_ACL_STRUCTURES,
     );
-    expect(internals._stagedAdditionClientIDs.size).toBe(
+    expect(internals._stagedClientIDs.size).toBe(
       MAX_YJS_ACL_STRUCTURES,
     );
   });
@@ -756,21 +741,21 @@ describe('YjsACL', () => {
     const internals = acl as unknown as {
       _acl: Doc;
       _revision: number;
-      _stagedAdditionOperations: Set<string>;
-      _stagedAdditionClientIDs: Set<number>;
+      _stagedOperations: Set<string>;
+      _stagedClientIDs: Set<number>;
     };
     const liveACL = internals._acl;
     const revision = internals._revision;
-    const operations = new Set(internals._stagedAdditionOperations);
-    const clientIDs = new Set(internals._stagedAdditionClientIDs);
+    const operations = new Set(internals._stagedOperations);
+    const clientIDs = new Set(internals._stagedClientIDs);
 
     noOpAddition.claimCommit().finalize();
     noOpRemoval.claimCommit().finalize();
 
     expect(internals._acl).toBe(liveACL);
     expect(internals._revision).toBe(revision);
-    expect(internals._stagedAdditionOperations).toEqual(operations);
-    expect(internals._stagedAdditionClientIDs).toEqual(clientIDs);
+    expect(internals._stagedOperations).toEqual(operations);
+    expect(internals._stagedClientIDs).toEqual(clientIDs);
 
     addition.claimCommit().finalize();
     expect(await acl.check(key1)).toBe(true);
@@ -1005,27 +990,52 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(false);
   });
 
-  test('repeated staged removals preserve the Yjs actor clock', async () => {
+  test('grants and staged revocations share one continuous Yjs actor clock', async () => {
     const acl = new YjsACL();
-    const additions = [await acl.add(key1)];
+    const updates = [await acl.add(key1)];
 
     for (let iteration = 0; iteration < 2; iteration++) {
       const prepared = await acl.prepareRemove(key1);
+      updates.push(prepared.changes);
       prepared.commit();
-      additions.push(await acl.add(key1));
+      updates.push(await acl.add(key1));
     }
 
-    const identities = additions.map((update) => {
+    const identities = updates.map((update) => {
       const decoded = decodeUpdateV2(update);
       expect(decoded.structs).toHaveLength(1);
       return decoded.structs[0]!.id;
     });
-    expect(identities.map(({ client }) => client)).toEqual([
-      identities[0]!.client,
-      identities[0]!.client,
-      identities[0]!.client,
-    ]);
-    expect(identities.map(({ clock }) => clock)).toEqual([0, 1, 2]);
+    expect(new Set(identities.map(({ client }) => client)).size).toBe(1);
+    expect(identities.map(({ clock }) => clock)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test('competing staged revocations reserve distinct operation IDs', async () => {
+    const acl = new YjsACL();
+    await acl.add(key1);
+    await acl.add(key2);
+    const base = acl.current();
+    const first = await acl.prepareRemove(key1);
+    const competing = await acl.prepareRemove(key2);
+    const ids = [first, competing].map(({ changes }) => {
+      const { structs } = decodeUpdateV2(changes);
+      expect(structs).toHaveLength(1);
+      return structs[0]!.id;
+    });
+    expect(ids[0]).not.toEqual(ids[1]);
+
+    const receiver = new YjsACL();
+    receiver.merge(base);
+    receiver.merge(competing.changes);
+    receiver.merge(first.changes);
+    expect(await receiver.users()).toEqual([]);
+
+    first.commit();
+    expect(() => competing.commit()).toThrow(
+      'ACL changed while removal was staged',
+    );
+    expect(await acl.check(key1)).toBe(false);
+    expect(await acl.check(key2)).toBe(true);
   });
 
   test('prepareRemove() commit is single-use', async () => {
@@ -1422,30 +1432,29 @@ describe('YjsACL', () => {
       mergeUpdatesV2([steps[1]!, steps[2]!]),
     ]);
 
-    // Deletions spanning several structs of another client.
+    // Native overwrites carry delete ranges spanning another client's structs.
     const added = writer(800);
     const additions = edit(added, (users) => {
       for (const name of names.slice(0, 3)) users.set(name, true);
     });
     probe(
       edit(writer(801, additions), (users) => {
-        for (const name of names.slice(0, 3)) users.delete(name);
+        for (const name of names.slice(0, 3)) users.set(name, true);
       }),
       [additions],
     );
 
-    // A re-addition whose origin and deletion belong to other clients.
-    const first = writer(900);
-    const addition = edit(first, (users) => users.set(names[0]!, true));
-    const removal = edit(writer(901, addition), (users) =>
-      users.delete(names[0]!),
-    );
-    probe(
-      edit(writer(902, addition, removal), (users) =>
-        users.set(names[0]!, true),
-      ),
-      [addition, removal],
-    );
+    // A regrant depends on the original native grant and its independent
+    // revocation receipt. Only the receipt gives the grant its authority.
+    const first = new YjsACL();
+    const addition = await first.add(key1);
+    const remover = new YjsACL();
+    remover.merge(addition);
+    const removal = await remover.remove(key1);
+    const regranting = new YjsACL();
+    regranting.merge(addition);
+    regranting.merge(removal);
+    probe(await regranting.add(key1), [addition, removal]);
   });
 
   test('merge() refuses dependency-incomplete updates until dependencies arrive', async () => {
@@ -1726,20 +1735,20 @@ describe('YjsACL', () => {
     }
   });
 
-  test('merge() refuses pending deletes until their dependencies arrive', async () => {
+  test('merge() refuses out-of-order revocation receipts until their author history arrives', async () => {
     const source = new YjsACL();
     const dependency = await source.add(key1);
-    const pendingDelete = await source.remove(key1);
+    const pendingRevocation = await source.remove(key1);
     const receiver = new YjsACL();
 
-    expect(() => receiver.merge(pendingDelete)).toThrow(
+    expect(() => receiver.merge(pendingRevocation)).toThrow(
       ACLMergeDependencyError,
     );
     await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
 
     receiver.merge(dependency);
     expect(await receiver.check(key1)).toBe(true);
-    receiver.merge(pendingDelete);
+    receiver.merge(pendingRevocation);
     expect(await receiver.check(key1)).toBe(false);
   });
 
