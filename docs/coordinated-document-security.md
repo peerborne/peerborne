@@ -684,18 +684,24 @@ exporting that history again.
 
 The [native MLS suite](../verification/mls-provider/README.md) exercises actual
 `Peerborne.doc`, `PeerborneDocument`, Automerge and Yjs, MLS exporters, Ed25519,
-AES-GCM and native Chromium IndexedDB. Its pubsub delivery is a deterministic
-simulation, not WebRTC or cross-NAT evidence. It checks concurrent author
+AES-GCM and native Chromium IndexedDB. Simulated pubsub checks concurrent author
 convergence, batched changes, malformed ciphertext, legacy bypass rejection,
-checkpoint reconstruction, durable replay and publication retry.
+checkpoint reconstruction, durable replay and publication retry. A separate
+three-member Automerge scenario runs signed GossipSub over Node loopback
+WebSockets. It checks that a removed writer receiving current-epoch ciphertext
+cannot apply it, that removal survives provider reconstruction, and that
+a surviving writer can request a checkpoint and resume live edits in both
+directions after reconstruction through an owned Circuit Relay v2. This
+scenario keeps the reference stores and anchors in the same process.
 
 Extending a writer's receipt across a gap longer than the retained frames, and
 epoch-fork reconciliation, remain future work. Members request the controller
 checkpoint on the document topic, or the application relays it; both paths
-serve current members only. Automatic catch-up runs over simulated pubsub in
-these tests, not over real GossipSub. A frame under an unknown or stale epoch
-is rejected. A frame that is
-missing its author prefix or native causal context is held only within the
+serve current members only. The simulated tests cover automatic catch-up
+scheduling, and the loopback test exercises a member explicitly requesting
+a checkpoint over the document topic through the relay. An unknown or stale
+epoch causes rejection. A frame missing its author prefix or native causal
+context is held only within the
 bounds above. The caller must arrange ordered control/role delivery
 and recovery beyond these limits. Role records contain public identities and the document
 path; applications must protect that separate control transport. The content

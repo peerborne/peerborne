@@ -1,29 +1,17 @@
 import {
   Peerborne,
-  GroupSecurityCoordinator,
-  InMemoryGroupStateStore,
-  InMemoryGroupSecurityRollbackAnchor,
-  WebCryptoGroupStateProtector,
-  createGroupSecurityDurableAcceptance,
-  DocumentAuthorityLog,
-  DocumentGroupControlAuthority,
   DocumentReplayJournal,
   InMemoryDocumentJournalStore,
   IndexedDBDocumentJournalStore,
   InMemoryDocumentJournalRollbackAnchor,
-  type AuthProvider,
-  type GroupSecurityDelivery,
-  type GroupSecurityCoordinatorConfig,
 } from '@peerborne/core';
 import {
   AutomergeProvider,
   AutomergeJSONSerializer,
 } from '@peerborne/automerge';
 import { YjsProvider, YjsJSONSerializer } from '@peerborne/yjs';
-import { MlsProviderSpike } from './provider.js';
-import { JsonTestCodec } from '../../packages/core/src/__testutils__/group-security-coordinator.js';
+import { collect, setupCoordinatedDocument } from './coordinated-fixture.js';
 
-const encoder = new TextEncoder();
 const equal = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((value, index) => value === b[index]);
 const hex = (value: Uint8Array) =>
@@ -66,225 +54,11 @@ function pauseNotificationWriters<T>(document: { getWriters(): Promise<T> }) {
   };
 }
 
-async function collect(coordinator: GroupSecurityCoordinator) {
-  const values: GroupSecurityDelivery[] = [];
-  await coordinator.flushOutbox(async (value) => {
-    values.push(value);
-    return createGroupSecurityDurableAcceptance(value);
-  });
-  check(values.length === 1, 'one membership delivery');
-  return values[0];
-}
-
-async function setup(documentId: string) {
-  const members = [new Uint8Array(32).fill(1), new Uint8Array(32).fill(2)],
-    groupId = random(),
-    credential = encoder.encode('document integration fixture');
-  const pinned = new Map<string, Uint8Array>();
-  const policy = async (binding: {
-    memberId: Uint8Array;
-    signingKey: Uint8Array;
-    credential: Uint8Array;
-  }) =>
-    equal(
-      pinned.get(hex(binding.memberId)) ?? new Uint8Array(),
-      binding.signingKey,
-    ) && equal(binding.credential, credential);
-  const engines = await Promise.all(
-    members.map((member) =>
-      MlsProviderSpike.initialize(member, members[0], policy),
-    ),
-  );
-  engines.forEach((engine, index) =>
-    pinned.set(hex(members[index]), engine.credentialSigningKey),
-  );
-  const signing = await Promise.all(
-    members.map(() =>
-      crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']),
-    ),
-  );
-  const publicKeys = await Promise.all(
-    signing.map((pair) =>
-      crypto.subtle
-        .exportKey('raw', pair.publicKey)
-        .then((bytes) => hex(new Uint8Array(bytes))),
-    ),
-  );
-  const controls = engines.map(
-    (engine) =>
-      new DocumentGroupControlAuthority(engine.protocol, groupId, members[0]),
-  );
-  const stores = members.map(() => new InMemoryGroupStateStore()),
-    anchors = members.map(() => new InMemoryGroupSecurityRollbackAnchor());
-  const protectors = await Promise.all(
-    members.map((_, index) =>
-      WebCryptoGroupStateProtector.generate(`document-fixture-${index}`),
-    ),
-  );
-  const auth: AuthProvider<CryptoKey, CryptoKey, string> = {
-    nonceBytes: 12,
-    sign: async (bytes, key) =>
-      new Uint8Array(
-        await crypto.subtle.sign('Ed25519', key, bytes as BufferSource),
-      ),
-    verify: async (bytes, key, signature) =>
-      crypto.subtle.verify(
-        'Ed25519',
-        key,
-        signature as BufferSource,
-        bytes as BufferSource,
-      ),
-    serializePublicKey: async (key) =>
-      hex(new Uint8Array(await crypto.subtle.exportKey('raw', key))),
-    deserializePublicKey: async (value) => {
-      if (!/^[0-9a-f]{64}$/.test(value))
-        throw new Error('Malformed fixture public key');
-      return crypto.subtle.importKey(
-        'raw',
-        Uint8Array.from(value.match(/../g)!, (byte) => parseInt(byte, 16)),
-        'Ed25519',
-        true,
-        ['verify'],
-      );
-    },
-    encrypt: async () => {
-      throw new Error('Legacy encryption was invoked');
-    },
-    decrypt: async () => {
-      throw new Error('Legacy decryption was invoked');
-    },
-  };
-  const configuration = (index: number): GroupSecurityCoordinatorConfig => ({
-    provider: engines[index],
-    store: stores[index],
-    storeKey: { protocol: engines[index].protocol, groupId },
-    rollbackAnchor: anchors[index],
-    protector: protectors[index],
-    actorId: members[index],
-    signControlRecord: async (bytes) =>
-      auth.sign(bytes, signing[index].privateKey),
-    verifyControlSignature: async (bytes, signature, actor) => {
-      const index = members.findIndex((member) => equal(member, actor));
-      return (
-        index >= 0 && auth.verify(bytes, signing[index].publicKey, signature)
-      );
-    },
-    authorizeControl: controls[index].authorize,
-    outboxCodec: new JsonTestCodec(),
-  });
-  const controller = await GroupSecurityCoordinator.bootstrap(
-    configuration(0),
-    { groupId, creatorMemberId: members[0], credential },
-    { operationId: random(), subjectId: members[0] },
-  );
-  const genesis = await collect(controller);
-  const initialMembers = [
-    { memberId: members[0], publicKey: publicKeys[0], role: 3 as const },
-  ];
-  const log = await DocumentAuthorityLog.create(
-    documentId,
-    controller.documentContext,
-    initialMembers,
-    signing[0].privateKey,
-    auth,
-    controls[0],
-  );
-  const packageValue = await GroupSecurityCoordinator.createPendingKeyPackage(
-    configuration(1),
-    { operationId: random(), groupId, memberId: members[1], credential },
-  );
-  await controller.createCommit(
-    {
-      changes: [
-        { kind: 'add', memberId: members[1], keyPackage: packageValue },
-      ],
-    },
-    {
-      operationId: random(),
-      requestDigest: random(),
-      action: 'add',
-      subjectId: members[1],
-    },
-  );
-  const addition = await collect(controller);
-  const roster = [
-    ...initialMembers,
-    { memberId: members[1], publicKey: publicKeys[1], role: 2 as const },
-  ];
-  await log.applyUpdate(
-    controller,
-    await log.signUpdate(
-      controller.documentContext,
-      roster,
-      signing[0].privateKey,
-    ),
-  );
-  const recipientLog = await DocumentAuthorityLog.restore(
-    log.exportRecords(),
-    log.genesisId,
-    auth,
-    controls[1],
-  );
-  await engines[1].clearKeyPackageState(packageValue.reference);
-  const recipient = await GroupSecurityCoordinator.joinFromInvitation(
-    configuration(1),
-    {
-      subjectId: members[1],
-      keyPackageRef: packageValue.reference,
-      controlPrefix: [genesis.controlRecord, addition.controlRecord],
-      commit: addition.commit!,
-      welcome: addition.welcomes[0],
-    },
-  );
-  const pinnedGenesis = log.genesisId;
-  const restoreReplica = async (
-    index: number,
-    authorityRecords: readonly Uint8Array[],
-  ) => {
-    const config = configuration(index);
-    const engine = await MlsProviderSpike.initialize(
-      members[index],
-      members[0],
-      policy,
-    );
-    const control = new DocumentGroupControlAuthority(
-      engine.protocol,
-      groupId,
-      members[0],
-    );
-    const authority = await DocumentAuthorityLog.restore(
-      authorityRecords,
-      pinnedGenesis,
-      auth,
-      control,
-    );
-    await engines[index].clearGroupState();
-    const coordinator = await GroupSecurityCoordinator.restore({
-      ...config,
-      provider: engine,
-      authorizeControl: control.authorize,
-    });
-    engines[index] = engine;
-    controls[index] = control;
-    return { coordinator, authority };
-  };
-
-  return {
-    coordinators: [controller, recipient],
-    logs: [log, recipientLog],
-    restoreReplica,
-    members,
-    signing,
-    auth,
-    roster,
-  };
-}
-
 export async function runProductionDocumentChecks() {
   const results: Record<string, unknown> = {};
   for (const backend of ['automerge', 'yjs'] as const) {
     const path = `/native-${backend}-private-document`,
-      f = await setup(path);
+      f = await setupCoordinatedDocument(path);
     const exportRecords = f.logs[0].exportRecords.bind(f.logs[0]);
     let authorityExports = 0;
     f.logs[0].exportRecords = () => {
@@ -325,7 +99,7 @@ export async function runProductionDocumentChecks() {
       pubsub.publish = async (topic: string, data: Uint8Array) => {
         publications.push({ sender: index, topic, data: data.slice() });
       };
-      const swarm = new Peerborne<any, any, any, CryptoKey, CryptoKey, string>(
+      const swarm = new Peerborne<any, any, any, CryptoKey, CryptoKey, CryptoKey>(
         f.signing[index].privateKey,
         f.signing[index].publicKey,
         provider,
