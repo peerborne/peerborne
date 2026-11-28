@@ -407,7 +407,8 @@ export interface PeerborneConfig {
    * dependencies, when a frame names a change that cannot be fetched, when a
    * member advertises a head it lacks, and every 30-60 s. A gap that outlives
    * a request is repaired with the authenticated V4 load path when the CRDT
-   * itself shows the gap or two members advertise the same head; that needs
+   * itself shows the gap, two members advertise the same head, or the
+   * connected sole writer sends a fresh signed advertisement. This requires
    * `resolveLoadSecurityCommitments` and keeps every load quorum rule.
    * Observe it with `document.antiEntropyStatus` and
    * `document.subscribeToAntiEntropy()`.

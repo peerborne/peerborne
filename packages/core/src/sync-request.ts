@@ -157,7 +157,7 @@ export async function syncSnapshotHint(signature: Uint8Array): Promise<string> {
 }
 
 export function isSyncRequestFresh(
-  request: SyncRequest,
+  request: Pick<SyncRequest, 'issuedAtMs'>,
   nowMs: number,
 ): boolean {
   return (

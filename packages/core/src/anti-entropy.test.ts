@@ -1,4 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
+import fc from 'fast-check';
 import {
   AntiEntropy,
   AntiEntropyBudget,
@@ -629,6 +630,50 @@ describe('anti-entropy evidence and abuse bounds', () => {
     expect(state.loads).toEqual([]);
   });
 
+  test('only a current connected sole writer can trigger an uncorroborated load without local evidence', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.record({
+          connected: fc.boolean(),
+          writer: fc.boolean(),
+          advertisedVersion: fc.integer({ min: 1, max: 2 }),
+          stillFreshAtMs: fc.integer({ min: 2_000, max: 30_000 }),
+        }),
+        async ({ connected, writer, advertisedVersion, stillFreshAtMs }) => {
+          const { time, host, state, antiEntropy } = setup();
+          host.canLoadFromSoleWriter = (ad) =>
+            ad.writerVersion === 2 &&
+            ad.issuedAtMs === START + 1_000 &&
+            time.now <= stillFreshAtMs;
+          state.connected = new Set(
+            connected ? ['unrelated', 'w'] : ['unrelated'],
+          );
+          state.load = async () => {
+            state.known.add('head');
+            return true;
+          };
+          antiEntropy.start();
+          await time.to(1_000);
+          antiEntropy.advertisement('m', 'w', 'head', writer, {
+            writerVersion: advertisedVersion,
+            issuedAtMs: START + 1_000,
+          });
+          await time.to(30_000);
+          expect(state.loads).toEqual(
+            connected &&
+              writer &&
+              advertisedVersion === 2 &&
+              stillFreshAtMs >= 21_000
+              ? [{ peer: 'w', at: 21_000 }]
+              : [],
+          );
+          antiEntropy.close();
+        },
+      ),
+      { seed: 1946, numRuns: 100 },
+    );
+  });
+
   test('a head only one member advertises is asked for, then abandoned with a growing penalty, never loaded', async () => {
     const { time, state, events, antiEntropy } = setup();
     state.connected = new Set(['w']);
@@ -656,6 +701,31 @@ describe('anti-entropy evidence and abuse bounds', () => {
     await time.to(secondStrike + 600_000);
     expect(antiEntropy.admitAdvertisement('m', 'fake-3')).toBe(true);
     expect(state.loads).toEqual([]);
+  });
+
+  test('a sole writer can renew an unusable same-head advertisement through the existing cooldown', async () => {
+    const { time, host, state, antiEntropy } = setup({ loadAfterMs: 65_000 });
+    host.canLoadFromSoleWriter = (ad) =>
+      START + time.now - ad.issuedAtMs <= 60_000;
+    state.connected.add('initial');
+    antiEntropy.start();
+    await time.to(1_000);
+    antiEntropy.advertisement('m', 'initial', 'head', true, {
+      writerVersion: 1,
+      issuedAtMs: START + 1_000,
+    });
+    state.connected.delete('initial');
+    expect(antiEntropy.admitAdvertisement('m', 'head')).toBe(false);
+    await time.to(62_000);
+    state.connected.add('reconnected');
+    expect(antiEntropy.admitAdvertisement('m', 'head')).toBe(true);
+    antiEntropy.advertisement('m', 'reconnected', 'head', true, {
+      writerVersion: 1,
+      issuedAtMs: START + 62_000,
+    });
+    await time.to(80_000);
+    expect(state.loads).toEqual([{ at: 71_000, peer: 'reconnected' }]);
+    antiEntropy.close();
   });
 
   test('a corroborated load that leaves the head unknown penalizes its advertisers and keeps the backoff', async () => {
