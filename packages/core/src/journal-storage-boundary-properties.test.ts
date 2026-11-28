@@ -13,9 +13,9 @@ import {
   InMemoryDocumentJournalRollbackAnchor,
   type DocumentJournalStore,
 } from './document-replay-journal.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { documentFixture } from './__testutils__/coordinated-document.js';
-import * as byteUtilities from './utils.js';
+import * as byteUtilities from './internal/bytes.js';
 
 const storageKey = 'synthetic-journal';
 const publicationId = new Uint8Array(32).fill(5);
@@ -50,7 +50,7 @@ async function seedStorage(
       if (publication)
         transaction
           .objectStore('publications')
-          .put(publication, [storageKey, documentBytesId(publicationId)]);
+          .put(publication, [storageKey, bytesToHex(publicationId)]);
       transaction.oncomplete = () => resolve();
       transaction.onerror = transaction.onabort = () =>
         reject(transaction.error);
@@ -265,7 +265,7 @@ test.each(['load', 'loadPublications'] as const)(
             revisions: [],
             bytes: 0,
             publications: [
-              { id: documentBytesId(publicationId), bytes: declared },
+              { id: bytesToHex(publicationId), bytes: declared },
             ],
           },
           [],
@@ -333,7 +333,7 @@ test('authenticated replay copies each stored ciphertext once while isolating la
           ).commit();
         }
         const snapshot = await backing.load(
-          documentBytesId(f.authority.genesisId),
+          bytesToHex(f.authority.genesisId),
         );
         const expectedBytes = snapshot.entries.reduce(
           (sum, entry) => sum + entry.byteLength,

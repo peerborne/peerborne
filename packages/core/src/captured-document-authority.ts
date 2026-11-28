@@ -3,8 +3,8 @@ import {
   captureDocumentRoster,
   type CapturedDocumentMember,
 } from './policy/authority-capture.js';
-import { copyUnsharedUint8Array } from './utils.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   captureDocumentWritePaths,
   DocumentFieldScopeBudget,
@@ -65,7 +65,7 @@ export function captureDocumentAuthorityLease(
       !Number.isSafeInteger(role)
     )
       throw new Error('Invalid document authority member');
-    const id = documentBytesId(
+    const id = bytesToHex(
       copyUnsharedUint8Array(
         ownData(member, 'memberId'),
         32,

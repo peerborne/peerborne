@@ -1,5 +1,5 @@
 import { Base64 } from 'js-base64';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import {
   concatenate,
   encodeUtf8,

@@ -20,16 +20,15 @@
 import { CRDTSyncMessage } from './crdt-sync-message.js';
 import { ECIES_P256_PUBLIC_KEY_LENGTH } from './ecies.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
-import { constantTimeEqual } from './internal/constant-time-equal.js';
 import { SyncMessageSerializer } from './sync-message-serializer.js';
 import {
   snapshotSyncMessageForContext,
   syncMessageMatchesSnapshot,
 } from './sync-message-context.js';
 import {
-  copyUnsharedUint8Array,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-} from './utils.js';
+} from './shared-protocol-request.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
 
 /**
  * Outcome of validating an incoming Welcome.
@@ -362,7 +361,7 @@ export async function evaluateBeeKEMWelcome<ChangesType, PublicKey>(
   } catch {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
-  if (!constantTimeEqual(raw, rawAfterVerification)) {
+  if (!equalBytes(raw, rawAfterVerification)) {
     return { kind: 'drop-malformed', reason: 'invalid-welcome-encoding' };
   }
 

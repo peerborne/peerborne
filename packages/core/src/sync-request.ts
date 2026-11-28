@@ -1,6 +1,8 @@
 import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
 import { syncRequestTimeAllowed } from './policy/sync-request.js';
+import { sha256 } from './internal/digest.js';
+import { bytesToHex } from './internal/hex.js';
 
 const domain = '\u0000peerborne/sync-request/3\u0000';
 const prefix = Uint8Array.from(domain, (character) => character.charCodeAt(0));
@@ -148,16 +150,11 @@ export function decodeSyncRequest(bytes: Uint8Array): SyncRequest | undefined {
 }
 
 export async function syncSnapshotHint(signature: Uint8Array): Promise<string> {
-  const hash = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', new Uint8Array(signature)),
-  );
-  return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join(
-    '',
-  );
+  return bytesToHex(await sha256(new Uint8Array(signature)));
 }
 
 export function isSyncRequestFresh(
-  request: SyncRequest,
+  request: Pick<SyncRequest, 'issuedAtMs'>,
   nowMs: number,
 ): boolean {
   return (

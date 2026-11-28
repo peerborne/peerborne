@@ -12,11 +12,11 @@ import {
   DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD,
   MAX_DOCUMENT_STORED_PUBLICATION_BYTES,
 } from './document-replay-journal.js';
-import { documentBytesEqual } from './internal/document-binary.js';
 import {
   copyUnsharedUint8Array,
+  equalBytes,
   unsharedUint8ArrayByteLength,
-} from './utils.js';
+} from './internal/bytes.js';
 import { boundedFieldEnd } from './policy/frame-layout.js';
 import { isDocumentJournalIndexValid } from './policy/journal-index.js';
 import { planDocumentJournalRead } from './policy/document-journal.js';
@@ -27,6 +27,7 @@ import {
   type JournalPublicationIndex,
   type JournalPublicationPlan,
 } from './policy/journal-store.js';
+import { bytesToHex } from './internal/hex.js';
 
 interface InMemoryJournalSnapshot extends DocumentJournalSnapshot {
   readonly pending?: NonNullable<DocumentJournalSnapshot['pending']> & {
@@ -48,7 +49,7 @@ function publicationIndex(
   publications: ReadonlyArray<DocumentJournalPublication>,
 ): JournalPublicationIndex[] {
   return publications.map((publication) => ({
-    id: publicationId(publication.id),
+    id: bytesToHex(publication.id),
     bytes: publication.frame.length,
   }));
 }
@@ -113,7 +114,7 @@ function readIndexedPublication(
   index: { id: string; bytes: number },
 ): DocumentJournalPublication {
   const id = copyUnsharedUint8Array(value.id, 32, 32, 'publication id');
-  if (publicationId(id) !== index.id)
+  if (bytesToHex(id) !== index.id)
     throw new Error('Publication index mismatch');
   return {
     id,
@@ -250,7 +251,7 @@ function publicationBase(
   const plan = requirePublicationPlan(
     planJournalPublication(
       publications,
-      publicationId(publication.replaces),
+      bytesToHex(publication.replaces),
       0,
       false,
     ),
@@ -283,7 +284,7 @@ function staged(
     requirePublicationPlan(
       planJournalPublication(
         publicationBase(publicationIndex(current.publications ?? []), publication),
-        publicationId(publication.id),
+        bytesToHex(publication.id),
         publication.bytes,
         true,
       ),
@@ -312,7 +313,7 @@ function committed(
       current.revision,
       revision,
       true,
-      documentBytesEqual(current.pending.token, token),
+      equalBytes(current.pending.token, token),
       current.pending.checkpoint === checkpoint,
     )
   )
@@ -325,7 +326,7 @@ function committed(
   if (
     !!current.pending.publication !== !!acceptedPublication ||
     (acceptedPublication &&
-      (!documentBytesEqual(
+      (!equalBytes(
         acceptedPublication.id,
         current.pending.publication!.id,
       ) ||
@@ -345,7 +346,7 @@ function committed(
   const replaces = current.pending.publication?.replaces;
   const before = (current.publications ?? []).filter(
     (publication) =>
-      replaces === undefined || !documentBytesEqual(publication.id, replaces),
+      replaces === undefined || !equalBytes(publication.id, replaces),
   );
   if (
     replaces !== undefined &&
@@ -357,7 +358,7 @@ function committed(
         ...requirePublicationPlan(
           planJournalPublication(
             publicationIndex(before),
-            publicationId(acceptedPublication.id),
+            bytesToHex(acceptedPublication.id),
             acceptedPublication.frame.length,
             true,
           ),
@@ -375,7 +376,7 @@ function discarded(
   current: InMemoryJournalSnapshot,
   token: Uint8Array,
 ): InMemoryJournalSnapshot {
-  if (!current.pending || !documentBytesEqual(current.pending.token, token))
+  if (!current.pending || !equalBytes(current.pending.token, token))
     return current;
   return {
     revision: current.revision,
@@ -470,7 +471,7 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
     const plan = requirePublicationPlan(
       planJournalPublication(
         publicationIndex(before),
-        publicationId(ownId),
+        bytesToHex(ownId),
         0,
         false,
       ),
@@ -494,13 +495,13 @@ export class InMemoryDocumentJournalStore implements DocumentJournalStore {
       before = current.publications ?? [];
     replacedPublicationIndex(
       publicationIndex(before),
-      publicationId(ownId),
-      { id: publicationId(next.id), bytes: next.frame.length },
+      bytesToHex(ownId),
+      { id: bytesToHex(next.id), bytes: next.frame.length },
     );
     this.documents.set(key, {
       ...current,
       publications: before.map((value) =>
-        documentBytesEqual(value.id, ownId) ? next : value,
+        equalBytes(value.id, ownId) ? next : value,
       ),
     });
   }
@@ -583,8 +584,6 @@ function readHead(value: JournalHead | undefined): JournalHead {
   }
   return value;
 }
-const publicationId = (id: Uint8Array) =>
-  Array.from(id, (byte) => byte.toString(16).padStart(2, '0')).join('');
 
 /** Ciphertext-only WAL. Routine writes never read or rewrite the checkpoint. */
 export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
@@ -716,7 +715,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               guard(() => {
                 if (
                   !item.result ||
-                  !documentBytesEqual(item.result.token, head.pending!.token)
+                  !equalBytes(item.result.token, head.pending!.token)
                 )
                   throw new Error('Pending journal index mismatch');
                 const loaded: DocumentJournalSnapshot['pending'] = {
@@ -891,7 +890,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
         requirePublicationPlan(
           planJournalPublication(
             publicationBase(head.publications, ownedPublication),
-            publicationId(ownedPublication.id),
+            bytesToHex(ownedPublication.id),
             ownedPublication.bytes,
             true,
           ),
@@ -947,7 +946,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             head.revision,
             revision,
             true,
-            documentBytesEqual(head.pending.token, owned),
+            equalBytes(head.pending.token, owned),
             head.pending.checkpoint === checkpoint,
           ) ||
           accepted.length !==
@@ -960,7 +959,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             const pending = request.result;
             if (
               !pending ||
-              !documentBytesEqual(pending.token, owned) ||
+              !equalBytes(pending.token, owned) ||
               pending.entry.length !== head.pending!.bytes
             )
               throw new Error('Pending journal changed');
@@ -973,14 +972,14 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
               (reservation &&
                 (!publication ||
                   reservation.bytes !== publication.frame.length ||
-                  !documentBytesEqual(reservation.id, publication.id)))
+                  !equalBytes(reservation.id, publication.id)))
             )
               throw new Error('Pending publication changed');
             const publications = publication
               ? requirePublicationPlan(
                   planJournalPublication(
                     publicationBase(head.publications, reservation!),
-                    publicationId(publication.id),
+                    bytesToHex(publication.id),
                     publication.frame.length,
                     true,
                   ),
@@ -994,11 +993,11 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
             if (reservation?.replaces)
               transaction
                 .objectStore('publications')
-                .delete([key, publicationId(reservation.replaces)]);
+                .delete([key, bytesToHex(reservation.replaces)]);
             if (publication)
               transaction
                 .objectStore('publications')
-                .put(publication, [key, publicationId(publication.id)]);
+                .put(publication, [key, bytesToHex(publication.id)]);
             transaction.objectStore('pending').delete(key);
             transaction.objectStore('heads').put(
               {
@@ -1022,7 +1021,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
   discard(key: string, token: Uint8Array): Promise<void> {
     const owned = copyUnsharedUint8Array(token, 32, 32, 'journal token');
     return this.update(key, ['pending'], (head, transaction) => {
-      if (!head.pending || !documentBytesEqual(head.pending.token, owned))
+      if (!head.pending || !equalBytes(head.pending.token, owned))
         return;
       transaction.objectStore('pending').delete(key);
       const { pending: _pending, ...remaining } = head;
@@ -1031,7 +1030,7 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
   }
 
   publicationSent(key: string, id: Uint8Array): Promise<void> {
-    const owned = publicationId(
+    const owned = bytesToHex(
       copyUnsharedUint8Array(id, 32, 32, 'publication id'),
     );
     return this.update(key, ['publications'], (head, transaction) => {
@@ -1054,11 +1053,11 @@ export class IndexedDBDocumentJournalStore implements DocumentJournalStore {
     id: Uint8Array,
     publication: DocumentJournalPublication,
   ): Promise<void> {
-    const owned = publicationId(
+    const owned = bytesToHex(
         copyUnsharedUint8Array(id, 32, 32, 'publication id'),
       ),
       next = ownPublication(publication),
-      nextId = publicationId(next.id);
+      nextId = bytesToHex(next.id);
     return this.update(key, ['publications'], (head, transaction) => {
       const publications = replacedPublicationIndex(head.publications, owned, {
         id: nextId,

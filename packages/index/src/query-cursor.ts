@@ -2,6 +2,7 @@ import { compareQueryKeys } from './query-order.js';
 import { IndexDefinition, IndexFieldType, IndexScalar, QueryAst, SortClause } from './types.js';
 import { compareIndexScalars, normalizeIndexScalar } from './query-ast.js';
 import { extractField } from './field-extractor.js';
+import { decodeBase64Url, encodeBase64Url, isRecord } from './encoding.js';
 
 const MAX_CURSOR_BYTES = 16_384;
 const MAX_CURSOR_ENCODED_LENGTH = Math.ceil(MAX_CURSOR_BYTES * 4 / 3);
@@ -55,8 +56,7 @@ export function parseQueryCursor(
   let parsed: unknown;
   try {
     if (cursor.length > MAX_CURSOR_ENCODED_LENGTH) throw new Error('cursor too large');
-    bytes = decodeBase64Url(cursor);
-    if (bytes.byteLength > MAX_CURSOR_BYTES) throw new Error('cursor too large');
+    bytes = decodeBase64Url(cursor, MAX_CURSOR_BYTES);
     parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } catch {
     throw new TypeError('invalid query cursor');
@@ -145,21 +145,4 @@ export function isAfterQueryCursor(
       position.documentPath,
     ) > 0
   );
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
-}
-
-function decodeBase64Url(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('invalid base64url');
-  const padding = '='.repeat((4 - value.length % 4) % 4);
-  const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + padding);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

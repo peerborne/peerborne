@@ -3,7 +3,7 @@ import {
   documentFrameNonce,
   splitDocumentPublication,
 } from './document-security-wire.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { testCRDT, testChanges } from './__testutils__/coordinated-document.js';
 import {
   coordinatedGroupFixture,
@@ -98,7 +98,7 @@ async function group(options: Omit<CoordinatedGroupOptions, 'members'> = {}) {
 const nonces = (publications: readonly Uint8Array[]) =>
   publications
     .flatMap((publication) => splitDocumentPublication(publication))
-    .map((frame) => documentBytesId(documentFrameNonce(frame)));
+    .map((frame) => bytesToHex(documentFrameNonce(frame)));
 
 const range = (count: number) =>
   Array.from({ length: count }, (_, value) => value + 1);

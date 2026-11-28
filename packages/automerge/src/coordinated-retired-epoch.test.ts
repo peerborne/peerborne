@@ -12,7 +12,7 @@ import {
   DocumentPublicationBacklogError,
   type DocumentMemberAuthority,
 } from '../../core/src/coordinated-document.js';
-import { documentBytesId } from '../../core/src/internal/document-binary.js';
+import { bytesToHex } from '../../core/src/internal/hex.js';
 import { splitDocumentPublication } from '../../core/src/document-security-wire.js';
 
 jest.mock('@helia/unixfs', () => ({ unixfs: () => ({}) }));
@@ -46,8 +46,8 @@ async function rotate(
   const record = await g.logs[0].signUpdate(
     g.coordinators[0].documentContext,
     [
-      { memberId: g.members[0], publicKey: documentBytesId(g.members[0]), role: 3 },
-      { memberId: g.members[1], publicKey: documentBytesId(g.members[1]), ...writer },
+      { memberId: g.members[0], publicKey: bytesToHex(g.members[0]), role: 3 },
+      { memberId: g.members[1], publicKey: bytesToHex(g.members[1]), ...writer },
     ],
     g.members[0],
   );

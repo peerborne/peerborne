@@ -12,10 +12,9 @@ import {
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
-  documentBytesEqual,
-  documentBytesId,
 } from './internal/document-binary.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
+import { bytesToHex } from './internal/hex.js';
 
 const MAGIC = Uint8Array.from(
   'peerborne/document-redelivery/v1\0',
@@ -85,7 +84,7 @@ export function encodeDocumentRedeliveryRequest(
   let previous = '';
   for (const { memberId, sequence } of value.held) {
     const member = copyUnsharedUint8Array(memberId, 32, 32, 'held member');
-    const key = `${documentBytesId(member)}:${String(sequence).padStart(16, '0')}`;
+    const key = `${bytesToHex(member)}:${String(sequence).padStart(16, '0')}`;
     if (key <= previous || !Number.isSafeInteger(sequence) || sequence < 1)
       throw new TypeError('Noncanonical held document frame');
     writer.fixed(member).integer(sequence, 8);
@@ -101,7 +100,7 @@ export function decodeDocumentRedeliveryRequest(
     value,
     MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES,
   );
-  if (!documentBytesEqual(reader.fixed(MAGIC.length), MAGIC))
+  if (!equalBytes(reader.fixed(MAGIC.length), MAGIC))
     throw new TypeError('Invalid document redelivery domain');
   const documentId = reader.text(),
     genesisId = reader.fixed(32),
@@ -121,7 +120,7 @@ export function decodeDocumentRedeliveryRequest(
   for (let index = 0; index < count; index++) {
     const memberId = reader.fixed(32),
       sequence = reader.number(8);
-    const key = `${documentBytesId(memberId)}:${String(sequence).padStart(16, '0')}`;
+    const key = `${bytesToHex(memberId)}:${String(sequence).padStart(16, '0')}`;
     if (key <= previous || sequence < 1)
       throw new TypeError('Noncanonical held document frame');
     held.push({ memberId, sequence });
@@ -145,7 +144,7 @@ export function decodeDocumentRedeliveryRequest(
 export function isDocumentRedeliveryFrame(frame: Uint8Array): boolean {
   return (
     frame.length >= DOCUMENT_REDELIVERY_MARKER.length &&
-    documentBytesEqual(
+    equalBytes(
       frame.subarray(0, DOCUMENT_REDELIVERY_MARKER.length),
       DOCUMENT_REDELIVERY_MARKER,
     )
@@ -174,7 +173,7 @@ export function decodeEncryptedDocumentRedelivery(value: Uint8Array): {
     value,
     MAX_DOCUMENT_REDELIVERY_REQUEST_BYTES + 64,
   );
-  if (!documentBytesEqual(reader.fixed(4), DOCUMENT_REDELIVERY_MARKER))
+  if (!equalBytes(reader.fixed(4), DOCUMENT_REDELIVERY_MARKER))
     throw new TypeError('Invalid encrypted document redelivery domain');
   const epochTag = reader.fixed(16),
     nonce = reader.fixed(12),

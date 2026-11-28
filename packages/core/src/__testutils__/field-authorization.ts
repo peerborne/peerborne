@@ -15,7 +15,7 @@ import {
 } from '../document-replay-journal.js';
 import { InMemoryDocumentJournalStore } from '../document-journal-store.js';
 import { GroupSecurityCoordinator } from '../group-security-coordinator.js';
-import { documentBytesId } from '../internal/document-binary.js';
+import { bytesToHex } from '../internal/hex.js';
 import { testAuth } from './coordinated-document.js';
 import {
   context,
@@ -50,7 +50,7 @@ export async function fieldDocumentFixture<Document, Changes, Change>(
     [
       {
         memberId: f.identities.actorId,
-        publicKey: documentBytesId(f.identities.actorId),
+        publicKey: bytesToHex(f.identities.actorId),
         role: 3,
       },
     ],
@@ -67,13 +67,13 @@ export async function fieldDocumentFixture<Document, Changes, Change>(
     [
       {
         memberId: f.identities.actorId,
-        publicKey: documentBytesId(f.identities.actorId),
+        publicKey: bytesToHex(f.identities.actorId),
         role: 2,
         writePaths: grants,
       },
       {
         memberId: f.identities.attackerId,
-        publicKey: documentBytesId(f.identities.attackerId),
+        publicKey: bytesToHex(f.identities.attackerId),
         role: 3,
       },
     ],
@@ -118,7 +118,7 @@ export async function fieldDocumentFixture<Document, Changes, Change>(
   });
   return {
     store,
-    storageKey: documentBytesId(authority.genesisId),
+    storageKey: bytesToHex(authority.genesisId),
     create: (initial: Document, bypass = false, persist = false) =>
       new CoordinatedDocument(
         authority.documentId,

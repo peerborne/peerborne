@@ -35,10 +35,8 @@ import {
   testChanges,
   testAuth,
 } from './__testutils__/coordinated-document.js';
-import {
-  documentBytesId,
-  DocumentBinaryWriter,
-} from './internal/document-binary.js';
+import { DocumentBinaryWriter } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 
 const deviceKey = () =>
   crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
@@ -467,7 +465,7 @@ describe('accepted document WAL and replay persistence', () => {
       });
       if (!index) first = frame;
     }
-    const saved = await store.load(documentBytesId(f.authority.genesisId));
+    const saved = await store.load(bytesToHex(f.authority.genesisId));
     expect(saved.revision).toBe(260);
     expect(saved.entries.length).toBeLessThan(128);
     expect(saved.pending).toBeUndefined();
@@ -574,12 +572,12 @@ describe('accepted document WAL and replay persistence', () => {
     await document.change((doc) => {
       doc.push(1);
     });
-    const old = await backing.load(documentBytesId(f.authority.genesisId));
+    const old = await backing.load(bytesToHex(f.authority.genesisId));
     await document.change((doc) => {
       doc.push(2);
     });
     await document.close();
-    const actual = await backing.load(documentBytesId(f.authority.genesisId));
+    const actual = await backing.load(bytesToHex(f.authority.genesisId));
     const modified = {
       ...actual,
       entries: actual.entries.map((entry) => entry.slice()),
@@ -848,7 +846,7 @@ test('storage cannot promote a prepared ciphertext into an accepted journal entr
           authorityRecords: [],
         });
         const staged = await backing.load(
-          documentBytesId(f.authority.genesisId),
+          bytesToHex(f.authority.genesisId),
         );
         const encoded = new DocumentBinaryWriter()
           .bytes(staged.pending!.entry)
@@ -864,7 +862,7 @@ test('storage cannot promote a prepared ciphertext into an accepted journal entr
         const recovered = engine(f, key, hostile, anchor);
         await expect(recovered.activate()).rejects.toThrow('acceptance');
         expect(
-          await anchor.load(documentBytesId(f.authority.genesisId)),
+          await anchor.load(bytesToHex(f.authority.genesisId)),
         ).toBeUndefined();
         expect(() => recovered.document).toThrow();
         await recovered.close();
@@ -916,7 +914,7 @@ test.each([true, false])(
     await new Promise((resolve) => setImmediate(resolve));
     expect(observed).toBe(false);
     expect(
-      (await store.load(documentBytesId(f.authority.genesisId))).publications,
+      (await store.load(bytesToHex(f.authority.genesisId))).publications,
     ).toHaveLength(1);
     release();
     const changed = await mutationResult,
@@ -1076,7 +1074,7 @@ test('staging reveals no publishable ciphertext and rejected admission cannot mi
     id: expect.any(Uint8Array),
     bytes: expect.any(Number),
   });
-  const snapshot = await store.load(documentBytesId(f.authority.genesisId));
+  const snapshot = await store.load(bytesToHex(f.authority.genesisId));
   expect(snapshot.publications).toEqual([]);
   expect(snapshot.pending).toBeUndefined();
   expect(document.document).toEqual([]);
@@ -1100,7 +1098,7 @@ test('authenticates each stored publication after its original journal entry was
   }
   expect(await document.pendingPublications()).toEqual([first]);
   await document.close();
-  const snapshot = await store.load(documentBytesId(f.authority.genesisId));
+  const snapshot = await store.load(bytesToHex(f.authority.genesisId));
   expect(snapshot.entries.length).toBeLessThan(10);
   expect(snapshot.publications).toHaveLength(1);
   const publication = snapshot.publications![0];

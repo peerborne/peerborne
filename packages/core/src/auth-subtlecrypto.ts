@@ -1,5 +1,5 @@
 import { AuthProvider, AesAlgorithmName } from './auth-provider.js';
-import { concatUint8Arrays } from './utils.js';
+import { concatBytes } from './internal/bytes.js';
 import { Base64 } from 'js-base64';
 import { INITIAL_INVITATION_CAPACITY_PROFILE } from './invitation-capacity.js';
 import { decodeCanonicalP384PublicKeyEncoding } from './serialized-public-key.js';
@@ -460,7 +460,7 @@ export class SubtleCrypto
         ),
       );
       return {
-        data: concatUint8Arrays(ciphertext, tag),
+        data: concatBytes([ciphertext, tag]),
         nonce,
       };
     }
@@ -485,5 +485,5 @@ function macInput(
 ): Uint8Array {
   const length = new Uint8Array(4);
   new DataView(length.buffer).setUint32(0, associatedData.byteLength, false);
-  return concatUint8Arrays(length, associatedData, nonce, ciphertext);
+  return concatBytes([length, associatedData, nonce, ciphertext]);
 }

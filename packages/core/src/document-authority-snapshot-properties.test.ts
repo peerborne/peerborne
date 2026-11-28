@@ -9,7 +9,7 @@ import {
   captureDocumentRoster,
   type CapturedDocumentMember,
 } from './policy/authority-capture.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   documentFixture,
   testCRDT,
@@ -246,7 +246,7 @@ test('required authority fields reject accessors and inherited data without invo
       fc.boolean(),
       (field, inherited) => {
         const lease = nativeLease();
-        const localId = documentBytesId(lease.members[0].memberId);
+        const localId = bytesToHex(lease.members[0].memberId);
         const target = ['isCurrent', 'members', 'headId'].includes(field)
           ? lease
           : field === '0'
@@ -370,7 +370,7 @@ test('native captures own their bytes and scalar roster while retaining the orig
           calls++;
           return (this.alive ? answer : false) as boolean;
         };
-        const localId = documentBytesId(lease.members[0].memberId);
+        const localId = bytesToHex(lease.members[0].memberId);
         const first = captureDocumentAuthorityLease(lease, localId);
         const second = captureDocumentAuthorityLease(lease, localId);
         lease.headId.fill(changedByte);
@@ -406,14 +406,14 @@ test('roster bounds reject before reading entries and admit exactly 256 own entr
       fc.boolean(),
       (count, sparse) => {
         const lease = nativeLease();
-        const localId = documentBytesId(lease.members[0].memberId);
+        const localId = bytesToHex(lease.members[0].memberId);
         lease.members = Array.from({ length: count }, (_, index) => {
           const memberId = new Uint8Array(32).fill(7);
           memberId[31] = index;
           return { memberId, publicKey: `key-${index}`, role: 3 as const };
         });
         const expectedLocalId =
-          count > 0 ? documentBytesId(lease.members[0].memberId) : localId;
+          count > 0 ? bytesToHex(lease.members[0].memberId) : localId;
         let reads = 0;
         if (count === 0 || count > 256) {
           Object.defineProperty(lease, 'headId', {

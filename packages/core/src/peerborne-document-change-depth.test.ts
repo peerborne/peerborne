@@ -23,7 +23,7 @@ import { JSONSerializer } from './json-serializer.js';
 import { KNOWN_CHANGE_GENERATION } from './known-changes.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { PeerborneDocument } from './peerborne-document.js';
-import { tipsHashToHex } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
 import { fixtureLoadCommitments } from './__testutils__/load-session.js';
 
 jest.mock('it-pipe', () => ({ pipe: jest.fn() }), { virtual: true });
@@ -338,7 +338,7 @@ describe('known-change sets', () => {
         ),
       ),
     );
-    return tipsHashToHex(
+    return bytesToHex(
       await loadAdvertisementHash(
         document.documentPath,
         sorted(document._servedFrontier()),

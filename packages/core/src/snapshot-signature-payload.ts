@@ -1,5 +1,5 @@
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
-import { MAX_DOCUMENT_PATH_LENGTH } from './utils.js';
+import { MAX_DOCUMENT_PATH_LENGTH } from './shared-protocol-request.js';
 
 const SNAPSHOT_SIGNATURE_DOMAIN = Uint8Array.from(
   'peerborne/snapshot-signature/v2\0',

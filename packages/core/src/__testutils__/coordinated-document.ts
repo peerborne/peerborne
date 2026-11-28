@@ -1,10 +1,8 @@
 import type { AuthProvider } from '../auth-provider.js';
 import type { CRDTProvider } from '../crdt-provider.js';
 import { preparedDocumentChange } from '../document-crdt-session.js';
-import {
-  documentBytesEqual,
-  documentBytesId,
-} from '../internal/document-binary.js';
+import { bytesToHex } from '../internal/hex.js';
+import { equalBytes } from '../internal/bytes.js';
 import {
   bootstrap,
   context,
@@ -88,7 +86,7 @@ export class TestDocumentAuthority implements DocumentAuthority {
     readonly memberId: Uint8Array,
   ) {}
   get headId(): Uint8Array { return this.genesisId.slice(); }
-  extendsHead(head: Uint8Array): boolean { return documentBytesEqual(head, this.genesisId); }
+  extendsHead(head: Uint8Array): boolean { return equalBytes(head, this.genesisId); }
   capture(context: GroupSecurityDocumentContext) {
     if (!documentContextsMatch(this.context, context))
       throw new Error('Role log does not cover the group head');
@@ -100,7 +98,7 @@ export class TestDocumentAuthority implements DocumentAuthority {
         {
           memberId: this.memberId.slice(),
           role,
-          publicKey: documentBytesId(this.memberId),
+          publicKey: bytesToHex(this.memberId),
         },
       ] satisfies DocumentMemberAuthority[],
       isCurrent: () => version === this.version && role === this.role,
@@ -116,12 +114,12 @@ export function testAuth(
     sign: (data, privateKey) => value.identities.signAs(privateKey, data),
     verify: (data, publicKey, signature) =>
       value.identities.verify(data, signature, publicKey),
-    serializePublicKey: async (key) => documentBytesId(key),
+    serializePublicKey: async (key) => bytesToHex(key),
     deserializePublicKey: async (key) => {
       const known = [
         value.identities.actorId,
         value.identities.attackerId,
-      ].find((id) => documentBytesId(id) === key);
+      ].find((id) => bytesToHex(id) === key);
       if (!known) throw new Error('Unknown identity');
       return known.slice();
     },

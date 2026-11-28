@@ -19,6 +19,7 @@ import {
   type AntiEntropyHandler,
   type AntiEntropyRequestOutcome,
   type AntiEntropyStatus,
+  type SoleWriterAdvertisement,
 } from './anti-entropy.js';
 import {
   DocumentBlockReadLimitError,
@@ -88,7 +89,6 @@ import {
   GossipReceiveAdmission,
   type SkippedFrameKind,
 } from './gossip-receive-admission.js';
-import { documentBytesEqual } from './internal/document-binary.js';
 import {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,
@@ -119,16 +119,20 @@ import {
 import { pipe } from 'it-pipe';
 import { Libp2p } from 'libp2p';
 import type { CreateInvitationOptions, Peerborne } from './peerborne.js';
+import { randomHex, shuffleArray } from './internal/random.js';
+import { bytesToHex } from './internal/hex.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
+import { readUint8Iterable } from './internal/stream-read.js';
 import {
   assertSharedProtocolRequestSize,
-  concatUint8Arrays,
-  copyUnsharedUint8Array,
   MAX_DOCUMENT_PATH_LENGTH,
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  readUint8Iterable,
-  shuffleArray,
-  snapshotEnumerableOwnDataObject,
-} from './utils.js';
+} from './shared-protocol-request.js';
+import {
+  concatBytes,
+  copyUnsharedUint8Array,
+  equalBytes,
+} from './internal/bytes.js';
 import type { Connection, Stream } from '@libp2p/interface';
 import type { Identify } from '@libp2p/identify';
 import { writeStream, type ProtocolWriteStream } from './stream-write.js';
@@ -256,8 +260,8 @@ import {
   deriveDocumentKeyFromRootSecret,
   deriveEpochIdFromRootSecret,
 } from './derive-doc-key.js';
-import { EPOCH_ID_LENGTH, toHex } from './epoch.js';
-import { tipsHashToHex, TIPS_HASH_LENGTH } from './tips-hash.js';
+import { EPOCH_ID_LENGTH } from './epoch.js';
+import { TIPS_HASH_LENGTH } from './tips-hash.js';
 import {
   constantTimeHexEquals,
   DEFAULT_LOAD_QUORUM_K,
@@ -354,7 +358,6 @@ import {
   runSharedProtocolMutation,
   type SharedProtocolHandlerAdmission,
 } from './shared-protocol-admission.js';
-import { constantTimeEqual } from './internal/constant-time-equal.js';
 export type { HistoryVisibility } from './invitation-policy.js';
 
 /** Authenticated libp2p PeerIds of connected load candidates, by address. */
@@ -651,17 +654,14 @@ function capturePreparedKeychainMerge(
       EPOCH_ID_LENGTH,
       `Prepared Welcome keychain keyIds[${index}]`,
     );
-    let encodedKeyId = '';
-    for (let offset = 0; offset < keyId.byteLength; offset++) {
-      encodedKeyId += keyId[offset].toString(16).padStart(2, '0');
-    }
+    const encodedKeyId = bytesToHex(keyId);
     if (seenKeyIds.has(encodedKeyId)) {
       throw new TypeError('Prepared Welcome keychain has duplicate key IDs');
     }
     seenKeyIds.add(encodedKeyId);
     keyIds.push(keyId);
   }
-  if (!constantTimeEqual(currentKeyId, keyIds[keyIds.length - 1])) {
+  if (!equalBytes(currentKeyId, keyIds[keyIds.length - 1])) {
     throw new TypeError(
       'Prepared Welcome keychain currentKeyId must be its final key ID',
     );
@@ -710,7 +710,7 @@ function hasCompleteHydratedKeychain(
     );
     if (
       key === undefined ||
-      !constantTimeEqual(hydratedKeyId, keyIds[index])
+      !equalBytes(hydratedKeyId, keyIds[index])
     ) {
       return false;
     }
@@ -2021,8 +2021,16 @@ export class PeerborneDocument<
       : documentTopic(this.documentPath);
   }
 
-  private async _shuffledPeers() {
-    const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+  private async _shuffledPeers(onlyPeer?: string) {
+    const openConnections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+    const connections =
+      onlyPeer === undefined
+        ? openConnections
+        : openConnections.filter(
+            (connection) =>
+              connection.status === 'open' &&
+              connection.remotePeer.toString() === onlyPeer,
+          );
     const loadable = await Promise.all(
       connections.map((connection) => this._mayServeDocumentLoad(connection)),
     );
@@ -2450,7 +2458,7 @@ export class PeerborneDocument<
         'Encrypted document block exceeds the byte limit',
       );
     }
-    const blockData = concatUint8Arrays(documentKeyID, nonce, data);
+    const blockData = concatBytes([documentKeyID, nonce, data]);
     const cid = (await this.heliaFs.addBytes(blockData)).toString();
     if (
       kind === crdtDocumentChangeNode &&
@@ -5286,7 +5294,7 @@ export class PeerborneDocument<
       return { kind: 'changed' };
     }
     if (
-      !constantTimeEqual(raw, rawAfterVerification) ||
+      !equalBytes(raw, rawAfterVerification) ||
       this._writerKeysVersion !== writerKeysVersion
     ) {
       return { kind: 'changed' };
@@ -5367,7 +5375,7 @@ export class PeerborneDocument<
       frameLength,
       `${protocol} shared protocol request`,
     );
-    return concatUint8Arrays(pathHeader, pathBytes, ...parts);
+    return concatBytes([pathHeader, pathBytes, ...parts]);
   }
 
   private _deserializeSignature(signature: string): Uint8Array {
@@ -5561,7 +5569,7 @@ export class PeerborneDocument<
       const publication: unknown =
         await this.swarm.heliaNode.libp2p.services.pubsub.publish(
           this._topic,
-          concatUint8Arrays(documentKeyID, nonce, data),
+          concatBytes([documentKeyID, nonce, data]),
         );
       const recipients = publicationRecipients(
         publication,
@@ -6300,7 +6308,7 @@ export class PeerborneDocument<
       if (!nonce) {
         throw new Error(`Failed to encrypt sync message! Nonce cannot be empty`);
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = concatBytes([documentKeyID, nonce, data]);
       assertSharedProtocolRequestSize(
         assembled.byteLength,
         'Encrypted document-load response',
@@ -6390,7 +6398,7 @@ export class PeerborneDocument<
       if (!nonce) {
         throw new Error(`Failed to encrypt snapshot response! Nonce cannot be empty`);
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = concatBytes([documentKeyID, nonce, data]);
       assertSharedProtocolRequestSize(
         assembled.byteLength,
         'Encrypted snapshot-load response',
@@ -6515,7 +6523,7 @@ export class PeerborneDocument<
       if (!nonce) {
         throw new Error(`Failed to encrypt security-advertise response! Nonce cannot be empty`);
       }
-      const assembled = concatUint8Arrays(documentKeyID, nonce, data);
+      const assembled = concatBytes([documentKeyID, nonce, data]);
       console.log('Sending encrypted shared security-advertise response');
 
       await this._sendAuthorizedLoadResponse(
@@ -7275,10 +7283,10 @@ export class PeerborneDocument<
           const servedFrontier = computeServedFrontier(
             message.changeId, message.changes, message.snapshot?.lastChangeNodeCID,
           );
-          responseDigest = tipsHashToHex(await awaitLoadWork(loadAdvertisementHash(
+          responseDigest = bytesToHex(await awaitLoadWork(loadAdvertisementHash(
             this.documentPath, servedFrontier, session.commitments, manifestHash,
           ), signal));
-          const advertisedDigest = tipsHashToHex(await awaitLoadWork(loadAdvertisementHash(
+          const advertisedDigest = bytesToHex(await awaitLoadWork(loadAdvertisementHash(
             this.documentPath, message.tips, session.commitments, manifestHash,
           ), signal));
           if (!constantTimeHexEquals(responseDigest, advertisedDigest)) {
@@ -8047,12 +8055,21 @@ export class PeerborneDocument<
     preferredPeer?: PeerId | string,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    return this._loadAuthenticated(preferredPeer, signal);
+  }
+
+  private async _loadAuthenticated(
+    preferredPeer?: PeerId | string,
+    signal?: AbortSignal,
+    soleWriter?: SoleWriterAdvertisement,
+  ): Promise<boolean> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
     if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
     this._assertNoIncompleteBootstrapLoad();
 
-    const shuffledPeers = await this._shuffledPeers();
+    if (soleWriter && !this._canLoadFromSoleWriter(soleWriter)) return false;
+    const shuffledPeers = await this._shuffledPeers(soleWriter?.peer);
     if (shuffledPeers.length === 0) {
       this._assertNoIncompleteBootstrapLoad();
       return false;
@@ -8061,6 +8078,14 @@ export class PeerborneDocument<
     this._beekemForkGuard?.assertAcceptsWork();
     const session = await this._captureLoadSession();
     throwIfLoadAborted(signal);
+    if (
+      soleWriter &&
+      (!this._canLoadFromSoleWriter(soleWriter) ||
+        session.bootstrap ||
+        session.authorities.length !== 1 ||
+        session.authorities[0]?.authorityId !== soleWriter.member)
+    )
+      return false;
 
     const orderedPeers = [...shuffledPeers];
 
@@ -8387,7 +8412,11 @@ export class PeerborneDocument<
                 connection.status === 'open' &&
                 connection.remotePeer?.toString() === peer,
             ),
-        load: (peer, signal) => this.load(peer, signal),
+        canLoadFromSoleWriter: (writer) => this._canLoadFromSoleWriter(writer),
+        load: (peer, signal, soleWriter) =>
+          soleWriter === undefined
+            ? this.load(peer, signal)
+            : this._loadAuthenticated(peer, signal, soleWriter),
       },
       antiEntropyBudgetFor(this.swarm),
       (event) => this._emitAntiEntropy(antiEntropy, event),
@@ -8479,10 +8508,7 @@ export class PeerborneDocument<
         'Sync request',
       )(this._userPublicKey),
       requesterPeer,
-      requestId: Array.from(
-        crypto.getRandomValues(new Uint8Array(16)),
-        (byte) => byte.toString(16).padStart(2, '0'),
-      ).join(''),
+      requestId: randomHex(16),
       issuedAtMs: now,
       knownSnapshots: [...new Set([
         ...(this._latestSnapshot ? [await syncSnapshotHint(this._latestSnapshot.signature)] : []),
@@ -8552,10 +8578,20 @@ export class PeerborneDocument<
     return (await role) !== undefined;
   }
 
+  private _canLoadFromSoleWriter(writer: SoleWriterAdvertisement): boolean {
+    const now = this._observeSyncRequestClock();
+    return (
+      this._writerMutationsInFlight === 0 &&
+      writer.writerVersion === this._writerKeysVersion &&
+      now !== undefined &&
+      isSyncRequestFresh(writer, now)
+    );
+  }
+
   /** The verified requester's current role, or undefined if unauthenticated. */
   private async _syncRequestRole(
     request: SyncRequest,
-  ): Promise<'writer' | 'reader' | undefined> {
+  ): Promise<'sole-writer' | 'writer' | 'reader' | undefined> {
     if (
       request.documentId !== this.documentPath ||
       !this._isSigningEnabled()
@@ -8577,7 +8613,7 @@ export class PeerborneDocument<
         this._deserializeSignature(request.signature),
       )) === true
         ? index < writers.length
-          ? 'writer'
+          ? (writers.length === 1 ? 'sole-writer' : 'writer')
           : 'reader'
         : undefined;
     }
@@ -8595,7 +8631,7 @@ export class PeerborneDocument<
   private async _observeSyncRequest(
     request: SyncRequest,
     now: number | undefined,
-    role: () => Promise<'writer' | 'reader' | undefined>,
+    role: () => Promise<'sole-writer' | 'writer' | 'reader' | undefined>,
     isCurrent: () => boolean,
   ): Promise<void> {
     const antiEntropy = this._antiEntropy;
@@ -8618,6 +8654,7 @@ export class PeerborneDocument<
         : !antiEntropy.admitAdvertisement(request.requester, head)
     )
       return;
+    const writerVersion = this._writerKeysVersion;
     const verified = await role();
     if (verified === undefined || !isCurrent()) return;
     this._noteMemberPeer(request.requesterPeer);
@@ -8627,7 +8664,10 @@ export class PeerborneDocument<
         request.requester,
         request.requesterPeer,
         head,
-        verified === 'writer',
+        verified !== 'reader',
+        verified === 'sole-writer' && writerVersion === this._writerKeysVersion
+          ? { writerVersion, issuedAtMs: request.issuedAtMs }
+          : undefined,
       );
   }
 
@@ -8645,7 +8685,7 @@ export class PeerborneDocument<
     await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
-      let verification: Promise<'writer' | 'reader' | undefined> | undefined;
+      let verification: ReturnType<typeof this._syncRequestRole> | undefined;
       const role = () => (verification ??= this._syncRequestRole(request));
       await this._observeSyncRequest(request, now, role, isCurrent);
       if (!isCurrent()) return;
@@ -8772,7 +8812,7 @@ export class PeerborneDocument<
       this._payloadAAD(keyId, 'frame'),
     );
     if (!nonce) throw new Error('Encrypted sync requires a nonce');
-    const frame = concatUint8Arrays(keyId, nonce, data);
+    const frame = concatBytes([keyId, nonce, data]);
     if (isCurrent && !isCurrent()) return undefined;
     return this.swarm.heliaNode.libp2p.services.pubsub.publish(
       this._topic,
@@ -8951,7 +8991,7 @@ export class PeerborneDocument<
       !checkpointCommitmentPermitsRestore(
         commitment !== undefined,
         commitment !== undefined &&
-          constantTimeEqual(commitment, await digestDocumentCheckpointPayload(bytes)),
+          equalBytes(commitment, await digestDocumentCheckpointPayload(bytes)),
       )
     )
       throw new Error('Local checkpoint commitment mismatch');
@@ -9006,7 +9046,7 @@ export class PeerborneDocument<
         !checkpointCommitmentPermitsRestore(
           commitment !== undefined,
           commitment !== undefined &&
-            constantTimeEqual(commitment, await digestDocumentCheckpointPayload(payload)),
+            equalBytes(commitment, await digestDocumentCheckpointPayload(payload)),
         )
       ) {
         throw new Error('Local checkpoint commitment mismatch');
@@ -9837,7 +9877,7 @@ export class PeerborneDocument<
     if (
       currentKeyId === undefined ||
       frame.byteLength <= keyEnd ||
-      !documentBytesEqual(frame.subarray(0, keyEnd), currentKeyId)
+      !equalBytes(frame.subarray(0, keyEnd), currentKeyId)
     )
       return undefined;
     const content = await this._decryptGossipFrame(frame);
@@ -10602,7 +10642,7 @@ export class PeerborneDocument<
       unchanged: () => {
         try {
           return (
-            constantTimeEqual(raw, serialize()) &&
+            equalBytes(raw, serialize()) &&
             syncMessageMatchesSnapshot(expected, unsigned, context)
           );
         } catch {
@@ -10764,7 +10804,7 @@ export class PeerborneDocument<
         ]),
         changeFetchOptions.signal,
       );
-      if (!constantTimeEqual(liveCommitment, preparedCommitment)) {
+      if (!equalBytes(liveCommitment, preparedCommitment)) {
         console.warn(
           `Rejected keychain changes that would add keys to ${this.documentPath}`,
         );
@@ -11628,8 +11668,8 @@ export class PeerborneDocument<
     if (!this._isSigningEnabled()) return;
     const key = [
       registration.signer,
-      toHex(registration.nonce),
-      toHex(registration.registrationSignature),
+      bytesToHex(registration.nonce),
+      bytesToHex(registration.registrationSignature),
     ].join('\0');
     if (this._verifiedRegistrations.has(key)) {
       this._verifiedRegistrations.delete(key);
@@ -13193,11 +13233,11 @@ export class PeerborneDocument<
       );
     }
 
-    const encryptedBootstrap = concatUint8Arrays(
+    const encryptedBootstrap = concatBytes([
       welcomeEpochId,
       encrypted.nonce,
       encrypted.data,
-    );
+    ]);
     if (
       encryptedBootstrap.byteLength - bootstrapPlaintext.byteLength >
       INITIAL_INVITATION_MAX_ENCRYPTED_BOOTSTRAP_OVERHEAD_BYTES
@@ -13570,7 +13610,7 @@ export class PeerborneDocument<
           const stagedCurrentKeyId = preparedKeychain.currentKeyId;
           if (
             stagedCurrentKeyId === undefined ||
-            !constantTimeEqual(
+            !equalBytes(
               stagedCurrentKeyId,
               invitationBundle.welcomeEpochId,
             )
@@ -13581,7 +13621,7 @@ export class PeerborneDocument<
           }
           await awaitLoadWork(preparedKeychain.hydrateKeys(), signal);
           const epochPresent = preparedKeychain.keyIds.some((keyId) =>
-            constantTimeEqual(keyId, invitationBundle.welcomeEpochId),
+            equalBytes(keyId, invitationBundle.welcomeEpochId),
           );
           if (
             !epochPresent ||
@@ -13698,7 +13738,7 @@ export class PeerborneDocument<
 
           if (
             bootstrapMessage.keychainChanges === undefined ||
-            !constantTimeEqual(
+            !equalBytes(
               this._changesSerializer.serializeChanges(
                 bootstrapMessage.keychainChanges,
               ),
@@ -13770,7 +13810,7 @@ export class PeerborneDocument<
             currentKemKeyPair.privateKey !== kemKeyPair.privateKey ||
             currentKemKeyPair.publicKey !== kemKeyPair.publicKey ||
             !currentKemPublicKeyRaw ||
-            !constantTimeEqual(
+            !equalBytes(
               currentKemPublicKeyRaw,
               invitationKemPublicKeyRaw,
             )
@@ -14181,7 +14221,7 @@ export class PeerborneDocument<
     if (
       !messageKemPublic ||
       messageKemPublic.byteLength !== localKemPublicRaw.byteLength ||
-      !constantTimeEqual(messageKemPublic, localKemPublicRaw)
+      !equalBytes(messageKemPublic, localKemPublicRaw)
     ) {
       console.warn('Dropping BeeKEM Welcome for a different KEM public key');
       return 'retry';
@@ -14227,7 +14267,7 @@ export class PeerborneDocument<
       );
       preparedKeychainMerge = capturePreparedKeychainMerge(prepared);
 
-      if (!constantTimeEqual(preparedKeychainMerge.currentKeyId, newEpochId)) {
+      if (!equalBytes(preparedKeychainMerge.currentKeyId, newEpochId)) {
         console.warn(
           'Dropping BeeKEM Welcome whose epoch is not the staged current key',
         );
@@ -14348,7 +14388,7 @@ export class PeerborneDocument<
   ): void {
     const epochId = message.welcomeEpochId;
     if (!epochId || epochId.byteLength !== EPOCH_ID_LENGTH) return;
-    const key = this._hexEncode(epochId);
+    const key = bytesToHex(epochId);
     let stored: boolean;
     try {
       // Retain bytes rather than the decoded object graph. This makes byte
@@ -14450,15 +14490,6 @@ export class PeerborneDocument<
   /** Indirection so unit tests can stub the wall clock. */
   private _now(): number {
     return Date.now();
-  }
-
-  /** Lower-case hex encoding of a `Uint8Array`. */
-  private _hexEncode(bytes: Uint8Array): string {
-    let s = '';
-    for (let i = 0; i < bytes.length; i++) {
-      s += bytes[i].toString(16).padStart(2, '0');
-    }
-    return s;
   }
 
   /**
@@ -14857,7 +14888,7 @@ export class PeerborneDocument<
           'unavailable, so KEM leaf uniqueness cannot be verified.',
       );
     }
-    if (constantTimeEqual(this._kemPublicKeyRaw, readerKemPublicKey)) {
+    if (equalBytes(this._kemPublicKeyRaw, readerKemPublicKey)) {
       throw new Error(
         `[${this.documentPath}] addReader: readerKemPublicKey matches the ` +
           'founder\'s BeeKEM leaf. Each member must use a unique KEM public key.',
@@ -14914,7 +14945,7 @@ export class PeerborneDocument<
       this._readerKemPublicKeys.get(serializedReader);
     if (
       previousKemPublicKey &&
-      !constantTimeEqual(previousKemPublicKey, readerKemPublicKey)
+      !equalBytes(previousKemPublicKey, readerKemPublicKey)
     ) {
       throw new Error(
         `[${this.documentPath}] _prepareBeeKEMReaderRegistration: this reader is ` +
@@ -15419,7 +15450,7 @@ export class PeerborneDocument<
       // byte-identical to what both ends will key on for future
       // encrypted-block lookups.
       const localEpochId32 = await deriveEpochIdFromRootSecret(rootSecret);
-      if (!constantTimeEqual(localEpochId32, senderEpochId32)) {
+      if (!equalBytes(localEpochId32, senderEpochId32)) {
         console.warn('Dropping BeeKEM PathUpdateV2 with a mismatched epoch ID');
         return;
       }

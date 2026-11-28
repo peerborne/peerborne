@@ -16,7 +16,7 @@ import {
 import {
   snapshotDeepEnumerableData,
   snapshotEnumerableOwnDataObject,
-} from './utils.js';
+} from './internal/data-snapshot.js';
 
 /**
  * Bound all detached change payloads as one value. The synthetic outer array

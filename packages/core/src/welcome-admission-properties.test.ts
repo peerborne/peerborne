@@ -8,7 +8,7 @@ import {
 } from './pending-welcome-buffer.js';
 import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
-import * as byteUtilities from './utils.js';
+import * as byteUtilities from './internal/bytes.js';
 import * as admissionPolicy from './policy/welcome-admission.js';
 
 const welcome = (): CRDTSyncMessage<Uint8Array> => ({

@@ -1,5 +1,5 @@
-import { tipsHashToHex } from './tips-hash.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { bytesToHex } from './internal/hex.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import {
   selectQuorumBucket,
   firstEligiblePeerIndices,
@@ -59,7 +59,7 @@ export function decideLoadQuorum(
         32,
         'load-quorum vote hash',
       );
-      digest = tipsHashToHex(hash);
+      digest = bytesToHex(hash);
     } catch {}
     return { peerId, digest };
   });
@@ -136,7 +136,7 @@ export function decideSingleWriterLoad(
     let digest: string | undefined;
     if (vote.signerAuthority === authority) {
       try {
-        digest = tipsHashToHex(
+        digest = bytesToHex(
           copyUnsharedUint8Array(vote.hash, 32, 32, 'load-quorum vote hash'),
         );
       } catch {}

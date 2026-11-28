@@ -10,13 +10,18 @@ import {
   claimPreparedCommit,
   completePreparedCommit,
 } from './policy/commit-lifecycle.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import {
+  compareBytes,
+  copyUnsharedUint8Array,
+  equalBytes,
+} from './internal/bytes.js';
 import {
   computeKeychainStateCommitment,
   MAX_KEYCHAIN_EPOCHS,
 } from './keychain.js';
 import type { KeychainAppendIntent } from './keychain.js';
 import type { PreparedCommitClaim } from './prepared-commit.js';
+import { bytesToHex, tryDecodeLowercaseHex } from './internal/hex.js';
 
 const KEY_ID_LENGTH_BYTES = 32;
 
@@ -29,16 +34,8 @@ export type CanonicalAppendIntent = {
   readonly newKeyId: string;
 };
 
-function toHex(bytes: Uint8Array): string {
-  const hexChars: string[] = new Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    hexChars[i] = bytes[i].toString(16).padStart(2, '0');
-  }
-  return hexChars.join('');
-}
-
 function keyIdToCacheKey(keyIDBytes: Uint8Array): string {
-  return toHex(
+  return bytesToHex(
     copyUnsharedUint8Array(
       keyIDBytes,
       KEY_ID_LENGTH_BYTES,
@@ -49,14 +46,11 @@ function keyIdToCacheKey(keyIDBytes: Uint8Array): string {
 }
 
 function cacheKeyToKeyId(cacheKey: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(cacheKey)) {
+  const bytes = tryDecodeLowercaseHex(cacheKey, KEY_ID_LENGTH_BYTES);
+  if (bytes === undefined) {
     throw new Error(
       'Invalid keychain key ID: expected 64 lowercase hex characters',
     );
-  }
-  const bytes = new Uint8Array(KEY_ID_LENGTH_BYTES);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(cacheKey.substring(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }
@@ -279,9 +273,42 @@ function createMergeClaim({
   };
 }
 
+/** Base64 of a key's raw export; ACL members and keychain entries share it. */
+async function serializeKey(publicKey: CryptoKey): Promise<string> {
+  const buf = await crypto.subtle.exportKey('raw', publicKey);
+  return Base64.fromUint8Array(new Uint8Array(buf));
+}
+
+/** Import keys encoded by `serializeKey` with the given algorithm and usages. */
+function deserializeKey(
+  algorithm:
+    | AlgorithmIdentifier
+    | RsaHashedImportParams
+    | EcKeyImportParams
+    | HmacImportParams
+    | AesKeyAlgorithm,
+  keyUsages: KeyUsage[],
+): (publicKey: string) => Promise<CryptoKey> {
+  return (publicKey: string) => {
+    const bytes = Base64.toUint8Array(publicKey);
+    // Cast needed: Uint8Array<ArrayBufferLike> does not satisfy BufferSource (excludes SharedArrayBuffer)
+    return crypto.subtle.importKey(
+      'raw',
+      bytes as Uint8Array<ArrayBuffer>,
+      algorithm,
+      true,
+      keyUsages,
+    );
+  };
+}
+
 /** @internal Canonical validation shared by the CRDT adapters. */
 export const canonicalKeychain = Object.freeze({
-  toHex,
+  toHex: bytesToHex,
+  compareBytes,
+  equalBytes,
+  serializeKey,
+  deserializeKey,
   keyIdToCacheKey,
   cacheKeyToKeyId,
   assertAesGcmDocumentKey,

@@ -20,11 +20,9 @@ import {
   type DocumentJournalSnapshot,
 } from './document-replay-journal.js';
 import { planJournalPublication } from './policy/journal-store.js';
-import * as byteUtilities from './utils.js';
-import {
-  documentBytesEqual,
-  documentBytesId,
-} from './internal/document-binary.js';
+import * as byteUtilities from './internal/bytes.js';
+import { bytesToHex } from './internal/hex.js';
+import { equalBytes } from './internal/bytes.js';
 import { documentFixture } from './__testutils__/coordinated-document.js';
 
 type Backend = 'memory' | 'indexeddb';
@@ -189,7 +187,7 @@ async function executeAction(
       (!publication ||
         (model.publications.length < 16 &&
           model.publications.every(
-            (existing) => !documentBytesEqual(existing.id, id),
+            (existing) => !equalBytes(existing.id, id),
           )));
     const operation = (async () =>
       store.stage(
@@ -237,13 +235,13 @@ async function executeAction(
     const admissible =
       !!pending &&
       expectedRevision === model.revision &&
-      documentBytesEqual(token, pending.token) &&
+      equalBytes(token, pending.token) &&
       checkpoint === pending.checkpoint &&
       accepted.length ===
         pending.entry.length + DOCUMENT_JOURNAL_ACCEPTED_OVERHEAD &&
       !!publication === !!pending.publication &&
       (!publication ||
-        documentBytesEqual(publication.id, pending.publication!.id));
+        equalBytes(publication.id, pending.publication!.id));
     const operation = (async () =>
       store.commit(
         'doc',
@@ -269,13 +267,13 @@ async function executeAction(
     const id = syntheticId(command.id);
     await store.publicationSent('doc', id);
     model.publications = model.publications.filter(
-      (publication) => !documentBytesEqual(publication.id, id),
+      (publication) => !equalBytes(publication.id, id),
     );
   } else {
     const token = model.pending?.token.slice() ?? syntheticId(9);
     if (command.fault === 'token') token[0] ^= 0x80;
     await store.discard('doc', token);
-    if (model.pending && documentBytesEqual(model.pending.token, token))
+    if (model.pending && equalBytes(model.pending.token, token))
       model.pending = undefined;
   }
   expectSnapshot(await store.load('doc'), model);
@@ -769,13 +767,13 @@ test.each(['memory', 'indexeddb'] as const)(
             await journal.restore();
             await (await journal.prepare(item)).commit();
             const before = await store.load(
-              documentBytesId(fixture.authority.genesisId),
+              bytesToHex(fixture.authority.genesisId),
             );
             await expect(
               journal.prepare({ ...item, checkpoint: !checkpoint }),
             ).rejects.toThrow();
             expect(
-              await store.load(documentBytesId(fixture.authority.genesisId)),
+              await store.load(bytesToHex(fixture.authority.genesisId)),
             ).toEqual(before);
             const recovered = make();
             expect(await recovered.restore()).toHaveLength(1);

@@ -6,10 +6,13 @@ import type { CRDTSyncMessage } from './crdt-sync-message.js';
 import type { SyncMessageSerializer } from './sync-message-serializer.js';
 import { snapshotSyncMessageForContext } from './sync-message-context.js';
 import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
+import {
+  byteLengthOf,
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
-  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-} from './utils.js';
+} from './internal/bytes.js';
 import {
   advancePendingWelcomeClock,
   canAdmitPendingWelcome,
@@ -39,15 +42,6 @@ if (PENDING_WELCOMES_MAX_RETAINED_BYTES < PENDING_WELCOME_MAX_BODY_BYTES) {
     'Pending Welcome aggregate limit must admit one maximum-size body',
   );
 }
-
-const typedArrayByteLength = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype),
-  'byteLength',
-)?.get;
-if (typeof typedArrayByteLength !== 'function') {
-  throw new Error('PendingWelcomeBuffer requires TypedArray.byteLength');
-}
-const getByteLength = typedArrayByteLength;
 
 export class PendingWelcomeBodyLimitError extends RangeError {
   constructor() {
@@ -178,7 +172,7 @@ export class PendingWelcomeBuffer {
     validateAdmissionInput(key, bufferedAtMs, authenticated);
     let bodyLength: number;
     try {
-      bodyLength = Reflect.apply(getByteLength, body, []);
+      bodyLength = byteLengthOf(body as Uint8Array);
     } catch {
       throw new TypeError('Pending BeeKEM Welcome body must be a Uint8Array');
     }

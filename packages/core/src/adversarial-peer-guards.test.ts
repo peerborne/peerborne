@@ -1,5 +1,9 @@
 import { describe, expect, test } from '@jest/globals';
-import { readPathPrefixedProtocolHeader, readFirstDeserializable, readUint8Iterable } from './utils';
+import {
+  readFirstDeserializable,
+  readUint8Iterable,
+} from './internal/stream-read.js';
+import { readPathPrefixedProtocolHeader } from './shared-protocol-request.js';
 
 describe('adversarial peer simulation - protocol handler guards', () => {
   async function* source(chunks: Uint8Array[]): AsyncIterable<Uint8Array> {

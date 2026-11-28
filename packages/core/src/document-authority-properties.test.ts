@@ -23,7 +23,8 @@ import {
   testCRDT,
   testChanges,
 } from './__testutils__/coordinated-document.js';
-import { documentBytesEqual, documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
+import { equalBytes } from './internal/bytes.js';
 import {
   DocumentReplayJournal,
   InMemoryDocumentJournalRollbackAnchor,
@@ -38,10 +39,10 @@ async function strictRosterFixture(persistPublications = false, includeReader = 
   const controller = new DocumentGroupControlAuthority(protocol, groupId, own);
   const provider: GroupSecurityProvider = f.provider;
   const roster: Array<{ memberId: Uint8Array; publicKey: string; role: 1 | 3 }> = [
-    { memberId: own, publicKey: documentBytesId(own), role: 3 },
+    { memberId: own, publicKey: bytesToHex(own), role: 3 },
   ];
   if (includeReader) {
-    roster.push({ memberId: reader, publicKey: documentBytesId(reader), role: 1 });
+    roster.push({ memberId: reader, publicKey: bytesToHex(reader), role: 1 });
   }
   let providerReads = 0;
   const useExpectedMemberIds = () => {
@@ -205,12 +206,12 @@ describe('causal document controller authority', () => {
             const members = () => [
               {
                 memberId: controller,
-                publicKey: documentBytesId(controller),
+                publicKey: bytesToHex(controller),
                 role: 3 as const,
               },
               {
                 memberId: other,
-                publicKey: documentBytesId(other),
+                publicKey: bytesToHex(other),
                 role: 1 as const,
               },
             ];
@@ -228,8 +229,8 @@ describe('causal document controller authority', () => {
               // The coordinator's local signing actor stays fixed. After transferring
               // authority away, direct control requests from that actor must fail.
               if (
-                documentBytesId(controller) !==
-                documentBytesId(f.identities.actorId)
+                bytesToHex(controller) !==
+                bytesToHex(f.identities.actorId)
               ) {
                 await expect(
                   coordinator.createCommit(
@@ -254,12 +255,12 @@ describe('causal document controller authority', () => {
               const roster = [
                 {
                   memberId: nextController,
-                  publicKey: documentBytesId(nextController),
+                  publicKey: bytesToHex(nextController),
                   role: 3 as const,
                 },
                 {
                   memberId: transfers[index] ? controller : other,
-                  publicKey: documentBytesId(
+                  publicKey: bytesToHex(
                     transfers[index] ? controller : other,
                   ),
                   role: 1 as const,
@@ -410,7 +411,7 @@ describe('causal document controller authority', () => {
           const f = await strictRosterFixture(false, true);
           const substitute = f.reader.slice();
           substitute[changedByte] ^= 1;
-          if (documentBytesEqual(substitute, f.own)) {
+          if (equalBytes(substitute, f.own)) {
             substitute[(changedByte + 1) % substitute.length] ^= 1;
           }
           const invalid = {
@@ -621,12 +622,12 @@ describe('causal document controller authority', () => {
     const roster = [
       {
         memberId: f.identities.actorId,
-        publicKey: documentBytesId(f.identities.actorId),
+        publicKey: bytesToHex(f.identities.actorId),
         role: 3 as const,
       },
       {
         memberId: f.identities.attackerId,
-        publicKey: documentBytesId(f.identities.attackerId),
+        publicKey: bytesToHex(f.identities.attackerId),
         role: 1 as const,
       },
     ];
@@ -734,13 +735,13 @@ test('rejects a validly signed role fork that does not extend the accepted check
   );
   const writer = {
     memberId: f.identities.attackerId,
-    publicKey: documentBytesId(f.identities.attackerId),
+    publicKey: bytesToHex(f.identities.attackerId),
     role: 2 as const,
   };
   const roster = [
     {
       memberId: f.identities.actorId,
-      publicKey: documentBytesId(f.identities.actorId),
+      publicKey: bytesToHex(f.identities.actorId),
       role: 3 as const,
     },
     writer,

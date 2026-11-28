@@ -5,7 +5,7 @@ import {
 import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
-} from './utils.js';
+} from './internal/bytes.js';
 import { reserveAuthenticationWork } from './policy/authentication-budget.js';
 
 export const MAX_INITIAL_LOAD_AUTHENTICATION_PAYLOAD_BYTES = 64 * 1024 * 1024;

@@ -11,7 +11,7 @@ import {
   type DocumentJournalStore,
 } from './document-replay-journal.js';
 import { documentFixture } from './__testutils__/coordinated-document.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 
 async function fixture(changes: Uint8Array, pending: boolean) {
   const f = await documentFixture();
@@ -63,7 +63,7 @@ async function fixture(changes: Uint8Array, pending: boolean) {
     store,
     anchor,
     create,
-    storageKey: documentBytesId(f.authority.genesisId),
+    storageKey: bytesToHex(f.authority.genesisId),
   };
 }
 

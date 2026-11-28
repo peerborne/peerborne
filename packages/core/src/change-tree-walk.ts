@@ -6,7 +6,7 @@ import {
   crdtReaderChangeNode,
   crdtWriterChangeNode,
 } from './crdt-change-node.js';
-import { snapshotEnumerableOwnDataObject } from './utils.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
 import { consumeWorkBudget } from './policy/work-budget.js';
 
 /** Aggregate limits for one accepted in-memory change tree. */

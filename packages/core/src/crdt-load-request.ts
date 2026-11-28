@@ -2,7 +2,7 @@ import {
   cloneInitialLoadChallenge,
   initialLoadRequestSignaturePayload,
 } from './initial-load-challenge.js';
-import { snapshotEnumerableOwnDataObject } from './utils.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
 
 /**
  * A signed document request addressed to one responder's libp2p PeerId, with

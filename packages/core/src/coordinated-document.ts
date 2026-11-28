@@ -24,10 +24,7 @@ import {
   GroupDocumentOperationError,
   type PreparedGroupDocumentOperation,
 } from './group-document-operation.js';
-import {
-  documentBytesEqual,
-  documentBytesId,
-} from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { isWellFormedUtf16 } from './internal/canonical-encoding.js';
 import { captureDocumentAuthorityLease } from './captured-document-authority.js';
 import {
@@ -43,8 +40,9 @@ import {
 import type { CapturedDocumentMember } from './policy/authority-capture.js';
 import {
   copyUnsharedUint8Array,
+  equalBytes,
   unsharedUint8ArrayByteLength,
-} from './utils.js';
+} from './internal/bytes.js';
 import {
   admitContentSequence,
   contentRolePermits,
@@ -236,7 +234,7 @@ function queueOf(rows: readonly Uint8Array[]): QueuedFrames {
   const rowOf = new Map<string, number>();
   parts.forEach((frames, row) => {
     for (const frame of frames)
-      rowOf.set(documentBytesId(documentFrameNonce(frame)), row);
+      rowOf.set(bytesToHex(documentFrameNonce(frame)), row);
   });
   return { rows: [...rows], parts, rowOf };
 }
@@ -246,7 +244,7 @@ function outboxHolds(
   queued: QueuedFrames,
   nonce: Uint8Array | undefined,
 ): boolean {
-  return nonce !== undefined && queued.rowOf.has(documentBytesId(nonce));
+  return nonce !== undefined && queued.rowOf.has(bytesToHex(nonce));
 }
 
 function joinFrames(frames: readonly Uint8Array[]): Uint8Array {
@@ -928,7 +926,7 @@ export class CoordinatedDocument<
   }
 
   get routingId(): string {
-    return documentBytesId(this.genesisId);
+    return bytesToHex(this.genesisId);
   }
 
   async publicKeys(writersOnly: boolean): Promise<PublicKey[]> {
@@ -991,7 +989,7 @@ export class CoordinatedDocument<
     if (
       current?.isCurrent() &&
       documentContextsMatch(current.context, context) &&
-      documentBytesEqual(current.authorityHead, lease.headId)
+      equalBytes(current.authorityHead, lease.headId)
     ) {
       return current;
     }
@@ -1072,7 +1070,7 @@ export class CoordinatedDocument<
   private ownFramesWaiting(): boolean {
     if (this.undecidedPublications > 0 || this.ownFramesPending > 0)
       return true;
-    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const local = bytesToHex(this.options.coordinator.localMemberId);
     return this.held?.frames.some((entry) => entry.author === local) ?? false;
   }
 
@@ -1087,7 +1085,7 @@ export class CoordinatedDocument<
         async (captured, _input, _signal, work) => {
           const lease = this.authority(captured);
           const own = lease.members.get(
-            documentBytesId(this.options.coordinator.localMemberId),
+            bytesToHex(this.options.coordinator.localMemberId),
           );
           if (!own) throw new Error('Local member has no document authority');
           const { value } = await work.observe<string>(
@@ -1318,7 +1316,7 @@ export class CoordinatedDocument<
     { material, aad }: Awaited<ReturnType<typeof this.frameKey>>,
   ): Promise<boolean> {
     const envelope = decodeEncryptedDocumentContent(frame);
-    if (!documentBytesEqual(envelope.epochTag, material.epochTag)) return false;
+    if (!equalBytes(envelope.epochTag, material.epochTag)) return false;
     try {
       await crypto.subtle.decrypt(
         {
@@ -1398,7 +1396,7 @@ export class CoordinatedDocument<
       delivered(value) || this.admittedFrames.has(value.id);
     for (const [index, frame] of frames.entries()) {
       const envelope = decodeEncryptedDocumentContent(frame);
-      if (!documentBytesEqual(envelope.epochTag, key.material.epochTag))
+      if (!equalBytes(envelope.epochTag, key.material.epochTag))
         throw new Error('Document epoch is unavailable');
       let plaintext: Uint8Array;
       try {
@@ -1420,10 +1418,10 @@ export class CoordinatedDocument<
       }
       const { unsigned } = decodeSignedDocumentContent(plaintext);
       const content = decodeDocumentContent(unsigned);
-      const author = documentBytesId(content.memberId);
+      const author = bytesToHex(content.memberId);
       if (index === 0)
         decide(
-          author === documentBytesId(this.options.coordinator.localMemberId),
+          author === bytesToHex(this.options.coordinator.localMemberId),
         );
       if (
         index !== 0 &&
@@ -1444,7 +1442,7 @@ export class CoordinatedDocument<
         author,
         sequence: content.sequence,
         hash,
-        id: `${author}:${content.sequence}:${documentBytesId(hash)}`,
+        id: `${author}:${content.sequence}:${bytesToHex(hash)}`,
         released: false,
       };
       // A copy stops holding queue capacity as soon as it is recognized.
@@ -1525,15 +1523,15 @@ export class CoordinatedDocument<
         if (this.held && documentContextsMatch(this.held.context, context))
           for (const entry of this.held.frames)
             held.add(
-              `${entry.author}:${entry.sequence}:${documentBytesId(entry.hash)}`,
+              `${entry.author}:${entry.sequence}:${bytesToHex(entry.hash)}`,
             );
       }
       const accepted = receipts.get(author);
       const last = accepted?.sequence ?? 0;
       return (
         sequence < last ||
-        (sequence === last && documentBytesEqual(hash, accepted!.hash)) ||
-        held.has(`${author}:${sequence}:${documentBytesId(hash)}`)
+        (sequence === last && equalBytes(hash, accepted!.hash)) ||
+        held.has(`${author}:${sequence}:${bytesToHex(hash)}`)
       );
     };
   }
@@ -1562,7 +1560,7 @@ export class CoordinatedDocument<
     }
     if (fitting === 0) return;
     const turns = frames.slice(0, fitting);
-    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const local = bytesToHex(this.options.coordinator.localMemberId);
     let own = turns.filter((value) => value.author === local).length;
     this.ownFramesPending += own;
     const result = this.tail
@@ -1643,7 +1641,7 @@ export class CoordinatedDocument<
         entry.author === pending.author && entry.sequence === pending.sequence,
     );
     if (same) {
-      if (!documentBytesEqual(same.hash, pending.hash))
+      if (!equalBytes(same.hash, pending.hash))
         throw new Error('Document author equivocated');
       same.reason = pending.reason;
       same.ready = pending.ready;
@@ -1989,7 +1987,7 @@ export class CoordinatedDocument<
     }
     const frames = retained.authors.get(author) ?? [];
     const base = frames.find((frame) => frame.sequence === sequence);
-    if (base && !documentBytesEqual(base.hash, hash)) return undefined;
+    if (base && !equalBytes(base.hash, hash)) return undefined;
     const suffix = frames.filter((frame) => frame.sequence > sequence);
     if (
       suffix.length !== head - sequence ||
@@ -2030,7 +2028,7 @@ export class CoordinatedDocument<
     return (author, sequence, copy) => {
       const frames = retained.authors.get(author);
       const entry = frames?.[sequence - frames[0].sequence];
-      if (entry?.sequence === sequence && documentBytesEqual(entry.frame, copy))
+      if (entry?.sequence === sequence && equalBytes(entry.frame, copy))
         entry.observedAt = now;
     };
   }
@@ -2100,7 +2098,7 @@ export class CoordinatedDocument<
       this.assertActivated();
       return this.runSealed(new Uint8Array(), async (stage) => {
         const requesterId = this.options.coordinator.localMemberId;
-        const member = stage.lease.members.get(documentBytesId(requesterId));
+        const member = stage.lease.members.get(bytesToHex(requesterId));
         if (!member) throw new Error('Local member has no document authority');
         return this.sealSigned(
           stage,
@@ -2188,7 +2186,7 @@ export class CoordinatedDocument<
         context,
       };
       const material = await this.materialFor(context);
-      if (!documentBytesEqual(envelope.epochTag, material.epochTag))
+      if (!equalBytes(envelope.epochTag, material.epochTag))
         throw new Error('Document redelivery epoch is unavailable');
       let plaintext: Uint8Array;
       try {
@@ -2213,11 +2211,11 @@ export class CoordinatedDocument<
       this.assertCatchUpBinding(binding, body);
       if (from === undefined || body.requesterPeer !== from)
         throw new Error('Document redelivery request is not from its signer');
-      const requesterId = documentBytesId(body.requesterId);
+      const requesterId = bytesToHex(body.requesterId);
       const requester = lease.members.get(requesterId);
       if (
         !requester ||
-        documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+        equalBytes(body.requesterId, this.options.coordinator.localMemberId)
       )
         throw new Error('Document redelivery requester is unauthorized');
       // Stale or replayed requests are refused before their signature check.
@@ -2244,7 +2242,7 @@ export class CoordinatedDocument<
     lease: AuthorityLease,
     requester: string,
   ): CoordinatedRedeliveryAnswer {
-    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const local = bytesToHex(this.options.coordinator.localMemberId);
     const peers = [...lease.members.keys()]
       .filter((id) => id !== requester)
       .sort();
@@ -2258,7 +2256,7 @@ export class CoordinatedDocument<
   ): CoordinatedRedeliveryAnswer {
     const context = stage.binding.context;
     const now = Date.now();
-    const local = documentBytesId(this.options.coordinator.localMemberId);
+    const local = bytesToHex(this.options.coordinator.localMemberId);
     const peers = [...stage.lease.members.keys()]
       .filter((id) => id !== requester)
       .sort();
@@ -2292,11 +2290,11 @@ export class CoordinatedDocument<
     const receipts = body.receipts;
     const skip = new Set(
       body.held.map(
-        ({ memberId, sequence }) => `${documentBytesId(memberId)}:${sequence}`,
+        ({ memberId, sequence }) => `${bytesToHex(memberId)}:${sequence}`,
       ),
     );
     const heads = new Map(
-      receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
+      receipts.map((receipt) => [bytesToHex(receipt.memberId), receipt]),
     );
     const accepted = this.sortedReceipts(context);
     const own: Uint8Array[] = [];
@@ -2359,7 +2357,7 @@ export class CoordinatedDocument<
     return this.enqueueCatchUp(undefined, 0, 0, (input) =>
       this.runCatchUp(input, async (stage) => {
         const requesterId = this.options.coordinator.localMemberId;
-        const member = stage.lease.members.get(documentBytesId(requesterId));
+        const member = stage.lease.members.get(bytesToHex(requesterId));
         if (!member) throw new Error('Local member has no document authority');
         const challenge = crypto.getRandomValues(new Uint8Array(32));
         const value = await this.sealCatchUp(
@@ -2396,9 +2394,9 @@ export class CoordinatedDocument<
           const body = decodeDocumentCatchUpRequest(signed.unsigned);
           this.assertCatchUpBinding(stage.binding, body);
           const requester = stage.lease.members.get(
-            documentBytesId(body.requesterId),
+            bytesToHex(body.requesterId),
           );
-          if (!requester || documentBytesEqual(body.requesterId, controllerId))
+          if (!requester || equalBytes(body.requesterId, controllerId))
             throw new Error('Document catch-up requester is unauthorized');
           await this.verifyCatchUp(stage, signed, requester);
           return { value: await this.sealCheckpoint(stage, body, 'checkpoint') };
@@ -2544,7 +2542,7 @@ export class CoordinatedDocument<
       const lease = this.authority(this.options.coordinator.documentContext);
       return (
         lease.members.has(
-          documentBytesId(this.options.coordinator.localMemberId),
+          bytesToHex(this.options.coordinator.localMemberId),
         ) && !this.controlsCatchUp(lease)
       );
     } catch {
@@ -2587,7 +2585,7 @@ export class CoordinatedDocument<
       (input) =>
         this.runCatchUp(input, async (stage) => {
           const requesterId = this.options.coordinator.localMemberId;
-          const member = stage.lease.members.get(documentBytesId(requesterId));
+          const member = stage.lease.members.get(bytesToHex(requesterId));
           if (!member) throw new Error('Local member has no document authority');
           if (this.controlsCatchUp(stage.lease))
             throw new Error('The document controller has no catch-up source');
@@ -2673,11 +2671,11 @@ export class CoordinatedDocument<
       this.assertCatchUpBinding(binding, body);
       if (from === undefined || body.requesterPeer !== from)
         throw new Error('Document catch-up request is not from its signer');
-      const requesterId = documentBytesId(body.requesterId);
+      const requesterId = bytesToHex(body.requesterId);
       const requester = lease.members.get(requesterId);
       if (
         !requester ||
-        documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+        equalBytes(body.requesterId, this.options.coordinator.localMemberId)
       )
         throw new Error('Document catch-up requester is unauthorized');
       const state = this.catchUpAnswer;
@@ -2799,11 +2797,11 @@ export class CoordinatedDocument<
         'topic-checkpoint',
       );
       const pending = this.outstandingCatchUps().find((entry) =>
-        documentBytesEqual(entry.challenge, body.challenge),
+        equalBytes(entry.challenge, body.challenge),
       );
       if (
         !pending ||
-        !documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+        !equalBytes(body.requesterId, this.options.coordinator.localMemberId)
       )
         return false;
       await this.receivedTurn(async () => {
@@ -2868,11 +2866,11 @@ export class CoordinatedDocument<
       const body = decodeDocumentCatchUpRefusal(signed.unsigned);
       this.assertCatchUpBinding(binding, body);
       const pending = this.outstandingCatchUps().find((entry) =>
-        documentBytesEqual(entry.challenge, body.challenge),
+        equalBytes(entry.challenge, body.challenge),
       );
       if (
         !pending ||
-        !documentBytesEqual(body.requesterId, this.options.coordinator.localMemberId)
+        !equalBytes(body.requesterId, this.options.coordinator.localMemberId)
       )
         return false;
       await this.verifySigned(
@@ -2928,7 +2926,7 @@ export class CoordinatedDocument<
     envelope: { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array },
   ): Promise<ReturnType<typeof decodeSignedDocumentContent> | undefined> {
     const material = await this.materialFor(context);
-    if (!documentBytesEqual(envelope.epochTag, material.epochTag))
+    if (!equalBytes(envelope.epochTag, material.epochTag))
       return undefined;
     let plaintext: Uint8Array;
     try {
@@ -3102,7 +3100,7 @@ export class CoordinatedDocument<
     lease: AuthorityLease,
     memberId: Uint8Array,
   ): CapturedDocumentMember {
-    const id = documentBytesId(memberId);
+    const id = bytesToHex(memberId);
     const member = lease.members.get(id);
     const paths = lease.writePaths.get(id);
     if (
@@ -3122,8 +3120,8 @@ export class CoordinatedDocument<
   ): void {
     if (
       value.documentId !== expected.documentId ||
-      !documentBytesEqual(value.genesisId, expected.genesisId) ||
-      !documentBytesEqual(value.authorityHead, expected.authorityHead) ||
+      !equalBytes(value.genesisId, expected.genesisId) ||
+      !equalBytes(value.authorityHead, expected.authorityHead) ||
       !documentContextsMatch(value.context, expected.context)
     )
       throw new Error('Document catch-up context mismatch');
@@ -3148,7 +3146,7 @@ export class CoordinatedDocument<
     aad: Uint8Array,
     envelope: { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array },
   ) {
-    if (!documentBytesEqual(envelope.epochTag, stage.material.epochTag))
+    if (!equalBytes(envelope.epochTag, stage.material.epochTag))
       throw new Error('Document catch-up epoch is unavailable');
     const { value } = await stage.work.observe<ArrayBuffer>(
       (async () =>
@@ -3282,14 +3280,14 @@ export class CoordinatedDocument<
           if (!isPending() || pending.roster !== stage.roster)
             throw new Error('Document catch-up request authority changed');
           const localId = this.options.coordinator.localMemberId;
-          if (!stage.lease.members.has(documentBytesId(localId)))
+          if (!stage.lease.members.has(bytesToHex(localId)))
             throw new Error('Local member has no document authority');
           const signed = await this.openCatchUp(stage, kind, owned);
           const body = decodeDocumentCatchUpCheckpoint(signed.unsigned, kind);
           this.assertCatchUpBinding(stage.binding, body);
           if (
-            !documentBytesEqual(body.requesterId, localId) ||
-            !documentBytesEqual(body.challenge, pending.challenge)
+            !equalBytes(body.requesterId, localId) ||
+            !equalBytes(body.challenge, pending.challenge)
           )
             throw new Error(
               'Document catch-up response has no matching request',
@@ -3408,9 +3406,9 @@ export class CoordinatedDocument<
     extended: ReadonlySet<string>,
   ): Map<string, Receipt> {
     const receipts = new Map(this.receiptsAt(context));
-    const local = documentBytesId(localId);
+    const local = bytesToHex(localId);
     for (const { memberId, sequence, hash } of offered) {
-      const id = documentBytesId(memberId);
+      const id = bytesToHex(memberId);
       const writer = lease.members.get(id);
       if (!writer || !contentRolePermits(writer.role, false))
         throw new Error(
@@ -3420,7 +3418,7 @@ export class CoordinatedDocument<
       const admission = admitDocumentCatchUpReceipt(
         current?.sequence ?? 0,
         sequence,
-        current !== undefined && documentBytesEqual(current.hash, hash),
+        current !== undefined && equalBytes(current.hash, hash),
         id !== local,
       );
       const extends_ =
@@ -3443,7 +3441,7 @@ export class CoordinatedDocument<
           .get(id)
           ?.some(
             (frame) =>
-              frame.sequence === sequence && documentBytesEqual(frame.hash, hash),
+              frame.sequence === sequence && equalBytes(frame.hash, hash),
           ) === true;
       if (admission === 'conflict' && !extends_ && !behind)
         throw new Error(
@@ -3479,18 +3477,18 @@ export class CoordinatedDocument<
     requesterId: Uint8Array,
     room: number,
   ): { offered: Map<string, Receipt>; suffixes: Uint8Array[] } {
-    const requester = documentBytesId(requesterId);
+    const requester = bytesToHex(requesterId);
     const offered = new Map(receipts);
     const suffixes: Uint8Array[] = [];
     let bytes = 0;
     for (const { memberId, sequence, hash } of requested) {
-      const author = documentBytesId(memberId);
+      const author = bytesToHex(memberId);
       const head = receipts.get(author)?.sequence ?? 0;
       if (author === requester || sequence >= head) continue;
       const base = this.retained?.authors
         .get(author)
         ?.find((frame) => frame.sequence === sequence);
-      if (base && !documentBytesEqual(base.hash, hash)) continue;
+      if (base && !equalBytes(base.hash, hash)) continue;
       const suffix =
         this.retainedSuffix(context, author, sequence, hash, head) ?? [];
       let included = 0;
@@ -3530,7 +3528,7 @@ export class CoordinatedDocument<
   ): Promise<Set<string>> {
     const current = this.receiptsAt(stage.binding.context);
     const offered = new Map(
-      body.receipts.map((receipt) => [documentBytesId(receipt.memberId), receipt]),
+      body.receipts.map((receipt) => [bytesToHex(receipt.memberId), receipt]),
     );
     const chains = new Map<
       string,
@@ -3541,13 +3539,13 @@ export class CoordinatedDocument<
       const frame = decodeDocumentContent(signed.unsigned);
       if (
         frame.documentId !== this.documentId ||
-        !documentBytesEqual(frame.genesisId, this.genesisId) ||
-        !documentBytesEqual(frame.authorityHead, stage.binding.authorityHead) ||
+        !equalBytes(frame.genesisId, this.genesisId) ||
+        !equalBytes(frame.authorityHead, stage.binding.authorityHead) ||
         !documentContextsMatch(frame.context, stage.binding.context) ||
         frame.kind !== 'change'
       )
         throw new Error('Document catch-up suffix context mismatch');
-      const author = documentBytesId(frame.memberId);
+      const author = bytesToHex(frame.memberId);
       const chain = chains.get(author) ?? [];
       chain.push({ ...signed, sequence: frame.sequence, parent: frame.parent });
       chains.set(author, chain);
@@ -3565,7 +3563,7 @@ export class CoordinatedDocument<
       for (const [index, link] of links.entries()) {
         if (
           link.sequence !== local.sequence + index + 1 ||
-          !documentBytesEqual(link.parent, parent)
+          !equalBytes(link.parent, parent)
         )
           break;
         try {
@@ -3581,7 +3579,7 @@ export class CoordinatedDocument<
             ))(),
         );
         parent = new Uint8Array(digest);
-        if (index === links.length - 1 && documentBytesEqual(parent, head.hash))
+        if (index === links.length - 1 && equalBytes(parent, head.hash))
           extended.add(author);
       }
     }
@@ -3600,7 +3598,7 @@ export class CoordinatedDocument<
   private authority(context: GroupSecurityDocumentContext) {
     return captureDocumentAuthorityLease(
       this.options.authority.capture(context),
-      documentBytesId(this.options.coordinator.localMemberId),
+      bytesToHex(this.options.coordinator.localMemberId),
     );
   }
 
@@ -3680,13 +3678,13 @@ export class CoordinatedDocument<
             let member: CapturedDocumentMember;
             if (input !== undefined) {
               const envelope = decodeEncryptedDocumentContent(owned);
-              if (!documentBytesEqual(envelope.epochTag, material.epochTag))
+              if (!equalBytes(envelope.epochTag, material.epochTag))
                 throw new Error('Document epoch is unavailable');
               // Pre-authentication already decrypted it under this binding.
               const plaintext =
                 decrypted &&
                 documentContextsMatch(decrypted.context, captured) &&
-                documentBytesEqual(decrypted.aad, aad)
+                equalBytes(decrypted.aad, aad)
                   ? decrypted.plaintext
                   : new Uint8Array(
                       (
@@ -3710,15 +3708,15 @@ export class CoordinatedDocument<
               const frame = decodeDocumentContent(unsigned);
               if (
                 frame.documentId !== this.documentId ||
-                !documentBytesEqual(frame.genesisId, this.genesisId) ||
-                !documentBytesEqual(frame.authorityHead, lease.headId) ||
+                !equalBytes(frame.genesisId, this.genesisId) ||
+                !equalBytes(frame.authorityHead, lease.headId) ||
                 !documentContextsMatch(frame.context, captured)
               )
                 throw new Error('Document content context mismatch');
               memberId = frame.memberId;
               sequence = frame.sequence;
               parent = frame.parent;
-              const found = lease.members.get(documentBytesId(memberId));
+              const found = lease.members.get(bytesToHex(memberId));
               if (
                 !found ||
                 !contentRolePermits(found.role, frame.kind === 'snapshot')
@@ -3746,11 +3744,11 @@ export class CoordinatedDocument<
                 throw new Error(
                   'Unsolicited document snapshots are not accepted',
                 );
-              const accepted = receipts.get(documentBytesId(memberId));
+              const accepted = receipts.get(bytesToHex(memberId));
               const admission = admitContentSequence(
                 sequence,
                 accepted?.sequence ?? 0,
-                documentBytesEqual(parent, accepted?.hash ?? ZERO_HASH),
+                equalBytes(parent, accepted?.hash ?? ZERO_HASH),
               );
               if (admission === 'replay') replay = true;
               else if (admission === 'gap') held = 'gap';
@@ -3775,7 +3773,7 @@ export class CoordinatedDocument<
               }
             } else {
               memberId = this.options.coordinator.localMemberId;
-              const found = lease.members.get(documentBytesId(memberId));
+              const found = lease.members.get(bytesToHex(memberId));
               if (!found || !contentRolePermits(found.role, false)) {
                 if (resend) throw new ResendDeniedError();
                 throw new Error('Local document member cannot write');
@@ -3786,7 +3784,7 @@ export class CoordinatedDocument<
               );
               if (ownKey !== member.publicKey)
                 throw new Error('Document signing identity mismatch');
-              const accepted = receipts.get(documentBytesId(memberId));
+              const accepted = receipts.get(bytesToHex(memberId));
               if (accepted?.sequence === Number.MAX_SAFE_INTEGER)
                 throw new Error('Document sequence is exhausted');
               sequence = nextContentSequence(accepted?.sequence ?? 0);
@@ -3883,14 +3881,14 @@ export class CoordinatedDocument<
                   tail.frames < MAX_DOCUMENT_PUBLICATION_FRAMES &&
                   tail.bytes.length + result.length <=
                     MAX_JOINED_PUBLICATION_BYTES &&
-                  documentBytesEqual(tail.aad, aad) &&
-                  documentBytesEqual(
+                  equalBytes(tail.aad, aad) &&
+                  equalBytes(
                     documentFrameEpochTag(tail.bytes),
                     material.epochTag,
                   ) &&
                   (!!this.options.journal ||
                     (this.publications.length !== 0 &&
-                      documentBytesEqual(
+                      equalBytes(
                         this.publications.at(-1)!,
                         tail.bytes,
                       )));
@@ -3938,16 +3936,16 @@ export class CoordinatedDocument<
               throw new HeldDocumentFrame(
                 held,
                 captured,
-                documentBytesId(memberId),
+                bytesToHex(memberId),
                 sequence,
                 hash,
                 dependenciesReady,
               );
-            const accepted = receipts.get(documentBytesId(memberId));
+            const accepted = receipts.get(bytesToHex(memberId));
             if (
               replay &&
               accepted?.sequence === sequence &&
-              !documentBytesEqual(accepted.hash, hash)
+              !equalBytes(accepted.hash, hash)
             )
               throw new Error('Document author equivocated');
             if (!replay && this.options.journal) {
@@ -3964,7 +3962,7 @@ export class CoordinatedDocument<
                 ? this.serializer.serializeChanges(snapshot!())
                 : (resend?.changes ?? this.serializer.serializeChanges(plan!.changes));
               const nextReceipts = new Map(receipts);
-              nextReceipts.set(documentBytesId(memberId), { sequence, hash });
+              nextReceipts.set(bytesToHex(memberId), { sequence, hash });
               const persistedReceipts = checkpoint
                 ? receiptEntries(nextReceipts)
                 : [{ memberId, sequence, hash }];
@@ -4025,7 +4023,7 @@ export class CoordinatedDocument<
               commit: () => {
                 this.rosterBinding = roster;
                 if (replay) {
-                  this.observeRetained(captured, documentBytesId(memberId), sequence);
+                  this.observeRetained(captured, bytesToHex(memberId), sequence);
                   return;
                 }
                 commitAttempted = true;
@@ -4034,11 +4032,11 @@ export class CoordinatedDocument<
                 this.contentVersion++;
                 this.receipts = receipts;
                 this.receiptsContext = captured;
-                this.receipts.set(documentBytesId(memberId), {
+                this.receipts.set(bytesToHex(memberId), {
                   sequence,
                   hash,
                 });
-                this.retain(captured, documentBytesId(memberId), {
+                this.retain(captured, bytesToHex(memberId), {
                   sequence,
                   hash,
                   signed: signedContent,
@@ -4165,7 +4163,7 @@ export class CoordinatedDocument<
               ? new Map<string, Receipt>()
               : new Map(this.receipts);
           for (const receipt of record.receipts) {
-            const id = documentBytesId(receipt.memberId);
+            const id = bytesToHex(receipt.memberId);
             if (
               !record.checkpoint &&
               admitContentSequence(
@@ -4181,12 +4179,12 @@ export class CoordinatedDocument<
             });
             if (
               !record.checkpoint &&
-              id !== documentBytesId(this.options.coordinator.localMemberId)
+              id !== bytesToHex(this.options.coordinator.localMemberId)
             )
               this.markRemote(record.context);
             if (
               !record.checkpoint &&
-              id === documentBytesId(this.options.coordinator.localMemberId)
+              id === bytesToHex(this.options.coordinator.localMemberId)
             )
               restoreOwn({
                 context: record.context,
@@ -4434,7 +4432,7 @@ export class CoordinatedDocument<
     own.bytes += ownFrameBytes(frame);
     while (own.frames.length > MAX_OWN_FRAMES || own.bytes > MAX_OWN_BYTES) {
       const index = own.frames.findIndex(
-        (value) => !value.nonce || !this.unsent.has(documentBytesId(value.nonce)),
+        (value) => !value.nonce || !this.unsent.has(bytesToHex(value.nonce)),
       );
       if (index === -1) break;
       const [oldest] = own.frames.splice(index, 1);
@@ -4444,7 +4442,7 @@ export class CoordinatedDocument<
   }
 
   private markUnsent(nonce: Uint8Array, paths: DocumentWritePaths): void {
-    const id = documentBytesId(nonce);
+    const id = bytesToHex(nonce);
     if (this.unsent.has(id)) return;
     const bytes = encodedPathBytes(paths);
     this.unsent.set(id, bytes);
@@ -4456,12 +4454,12 @@ export class CoordinatedDocument<
     const remaining = new Set(
       kept
         ? splitDocumentPublication(kept).map((frame) =>
-            documentBytesId(documentFrameNonce(frame)),
+            bytesToHex(documentFrameNonce(frame)),
           )
         : [],
     );
     for (const frame of splitDocumentPublication(publication)) {
-      const id = documentBytesId(documentFrameNonce(frame));
+      const id = bytesToHex(documentFrameNonce(frame));
       const bytes = this.unsent.get(id);
       if (bytes === undefined || remaining.has(id)) continue;
       this.unsent.delete(id);
@@ -4503,7 +4501,7 @@ export class CoordinatedDocument<
         : undefined;
     const committed =
       controller !== undefined &&
-      documentBytesEqual(controller, this.options.coordinator.localMemberId);
+      equalBytes(controller, this.options.coordinator.localMemberId);
     const carried = retired.frames.flatMap((frame) => {
       const unsent = outboxHolds(queued, frame.nonce);
       return unsent ||
@@ -4576,7 +4574,7 @@ export class CoordinatedDocument<
     const frames = new Map<string, OwnFrame>();
     for (const frame of [...(this.own?.frames ?? []), ...this.resendQueue])
       if (outboxHolds(queued, frame.nonce))
-        frames.set(documentBytesId(frame.nonce!), frame);
+        frames.set(bytesToHex(frame.nonce!), frame);
     const carried = [...frames.values()]
       .sort((a, b) => a.order - b.order)
       .map(
@@ -4602,7 +4600,7 @@ export class CoordinatedDocument<
     const byRow = new Map<number, Set<string>>();
     for (const nonce of nonces) {
       if (!nonce) continue;
-      const id = documentBytesId(nonce),
+      const id = bytesToHex(nonce),
         row = queued.rowOf.get(id);
       if (row === undefined) continue;
       const ids = byRow.get(row) ?? new Set<string>();
@@ -4612,7 +4610,7 @@ export class CoordinatedDocument<
     for (const [row, ids] of byRow) {
       const before = queued.rows[row];
       const rest = queued.parts[row].filter(
-        (frame) => !ids.has(documentBytesId(documentFrameNonce(frame))),
+        (frame) => !ids.has(bytesToHex(documentFrameNonce(frame))),
       );
       const next = rest.length === 0 ? undefined : joinFrames(rest);
       if (next) await this.replacePublication(before, next);
@@ -4634,10 +4632,10 @@ export class CoordinatedDocument<
       await this.options.journal.replacePublication(frame, next);
     else
       this.publications = this.publications.map((value) =>
-        documentBytesEqual(value, frame) ? next.slice() : value,
+        equalBytes(value, frame) ? next.slice() : value,
       );
     this.markSent(frame, next);
-    if (this.outboxTail && documentBytesEqual(this.outboxTail.bytes, frame))
+    if (this.outboxTail && equalBytes(this.outboxTail.bytes, frame))
       this.outboxTail = undefined;
   }
 
@@ -4659,16 +4657,16 @@ export class CoordinatedDocument<
         !entry.nonce
       )
         throw error;
-      const row = queued.rowOf.get(documentBytesId(entry.nonce));
+      const row = queued.rowOf.get(bytesToHex(entry.nonce));
       const waiting = new Set(
         this.resendQueue.flatMap((frame) =>
-          frame.nonce ? [documentBytesId(frame.nonce)] : [],
+          frame.nonce ? [bytesToHex(frame.nonce)] : [],
         ),
       );
       if (
         row === undefined ||
         !queued.parts[row].every((frame) =>
-          waiting.has(documentBytesId(documentFrameNonce(frame))),
+          waiting.has(bytesToHex(documentFrameNonce(frame))),
         )
       )
         throw error;
@@ -4738,7 +4736,7 @@ export class CoordinatedDocument<
     const ids = new Set<string>();
     const add = (frames: readonly OwnFrame[]) => {
       for (const frame of frames)
-        if (frame.nonce) ids.add(documentBytesId(frame.nonce));
+        if (frame.nonce) ids.add(bytesToHex(frame.nonce));
     };
     add(this.resendQueue);
     // Learning the new roles queues these.
@@ -4757,7 +4755,7 @@ export class CoordinatedDocument<
     try {
       const member = this.authority(
         this.options.coordinator.documentContext,
-      ).members.get(documentBytesId(this.options.coordinator.localMemberId));
+      ).members.get(bytesToHex(this.options.coordinator.localMemberId));
       return member !== undefined && contentRolePermits(member.role, false);
     } catch {
       return false;
@@ -4887,7 +4885,7 @@ export class CoordinatedDocument<
             last = parts.length;
           } else if (
             parts.some((frame) =>
-              resignable.has(documentBytesId(documentFrameNonce(frame))),
+              resignable.has(bytesToHex(documentFrameNonce(frame))),
             )
           )
             kept++;
@@ -4898,7 +4896,7 @@ export class CoordinatedDocument<
         }
         const tail = frames.at(-1);
         this.outboxTail =
-          kept === 0 || (tail && documentBytesEqual(tail, rows.at(-1)!))
+          kept === 0 || (tail && equalBytes(tail, rows.at(-1)!))
             ? tail
               ? {
                   bytes: tail,
@@ -4976,10 +4974,10 @@ export class CoordinatedDocument<
     if (this.options.journal) await this.options.journal.publicationSent(frame);
     else
       this.publications = this.publications.filter(
-        (value) => !documentBytesEqual(value, frame),
+        (value) => !equalBytes(value, frame),
       );
     this.markSent(frame);
-    if (this.outboxTail && documentBytesEqual(this.outboxTail.bytes, frame))
+    if (this.outboxTail && equalBytes(this.outboxTail.bytes, frame))
       this.outboxTail = undefined;
   }
 

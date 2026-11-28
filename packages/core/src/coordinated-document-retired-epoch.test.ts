@@ -5,7 +5,7 @@ import {
 } from './coordinated-document.js';
 import { createGroupSecurityDurableAcceptance } from './group-security-durable-acceptance.js';
 import type { GroupSecurityDelivery } from './group-security-coordinator.js';
-import { documentBytesId } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import { splitDocumentPublication } from './document-security-wire.js';
 import { testCRDT, testChanges } from './__testutils__/coordinated-document.js';
 import { coordinatedGroupFixture } from './__testutils__/coordinated-group.js';
@@ -75,12 +75,12 @@ async function offlineAcrossEpoch(
     [
       {
         memberId: g.members[0],
-        publicKey: documentBytesId(g.members[0]),
+        publicKey: bytesToHex(g.members[0]),
         role: 3,
       },
       {
         memberId: g.members[1],
-        publicKey: documentBytesId(g.members[1]),
+        publicKey: bytesToHex(g.members[1]),
         ...writer,
       },
     ],

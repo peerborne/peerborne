@@ -1,10 +1,8 @@
 import { assertPositiveSafeByteLimit } from './byte-limits.js';
 import type { InvitationBootstrapBundle } from '../peerborne-document.js';
 import { MAX_INVITATION_MESSAGE_BYTES } from '../invitation-wire.js';
-import {
-  copyUnsharedUint8Array,
-  snapshotEnumerableOwnDataObject,
-} from '../utils.js';
+import { snapshotEnumerableOwnDataObject } from './data-snapshot.js';
+import { copyUnsharedUint8Array } from './bytes.js';
 
 const reflectOwnKeys = Reflect.ownKeys;
 

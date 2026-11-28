@@ -24,7 +24,7 @@ import {
 import { runInNewContext } from 'node:vm';
 import { runLoadQuorum } from './load-quorum-orchestrator.js';
 import { dedupePeersByPeerId, LoadQuorumFailedError } from './load-quorum.js';
-import { tipsHashToHex } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
 
 /**
  * Fixture hashes. Each is a 32-byte fixed-byte buffer so the hex form is
@@ -38,8 +38,8 @@ function fixedByteHash(byte: number): Uint8Array {
 }
 const HASH_X = fixedByteHash(0xaa);
 const HASH_Y = fixedByteHash(0xbb);
-const HASH_X_HEX = tipsHashToHex(HASH_X);
-const HASH_Y_HEX = tipsHashToHex(HASH_Y);
+const HASH_X_HEX = bytesToHex(HASH_X);
+const HASH_Y_HEX = bytesToHex(HASH_Y);
 
 /**
  * Test "peer" type. The orchestrator is generic on `T`; in production T is
@@ -1813,7 +1813,7 @@ describe('quorum vote normalization', () => {
 describe('single-writer fallback', () => {
   const WRITER = 'sole-writer';
   const HASH_Z = fixedByteHash(0xcc);
-  const HASH_Z_HEX = tipsHashToHex(HASH_Z);
+  const HASH_Z_HEX = bytesToHex(HASH_Z);
   const devices =
     (states: Record<string, Uint8Array | null>) => async (peer: TestPeer) => {
       const hash = states[peer];

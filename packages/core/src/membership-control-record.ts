@@ -4,6 +4,32 @@ import {
   isControlActionValid,
 } from './policy/control-chain.js';
 import { boundedFieldEnd } from './policy/frame-layout.js';
+import {
+  bufferOf,
+  byteLengthOf,
+  byteOffsetOf,
+  concatBytes,
+  copyUnsharedUint8Array,
+  equalBytes,
+} from './internal/bytes.js';
+import {
+  optionalOwnDataProperty,
+  ownDataProperty,
+} from './internal/data-property.js';
+import { bytesToHex } from './internal/hex.js';
+import {
+  encodeU16,
+  encodeU64,
+  encodeU8,
+  lengthPrefixed16,
+  lengthPrefixed32,
+  requireU64,
+} from './internal/big-endian.js';
+import {
+  isCanonicalIdentifier,
+  isCanonicalProtocol,
+  sameProtocol,
+} from './internal/protocol-identifier.js';
 
 const MEMBERSHIP_CONTROL_MAGIC = new Uint8Array([
   0x53, 0x57, 0x4d, 0x4d, 0x43, 0x52, 0x30, 0x31,
@@ -17,65 +43,18 @@ const MAX_IDENTITY_BYTES = 512;
 const MAX_GROUP_ID_BYTES = 1024;
 const MAX_CONTROL_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES = 4096;
-const MAX_U64 = (1n << 64n) - 1n;
-const HEX_ALPHABET = '0123456789abcdef';
 
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-const numberIsInteger = Number.isInteger;
 const reflectApply = Reflect.apply;
 const uint8ArrayConstructor = Uint8Array;
 const dataViewConstructor = DataView;
 const stringCharCodeAt = String.prototype.charCodeAt;
 const stringFromCharCode = String.fromCharCode;
-const uint8ArraySet = Uint8Array.prototype.set;
 const uint8ArraySubarray = Uint8Array.prototype.subarray;
-const regExpExec = RegExp.prototype.exec;
 const dataViewGetBigUint64 = DataView.prototype.getBigUint64;
 const dataViewGetUint16 = DataView.prototype.getUint16;
 const dataViewGetUint32 = DataView.prototype.getUint32;
-const dataViewSetBigUint64 = DataView.prototype.setBigUint64;
-const dataViewSetUint16 = DataView.prototype.setUint16;
-const dataViewSetUint32 = DataView.prototype.setUint32;
-const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
-const typedArrayByteLength = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteLength',
-)?.get;
-const typedArrayByteOffset = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'byteOffset',
-)?.get;
-const typedArrayBuffer = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  'buffer',
-)?.get;
-const typedArrayTag = objectGetOwnPropertyDescriptor(
-  typedArrayPrototype,
-  Symbol.toStringTag,
-)?.get;
-const sharedArrayBufferByteLength =
-  typeof SharedArrayBuffer === 'undefined'
-    ? undefined
-    : objectGetOwnPropertyDescriptor(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-      )?.get;
-
-if (
-  typedArrayByteLength === undefined ||
-  typedArrayByteOffset === undefined ||
-  typedArrayBuffer === undefined ||
-  typedArrayTag === undefined
-) {
-  throw new Error('membership control Uint8Array intrinsics are unavailable');
-}
-const typedArrayByteLengthGetter = typedArrayByteLength;
-const typedArrayByteOffsetGetter = typedArrayByteOffset;
-const typedArrayBufferGetter = typedArrayBuffer;
-const typedArrayTagGetter = typedArrayTag;
-const canonicalProtocolIdPattern =
-  /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(?![\s\S])/;
 
 export type MembershipControlAction = 'create' | 'add' | 'remove' | 'update';
 
@@ -160,21 +139,21 @@ function canonicalMembershipControlPayloadFromSnapshot(
   record: UnsignedMembershipControlRecord,
 ): Uint8Array {
   const protocolId = encodeProtocolId(record.protocol.id);
-  return concat([
+  return concatBytes([
     MEMBERSHIP_CONTROL_MAGIC,
-    u16(record.version),
-    bytes16(protocolId),
-    u16(record.protocol.version),
-    bytes16(record.groupId),
-    u64(record.epoch),
+    encodeU16(record.version),
+    lengthPrefixed16(protocolId),
+    encodeU16(record.protocol.version),
+    lengthPrefixed16(record.groupId),
+    encodeU64(record.epoch),
     record.parentRecordId === undefined
-      ? u8(0)
-      : concat([u8(1), record.parentRecordId]),
+      ? encodeU8(0)
+      : concatBytes([encodeU8(1), record.parentRecordId]),
     record.operationId,
-    u8(actionToCode(record.action)),
-    bytes16(record.actorId),
-    bytes16(record.subjectId),
-    bytes32(record.controlPayload),
+    encodeU8(actionToCode(record.action)),
+    lengthPrefixed16(record.actorId),
+    lengthPrefixed16(record.subjectId),
+    lengthPrefixed32(record.controlPayload),
   ]);
 }
 
@@ -196,14 +175,14 @@ export async function signMembershipControlRecord(
 ): Promise<MembershipControlRecord> {
   const snapshot = snapshotUnsignedRecord(record, false);
   const canonical = canonicalMembershipControlPayloadFromSnapshot(snapshot);
-  const signature = snapshotBytes(
+  const signature = copyUnsharedUint8Array(
     await sign(
       new uint8ArrayConstructor(canonical),
       new uint8ArrayConstructor(snapshot.actorId),
     ),
-    'signature',
     1,
     MAX_SIGNATURE_BYTES,
+    'signature',
   );
   return {
     ...snapshot,
@@ -215,11 +194,11 @@ export function serializeMembershipControlRecord(
   record: MembershipControlRecord,
 ): Uint8Array {
   const snapshot = snapshotRecord(record);
-  const out = concat([
+  const out = concatBytes([
     canonicalMembershipControlPayloadFromSnapshot(snapshot),
-    bytes16(snapshot.signature),
+    lengthPrefixed16(snapshot.signature),
   ]);
-  if (intrinsicByteLength(out) > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES) {
+  if (byteLengthOf(out) > MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES) {
     throw new Error('membership control record exceeds its serialized limit');
   }
   return out;
@@ -229,11 +208,11 @@ export function deserializeMembershipControlRecord(
   bytes: Uint8Array,
 ): MembershipControlRecord {
   const reader = new Reader(
-    snapshotBytes(
+    copyUnsharedUint8Array(
       bytes,
-      'membership control record',
       0,
       MAX_MEMBERSHIP_CONTROL_SERIALIZED_BYTES,
+      'membership control record',
     ),
   );
   reader.expect(MEMBERSHIP_CONTROL_MAGIC, 'magic');
@@ -279,14 +258,14 @@ export class MembershipControlChain {
 
   constructor(config: MembershipControlChainConfig) {
     validateProtocol(config.protocol);
-    const groupId = snapshotBytes(
+    const groupId = copyUnsharedUint8Array(
       config.groupId,
-      'groupId',
       1,
       MAX_GROUP_ID_BYTES,
+      'groupId',
     );
     this.initialEpoch = config.initialEpoch ?? 0n;
-    validateU64(this.initialEpoch, 'initialEpoch');
+    requireU64(this.initialEpoch, 'initialEpoch');
     this.config = {
       ...config,
       protocol: { ...config.protocol },
@@ -360,7 +339,7 @@ export class MembershipControlChain {
       return rejected('bad-signature', 'invalid control signature');
     }
 
-    const recordHex = toHex(recordId);
+    const recordHex = bytesToHex(recordId);
     if (this.recordIdSet.has(recordHex)) {
       return {
         status: 'duplicate',
@@ -415,7 +394,7 @@ export class MembershipControlChain {
         'two authorized control records share one parent and epoch',
       );
     }
-    const operationHex = toHex(record.operationId);
+    const operationHex = bytesToHex(record.operationId);
     const previous = this.recordsValue[this.recordsValue.length - 1];
     const previousId = this.recordIds[this.recordIds.length - 1];
     const admission = classifyControlAppend(
@@ -485,9 +464,9 @@ function membershipControlSlotKey(
   epoch: bigint,
   parentRecordId: Uint8Array | undefined,
 ): string {
-  const encodedEpoch = toHex(u64(epoch));
+  const encodedEpoch = bytesToHex(encodeU64(epoch));
   return `${encodedEpoch}:${
-    parentRecordId === undefined ? 'genesis' : toHex(parentRecordId)
+    parentRecordId === undefined ? 'genesis' : bytesToHex(parentRecordId)
   }`;
 }
 
@@ -502,11 +481,7 @@ function validateProtocol(protocol: GroupSecurityProtocol): void {
   if (
     protocol === null ||
     typeof protocol !== 'object' ||
-    typeof protocol.id !== 'string' ||
-    reflectApply(regExpExec, canonicalProtocolIdPattern, [protocol.id]) === null ||
-    !numberIsInteger(protocol.version) ||
-    protocol.version < 0 ||
-    protocol.version > 0xffff
+    !isCanonicalProtocol(protocol.id, protocol.version)
   ) {
     throw new Error('invalid canonical protocol identifier');
   }
@@ -521,18 +496,12 @@ function encodeProtocolId(value: string): Uint8Array {
 }
 
 function decodeProtocolId(value: Uint8Array): string {
-  const length = intrinsicByteLength(value);
+  const length = byteLengthOf(value);
   let output = '';
   for (let index = 0; index < length; index++) {
     output += stringFromCharCode(value[index]);
   }
   return output;
-}
-
-function validateU64(value: bigint, field: string): void {
-  if (typeof value !== 'bigint' || value < 0n || value > MAX_U64) {
-    throw new Error(`${field} must be an unsigned 64-bit bigint`);
-  }
 }
 
 function actionToCode(action: MembershipControlAction): number {
@@ -557,11 +526,11 @@ function cloneRecord(record: MembershipControlRecord): MembershipControlRecord {
 
 function snapshotRecord(record: MembershipControlRecord): MembershipControlRecord {
   const unsigned = snapshotUnsignedRecord(record);
-  const signature = snapshotBytes(
-    ownDataValue(record, 'signature', 'membership control record'),
-    'signature',
+  const signature = copyUnsharedUint8Array(
+    ownDataProperty(record, 'signature', 'membership control record'),
     1,
     MAX_SIGNATURE_BYTES,
+    'signature',
   );
   return { ...unsigned, signature };
 }
@@ -577,7 +546,7 @@ function snapshotUnsignedRecord(
   ) {
     throw new Error('unsigned membership control record must not contain a signature');
   }
-  const version = ownDataValue(
+  const version = ownDataProperty(
     record,
     'version',
     'membership control record',
@@ -586,17 +555,17 @@ function snapshotUnsignedRecord(
     throw new Error('unsupported membership control version');
   }
   const protocol = snapshotProtocol(
-    ownDataValue(record, 'protocol', 'membership control record'),
+    ownDataProperty(record, 'protocol', 'membership control record'),
   );
-  const groupId = snapshotBytes(
-    ownDataValue(record, 'groupId', 'membership control record'),
-    'groupId',
+  const groupId = copyUnsharedUint8Array(
+    ownDataProperty(record, 'groupId', 'membership control record'),
     1,
     MAX_GROUP_ID_BYTES,
+    'groupId',
   );
-  const epoch = ownDataValue(record, 'epoch', 'membership control record');
-  validateU64(epoch as bigint, 'epoch');
-  const parentValue = optionalOwnDataValue(
+  const epoch = ownDataProperty(record, 'epoch', 'membership control record');
+  requireU64(epoch, 'epoch');
+  const parentValue = optionalOwnDataProperty(
     record,
     'parentRecordId',
     'membership control record',
@@ -604,41 +573,41 @@ function snapshotUnsignedRecord(
   const parentRecordId =
     parentValue === undefined
       ? undefined
-      : snapshotBytes(
+      : copyUnsharedUint8Array(
           parentValue,
+          MEMBERSHIP_CONTROL_ID_LENGTH,
+          MEMBERSHIP_CONTROL_ID_LENGTH,
           'parentRecordId',
-          MEMBERSHIP_CONTROL_ID_LENGTH,
-          MEMBERSHIP_CONTROL_ID_LENGTH,
         );
-  const operationId = snapshotBytes(
-    ownDataValue(record, 'operationId', 'membership control record'),
+  const operationId = copyUnsharedUint8Array(
+    ownDataProperty(record, 'operationId', 'membership control record'),
+    MEMBERSHIP_CONTROL_ID_LENGTH,
+    MEMBERSHIP_CONTROL_ID_LENGTH,
     'operationId',
-    MEMBERSHIP_CONTROL_ID_LENGTH,
-    MEMBERSHIP_CONTROL_ID_LENGTH,
   );
-  const action = ownDataValue(
+  const action = ownDataProperty(
     record,
     'action',
     'membership control record',
   ) as MembershipControlAction;
   actionToCode(action);
-  const actorId = snapshotBytes(
-    ownDataValue(record, 'actorId', 'membership control record'),
+  const actorId = copyUnsharedUint8Array(
+    ownDataProperty(record, 'actorId', 'membership control record'),
+    1,
+    MAX_IDENTITY_BYTES,
     'actorId',
+  );
+  const subjectId = copyUnsharedUint8Array(
+    ownDataProperty(record, 'subjectId', 'membership control record'),
     1,
     MAX_IDENTITY_BYTES,
-  );
-  const subjectId = snapshotBytes(
-    ownDataValue(record, 'subjectId', 'membership control record'),
     'subjectId',
-    1,
-    MAX_IDENTITY_BYTES,
   );
-  const controlPayload = snapshotBytes(
-    ownDataValue(record, 'controlPayload', 'membership control record'),
-    'controlPayload',
+  const controlPayload = copyUnsharedUint8Array(
+    ownDataProperty(record, 'controlPayload', 'membership control record'),
     1,
     MAX_CONTROL_PAYLOAD_BYTES,
+    'controlPayload',
   );
   return {
     version,
@@ -657,8 +626,8 @@ function snapshotUnsignedRecord(
 function snapshotProtocol(value: unknown): GroupSecurityProtocol {
   assertPlainRecord(value, 'membership control protocol');
   const protocol = {
-    id: ownDataValue(value, 'id', 'membership control protocol'),
-    version: ownDataValue(value, 'version', 'membership control protocol'),
+    id: ownDataProperty(value, 'id', 'membership control protocol'),
+    version: ownDataProperty(value, 'version', 'membership control protocol'),
   } as GroupSecurityProtocol;
   validateProtocol(protocol);
   return protocol;
@@ -679,89 +648,6 @@ function assertPlainRecord(value: unknown, field: string): asserts value is obje
   }
 }
 
-function ownDataValue(
-  value: object,
-  property: string,
-  field: string,
-): unknown {
-  const descriptor = objectGetOwnPropertyDescriptor(value, property);
-  if (
-    descriptor === undefined ||
-    !descriptor.enumerable ||
-    !('value' in descriptor)
-  ) {
-    throw new Error(`${field} ${property} must be an enumerable own data property`);
-  }
-  return descriptor.value;
-}
-
-function optionalOwnDataValue(
-  value: object,
-  property: string,
-  field: string,
-): unknown {
-  const descriptor = objectGetOwnPropertyDescriptor(value, property);
-  if (descriptor === undefined) return undefined;
-  if (!descriptor.enumerable || !('value' in descriptor)) {
-    throw new Error(`${field} ${property} must be an enumerable own data property`);
-  }
-  return descriptor.value;
-}
-
-function snapshotBytes(
-  value: unknown,
-  field: string,
-  minimum: number,
-  maximum: number,
-): Uint8Array {
-  let length: number;
-  let buffer: ArrayBufferLike;
-  let tag: unknown;
-  try {
-    length = reflectApply(typedArrayByteLengthGetter, value, []) as number;
-    buffer = reflectApply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
-    tag = reflectApply(typedArrayTagGetter, value, []);
-  } catch {
-    throw new Error(`${field} must be a genuine Uint8Array`);
-  }
-  let shared = false;
-  if (sharedArrayBufferByteLength !== undefined) {
-    try {
-      reflectApply(sharedArrayBufferByteLength, buffer, []);
-      shared = true;
-    } catch {
-      shared = false;
-    }
-  }
-  if (
-    tag !== 'Uint8Array' ||
-    length < minimum ||
-    length > maximum ||
-    shared
-  ) {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  const snapshot = new uint8ArrayConstructor(length);
-  try {
-    reflectApply(uint8ArraySet, snapshot, [value]);
-  } catch {
-    throw new Error(`${field} could not be copied safely`);
-  }
-  return snapshot;
-}
-
-function intrinsicByteLength(value: Uint8Array): number {
-  return reflectApply(typedArrayByteLengthGetter, value, []) as number;
-}
-
-function intrinsicByteOffset(value: Uint8Array): number {
-  return reflectApply(typedArrayByteOffsetGetter, value, []) as number;
-}
-
-function intrinsicBuffer(value: Uint8Array): ArrayBufferLike {
-  return reflectApply(typedArrayBufferGetter, value, []) as ArrayBufferLike;
-}
-
 function rejected(
   reason: MembershipControlRejectReason,
   message: string,
@@ -773,107 +659,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'non-Error failure';
 }
 
-function bytes16(value: Uint8Array): Uint8Array {
-  return concat([u16(intrinsicByteLength(value)), value]);
-}
-
-function bytes32(value: Uint8Array): Uint8Array {
-  return concat([u32(intrinsicByteLength(value)), value]);
-}
-
-function u8(value: number): Uint8Array {
-  if (!numberIsInteger(value) || value < 0 || value > 0xff) {
-    throw new Error('value does not fit in u8');
-  }
-  const out = new uint8ArrayConstructor(1);
-  out[0] = value;
-  return out;
-}
-
-function u16(value: number): Uint8Array {
-  if (!numberIsInteger(value) || value < 0 || value > 0xffff) {
-    throw new Error('value does not fit in u16');
-  }
-  const out = new uint8ArrayConstructor(2);
-  reflectApply(dataViewSetUint16, new dataViewConstructor(intrinsicBuffer(out)), [
-    0,
-    value,
-    false,
-  ]);
-  return out;
-}
-
-function u32(value: number): Uint8Array {
-  if (!numberIsInteger(value) || value < 0 || value > 0xffffffff) {
-    throw new Error('value does not fit in u32');
-  }
-  const out = new uint8ArrayConstructor(4);
-  reflectApply(dataViewSetUint32, new dataViewConstructor(intrinsicBuffer(out)), [
-    0,
-    value,
-    false,
-  ]);
-  return out;
-}
-
-function u64(value: bigint): Uint8Array {
-  validateU64(value, 'epoch');
-  const out = new uint8ArrayConstructor(8);
-  reflectApply(dataViewSetBigUint64, new dataViewConstructor(intrinsicBuffer(out)), [
-    0,
-    value,
-    false,
-  ]);
-  return out;
-}
-
-function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  let length = 0;
-  for (let index = 0; index < parts.length; index++) {
-    length += intrinsicByteLength(parts[index]);
-  }
-  const out = new uint8ArrayConstructor(length);
-  let offset = 0;
-  for (let index = 0; index < parts.length; index++) {
-    const part = parts[index];
-    reflectApply(uint8ArraySet, out, [part, offset]);
-    offset += intrinsicByteLength(part);
-  }
-  return out;
-}
-
-function sameProtocol(
-  a: GroupSecurityProtocol,
-  b: GroupSecurityProtocol,
-): boolean {
-  return a.id === b.id && a.version === b.version;
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  const length = intrinsicByteLength(a);
-  if (length !== intrinsicByteLength(b)) return false;
-  let different = 0;
-  for (let i = 0; i < length; i++) different |= a[i] ^ b[i];
-  return different === 0;
-}
-
-function toHex(bytes: Uint8Array): string {
-  let result = '';
-  const length = intrinsicByteLength(bytes);
-  for (let index = 0; index < length; index++) {
-    const value = bytes[index];
-    result += HEX_ALPHABET[value >>> 4] + HEX_ALPHABET[value & 0x0f];
-  }
-  return result;
-}
-
 class Reader {
   private offset = 0;
 
   constructor(private readonly bytes: Uint8Array) {}
 
   expect(expected: Uint8Array, field: string): void {
-    if (!equalBytes(this.fixed(intrinsicByteLength(expected), field), expected)) {
+    if (!equalBytes(this.fixed(byteLengthOf(expected), field), expected)) {
       throw new Error(`invalid ${field}`);
     }
   }
@@ -887,8 +679,8 @@ class Reader {
     return reflectApply(
       dataViewGetUint16,
       new dataViewConstructor(
-        intrinsicBuffer(this.bytes),
-        intrinsicByteOffset(this.bytes) + start,
+        bufferOf(this.bytes),
+        byteOffsetOf(this.bytes) + start,
         2,
       ),
       [0, false],
@@ -900,8 +692,8 @@ class Reader {
     return reflectApply(
       dataViewGetUint32,
       new dataViewConstructor(
-        intrinsicBuffer(this.bytes),
-        intrinsicByteOffset(this.bytes) + start,
+        bufferOf(this.bytes),
+        byteOffsetOf(this.bytes) + start,
         4,
       ),
       [0, false],
@@ -913,8 +705,8 @@ class Reader {
     return reflectApply(
       dataViewGetBigUint64,
       new dataViewConstructor(
-        intrinsicBuffer(this.bytes),
-        intrinsicByteOffset(this.bytes) + start,
+        bufferOf(this.bytes),
+        byteOffsetOf(this.bytes) + start,
         8,
       ),
       [0, false],
@@ -938,14 +730,14 @@ class Reader {
 
   protocolId(): string {
     const value = decodeProtocolId(this.bytes16('protocol.id', 1, 128));
-    if (reflectApply(regExpExec, canonicalProtocolIdPattern, [value]) === null) {
+    if (!isCanonicalIdentifier(value)) {
       throw new Error('invalid canonical protocol identifier');
     }
     return value;
   }
 
   done(): void {
-    if (this.offset !== intrinsicByteLength(this.bytes)) {
+    if (this.offset !== byteLengthOf(this.bytes)) {
       throw new Error('membership control record has trailing bytes');
     }
   }
@@ -964,7 +756,7 @@ class Reader {
 
   private reserve(length: number, field: string): number {
     const end = boundedFieldEnd(
-      intrinsicByteLength(this.bytes),
+      byteLengthOf(this.bytes),
       this.offset,
       length,
       0,

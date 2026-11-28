@@ -9,13 +9,14 @@ import {
 } from './crdt-change-node.js';
 import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import { MAX_MERKLE_DAG_DEPTH } from './merkle-dag-serialization.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import {
   concatenate,
   encodeUtf8,
   assertBoundedUtf8,
   uint32,
 } from './internal/canonical-encoding.js';
+import { sha256 } from './internal/digest.js';
 
 const LOAD_RESPONSE_MANIFEST_DOMAIN = 'peerborne/load-response-manifest/v2\0';
 
@@ -197,14 +198,6 @@ function descriptorParts(descriptor: NodeDescriptor): Uint8Array[] {
     parts.push(...stringParts(childId));
   }
   return parts;
-}
-
-async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    bytes as Uint8Array<ArrayBuffer>,
-  );
-  return new Uint8Array(digest);
 }
 
 function snapshotManifestOwnDataFields<Fields extends readonly string[]>(

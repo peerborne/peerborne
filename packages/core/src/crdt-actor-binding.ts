@@ -13,6 +13,9 @@
  * checkpoints without trusting whoever relays it.
  */
 
+import { compareBytes, equalBytes } from './internal/bytes.js';
+import { bytesToHex } from './internal/hex.js';
+
 /** Hooks a CRDT provider implements so documents can bind its actors to signers. */
 export interface CRDTActorBinding<DocType, ChangesType> {
   /** Native actor identifier selected by a 32-byte derivation digest. */
@@ -173,24 +176,6 @@ function assertNonce(nonce: Uint8Array): void {
     throw new CRDTActorBindingError('Invalid actor nonce');
 }
 
-function compareBytes(left: Uint8Array, right: Uint8Array): number {
-  const length = Math.min(left.byteLength, right.byteLength);
-  for (let index = 0; index < length; index++) {
-    if (left[index] !== right[index]) return left[index]! - right[index]!;
-  }
-  return left.byteLength - right.byteLength;
-}
-
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return compareBytes(left, right) === 0;
-}
-
-function hexOf(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
-    '',
-  );
-}
-
 function readSignature(reader: Reader): Uint8Array {
   const length = reader.u16();
   if (length > MAX_SIGNATURE_BYTES)
@@ -212,7 +197,7 @@ export function sameCRDTActorRegistration(
   left: CRDTActorRegistration,
   right: CRDTActorRegistration,
 ): boolean {
-  return left.signer === right.signer && sameBytes(left.nonce, right.nonce);
+  return left.signer === right.signer && equalBytes(left.nonce, right.nonce);
 }
 
 /** Draw a fresh per-instance actor nonce. */
@@ -352,7 +337,7 @@ export function encodeCRDTActorManifest(
     let nonces = bySigner.get(registration.signer);
     if (nonces === undefined)
       bySigner.set(registration.signer, (nonces = new Map()));
-    const key = hexOf(registration.nonce);
+    const key = bytesToHex(registration.nonce);
     if (!nonces.has(key)) nonces.set(key, registration);
   }
   const signers = [...bySigner.keys()]

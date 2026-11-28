@@ -17,7 +17,7 @@ import {
   signDistributedSearchResponse,
   verifyDistributedSearchRequest,
 } from './distributed-search-wire.js';
-import { encodeBase64Url } from './distributed-codec.js';
+import { encodeBase64Url } from './encoding.js';
 
 const signer: DistributedSearchSigner = {
   applicationId: 'app:test',
