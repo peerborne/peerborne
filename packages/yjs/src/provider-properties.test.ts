@@ -1,6 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import fc from 'fast-check';
 import { mergeACLChanges } from '@peerborne/core';
+import { applyUpdateV2, Doc } from 'yjs';
 import {
   YjsACL,
   YjsJSONSerializer,
@@ -209,6 +210,89 @@ describe('Yjs ACL generated delivery orders', () => {
         expect(await members(receiver)).toEqual(await members(sender));
       }),
       { seed: 9435, numRuns: 60, examples: [[[]]] },
+    );
+  }, 60_000);
+
+  test('a concurrent revocation defeats a stale regrant through reconstruction and a fully informed grant restores membership', async () => {
+    const [member, unaffected] = await Promise.all(
+      Array.from({ length: 2 }, async () =>
+        (
+          await crypto.subtle.generateKey(
+            { name: 'ECDSA', namedCurve: 'P-384' },
+            true,
+            ['sign', 'verify'],
+          )
+        ).publicKey,
+      ),
+    );
+    const founder = new YjsACL();
+    founder.actorBinding.setLocalActor('1');
+    await founder.add(member);
+    await founder.add(unaffected);
+    const serializedMember = await serializeKey(member);
+    const base = founder.current();
+    const replica = (actor: number) => {
+      const acl = new YjsACL();
+      acl.merge(base);
+      acl.actorBinding.setLocalActor(String(actor));
+      return acl;
+    };
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.tuple(fc.integer(), fc.integer(), fc.integer(), fc.integer()),
+        fc.boolean(),
+        async (priorities, staleGrantHasHigherActor) => {
+          const left = replica(10);
+          const right = replica(staleGrantHasHigherActor ? 40 : 20);
+          const leftRevocation = await left.remove(member);
+          const rightRevocation = await right.remove(member);
+          const staleGrant = await right.add(member);
+          expect(await right.check(member)).toBe(true);
+
+          const deliver = (receiver: YjsACL, packets: Uint8Array[]) => {
+            const ordered = packets
+              .map((changes, index) => ({ changes, priority: priorities[index] }))
+              .sort((a, b) => a.priority - b.priority);
+            let held: Uint8Array[] = [];
+            for (const packet of [...ordered, ...ordered.slice().reverse()]) {
+              held = mergeACLChanges(receiver, [...held, packet.changes]);
+              expect(() => receiver.current()).not.toThrow();
+            }
+            expect(held).toEqual([]);
+          };
+
+          const concurrent = [leftRevocation, rightRevocation, staleGrant];
+          const joined = replica(50);
+          deliver(joined, concurrent);
+          expect(await joined.check(member)).toBe(false);
+          expect(await joined.check(unaffected)).toBe(true);
+          const reopened = new YjsACL();
+          reopened.merge(joined.current());
+          expect(await reopened.check(member)).toBe(false);
+
+          const author = replica(30);
+          author.merge(leftRevocation);
+          author.merge(rightRevocation);
+          const freshGrant = await author.add(member);
+          for (const receiver of [reopened, replica(60)]) {
+            deliver(receiver, [...concurrent, freshGrant]);
+            expect(await receiver.check(member)).toBe(true);
+            expect(await receiver.users()).toHaveLength(2);
+
+            const native = new Doc({ gc: false });
+            try {
+              applyUpdateV2(native, receiver.current());
+              expect(native.getMap('users').get(serializedMember)).toHaveLength(
+                staleGrantHasHigherActor ? 1 : 2,
+              );
+            } finally {
+              native.destroy();
+            }
+          }
+        },
+      ),
+      { seed: 19026, numRuns: 60 },
     );
   }, 60_000);
 });

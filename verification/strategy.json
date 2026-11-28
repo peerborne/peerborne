@@ -257,7 +257,7 @@
     },
     {
       "id": "crdt-replication",
-      "formalBoundary": "Third-party CRDT engines, native serialization and out-of-order delivery are outside the proof model.",
+      "formalBoundary": "Third-party CRDT engines, native serialization and out-of-order delivery are outside the proof model. Generated Yjs ACL histories exercise revocation receipts and observed regrant bases through native merge, missing dependencies, duplicate packets, and reconstruction.",
       "evidence": [
         "packages/automerge/src/provider-properties.test.ts",
         "packages/yjs/src/provider-properties.test.ts"
