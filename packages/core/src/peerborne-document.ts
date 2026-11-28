@@ -19,6 +19,7 @@ import {
   type AntiEntropyHandler,
   type AntiEntropyRequestOutcome,
   type AntiEntropyStatus,
+  type SoleWriterAdvertisement,
 } from './anti-entropy.js';
 import {
   DocumentBlockReadLimitError,
@@ -2021,8 +2022,16 @@ export class PeerborneDocument<
       : documentTopic(this.documentPath);
   }
 
-  private async _shuffledPeers() {
-    const connections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+  private async _shuffledPeers(onlyPeer?: string) {
+    const openConnections = this.swarm.heliaNode.libp2p.getConnections() ?? [];
+    const connections =
+      onlyPeer === undefined
+        ? openConnections
+        : openConnections.filter(
+            (connection) =>
+              connection.status === 'open' &&
+              connection.remotePeer.toString() === onlyPeer,
+          );
     const loadable = await Promise.all(
       connections.map((connection) => this._mayServeDocumentLoad(connection)),
     );
@@ -8047,12 +8056,21 @@ export class PeerborneDocument<
     preferredPeer?: PeerId | string,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    return this._loadAuthenticated(preferredPeer, signal);
+  }
+
+  private async _loadAuthenticated(
+    preferredPeer?: PeerId | string,
+    signal?: AbortSignal,
+    soleWriter?: SoleWriterAdvertisement,
+  ): Promise<boolean> {
     if (this._coordinated)
       throw new Error('Legacy document operations are unavailable in coordinated mode');
     if (this._beekemForkGuard) await this._beekemForkGuard.acquire();
     this._assertNoIncompleteBootstrapLoad();
 
-    const shuffledPeers = await this._shuffledPeers();
+    if (soleWriter && !this._canLoadFromSoleWriter(soleWriter)) return false;
+    const shuffledPeers = await this._shuffledPeers(soleWriter?.peer);
     if (shuffledPeers.length === 0) {
       this._assertNoIncompleteBootstrapLoad();
       return false;
@@ -8061,6 +8079,14 @@ export class PeerborneDocument<
     this._beekemForkGuard?.assertAcceptsWork();
     const session = await this._captureLoadSession();
     throwIfLoadAborted(signal);
+    if (
+      soleWriter &&
+      (!this._canLoadFromSoleWriter(soleWriter) ||
+        session.bootstrap ||
+        session.authorities.length !== 1 ||
+        session.authorities[0]?.authorityId !== soleWriter.member)
+    )
+      return false;
 
     const orderedPeers = [...shuffledPeers];
 
@@ -8387,7 +8413,11 @@ export class PeerborneDocument<
                 connection.status === 'open' &&
                 connection.remotePeer?.toString() === peer,
             ),
-        load: (peer, signal) => this.load(peer, signal),
+        canLoadFromSoleWriter: (writer) => this._canLoadFromSoleWriter(writer),
+        load: (peer, signal, soleWriter) =>
+          soleWriter === undefined
+            ? this.load(peer, signal)
+            : this._loadAuthenticated(peer, signal, soleWriter),
       },
       antiEntropyBudgetFor(this.swarm),
       (event) => this._emitAntiEntropy(antiEntropy, event),
@@ -8552,10 +8582,20 @@ export class PeerborneDocument<
     return (await role) !== undefined;
   }
 
+  private _canLoadFromSoleWriter(writer: SoleWriterAdvertisement): boolean {
+    const now = this._observeSyncRequestClock();
+    return (
+      this._writerMutationsInFlight === 0 &&
+      writer.writerVersion === this._writerKeysVersion &&
+      now !== undefined &&
+      isSyncRequestFresh(writer, now)
+    );
+  }
+
   /** The verified requester's current role, or undefined if unauthenticated. */
   private async _syncRequestRole(
     request: SyncRequest,
-  ): Promise<'writer' | 'reader' | undefined> {
+  ): Promise<'sole-writer' | 'writer' | 'reader' | undefined> {
     if (
       request.documentId !== this.documentPath ||
       !this._isSigningEnabled()
@@ -8577,7 +8617,7 @@ export class PeerborneDocument<
         this._deserializeSignature(request.signature),
       )) === true
         ? index < writers.length
-          ? 'writer'
+          ? (writers.length === 1 ? 'sole-writer' : 'writer')
           : 'reader'
         : undefined;
     }
@@ -8595,7 +8635,7 @@ export class PeerborneDocument<
   private async _observeSyncRequest(
     request: SyncRequest,
     now: number | undefined,
-    role: () => Promise<'writer' | 'reader' | undefined>,
+    role: () => Promise<'sole-writer' | 'writer' | 'reader' | undefined>,
     isCurrent: () => boolean,
   ): Promise<void> {
     const antiEntropy = this._antiEntropy;
@@ -8618,6 +8658,7 @@ export class PeerborneDocument<
         : !antiEntropy.admitAdvertisement(request.requester, head)
     )
       return;
+    const writerVersion = this._writerKeysVersion;
     const verified = await role();
     if (verified === undefined || !isCurrent()) return;
     this._noteMemberPeer(request.requesterPeer);
@@ -8627,7 +8668,10 @@ export class PeerborneDocument<
         request.requester,
         request.requesterPeer,
         head,
-        verified === 'writer',
+        verified !== 'reader',
+        verified === 'sole-writer' && writerVersion === this._writerKeysVersion
+          ? { writerVersion, issuedAtMs: request.issuedAtMs }
+          : undefined,
       );
   }
 
@@ -8645,7 +8689,7 @@ export class PeerborneDocument<
     await this._runStateMutation(async () => {
       if (!isCurrent()) return;
       let now = this._observeSyncRequestClock();
-      let verification: Promise<'writer' | 'reader' | undefined> | undefined;
+      let verification: ReturnType<typeof this._syncRequestRole> | undefined;
       const role = () => (verification ??= this._syncRequestRole(request));
       await this._observeSyncRequest(request, now, role, isCurrent);
       if (!isCurrent()) return;
