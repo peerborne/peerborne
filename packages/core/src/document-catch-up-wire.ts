@@ -3,16 +3,15 @@ import type { GroupSecurityDocumentContext } from './group-security-coordinator.
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
-  documentBytesEqual,
-  documentBytesId,
 } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   MAX_DOCUMENT_CONTENT_BYTES,
   MAX_DOCUMENT_SECURITY_FRAME_BYTES,
   readDocumentContext,
   writeDocumentContext,
 } from './document-security-wire.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
 
 const MAGIC = Uint8Array.from('peerborne/document-catch-up/v1\0', (character) =>
   character.charCodeAt(0),
@@ -147,7 +146,7 @@ function readRequest(
   kind: DocumentCatchUpKind,
 ): Omit<DocumentCatchUpRequest, 'receipts'> {
   if (
-    !documentBytesEqual(reader.fixed(MAGIC.length), MAGIC) ||
+    !equalBytes(reader.fixed(MAGIC.length), MAGIC) ||
     reader.number(1) !== KINDS[kind]
   )
     throw new TypeError('Invalid document catch-up domain');
@@ -171,7 +170,7 @@ export function writeDocumentReceipts(
   let previous = '';
   for (const receipt of receipts) {
     const memberId = fixed32(receipt.memberId);
-    const id = documentBytesId(memberId);
+    const id = bytesToHex(memberId);
     if (
       id <= previous ||
       !Number.isSafeInteger(receipt.sequence) ||
@@ -194,7 +193,7 @@ export function readDocumentReceipts(reader: DocumentBinaryReader): DocumentRepl
   let previous = '';
   for (let index = 0; index < count; index++) {
     const memberId = reader.fixed(32);
-    const id = documentBytesId(memberId);
+    const id = bytesToHex(memberId);
     const sequence = reader.number(8);
     if (id <= previous || sequence === 0)
       throw new TypeError('Noncanonical document catch-up receipt');
@@ -361,7 +360,7 @@ function topicMarker(kind: TopicKind) {
 function hasMarker(frame: Uint8Array, marker: Uint8Array): boolean {
   return (
     frame.length >= marker.length &&
-    documentBytesEqual(frame.subarray(0, marker.length), marker)
+    equalBytes(frame.subarray(0, marker.length), marker)
   );
 }
 
@@ -398,7 +397,7 @@ export function decodeEncryptedDocumentCatchUp(
 ): { epochTag: Uint8Array; nonce: Uint8Array; ciphertext: Uint8Array } {
   const { marker, maximum } = topicMarker(kind);
   const reader = new DocumentBinaryReader(value, maximum + 64);
-  if (!documentBytesEqual(reader.fixed(4), marker))
+  if (!equalBytes(reader.fixed(4), marker))
     throw new TypeError('Invalid encrypted document catch-up domain');
   const epochTag = reader.fixed(16),
     nonce = reader.fixed(12),

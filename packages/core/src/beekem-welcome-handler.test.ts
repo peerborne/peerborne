@@ -5,7 +5,9 @@ import {
   evaluateBeeKEMWelcome,
   WelcomeValidationDeps,
 } from './beekem-welcome-handler.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 
 /**
  * Direct unit-test coverage for BeeKEM Welcome validation gates.

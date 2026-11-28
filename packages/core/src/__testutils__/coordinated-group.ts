@@ -33,7 +33,7 @@ import type {
 } from '../group-security-provider.js';
 import { InMemoryGroupSecurityRollbackAnchor } from '../group-security-rollback-anchor.js';
 import { InMemoryGroupStateStore } from '../group-state-store.js';
-import { documentBytesId } from '../internal/document-binary.js';
+import { bytesToHex } from '../internal/hex.js';
 import { Peerborne } from '../peerborne.js';
 import type { PeerborneDocument } from '../peerborne-document.js';
 import { WebCryptoGroupStateProtector } from '../webcrypto-group-state-protector.js';
@@ -92,7 +92,7 @@ export class GroupTestIdentities {
       sign: (data, privateKey) => this.signAs(privateKey, data),
       verify: (data, publicKey, signature) =>
         this.verify(data, signature, publicKey),
-      serializePublicKey: async (key) => documentBytesId(key),
+      serializePublicKey: async (key) => bytesToHex(key),
       deserializePublicKey: async (key) => {
         if (!this.keys.has(key)) throw new Error('Unknown identity');
         return fromHex(key);
@@ -286,7 +286,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     (delivery) => delivery.controlRecord,
   );
   const roster: DocumentMemberAuthority[] = [
-    { memberId: members[0], publicKey: documentBytesId(members[0]), role: 3 },
+    { memberId: members[0], publicKey: bytesToHex(members[0]), role: 3 },
   ];
   const logs: DocumentAuthorityLog<Uint8Array, Uint8Array, string>[] = [];
   logs[0] = await DocumentAuthorityLog.create(
@@ -445,7 +445,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       );
     roster.push({
       memberId: members[index],
-      publicKey: documentBytesId(members[index]),
+      publicKey: bytesToHex(members[index]),
       role,
     });
     const record = await logs[0].signUpdate(

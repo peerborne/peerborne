@@ -6,7 +6,7 @@ import {
   signDistributedIndexManifest,
   verifyDistributedIndexManifest,
 } from './distributed-manifest.js';
-import { encodeBase64Url } from './distributed-codec.js';
+import { encodeBase64Url } from './encoding.js';
 import { MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES } from './distributed-limits.js';
 import {
   RoutingAdvertisementRegistry,

@@ -3,7 +3,7 @@ import { InitialLoadAuthenticationBudget } from '../initial-load-auth.js';
 import type { InitialLoadSession } from '../internal/initial-load-session.js';
 import type { LoadSecurityCommitments } from '../load-security-state.js';
 import { loadAdvertisementHash } from '../load-advertisement-hash.js';
-import { tipsHashToHex } from '../tips-hash.js';
+import { bytesToHex } from '../internal/hex.js';
 import { computeServedFrontier } from '../merkle-cross-links.js';
 
 export const fixtureLoadChallenge = () => new Uint8Array(32).fill(17);
@@ -128,7 +128,7 @@ export async function fixtureLoadDigest(
   document: any,
   frontier: string[],
 ): Promise<string> {
-  return tipsHashToHex(
+  return bytesToHex(
     await loadAdvertisementHash(
       document.documentPath,
       frontier,

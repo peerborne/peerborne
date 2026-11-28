@@ -15,8 +15,9 @@ import {
   PeerLoadQuorumVote,
   validateLoadQuorumConfig,
 } from './load-quorum.js';
-import { TIPS_HASH_LENGTH, tipsHashToHex } from './tips-hash.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { TIPS_HASH_LENGTH } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import { classifyAuthorityVotes } from './policy/authority-votes.js';
 import type { AuthorityVote } from './policy/authority-votes.js';
 import { requiredQuorumQ, quorumCohortIndices } from './policy/quorum.js';
@@ -386,7 +387,7 @@ export async function runLoadQuorum<T>(opts: {
         agreement: new Map(),
       });
     }
-    const winningHashHex = tipsHashToHex(normalizedProbe.hash);
+    const winningHashHex = bytesToHex(normalizedProbe.hash);
     // Narrow to ONLY the probed peer. Without this, the subsequent
     // snapshot/doc-load loop would also try the other peers in the original
     // peer list (which were never probed) and bind their served state
@@ -431,7 +432,7 @@ export async function runLoadQuorum<T>(opts: {
     if (result.kind === 'vote') {
       signedVotes.push({
         authority: result.signerAuthority,
-        digest: tipsHashToHex(result.hash),
+        digest: bytesToHex(result.hash),
       });
     }
   }

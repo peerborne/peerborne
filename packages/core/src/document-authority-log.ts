@@ -20,9 +20,8 @@ import type {
 import {
   DocumentBinaryReader,
   DocumentBinaryWriter,
-  documentBytesEqual,
-  documentBytesId,
 } from './internal/document-binary.js';
+import { bytesToHex } from './internal/hex.js';
 import {
   decodeSignedDocumentContent,
   documentContextsMatch,
@@ -30,7 +29,7 @@ import {
   readDocumentContext,
   writeDocumentContext,
 } from './document-security-wire.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array, equalBytes } from './internal/bytes.js';
 import {
   captureDocumentWritePaths,
   copyDocumentFieldPaths,
@@ -114,7 +113,7 @@ function encode(record: AuthorityRecord): Uint8Array {
 
 function decode(bytes: Uint8Array): AuthorityRecord {
   const reader = new DocumentBinaryReader(bytes);
-  if (!documentBytesEqual(reader.fixed(DOMAIN.length), DOMAIN))
+  if (!equalBytes(reader.fixed(DOMAIN.length), DOMAIN))
     throw new Error('Invalid document authority domain');
   const documentId = reader.text(),
     sequence = reader.number(8),
@@ -139,7 +138,7 @@ function decode(bytes: Uint8Array): AuthorityRecord {
     const memberId = reader.fixed(32),
       publicKey = reader.text(4096),
       role = reader.number(1),
-      id = documentBytesId(memberId);
+      id = bytesToHex(memberId);
     if (id <= previous) throw new Error('Invalid authority roster');
     previous = id;
     ids.push(id);
@@ -202,9 +201,9 @@ function canonicalMembers(
       writePaths: captureDocumentWritePaths(member, scopeBudget),
     }))
     .sort((a, b) =>
-      documentBytesId(a.memberId) < documentBytesId(b.memberId)
+      bytesToHex(a.memberId) < bytesToHex(b.memberId)
         ? -1
-        : documentBytesId(a.memberId) === documentBytesId(b.memberId)
+        : bytesToHex(a.memberId) === bytesToHex(b.memberId)
           ? 0
           : 1,
     );
@@ -239,7 +238,7 @@ export class DocumentAuthorityLog<
     encoded: Uint8Array,
     private readonly auth: AuthProvider<PrivateKey, PublicKey, DocumentKey>,
   ) {
-    this.verifiedHeads.add(documentBytesId(root));
+    this.verifiedHeads.add(bytesToHex(root));
     this.root = root.slice();
     this.head = root.slice();
     this.current = record;
@@ -247,7 +246,7 @@ export class DocumentAuthorityLog<
     this.historyBytes = encoded.length;
     this.controllers = bindDocumentController(
       this.controllers,
-      documentBytesId(record.context.controlHead),
+      bytesToHex(record.context.controlHead),
       record.members.find((member) => member.role === 3)!.memberId.slice(),
       MAX_RECORDS,
     );
@@ -261,7 +260,7 @@ export class DocumentAuthorityLog<
   }
   extendsHead(head: Uint8Array): boolean {
     return this.verifiedHeads.has(
-      documentBytesId(
+      bytesToHex(
         copyUnsharedUint8Array(head, 32, 32, 'accepted authority head'),
       ),
     );
@@ -338,9 +337,9 @@ export class DocumentAuthorityLog<
       root = await digest(first.unsigned),
       initial = decode(first.unsigned);
     if (
-      !documentBytesEqual(root, pin) ||
+      !equalBytes(root, pin) ||
       initial.sequence !== 1 ||
-      !documentBytesEqual(initial.parent, ZERO)
+      !equalBytes(initial.parent, ZERO)
     )
       throw new Error('Untrusted authority genesis');
     const result = new DocumentAuthorityLog(root, initial, owned[0], auth);
@@ -373,7 +372,7 @@ export class DocumentAuthorityLog<
   }
 
   controllerAtHead(head: Uint8Array): Uint8Array | undefined {
-    return this.controllers.get(documentBytesId(head))?.slice();
+    return this.controllers.get(bytesToHex(head))?.slice();
   }
 
   capture(context: GroupSecurityDocumentContext) {
@@ -469,14 +468,14 @@ export class DocumentAuthorityLog<
         );
         if (admission) {
           assertDocumentGroupRoster(
-            next.members.map((member) => documentBytesId(member.memberId)),
+            next.members.map((member) => bytesToHex(member.memberId)),
             await work.readAuthenticatedMemberIds(),
           );
           if (signal.aborted || !admission.isCurrent())
             throw new Error('Document authority preparation is no longer current');
           const localId = coordinator.localMemberId;
           const local = next.members.find((member) =>
-            documentBytesEqual(member.memberId, localId),
+            equalBytes(member.memberId, localId),
           );
           const { value: publicKey } = await work.observe<string>(
             admission.readLocalPublicKey(),
@@ -505,7 +504,7 @@ export class DocumentAuthorityLog<
           authorityRecords: [...this.exportRecords(), input.slice()],
           isReserved,
           isInstalled: () =>
-            this.revision === next.sequence && documentBytesEqual(this.head, hash),
+            this.revision === next.sequence && equalBytes(this.head, hash),
           commit: () => {
             if (!isReserved())
               throw new Error('Authenticated role update reservation was lost');
@@ -538,7 +537,7 @@ export class DocumentAuthorityLog<
       admitContentSequence(
         next.sequence,
         this.revision,
-        documentBytesEqual(next.parent, this.head),
+        equalBytes(next.parent, this.head),
       ) !== 'apply'
     )
       throw new Error('Authority history is full, replayed, or forked');
@@ -548,8 +547,8 @@ export class DocumentAuthorityLog<
         state.epoch,
         previous.protocol.id === state.protocol.id &&
           previous.protocol.version === state.protocol.version &&
-          documentBytesEqual(previous.groupId, state.groupId),
-        !documentBytesEqual(
+          equalBytes(previous.groupId, state.groupId),
+        !equalBytes(
           next.context.controlHead,
           this.current.context.controlHead,
         ),
@@ -561,7 +560,7 @@ export class DocumentAuthorityLog<
     if (
       !canBindDocumentController(
         this.controllers,
-        documentBytesId(next.context.controlHead),
+        bytesToHex(next.context.controlHead),
         MAX_RECORDS,
       )
     )
@@ -613,13 +612,13 @@ export class DocumentAuthorityLog<
       throw new Error('Authority history byte bound exceeded');
     const controllers = bindDocumentController(
       this.controllers,
-      documentBytesId(next.context.controlHead),
+      bytesToHex(next.context.controlHead),
       next.members.find((member) => member.role === 3)!.memberId.slice(),
       MAX_RECORDS,
     );
     const record = encoded.slice();
     const head = hash.slice();
-    const id = documentBytesId(head);
+    const id = bytesToHex(head);
     return () => {
       this.records.push(record);
       this.historyBytes += record.length;
@@ -656,7 +655,7 @@ export class DocumentGroupControlAuthority {
       if (
         record.protocol.id !== this.protocol.id ||
         record.protocol.version !== this.protocol.version ||
-        !documentBytesEqual(record.groupId, this.groupId)
+        !equalBytes(record.groupId, this.groupId)
       )
         return false;
       const controller = previousRecordId
@@ -666,7 +665,7 @@ export class DocumentGroupControlAuthority {
           : undefined;
       return (
         controller !== undefined &&
-        documentBytesEqual(record.actorId, controller)
+        equalBytes(record.actorId, controller)
       );
     };
   }
@@ -680,8 +679,8 @@ export class DocumentGroupControlAuthority {
       this.log ||
       protocol.id !== this.protocol.id ||
       protocol.version !== this.protocol.version ||
-      !documentBytesEqual(groupId, this.groupId) ||
-      !documentBytesEqual(controller, this.controller)
+      !equalBytes(groupId, this.groupId) ||
+      !equalBytes(controller, this.controller)
     )
       throw new Error('Document control authority binding mismatch');
     this.log = log;

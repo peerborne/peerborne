@@ -9,11 +9,9 @@ import { consumeWorkBudget } from './policy/work-budget.js';
  */
 
 import { Base64 } from 'js-base64';
-import {
-  copyUnsharedUint8Array,
-  snapshotEnumerableOwnDataObject,
-  tryDecodeCanonicalBase64,
-} from './utils.js';
+import { tryDecodeCanonicalBase64 } from './internal/base64.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 const arrayIsArray = Array.isArray;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;

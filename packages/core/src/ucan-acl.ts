@@ -15,10 +15,8 @@ import { UCAN, createUCAN } from './ucan.js';
 import { DocumentCapability, capabilityImplies } from './capabilities.js';
 import { LRUCache } from './lru-cache.js';
 import { EPOCH_ID_LENGTH } from './epoch.js';
-import {
-  copyUnsharedUint8Array,
-  snapshotDeepEnumerableData,
-} from './utils.js';
+import { snapshotDeepEnumerableData } from './internal/data-snapshot.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 /**
  * An entry in the UCAN-based ACL.

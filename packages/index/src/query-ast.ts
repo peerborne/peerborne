@@ -13,6 +13,7 @@ import {
 import { extractField } from './field-extractor.js';
 import { hasSafeIndexFieldPathSegments } from './field-path.js';
 import { FieldProjection } from './field-projection.js';
+import { isRecord, sha256Hex } from './encoding.js';
 
 const MAX_FIELD_PATH_LENGTH = 512;
 const MAX_COLLECTION_PREFIX_LENGTH = 4096;
@@ -389,11 +390,11 @@ export function canonicalQueryString(query: QueryAst): string {
 }
 
 export async function hashIndexDefinition(definition: IndexDefinition): Promise<string> {
-  return sha256(canonicalIndexDefinitionString(definition));
+  return sha256Hex(new TextEncoder().encode(canonicalIndexDefinitionString(definition)));
 }
 
 export async function hashQuery(query: QueryAst): Promise<string> {
-  return sha256(canonicalQueryString(query));
+  return sha256Hex(new TextEncoder().encode(canonicalQueryString(query)));
 }
 
 function validateExpression(
@@ -566,17 +567,8 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-async function sha256(value: string): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

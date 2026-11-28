@@ -1,9 +1,8 @@
 import { assertBoundedUtf8 } from './internal/canonical-encoding.js';
 import { canAdvanceBeeKEMForkAnchor } from './policy/beekem-fork-anchor.js';
-import {
-  MAX_DOCUMENT_PATH_LENGTH,
-  snapshotEnumerableOwnDataObject,
-} from './utils.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
+import { MAX_DOCUMENT_PATH_LENGTH } from './shared-protocol-request.js';
+import { randomHex } from './internal/random.js';
 
 export interface BeeKEMForkScope {
   readonly documentPath: string;
@@ -82,12 +81,6 @@ function validGeneration(generation: number): boolean {
   return (
     Number.isInteger(generation) && generation > 0 && generation <= 0xffff_ffff
   );
-}
-
-function newLease(): string {
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
 }
 
 /** One handle's ownership of its durable active record. */
@@ -194,7 +187,7 @@ export class BeeKEMForkQuarantine {
     const active = Object.freeze({
       phase: 'active',
       revision: expected.revision + 1,
-      lease: newLease(),
+      lease: randomHex(16),
     } as const);
     if ((await this.compareAndSwap(scope, expected, active)) !== true) {
       throw new Error('Durable BeeKEM fork anchor changed before activation');

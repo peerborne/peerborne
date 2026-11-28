@@ -4,11 +4,11 @@ import {
   releaseDocumentOperationBytes,
   type DocumentOperationPhase,
 } from './policy/document-admission.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
 import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
-  snapshotEnumerableOwnDataObject,
-} from './utils.js';
+} from './internal/bytes.js';
 import { observeAdmissionWork } from './internal/admission-work.js';
 
 export const DEFAULT_DOCUMENT_OPERATION_COUNT = 16;

@@ -10,7 +10,9 @@ import {
   deserializeBeeKEMWelcomeV2FromWire,
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 
 describe('welcome-sealed-payload round-trip', () => {
   const keychainBytes = new Uint8Array([1, 2, 3, 4, 5]);

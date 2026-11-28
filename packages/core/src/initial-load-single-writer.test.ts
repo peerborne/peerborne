@@ -14,9 +14,9 @@ import { JSONSerializer } from './json-serializer.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
 import { LoadQuorumFailedError } from './load-quorum.js';
 import { PeerborneDocument } from './peerborne-document.js';
-import { tipsHashToHex } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
 import { fixtureLoadCommitments } from './__testutils__/load-session.js';
-import { concatUint8Arrays } from './utils.js';
+import { concatBytes } from './internal/bytes.js';
 import { documentLoadV4, securityAdvertiseV1 } from './wire-protocols.js';
 
 jest.mock(
@@ -88,7 +88,7 @@ function clientStream(protocol: string, respond: Respond) {
     abort: () => undefined,
     async *[Symbol.asyncIterator]() {
       await done;
-      const response = await respond(protocol, concatUint8Arrays(...sent));
+      const response = await respond(protocol, concatBytes(sent));
       if (response.length > 0) yield response;
     },
   };
@@ -103,7 +103,7 @@ async function signingKeys(): Promise<CryptoKeyPair> {
 }
 
 async function digestOf(frontier: string[]): Promise<string> {
-  return tipsHashToHex(
+  return bytesToHex(
     await loadAdvertisementHash(
       documentPath,
       frontier,
@@ -179,7 +179,7 @@ async function singleWriterFixture() {
     }
     const stream = collectingStream();
     await node.document.handleSecurityAdvertiseRequestData(request, stream);
-    return concatUint8Arrays(...stream.chunks);
+    return concatBytes(stream.chunks);
   }
 
   const responders = new Map<string, Respond>();

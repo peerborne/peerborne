@@ -10,6 +10,7 @@
  */
 
 import { findUnauthorizedCapability } from './capabilities.js';
+import { randomHex } from './internal/random.js';
 
 /**
  * A UCAN token for Peerborne document authorization.
@@ -79,7 +80,7 @@ export async function createUCAN(
     capabilities,
     expiration: options?.expiration ?? null,
     notBefore: options?.notBefore ?? null,
-    nonce: generateNonce(),
+    nonce: randomHex(16),
     proofs,
   };
 
@@ -258,12 +259,6 @@ function deterministicStringify(ucan: UCAN): string {
  */
 export function deserializeUCAN(encoded: string): UCAN {
   return JSON.parse(new TextDecoder().decode(base64ToUint8Array(encoded)));
-}
-
-// Helper functions
-function generateNonce(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {

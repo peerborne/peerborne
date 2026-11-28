@@ -75,6 +75,9 @@ import { Base64 } from 'js-base64';
 
 const {
   toHex,
+  compareBytes,
+  serializeKey,
+  deserializeKey,
   keyIdToCacheKey,
   cacheKeyToKeyId,
   assertAesGcmDocumentKey,
@@ -88,6 +91,8 @@ const {
   orderKeychainHistory,
   keychainHistoryTailClock,
 }: typeof canonicalKeychain = canonicalKeychain;
+
+export { serializeKey, deserializeKey };
 
 const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocumentKey = canonicalKeychain.assertSerializedDocumentKey;
 
@@ -986,33 +991,6 @@ export class YjsProvider
   }
 }
 
-export async function serializeKey(publicKey: CryptoKey): Promise<string> {
-  const buf = await crypto.subtle.exportKey('raw', publicKey);
-  return Base64.fromUint8Array(new Uint8Array(buf));
-}
-
-export function deserializeKey(
-  algorithm:
-    | AlgorithmIdentifier
-    | RsaHashedImportParams
-    | EcKeyImportParams
-    | HmacImportParams
-    | AesKeyAlgorithm,
-  keyUsages: KeyUsage[],
-): (publicKey: string) => Promise<CryptoKey> {
-  return (publicKey: string) => {
-    const bytes = Base64.toUint8Array(publicKey);
-    // Cast needed: Uint8Array<ArrayBufferLike> does not satisfy BufferSource (excludes SharedArrayBuffer)
-    return crypto.subtle.importKey(
-      'raw',
-      bytes as Uint8Array<ArrayBuffer>,
-      algorithm,
-      true,
-      keyUsages,
-    );
-  };
-}
-
 export class YjsACLProvider implements ACLProvider<Uint8Array, CryptoKey> {
   initialize(): ACL<Uint8Array, CryptoKey> {
     return new YjsACL();
@@ -1731,14 +1709,6 @@ function currentKeyProjection(
     .push([[entry[0], entry[1]]]);
   validateYjsKeychain(projection);
   return new Uint8Array(encodeStateAsUpdateV2(projection));
-}
-
-function compareBytes(left: Uint8Array, right: Uint8Array): number {
-  const sharedLength = Math.min(left.byteLength, right.byteLength);
-  for (let index = 0; index < sharedLength; index++) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return left.byteLength - right.byteLength;
 }
 
 type YjsItemId = { readonly client: number; readonly clock: number };

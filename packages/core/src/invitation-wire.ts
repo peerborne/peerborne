@@ -1,5 +1,7 @@
 import { invitationTimeDisposition } from './policy/invitation-time.js';
 import { Base64 } from 'js-base64';
+import { sha256 } from './internal/digest.js';
+import { equalBytes } from './internal/bytes.js';
 
 /** Wire-format version shared by the public invitation messages. */
 export const INVITATION_WIRE_VERSION = 1 as const;
@@ -819,15 +821,6 @@ export async function verifyInvitationAcceptance<PrivateKey, PublicKey>(
   }
 }
 
-async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(
-    await crypto.subtle.digest(
-      'SHA-256',
-      bytes as Uint8Array<ArrayBuffer>,
-    ),
-  );
-}
-
 export function digestInvitationOffer(
   offer: InvitationOfferV1,
 ): Promise<Uint8Array> {
@@ -992,13 +985,6 @@ export function assertInvitationBootstrapEpochBinding(
       'Invitation encrypted bootstrap epoch does not match its signed acceptance',
     );
   }
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
-  let difference = 0;
-  for (let i = 0; i < a.byteLength; i++) difference |= a[i] ^ b[i];
-  return difference === 0;
 }
 
 function snapshotUnsignedOffer(

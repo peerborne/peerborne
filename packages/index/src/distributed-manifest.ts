@@ -2,13 +2,11 @@ import { DistributedSearchAuthorizer, DistributedSearchSigner, validateApplicati
 import {
   assertExactKeys,
   canonicalBytes,
-  decodeBase64Url,
-  encodeBase64Url,
-  isRecord,
   parseBoundedJson,
   validateBoundedText,
   validateUint64,
 } from './distributed-codec.js';
+import { decodeBase64Url, encodeBase64Url, isRecord, sha256Hex } from './encoding.js';
 import { MAX_DISTRIBUTED_SEARCH_REQUEST_BYTES } from './distributed-limits.js';
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
@@ -145,7 +143,7 @@ export async function verifyDistributedIndexManifest(
     return {
       manifest,
       signerApplicationId: parsed.signerApplicationId,
-      manifestHash: await sha256(canonicalBytes(manifest)),
+      manifestHash: await sha256Hex(canonicalBytes(manifest)),
     };
   } catch (error) {
     if (error instanceof DistributedManifestError) throw error;
@@ -208,12 +206,4 @@ function validateInteger(value: unknown, min: number, max: number, label: string
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new TypeError(`${label} must be an integer from ${min}-${max}`);
   }
-}
-
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest(
-    'SHA-256',
-    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-  );
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

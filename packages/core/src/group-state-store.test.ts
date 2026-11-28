@@ -941,7 +941,7 @@ describe('InMemoryGroupStateStore', () => {
     expect(spoofed instanceof Uint8Array).toBe(true);
     await expect(
       store.load({ protocol: { ...protocol }, groupId: spoofed }),
-    ).rejects.toThrow(/invalid length or backing buffer/);
+    ).rejects.toThrow(/must be a genuine Uint8Array/);
 
     if (typeof SharedArrayBuffer !== 'undefined') {
       const crossRealmShared = runInNewContext(

@@ -1,11 +1,12 @@
 import { defineEnumerableDataProperty } from './internal/data-property.js';
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import {
   concatenate,
   encodeUtf8,
   assertBoundedUtf8,
   uint32,
 } from './internal/canonical-encoding.js';
+import { bytesToHex } from './internal/hex.js';
 
 const LOAD_SECURITY_STATE_DOMAIN = 'peerborne/load-security-state/v1\0';
 
@@ -415,8 +416,5 @@ export async function loadSecurityStateHash(
 }
 
 export function loadSecurityStateHashToHex(hash: Uint8Array): string {
-  const snapshot = requireHash('load security state hash', hash);
-  return Array.from(snapshot, (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
+  return bytesToHex(requireHash('load security state hash', hash));
 }

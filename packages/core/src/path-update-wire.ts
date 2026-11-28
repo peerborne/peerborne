@@ -11,7 +11,6 @@ import * as TreeMath from './beekem/tree-math.js';
 import {
   createV2DecodeBudget,
   decodeV2Bytes,
-  describe,
   encodeRuntimeBytes,
   requireNonNegativeInteger,
   requirePositiveInteger,
@@ -19,6 +18,7 @@ import {
   snapshotPlainObject,
   V2WireCodec,
 } from './wire-v2-validation.js';
+import { equalBytes } from './internal/bytes.js';
 
 const MAX_V2_PATH_NODES = 64;
 const MAX_V2_BUNDLE_CIPHERTEXT_BYTES = 64 * (4096 + 8) + 4096;
@@ -433,7 +433,7 @@ function validateV2TreeSemantics(
   if (
     snapshotSenderKey === undefined ||
     snapshotSenderKey === null ||
-    !bytesEqual(snapshotSenderKey, senderLeafPublicKey)
+    !equalBytes(snapshotSenderKey, senderLeafPublicKey)
   ) {
     throw new Error(
       'Invalid PathUpdateV2: senderLeafPublicKey does not match the tree snapshot',
@@ -447,7 +447,7 @@ function validateV2TreeSemantics(
     if (
       snapshotPathKey === undefined ||
       snapshotPathKey === null ||
-      !bytesEqual(snapshotPathKey, node.publicKey)
+      !equalBytes(snapshotPathKey, node.publicKey)
     ) {
       throw new Error(
         `Invalid PathUpdateV2: node[${offset}].publicKey does not match the tree snapshot`,
@@ -495,11 +495,4 @@ function resolveSnapshotNode(
       publicKeysByNode,
     ),
   ];
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  return (
-    left.byteLength === right.byteLength &&
-    left.every((byte, offset) => byte === right[offset])
-  );
 }

@@ -2,7 +2,9 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { Base64 } from 'js-base64';
 import { JSONSerializer } from './json-serializer.js';
 import { evaluateBeeKEMWelcome } from './beekem-welcome-handler.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 
 const serializer = new JSONSerializer<unknown>();
 

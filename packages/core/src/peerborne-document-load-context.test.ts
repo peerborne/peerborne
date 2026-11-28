@@ -3,9 +3,11 @@ import { currentLoadResponse, fixtureSerializeChanges, fixedLoadSession, fixture
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { JSONSerializer } from './json-serializer.js';
 import { loadAdvertisementHash } from './load-advertisement-hash.js';
-import { tipsHashToHex } from './tips-hash.js';
+import { bytesToHex } from './internal/hex.js';
 import { PeerborneDocument } from './peerborne-document.js';
-import { MAX_SHARED_PROTOCOL_REQUEST_BYTES } from './utils.js';
+import {
+  MAX_SHARED_PROTOCOL_REQUEST_BYTES,
+} from './shared-protocol-request.js';
 
 jest.mock(
   'it-pipe',
@@ -336,7 +338,7 @@ describe('load-response V4 confinement', () => {
         signature: 'AQ==',
       });
     const advertised = async (message: any) =>
-      tipsHashToHex(
+      bytesToHex(
         await loadAdvertisementHash(
           documentPath,
           message.tips,

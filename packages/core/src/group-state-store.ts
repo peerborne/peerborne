@@ -19,6 +19,26 @@ import {
   isEncryptedGroupState,
   isEncryptedKeyPackageState,
 } from './group-security-provider.js';
+import {
+  byteLengthOf,
+  compareBytes,
+  copyUnsharedUint8Array,
+  equalBytes,
+  optionalEqualBytes,
+} from './internal/bytes.js';
+import { bytesToHex } from './internal/hex.js';
+import { requireU64 } from './internal/big-endian.js';
+import {
+  optionalOwnDataProperty,
+  ownDataProperty,
+  requireIntrinsicGetter,
+} from './internal/data-property.js';
+import { snapshotPlainDataObject } from './internal/plain-data.js';
+import {
+  isCanonicalIdentifier,
+  sameProtocol,
+  snapshotCanonicalProtocol,
+} from './internal/protocol-identifier.js';
 
 export const GROUP_STATE_STORE_ID_LENGTH = 32;
 export const MAX_CONSUMED_KEY_PACKAGE_MARKERS = 4096;
@@ -31,47 +51,13 @@ const MAX_OUTBOX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const MAX_CONTROL_RECORD_BYTES = 4 * 1024 * 1024;
 const MAX_KEY_PACKAGE_REFERENCE_BYTES = 512;
 const MAX_GROUP_STATE_METADATA_ENTRIES = 65_536;
-const MAX_U64 = (1n << 64n) - 1n;
 const COMMITTED_STATE_FIXED_OVERHEAD = 1024;
 
-const typedArrayPrototype = Object.getPrototypeOf(
-  Uint8Array.prototype,
-) as object;
-const typedArrayByteLength = requireGetter(
-  typedArrayPrototype,
-  'byteLength',
-  'TypedArray.byteLength',
-);
-const typedArrayBuffer = requireGetter(
-  typedArrayPrototype,
-  'buffer',
-  'TypedArray.buffer',
-);
-const typedArrayTag = requireGetter(
-  typedArrayPrototype,
-  Symbol.toStringTag,
-  'TypedArray.toStringTag',
-);
-const uint8ArraySet = Uint8Array.prototype.set;
-const arrayJoin = Array.prototype.join;
-const HEX_BYTE_LOOKUP = Object.freeze(
-  Array.from({ length: 256 }, (_, value) =>
-    value.toString(16).padStart(2, '0'),
-  ),
-);
-const sharedArrayBufferByteLength =
-  typeof SharedArrayBuffer === 'undefined'
-    ? undefined
-    : requireGetter(
-        SharedArrayBuffer.prototype,
-        'byteLength',
-        'SharedArrayBuffer.byteLength',
-      );
 // Lengths belong only to internally decoded envelopes with immutable private fields.
 const clonedEnvelopeLengths = new WeakMap<object, number>();
 const serializeEncryptedGroupState = EncryptedGroupState.prototype.serialize;
 const deserializeEncryptedGroupState = EncryptedGroupState.deserialize;
-const encryptedGroupStateValue = requireGetter(
+const encryptedGroupStateValue = requireIntrinsicGetter(
   EncryptedGroupState.prototype,
   'state',
   'EncryptedGroupState.state',
@@ -80,7 +66,7 @@ const serializeEncryptedKeyPackageState =
   EncryptedKeyPackageState.prototype.serialize;
 const deserializeEncryptedKeyPackageState =
   EncryptedKeyPackageState.deserialize;
-const encryptedKeyPackageValue = requireGetter(
+const encryptedKeyPackageValue = requireIntrinsicGetter(
   EncryptedKeyPackageState.prototype,
   'keyPackage',
   'EncryptedKeyPackageState.keyPackage',
@@ -95,18 +81,6 @@ for (const [name, method] of [
   if (typeof method !== 'function') {
     throw new Error(`group-state-store requires callable ${name}`);
   }
-}
-
-function requireGetter(
-  target: object,
-  property: PropertyKey,
-  name: string,
-): NonNullable<PropertyDescriptor['get']> {
-  const getter = Object.getOwnPropertyDescriptor(target, property)?.get;
-  if (typeof getter !== 'function') {
-    throw new Error(`group-state-store requires getter ${name}`);
-  }
-  return getter;
 }
 
 export interface GroupStateStoreKey {
@@ -416,7 +390,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   ): EncryptedKeyPackageState | undefined {
     this.#assertActive();
     const stableReference = cloneKeyPackageReference(reference);
-    const state = this.#working.pendingKeyPackages.get(toHex(stableReference));
+    const state = this.#working.pendingKeyPackages.get(bytesToHex(stableReference));
     return state === undefined
       ? undefined
       : cloneEncryptedKeyPackageState(state);
@@ -426,7 +400,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     this.#assertActive();
     const snapshot = validateAndCloneEncryptedKeyPackageState(state, this.#key);
     const reference = getEncryptedKeyPackageValue(snapshot).reference;
-    const encodedReference = toHex(reference);
+    const encodedReference = bytesToHex(reference);
     if (this.#working.consumedKeyPackageRefs.has(encodedReference)) {
       throw new Error('KeyPackage reference has already been consumed');
     }
@@ -469,7 +443,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       'pending KeyPackage operationId',
     );
     const request = this.#working.pendingKeyPackageRequests.get(
-      toHex(stableOperationId),
+      bytesToHex(stableOperationId),
     );
     return request === undefined
       ? undefined
@@ -481,8 +455,8 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   ): boolean {
     this.#assertActive();
     const stableRequest = validateAndClonePendingKeyPackageRequest(request);
-    const encodedOperationId = toHex(stableRequest.operationId);
-    const encodedReference = toHex(stableRequest.keyPackageReference);
+    const encodedOperationId = bytesToHex(stableRequest.operationId);
+    const encodedReference = bytesToHex(stableRequest.keyPackageReference);
     const existing =
       this.#working.pendingKeyPackageRequests.get(encodedOperationId);
     if (existing !== undefined) {
@@ -527,13 +501,13 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   hasConsumedKeyPackage(reference: Uint8Array): boolean {
     this.#assertActive();
     const stableReference = cloneKeyPackageReference(reference);
-    return this.#working.consumedKeyPackageRefs.has(toHex(stableReference));
+    return this.#working.consumedKeyPackageRefs.has(bytesToHex(stableReference));
   }
 
   consumePendingKeyPackage(reference: Uint8Array): EncryptedKeyPackageState {
     this.#assertActive();
     const stableReference = cloneKeyPackageReference(reference);
-    const encodedReference = toHex(stableReference);
+    const encodedReference = bytesToHex(stableReference);
     if (this.#working.consumedKeyPackageRefs.has(encodedReference)) {
       throw new Error('KeyPackage reference has already been consumed');
     }
@@ -548,7 +522,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
       throw new Error('consumed KeyPackage marker limit reached');
     }
     this.#adjustCommittedBytes(
-      intrinsicByteLength(stableReference) +
+      byteLengthOf(stableReference) +
         2 -
         pendingEntryCommittedBytes(pending),
     );
@@ -576,7 +550,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   enqueueOutbox(entry: GroupStateOutboxEntry): boolean {
     this.#assertActive();
     const stableEntry = validateAndCloneOutboxEntry(entry);
-    const id = toHex(stableEntry.id);
+    const id = bytesToHex(stableEntry.id);
     const existing = this.#working.outbox.get(id);
     if (existing !== undefined) {
       if (!sameOutboxEntry(existing, stableEntry)) {
@@ -595,7 +569,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   removeOutbox(id: Uint8Array): boolean {
     this.#assertActive();
     const stableId = cloneFixedId(id, 'outbox id');
-    const encodedId = toHex(stableId);
+    const encodedId = bytesToHex(stableId);
     const existing = this.#working.outbox.get(encodedId);
     if (existing === undefined) return false;
     this.#adjustCommittedBytes(-outboxEntryCommittedBytes(existing));
@@ -606,13 +580,13 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   hasReplayRecord(recordId: Uint8Array): boolean {
     this.#assertActive();
     const stableRecordId = cloneFixedId(recordId, 'replay recordId');
-    return this.#working.replay.has(toHex(stableRecordId));
+    return this.#working.replay.has(bytesToHex(stableRecordId));
   }
 
   markReplay(entry: GroupStateReplayEntry): boolean {
     this.#assertActive();
     const stableEntry = validateAndCloneReplayEntry(entry);
-    const recordId = toHex(stableEntry.recordId);
+    const recordId = bytesToHex(stableEntry.recordId);
     const existing = this.#working.replay.get(recordId);
     if (existing !== undefined) {
       if (!sameReplayEntry(existing, stableEntry)) {
@@ -625,7 +599,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     }
     let operationId: string | undefined;
     if (stableEntry.operationId !== undefined) {
-      operationId = toHex(stableEntry.operationId);
+      operationId = bytesToHex(stableEntry.operationId);
       const priorRecord = this.#working.operationToRecord.get(operationId);
       if (priorRecord !== undefined && priorRecord !== recordId) {
         throw new Error('operationId belongs to a different replay recordId');
@@ -646,13 +620,13 @@ class MemoryTransaction implements GroupStateStoreTransaction {
   removeReplay(recordId: Uint8Array): boolean {
     this.#assertActive();
     const stableRecordId = cloneFixedId(recordId, 'replay recordId');
-    const recordHex = toHex(stableRecordId);
+    const recordHex = bytesToHex(stableRecordId);
     const existing = this.#working.replay.get(recordHex);
     if (existing === undefined) return false;
     this.#adjustCommittedBytes(-replayEntryCommittedBytes(existing));
     this.#working.replay.delete(recordHex);
     if (existing.operationId !== undefined) {
-      const operationHex = toHex(existing.operationId);
+      const operationHex = bytesToHex(existing.operationId);
       if (this.#working.operationToRecord.get(operationHex) === recordHex) {
         this.#working.operationToRecord.delete(operationHex);
       }
@@ -727,7 +701,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
         this.#key,
       );
       if (
-        toHex(getEncryptedKeyPackageValue(validated).reference) !==
+        bytesToHex(getEncryptedKeyPackageValue(validated).reference) !==
         encodedReference
       ) {
         throw new Error('pending KeyPackage map key does not match reference');
@@ -736,7 +710,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     for (const [encodedOperationId, request] of this.#working
       .pendingKeyPackageRequests) {
       const validated = validateAndClonePendingKeyPackageRequest(request);
-      if (toHex(validated.operationId) !== encodedOperationId) {
+      if (bytesToHex(validated.operationId) !== encodedOperationId) {
         throw new Error(
           'pending KeyPackage request map key does not match operationId',
         );
@@ -745,7 +719,7 @@ class MemoryTransaction implements GroupStateStoreTransaction {
     for (const [encodedReference, reference] of this.#working
       .consumedKeyPackageRefs) {
       cloneKeyPackageReference(reference);
-      if (toHex(reference) !== encodedReference) {
+      if (bytesToHex(reference) !== encodedReference) {
         throw new Error('consumed KeyPackage map key does not match reference');
       }
     }
@@ -813,11 +787,11 @@ function cloneMutableState(state: MutableState): MutableState {
     consumedKeyPackageRefs: new Map(
       Array.from(state.consumedKeyPackageRefs, ([encoded, reference]) => [
         encoded,
-        cloneBytes(
+        copyUnsharedUint8Array(
           reference,
-          'consumed KeyPackage reference',
           1,
           MAX_KEY_PACKAGE_REFERENCE_BYTES,
+          'consumed KeyPackage reference',
         ),
       ]),
     ),
@@ -853,11 +827,11 @@ function snapshot(state: MutableState): GroupStateStoreSnapshot {
     consumedKeyPackageRefs: Array.from(
       state.consumedKeyPackageRefs.values(),
       (reference) =>
-        cloneBytes(
+        copyUnsharedUint8Array(
           reference,
-          'consumed KeyPackage reference',
           1,
           MAX_KEY_PACKAGE_REFERENCE_BYTES,
+          'consumed KeyPackage reference',
         ),
     ),
     outbox: Array.from(state.outbox.values(), cloneOutboxEntry),
@@ -899,7 +873,7 @@ export function validateGroupStateStoreSnapshotSemantics(
   const pendingReferences = new Set<string>();
   for (const pending of snapshotValue.pendingKeyPackages) {
     const validated = validateAndCloneEncryptedKeyPackageState(pending, key);
-    const encodedReference = toHex(
+    const encodedReference = bytesToHex(
       getEncryptedKeyPackageValue(validated).reference,
     );
     if (pendingReferences.has(encodedReference)) {
@@ -912,12 +886,12 @@ export function validateGroupStateStoreSnapshotSemantics(
   const requestedReferences = new Set<string>();
   for (const requestValue of snapshotValue.pendingKeyPackageRequests) {
     const request = validateAndClonePendingKeyPackageRequest(requestValue);
-    const encodedOperationId = toHex(request.operationId);
+    const encodedOperationId = bytesToHex(request.operationId);
     if (pendingOperationIds.has(encodedOperationId)) {
       throw new Error('pending KeyPackage request operationId is duplicated');
     }
     pendingOperationIds.add(encodedOperationId);
-    const encodedReference = toHex(request.keyPackageReference);
+    const encodedReference = bytesToHex(request.keyPackageReference);
     if (!pendingReferences.has(encodedReference)) {
       throw new Error('pending KeyPackage request references missing state');
     }
@@ -942,7 +916,7 @@ export function validateGroupStateStoreSnapshotSemantics(
 
   const consumedReferences = new Set<string>();
   for (const referenceValue of snapshotValue.consumedKeyPackageRefs) {
-    const encodedReference = toHex(cloneKeyPackageReference(referenceValue));
+    const encodedReference = bytesToHex(cloneKeyPackageReference(referenceValue));
     if (consumedReferences.has(encodedReference)) {
       throw new Error('consumed KeyPackage reference is duplicated');
     }
@@ -955,7 +929,7 @@ export function validateGroupStateStoreSnapshotSemantics(
   const outboxIds = new Set<string>();
   for (const entryValue of snapshotValue.outbox) {
     const entry = validateAndCloneOutboxEntry(entryValue);
-    const encodedId = toHex(entry.id);
+    const encodedId = bytesToHex(entry.id);
     if (outboxIds.has(encodedId)) {
       throw new Error('outbox id is duplicated');
     }
@@ -969,13 +943,13 @@ export function validateGroupStateStoreSnapshotSemantics(
   const replayOperationIds = new Set<string>();
   for (const entryValue of snapshotValue.replay) {
     const entry = validateAndCloneReplayEntry(entryValue);
-    const encodedId = toHex(entry.recordId);
+    const encodedId = bytesToHex(entry.recordId);
     if (replayIds.has(encodedId)) {
       throw new Error('replay recordId is duplicated');
     }
     replayIds.add(encodedId);
     if (entry.operationId !== undefined) {
-      const encodedOperationId = toHex(entry.operationId);
+      const encodedOperationId = bytesToHex(entry.operationId);
       if (replayOperationIds.has(encodedOperationId)) {
         throw new Error('replay operationId is duplicated');
       }
@@ -1012,7 +986,7 @@ function cloneEncryptedState(state: EncryptedGroupState): EncryptedGroupState {
     EncryptedGroupState,
     bytes,
   );
-  clonedEnvelopeLengths.set(snapshot, intrinsicByteLength(bytes));
+  clonedEnvelopeLengths.set(snapshot, byteLengthOf(bytes));
   return snapshot;
 }
 
@@ -1024,7 +998,7 @@ function cloneEncryptedKeyPackageState(
     EncryptedKeyPackageState,
     bytes,
   );
-  clonedEnvelopeLengths.set(snapshot, intrinsicByteLength(bytes));
+  clonedEnvelopeLengths.set(snapshot, byteLengthOf(bytes));
   return snapshot;
 }
 
@@ -1096,11 +1070,11 @@ function serializedEncryptedGroupState(state: EncryptedGroupState): Uint8Array {
       'group-state store accepts only EncryptedGroupState; plaintext private state is forbidden',
     );
   }
-  return cloneBytes(
+  return copyUnsharedUint8Array(
     serializeEncryptedGroupState.call(state),
-    'serialized encrypted group state',
     1,
     MAX_GROUP_STATE_STORE_COMMITTED_BYTES,
+    'serialized encrypted group state',
   );
 }
 
@@ -1112,11 +1086,11 @@ function serializedEncryptedKeyPackageState(
       'group-state store accepts only EncryptedKeyPackageState; plaintext private KeyPackage state is forbidden',
     );
   }
-  return cloneBytes(
+  return copyUnsharedUint8Array(
     serializeEncryptedKeyPackageState.call(state),
-    'serialized encrypted KeyPackage state',
     1,
     MAX_GROUP_STATE_STORE_COMMITTED_BYTES,
+    'serialized encrypted KeyPackage state',
   );
 }
 
@@ -1136,18 +1110,21 @@ function getEncryptedKeyPackageValue(
 export function cloneGroupStateStoreKey(
   key: GroupStateStoreKey,
 ): GroupStateStoreKey {
-  const record = exactPlainDataObject(
+  const record = snapshotPlainDataObject(
     key,
     ['protocol', 'groupId'],
-    ['protocol', 'groupId'],
     'store key',
+    ['protocol', 'groupId'],
   );
-  const protocol = validateAndCloneProtocol(dataProperty(record, 'protocol'));
-  const groupId = cloneBytes(
-    dataProperty(record, 'groupId'),
-    'groupId',
+  const protocol = snapshotCanonicalProtocol(
+    ownDataProperty(record, 'protocol'),
+    'protocol',
+  );
+  const groupId = copyUnsharedUint8Array(
+    ownDataProperty(record, 'groupId'),
     1,
     1024,
+    'groupId',
   );
   return {
     protocol,
@@ -1177,58 +1154,34 @@ function cloneForkEvidence(
   return validateAndCloneForkEvidence(evidence);
 }
 
-function validateAndCloneProtocol(value: unknown): GroupSecurityProtocol {
-  const protocol = exactPlainDataObject(
-    value,
-    ['id', 'version'],
-    ['id', 'version'],
-    'protocol',
-  );
-  const id = dataProperty(protocol, 'id');
-  const version = dataProperty(protocol, 'version');
-  if (
-    typeof id !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(id) ||
-    !Number.isInteger(version) ||
-    (version as number) < 0 ||
-    (version as number) > 0xffff
-  ) {
-    throw new Error('invalid canonical protocol identifier');
-  }
-  return { id, version: version as number };
-}
-
 function validateAndCloneOutboxEntry(
   value: GroupStateOutboxEntry,
 ): GroupStateOutboxEntry {
-  const entry = exactPlainDataObject(
+  const entry = snapshotPlainDataObject(
     value,
     ['id', 'kind', 'epoch', 'payload', 'createdAt'],
-    ['id', 'kind', 'epoch', 'payload', 'createdAt'],
     'outbox entry',
+    ['id', 'kind', 'epoch', 'payload', 'createdAt'],
   );
-  const kind = dataProperty(entry, 'kind');
-  const epoch = dataProperty(entry, 'epoch');
-  const createdAt = dataProperty(entry, 'createdAt');
-  if (
-    typeof kind !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(kind)
-  ) {
+  const kind = ownDataProperty(entry, 'kind');
+  const epoch = ownDataProperty(entry, 'epoch');
+  const createdAt = ownDataProperty(entry, 'createdAt');
+  if (!isCanonicalIdentifier(kind)) {
     throw new Error('invalid outbox kind');
   }
-  validateU64(epoch as bigint, 'outbox epoch');
+  requireU64(epoch, 'outbox epoch');
   if (!Number.isSafeInteger(createdAt) || (createdAt as number) < 0) {
     throw new Error('outbox createdAt must be a non-negative safe integer');
   }
   return {
-    id: cloneFixedId(dataProperty(entry, 'id'), 'outbox id'),
+    id: cloneFixedId(ownDataProperty(entry, 'id'), 'outbox id'),
     kind,
     epoch: epoch as bigint,
-    payload: cloneBytes(
-      dataProperty(entry, 'payload'),
-      'outbox payload',
+    payload: copyUnsharedUint8Array(
+      ownDataProperty(entry, 'payload'),
       1,
       MAX_OUTBOX_PAYLOAD_BYTES,
+      'outbox payload',
     ),
     createdAt: createdAt as number,
   };
@@ -1237,27 +1190,27 @@ function validateAndCloneOutboxEntry(
 function validateAndCloneReplayEntry(
   value: GroupStateReplayEntry,
 ): GroupStateReplayEntry {
-  const entry = exactPlainDataObject(
+  const entry = snapshotPlainDataObject(
     value,
     ['recordId', 'operationId', 'epoch', 'controlRecord'],
-    ['recordId', 'epoch', 'controlRecord'],
     'replay entry',
+    ['recordId', 'epoch', 'controlRecord'],
   );
-  const operationId = optionalDataProperty(entry, 'operationId');
-  const epoch = dataProperty(entry, 'epoch');
-  validateU64(epoch as bigint, 'replay epoch');
+  const operationId = optionalOwnDataProperty(entry, 'operationId');
+  const epoch = ownDataProperty(entry, 'epoch');
+  requireU64(epoch, 'replay epoch');
   return {
-    recordId: cloneFixedId(dataProperty(entry, 'recordId'), 'replay recordId'),
+    recordId: cloneFixedId(ownDataProperty(entry, 'recordId'), 'replay recordId'),
     operationId:
       operationId === undefined
         ? undefined
         : cloneFixedId(operationId, 'replay operationId'),
     epoch: epoch as bigint,
-    controlRecord: cloneBytes(
-      dataProperty(entry, 'controlRecord'),
-      'replay controlRecord',
+    controlRecord: copyUnsharedUint8Array(
+      ownDataProperty(entry, 'controlRecord'),
       1,
       MAX_CONTROL_RECORD_BYTES,
+      'replay controlRecord',
     ),
   };
 }
@@ -1265,23 +1218,23 @@ function validateAndCloneReplayEntry(
 function validateAndClonePendingKeyPackageRequest(
   value: GroupStatePendingKeyPackageRequest,
 ): GroupStatePendingKeyPackageRequest {
-  const request = exactPlainDataObject(
+  const request = snapshotPlainDataObject(
     value,
     ['operationId', 'requestCommitment', 'keyPackageReference'],
-    ['operationId', 'requestCommitment', 'keyPackageReference'],
     'pending KeyPackage request',
+    ['operationId', 'requestCommitment', 'keyPackageReference'],
   );
   return {
     operationId: cloneFixedId(
-      dataProperty(request, 'operationId'),
+      ownDataProperty(request, 'operationId'),
       'pending KeyPackage operationId',
     ),
     requestCommitment: cloneFixedId(
-      dataProperty(request, 'requestCommitment'),
+      ownDataProperty(request, 'requestCommitment'),
       'pending KeyPackage request commitment',
     ),
     keyPackageReference: cloneKeyPackageReference(
-      dataProperty(request, 'keyPackageReference') as Uint8Array,
+      ownDataProperty(request, 'keyPackageReference') as Uint8Array,
     ),
   };
 }
@@ -1300,7 +1253,7 @@ function samePendingKeyPackageRequest(
 function validateAndCloneForkEvidence(
   value: GroupStateForkEvidence,
 ): GroupStateForkEvidence {
-  const evidence = exactPlainDataObject(
+  const evidence = snapshotPlainDataObject(
     value,
     [
       'epoch',
@@ -1310,6 +1263,7 @@ function validateAndCloneForkEvidence(
       'secondRecordId',
       'secondControlRecord',
     ],
+    'fork evidence',
     [
       'epoch',
       'parentRecordId',
@@ -1318,35 +1272,34 @@ function validateAndCloneForkEvidence(
       'secondRecordId',
       'secondControlRecord',
     ],
-    'fork evidence',
   );
-  const epoch = dataProperty(evidence, 'epoch');
-  validateU64(epoch as bigint, 'fork epoch');
+  const epoch = ownDataProperty(evidence, 'epoch');
+  requireU64(epoch, 'fork epoch');
   const cloned: GroupStateForkEvidence = {
     epoch: epoch as bigint,
     parentRecordId: cloneFixedId(
-      dataProperty(evidence, 'parentRecordId'),
+      ownDataProperty(evidence, 'parentRecordId'),
       'fork parentRecordId',
     ),
     firstRecordId: cloneFixedId(
-      dataProperty(evidence, 'firstRecordId'),
+      ownDataProperty(evidence, 'firstRecordId'),
       'fork firstRecordId',
     ),
-    firstControlRecord: cloneBytes(
-      dataProperty(evidence, 'firstControlRecord'),
-      'fork firstControlRecord',
+    firstControlRecord: copyUnsharedUint8Array(
+      ownDataProperty(evidence, 'firstControlRecord'),
       1,
       MAX_CONTROL_RECORD_BYTES,
+      'fork firstControlRecord',
     ),
     secondRecordId: cloneFixedId(
-      dataProperty(evidence, 'secondRecordId'),
+      ownDataProperty(evidence, 'secondRecordId'),
       'fork secondRecordId',
     ),
-    secondControlRecord: cloneBytes(
-      dataProperty(evidence, 'secondControlRecord'),
-      'fork secondControlRecord',
+    secondControlRecord: copyUnsharedUint8Array(
+      ownDataProperty(evidence, 'secondControlRecord'),
       1,
       MAX_CONTROL_RECORD_BYTES,
+      'fork secondControlRecord',
     ),
   };
   if (equalBytes(cloned.firstRecordId, cloned.secondRecordId)) {
@@ -1415,7 +1368,7 @@ function committedStateBytes(state: MutableState, maximum: number): number {
   for (const reference of state.consumedKeyPackageRefs.values()) {
     total = addCommittedBytes(
       total,
-      intrinsicByteLength(reference) + 2,
+      byteLengthOf(reference) + 2,
       maximum,
     );
   }
@@ -1450,7 +1403,7 @@ function addCommittedBytes(
 function encryptedStateCommittedBytes(state: EncryptedGroupState): number {
   return (
     (clonedEnvelopeLengths.get(state) ??
-      intrinsicByteLength(serializedEncryptedGroupState(state))) + 4
+      byteLengthOf(serializedEncryptedGroupState(state))) + 4
   );
 }
 
@@ -1459,7 +1412,7 @@ function encryptedKeyPackageSerializedLength(
 ): number {
   return (
     clonedEnvelopeLengths.get(state) ??
-    intrinsicByteLength(serializedEncryptedKeyPackageState(state))
+    byteLengthOf(serializedEncryptedKeyPackageState(state))
   );
 }
 
@@ -1467,7 +1420,7 @@ function pendingEntryCommittedBytes(state: EncryptedKeyPackageState): number {
   const reference = getEncryptedKeyPackageValue(state).reference;
   return (
     encryptedKeyPackageSerializedLength(state) +
-    intrinsicByteLength(reference) +
+    byteLengthOf(reference) +
     6
   );
 }
@@ -1478,7 +1431,7 @@ function pendingRequestCommittedBytes(
   return (
     2 * GROUP_STATE_STORE_ID_LENGTH +
     2 +
-    intrinsicByteLength(request.keyPackageReference)
+    byteLengthOf(request.keyPackageReference)
   );
 }
 
@@ -1490,7 +1443,7 @@ function outboxEntryCommittedBytes(entry: GroupStateOutboxEntry): number {
     8 +
     8 +
     4 +
-    intrinsicByteLength(entry.payload)
+    byteLengthOf(entry.payload)
   );
 }
 
@@ -1500,10 +1453,10 @@ function replayEntryCommittedBytes(entry: GroupStateReplayEntry): number {
     1 +
     (entry.operationId === undefined
       ? 0
-      : 4 + intrinsicByteLength(entry.operationId)) +
+      : 4 + byteLengthOf(entry.operationId)) +
     8 +
     4 +
-    intrinsicByteLength(entry.controlRecord)
+    byteLengthOf(entry.controlRecord)
   );
 }
 
@@ -1514,138 +1467,28 @@ function forkEvidenceCommittedBytes(evidence: GroupStateForkEvidence): number {
     8 +
     3 * GROUP_STATE_STORE_ID_LENGTH +
     4 +
-    intrinsicByteLength(evidence.firstControlRecord) +
+    byteLengthOf(evidence.firstControlRecord) +
     4 +
-    intrinsicByteLength(evidence.secondControlRecord)
+    byteLengthOf(evidence.secondControlRecord)
   );
 }
 
-function exactPlainDataObject(
-  value: unknown,
-  allowed: ReadonlyArray<string>,
-  required: ReadonlyArray<string>,
-  field: string,
-): Record<PropertyKey, unknown> {
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    (Object.getPrototypeOf(value) !== Object.prototype &&
-      Object.getPrototypeOf(value) !== null)
-  ) {
-    throw new Error(`${field} must be a plain object`);
-  }
-  const record = value as Record<PropertyKey, unknown>;
-  const keys = Reflect.ownKeys(record);
-  if (
-    keys.some((key) => typeof key !== 'string' || !allowed.includes(key)) ||
-    required.some((key) => !keys.includes(key))
-  ) {
-    throw new Error(`${field} has unexpected or missing fields`);
-  }
-  for (const key of keys) dataProperty(record, key as string);
-  return record;
-}
-
-function dataProperty(
-  object: Record<PropertyKey, unknown>,
-  key: string,
-): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(object, key);
-  if (
-    descriptor === undefined ||
-    !descriptor.enumerable ||
-    !('value' in descriptor)
-  ) {
-    throw new Error(`${key} must be an enumerable own data property`);
-  }
-  return descriptor.value;
-}
-
-function optionalDataProperty(
-  object: Record<PropertyKey, unknown>,
-  key: string,
-): unknown {
-  return Object.prototype.hasOwnProperty.call(object, key)
-    ? dataProperty(object, key)
-    : undefined;
-}
-
-function compareBytes(first: Uint8Array, second: Uint8Array): number {
-  const firstLength = intrinsicByteLength(first);
-  const secondLength = intrinsicByteLength(second);
-  const length = Math.min(firstLength, secondLength);
-  for (let index = 0; index < length; index++) {
-    if (first[index] !== second[index]) return first[index] - second[index];
-  }
-  return firstLength - secondLength;
-}
-
 function cloneFixedId(value: unknown, field: string): Uint8Array {
-  return cloneBytes(
+  return copyUnsharedUint8Array(
     value,
+    GROUP_STATE_STORE_ID_LENGTH,
+    GROUP_STATE_STORE_ID_LENGTH,
     field,
-    GROUP_STATE_STORE_ID_LENGTH,
-    GROUP_STATE_STORE_ID_LENGTH,
   );
 }
 
 function cloneKeyPackageReference(reference: unknown): Uint8Array {
-  return cloneBytes(
+  return copyUnsharedUint8Array(
     reference,
-    'KeyPackage reference',
     1,
     MAX_KEY_PACKAGE_REFERENCE_BYTES,
+    'KeyPackage reference',
   );
-}
-
-function cloneBytes(
-  value: unknown,
-  field: string,
-  minimum: number,
-  maximum: number,
-): Uint8Array {
-  let length: number;
-  let buffer: ArrayBufferLike;
-  let tag: unknown;
-  try {
-    tag = Reflect.apply(typedArrayTag, value, []);
-    length = Reflect.apply(typedArrayByteLength, value, []) as number;
-    buffer = Reflect.apply(typedArrayBuffer, value, []) as ArrayBufferLike;
-  } catch {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  if (
-    tag !== 'Uint8Array' ||
-    !Number.isSafeInteger(length) ||
-    length < minimum ||
-    length > maximum ||
-    isSharedArrayBuffer(buffer)
-  ) {
-    throw new Error(`${field} has an invalid length or backing buffer`);
-  }
-  const clone = new Uint8Array(length);
-  uint8ArraySet.call(clone, value as Uint8Array);
-  return clone;
-}
-
-function intrinsicByteLength(value: Uint8Array): number {
-  return Reflect.apply(typedArrayByteLength, value, []) as number;
-}
-
-function isSharedArrayBuffer(value: ArrayBufferLike): boolean {
-  if (sharedArrayBufferByteLength === undefined) return false;
-  try {
-    Reflect.apply(sharedArrayBufferByteLength, value, []);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function validateU64(value: bigint, field: string): void {
-  if (typeof value !== 'bigint' || value < 0n || value > MAX_U64) {
-    throw new Error(`${field} must be an unsigned 64-bit bigint`);
-  }
 }
 
 function sameOutboxEntry(
@@ -1668,43 +1511,11 @@ function sameReplayEntry(
   return (
     a.epoch === b.epoch &&
     equalBytes(a.recordId, b.recordId) &&
-    optionalBytesEqual(a.operationId, b.operationId) &&
+    optionalEqualBytes(a.operationId, b.operationId) &&
     equalBytes(a.controlRecord, b.controlRecord)
   );
 }
 
-function optionalBytesEqual(
-  a: Uint8Array | undefined,
-  b: Uint8Array | undefined,
-): boolean {
-  return a === undefined || b === undefined ? a === b : equalBytes(a, b);
-}
-
-function sameProtocol(
-  a: GroupSecurityProtocol,
-  b: GroupSecurityProtocol,
-): boolean {
-  return a.id === b.id && a.version === b.version;
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  const aLength = intrinsicByteLength(a);
-  const bLength = intrinsicByteLength(b);
-  if (aLength !== bLength) return false;
-  let different = 0;
-  for (let i = 0; i < aLength; i++) different |= a[i] ^ b[i];
-  return different === 0;
-}
-
 function encodeStoreKey(key: GroupStateStoreKey): string {
-  return `${key.protocol.id}:${key.protocol.version}:${toHex(key.groupId)}`;
-}
-
-function toHex(bytes: Uint8Array): string {
-  const length = intrinsicByteLength(bytes);
-  const encoded = new Array<string>(length);
-  for (let index = 0; index < length; index++) {
-    encoded[index] = HEX_BYTE_LOOKUP[bytes[index]];
-  }
-  return Reflect.apply(arrayJoin, encoded, ['']) as string;
+  return `${key.protocol.id}:${key.protocol.version}:${bytesToHex(key.groupId)}`;
 }

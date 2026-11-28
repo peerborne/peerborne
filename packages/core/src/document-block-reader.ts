@@ -3,7 +3,7 @@ import type { CID } from 'multiformats';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
 import { concatenate } from './internal/canonical-encoding.js';
 import { canReserveDocumentOperation } from './policy/document-admission.js';
-import { readUint8Iterable } from './utils.js';
+import { readUint8Iterable } from './internal/stream-read.js';
 
 type DocumentBlockstore = Parameters<typeof unixfs>[0]['blockstore'];
 

@@ -6,7 +6,7 @@ import {
 import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
-} from './utils.js';
+} from './internal/bytes.js';
 
 // Both receive paths share these credits across all local document instances.
 const aggregateGossipBudget = new GroupDocumentOperationBudget(

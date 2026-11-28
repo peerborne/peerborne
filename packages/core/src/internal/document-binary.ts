@@ -6,7 +6,7 @@ import { isWellFormedUtf16 } from './canonical-encoding.js';
 import {
   copyUnsharedUint8Array,
   unsharedUint8ArrayByteLength,
-} from '../utils.js';
+} from './bytes.js';
 
 export class DocumentBinaryWriter {
   private readonly parts: Uint8Array[] = [];
@@ -139,18 +139,4 @@ export class DocumentBinaryReader {
     if (this.offset !== this.data.length)
       throw new TypeError('Document frame contains trailing bytes');
   }
-}
-
-export function documentBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let difference = 0;
-  for (let index = 0; index < a.length; index++)
-    difference |= a[index] ^ b[index];
-  return difference === 0;
-}
-
-export function documentBytesId(bytes: Uint8Array): string {
-  return [...bytes]
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('');
 }

@@ -1,10 +1,8 @@
 import { Base64 } from 'js-base64';
 import { CID } from 'multiformats';
-import {
-  copyUnsharedUint8Array,
-  isPaddedBase64,
-  snapshotEnumerableOwnDataObject,
-} from './utils.js';
+import { isPaddedBase64 } from './internal/base64.js';
+import { snapshotEnumerableOwnDataObject } from './internal/data-snapshot.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import type { SerializedBeeKEMWelcomeV2 } from './beekem-welcome-wire.js';
 import { snapshotBoundedChangeTree } from './change-tree-walk.js';
 import type { CRDTSyncMessage } from './crdt-sync-message.js';

@@ -6,11 +6,11 @@ import {
   deserializeBeeKEMWelcomeV2FromWire,
   serializeBeeKEMWelcomeV2ForWire,
 } from './beekem-welcome-wire.js';
+import { tryDecodeCanonicalBase64 } from './internal/base64.js';
 import {
   MAX_SHARED_PROTOCOL_REQUEST_BYTES,
-  copyUnsharedUint8Array,
-  tryDecodeCanonicalBase64,
-} from './utils.js';
+} from './shared-protocol-request.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 
 /**
  * Bytes of a shared-protocol Welcome frame reserved for everything except

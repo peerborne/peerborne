@@ -75,6 +75,10 @@ import { AutomergeOperationIndex } from './operation-targets.js';
 
 const {
   toHex,
+  compareBytes,
+  equalBytes,
+  serializeKey,
+  deserializeKey,
   keyIdToCacheKey,
   cacheKeyToKeyId,
   assertAesGcmDocumentKey,
@@ -86,6 +90,8 @@ const {
   stateCommitment: automergeKeychainStateCommitment,
   createMergeClaim,
 }: typeof canonicalKeychain = canonicalKeychain;
+
+export { serializeKey, deserializeKey };
 
 const assertSerializedDocumentKey: typeof canonicalKeychain.assertSerializedDocumentKey = canonicalKeychain.assertSerializedDocumentKey;
 
@@ -156,9 +162,7 @@ function readAutomergeChunk<T>(
     },
     hex(bytes) {
       if (bytes === 0 || offset + bytes > chunk.byteLength) return undefined;
-      const value = Array.from(chunk.subarray(offset, offset + bytes), (byte) =>
-        byte.toString(16).padStart(2, '0'),
-      ).join('');
+      const value = toHex(chunk.subarray(offset, offset + bytes));
       offset += bytes;
       return value;
     },
@@ -235,9 +239,7 @@ function automergeStateActors(state: BinaryChange[]): ReadonlySet<string> {
 }
 
 function automergeActorFromDigest(digest: Uint8Array): string {
-  return Array.from(digest.subarray(0, 16), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
+  return toHex(digest.subarray(0, 16));
 }
 
 function attachAutomergeActorPrefix(
@@ -521,33 +523,6 @@ export class AutomergeProvider<T = any>
   hasPendingChanges(document: Doc<T>): boolean {
     return getMissingDeps(document, []).length > 0;
   }
-}
-
-export async function serializeKey(publicKey: CryptoKey): Promise<string> {
-  const buf = await crypto.subtle.exportKey('raw', publicKey);
-  return Base64.fromUint8Array(new Uint8Array(buf));
-}
-
-export function deserializeKey(
-  algorithm:
-    | AlgorithmIdentifier
-    | RsaHashedImportParams
-    | EcKeyImportParams
-    | HmacImportParams
-    | AesKeyAlgorithm,
-  keyUsages: KeyUsage[],
-): (publicKey: string) => Promise<CryptoKey> {
-  return (publicKey: string) => {
-    const bytes = Base64.toUint8Array(publicKey);
-    // Cast needed: Uint8Array<ArrayBufferLike> does not satisfy BufferSource (excludes SharedArrayBuffer)
-    return crypto.subtle.importKey(
-      'raw',
-      bytes as Uint8Array<ArrayBuffer>,
-      algorithm,
-      true,
-      keyUsages,
-    );
-  };
 }
 
 export type AutomergeACLDoc = Doc<{
@@ -1655,26 +1630,10 @@ function encodesOnlyDecodedAutomergeFields(
   decoded: DecodedAutomergeChange,
 ): boolean {
   const { actor, seq, startOp, time, message, deps, ops } = decoded;
-  return sameBytes(
+  return equalBytes(
     binaryChange,
     encodeChange({ actor, author: null, seq, startOp, time, message, deps, ops }),
   );
-}
-
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index++) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
-function compareBytes(left: Uint8Array, right: Uint8Array): number {
-  const sharedLength = Math.min(left.byteLength, right.byteLength);
-  for (let index = 0; index < sharedLength; index++) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return left.byteLength - right.byteLength;
 }
 
 function compareAutomergeHistories(
@@ -1699,7 +1658,7 @@ function sameAutomergeHistory(
   return (
     changes.length === history.length &&
     changes.every((binaryChange, index) =>
-      sameBytes(binaryChange, history[index]),
+      equalBytes(binaryChange, history[index]),
     )
   );
 }
@@ -1846,7 +1805,7 @@ function validateAutomergeKeychain(
   assertNoAutomergeConflicts(doc, visibleEntries);
   const history = getAllChanges(doc);
   const expectedSeed = getAllChanges(newKeychainDoc())[0];
-  if (history.length === 0 || !sameBytes(history[0], expectedSeed)) {
+  if (history.length === 0 || !equalBytes(history[0], expectedSeed)) {
     throw new Error('Invalid Automerge keychain seed');
   }
 

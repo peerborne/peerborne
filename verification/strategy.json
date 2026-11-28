@@ -184,7 +184,9 @@
         "packages/core/src/beekem-welcome-wire.ts",
         "packages/core/src/merkle-dag-serialization.ts",
         "packages/core/src/welcome-sealed-payload.ts",
-        "packages/core/src/utils.ts",
+        "packages/core/src/internal/bytes.ts",
+        "packages/core/src/internal/data-snapshot.ts",
+        "packages/core/src/internal/stream-read.ts",
         "packages/core/src/capabilities.ts"
       ]
     },
@@ -351,10 +353,16 @@
       "formalBoundary": "Field range/trailer separation and bounded chunk-copy progress are proved. DataView endianness, native safe-integer arithmetic, typed-array offsets, Uint8ArrayList chunks, stream cleanup, canonical decoding and ownership require native malformed-input and model-calibration properties.",
       "evidence": [
         "packages/core/src/frame-boundary-properties.test.ts",
-        "packages/core/src/frame-native-properties.fixture.mjs"
+        "packages/core/src/frame-native-properties.fixture.mjs",
+        "packages/core/src/internal/bytes.test.ts",
+        "packages/core/src/internal/big-endian.test.ts",
+        "packages/core/src/internal/hex.test.ts"
       ],
       "sources": [
         "packages/core/src/policy/frame-layout.ts",
+        "packages/core/src/internal/bytes.ts",
+        "packages/core/src/internal/big-endian.ts",
+        "packages/core/src/internal/hex.ts",
         "packages/core/src/group-security-transition-record.ts",
         "packages/core/src/membership-control-record.ts",
         "packages/core/src/invitation-framing.ts"

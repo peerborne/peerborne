@@ -1,5 +1,6 @@
-import { copyUnsharedUint8Array } from './utils.js';
+import { copyUnsharedUint8Array } from './internal/bytes.js';
 import type { PreparedCommitClaim } from './prepared-commit.js';
+import { bytesToHex } from './internal/hex.js';
 
 /**
  * Maximum retained epochs accepted by the built-in adapters and by core
@@ -64,9 +65,7 @@ export async function computeKeychainStateCommitment(
       KEYCHAIN_COMMITMENT_VALUE_BYTES,
       'Keychain commitment raw key',
     );
-    const keyIdHex = Array.from(keyId, (byte) =>
-      byte.toString(16).padStart(2, '0'),
-    ).join('');
+    const keyIdHex = bytesToHex(keyId);
     if (keyIds.has(keyIdHex)) {
       throw new Error('Duplicate keychain commitment key ID');
     }
