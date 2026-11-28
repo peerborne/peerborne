@@ -163,7 +163,25 @@ async function invitedPair(path) {
 
 async function burstOnce(path, burst, authorStops) {
   const { founder, source, target, stops } = await invitedPair(path);
+  const busy = Promise.withResolvers();
   try {
+    const libp2p = founder.swarm.libp2p;
+    const writer = libp2p.peerId.toString();
+    let markFinalPublish = false;
+    let finalFrame;
+    if (authorStops) {
+      const documentTopicName = documentTopic(path, DEFAULT_DOCUMENT_TOPIC_PREFIX);
+      const pubsub = libp2p.services.pubsub;
+      const publish = pubsub.publish.bind(pubsub);
+      pubsub.publish = (topic, data, options) => {
+        if (markFinalPublish && topic === documentTopicName) {
+          markFinalPublish = false;
+          finalFrame = data.slice();
+        }
+        return publish(topic, data, options);
+      };
+    }
+
     let kept = 0;
     const receive = target._gossipReceiveAdmission;
     const keep = receive.keep.bind(receive);
@@ -173,24 +191,41 @@ async function burstOnce(path, burst, authorStops) {
     };
     // The reader is busy while the burst arrives, so its validators wait in
     // the state queue and the burst outruns the receive limit.
-    const busy = Promise.withResolvers();
     const queued = target._mutationQueue.run(() => busy.promise);
     const started = performance.now();
     await Promise.all(
       Array.from({ length: burst }, (_, i) =>
         source.change((draft) => {
           draft.body = `burst ${i}`;
+          // This change owns the writer's state queue through its publication.
+          if (authorStops && i === burst - 1) markFinalPublish = true;
         }),
       ),
     );
-    await delay(1000);
-    if (authorStops) await founder.swarm.heliaNode.stop();
+    if (authorStops) {
+      assert(finalFrame, 'the writer did not publish the final burst frame');
+      await until(() => {
+        const retained = receive.kept.get(writer)?.frame;
+        return (
+          retained !== undefined && Buffer.compare(retained, finalFrame) === 0
+        );
+      }, 30_000).catch((cause) => {
+        throw new Error(
+          'The reader did not retain the final burst frame within 30 seconds',
+          { cause },
+        );
+      });
+      await founder.swarm.heliaNode.stop();
+    } else {
+      await until(() => kept > 0, 30_000);
+    }
     busy.resolve();
     await queued;
     await until(() => text(target, 'body') === `burst ${burst - 1}`, 30_000);
     assert(kept > 0, 'the burst must exceed the receive limit');
     return { burst, kept, convergeMs: performance.now() - started };
   } finally {
+    busy.resolve();
     for (const stop of stops.reverse()) await stop().catch(() => {});
   }
 }
@@ -202,8 +237,8 @@ export async function typingBurst({ full }) {
     burst,
     false,
   );
-  // The author stops as soon as its last edit is published, so the reader
-  // can only converge from frames it already received or kept.
+  // The author stops once the reader has retained the final frame, so the
+  // reader can only converge from frames it already received or kept.
   const authorOffline = await burstOnce(
     `/advanced/burst-${crypto.randomUUID()}`,
     burst,
@@ -211,7 +246,7 @@ export async function typingBurst({ full }) {
   );
   return {
     scope:
-      'A WebSocket relay and two real Peerborne nodes joined by invitation over Circuit Relay, with production GossipSub and topic validators. A founder publishes a burst of concurrent edits; in the second run it stops right after the last publish.',
+      'A WebSocket relay and two real Peerborne nodes joined by invitation over Circuit Relay, with production GossipSub and topic validators. A founder publishes a burst of concurrent edits and stops in the second run once the reader has retained the final frame.',
     metrics: { authorOnline, authorOffline, converged: true },
     gaps: [
       'Loopback only. Browser transports, slow links and several concurrent writers are not exercised.',

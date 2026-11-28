@@ -4,19 +4,20 @@
   "propertyGroups": [
     {
       "id": "coordinated-checkpoint-catch-up",
-      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. Replacing a conflicting shorter head with an offered one after verifying the writer's signed suffix chain is runtime logic beside that policy, exercised by generated forged, truncated, reordered and tampered suffixes. Native tests cover signed and encrypted binding, detached CRDT merge, acknowledged journal publication, replay, context changes and restart. Trusted controller behavior, group membership and cryptographic secrecy remain separate assumptions.",
+      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. The checkpoint phase policy proves at most one live exposure after authorization, anchoring and a fresh authority check. The restart composition checks activation against accepted journal state, the independent anchor and current authority. Signed runtime schedules interrupt the anchor write, fail the native merge, rotate the epoch before or during acceptance and reconstruct under the current role history. Replacing a conflicting shorter head after verifying the writer's signed suffix chain remains runtime logic exercised by generated signed suffix cases. Cryptographic verification, anchor durability, the CRDT merge and independently protected storage remain runtime dependencies.",
       "evidence": ["packages/core/src/document-catch-up-properties.test.ts"],
       "sources": [
         "packages/core/src/coordinated-document.ts",
         "packages/core/src/document-catch-up-wire.ts",
         "packages/core/src/policy/document-catch-up.ts",
+        "packages/core/src/policy/document-journal.ts",
         "packages/core/src/document-crdt-session.ts",
         "verification/mls-provider/document-tests.ts"
       ]
     },
     {
       "id": "encrypted-unixfs-block-reads",
-      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. Runtime properties cover actual UnixFS exporter traversal, raw and chunked files, observed chunk lengths, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
+      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. The layout proof checks exact flattening offsets and bounds bytes written into owned buffers to twice the accepted content. Runtime properties cover segment ownership and backing size, actual UnixFS traversal, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
       "evidence": [
         "packages/core/src/document-block-reader.fixture.mjs"
       ],

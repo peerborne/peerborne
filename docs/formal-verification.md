@@ -6,7 +6,7 @@ that needs platform execution or a particular attack reproducer. The
 [machine-readable strategy](../verification/strategy.json) records why each
 property suite is still necessary. This is not a whole-product proof.
 
-LemmaScript checks 169 production functions in 42 proof units. The runtime calls
+LemmaScript checks 171 production functions in 42 proof units. The runtime calls
 the actual verified TypeScript; there is no separate executable policy model.
 Pure decisions are separated from parsing, authentication, asynchronous commits
 and I/O. This makes proof authoring tractable without rewriting the application.
@@ -81,11 +81,14 @@ ciphertext per file, with tighter caller limits, and charges traversal bytes
 against the caller's aggregate fetch budget. Writes enforce the same file limit
 before persistence. If a legacy edit has already advanced a provider's live
 causal state, the oversized-write check retires that handle. Reopen from accepted
-state before splitting and retrying the edit. Native properties cover real UnixFS
-chunking, tighter caller budgets and cancellation. A Chromium profile relaunch
-exercises restore, authenticated sync and an edit with at least 50 MiB of
-encoded history. Renderer memory, long tasks and latency are measured at
-runtime because the proof covers logical counts and bytes.
+state before splitting and retrying the edit. For UnixFS file output, the
+assembler owns each accepted segment and flattens those segments at their
+proved prefix offsets. For a file of size `B`, the assembler writes at most
+`2B` bytes into its own buffers. Native properties check ownership, exact
+backing size, real UnixFS chunking, caller budgets and cancellation. A Chromium
+profile relaunch exercises restore, authenticated sync and an edit with at
+least 50 MiB of encoded history. Renderer memory, long tasks and latency
+remain runtime measurements.
 
 ### BeeKEM revocation and pinned restart
 
@@ -562,6 +565,20 @@ lease, a failed identity lookup, and closing before activation commits.
 The queue-order property covers change callbacks and publication access before
 activation, and confirms that work queued behind successful activation resumes.
 
+The [checkpoint phase proof](../verification/formal/proofs/packages/core/src/policy/document-journal.dfy)
+checks that each authenticated catch-up attempt can expose a live merge at most
+once, after initial authorization, journal acceptance and a fresh authority
+check. A failing synchronous merge poisons the live document. The restart
+theorem composes journal recovery and activation. An older
+revision, an unrelated role history or a journal with a divergence marker
+cannot activate. The model trusts the authenticated journal and role-history
+results, the independently maintained anchor and the current lease observation.
+Signed checkpoint properties interrupt the anchor write, fail the native merge
+or rotate the epoch before or during acceptance, then reconstruct the accepted
+history. The existing BeeKEM restart fence has a separate
+[lease proof](../verification/formal/proofs/packages/core/src/policy/beekem-fork-anchor.dfy)
+with an independently protected durable store.
+
 Yjs keychain history validation now indexes predecessor links and consumes each
 reachable item once. The actual ordering helper proves a distinct rooted prefix,
 rejects duplicate IDs and predecessor forks, and accepts exactly when a complete
@@ -664,7 +681,7 @@ read counter and Automerge history-index counter check specific traversal costs,
 not VM heap use or a browser latency limit. See the
 [field-scope profile](coordinated-document-security.md#native-field-write-scopes).
 
-The inventory audits 72 property-suite files containing 264 explicit
+The inventory audits 82 property-suite files containing 290 explicit
 `fast-check` assertions across six library workspaces. Seeds and workload
 bounds are checked in; generated operation histories shrink on failure. Counts
 are declarations, not code coverage or a security percentage. Parameterized

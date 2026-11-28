@@ -334,13 +334,14 @@ export const claims = [
     title: 'Reassemble encrypted UnixFS files within read limits',
     rule: 'Bound traversal and accumulated ciphertext. Check the complete ciphertext before deserializing changes.',
     checked:
-      'The reservation policy charges the exact admitted prefix and stops at the first byte or count rejection. A Chromium profile relaunch restores and edits a document with at least 50 MiB of encoded history.',
+      'The reservation policy charges the exact admitted prefix. UnixFS assembly writes each admitted byte at most twice into its own buffers. A Chromium profile relaunch restores and edits a document with at least 50 MiB of encoded history.',
     limit:
       'The browser fixture restores an application-held checkpoint and supplies the signed missing history. Renderer memory and latency depend on the workload and device.',
     proof: [
       'packages/core/src/policy/document-admission.ts',
       'canReserveDocumentOperation_ensures',
       'AdmittedBlockChunks',
+      'admittedBlockCopyBound',
     ],
     source: 'packages/core/src/document-block-reader.ts',
     tests: [
