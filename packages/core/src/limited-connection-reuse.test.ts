@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import type { Libp2p } from '@libp2p/interface';
 import { reuseLimitedConnections } from './limited-connection-reuse.js';
+import type { LimitedConnectionReuseOptions } from './limited-connection-reuse.js';
 
 jest.mock(
   '@libp2p/interface',
@@ -15,13 +16,35 @@ jest.mock(
   { virtual: true },
 );
 
+jest.mock(
+  '@libp2p/utils',
+  () => ({
+    isPrivateIp: (ip: string) => /^(?:127|10|192\.168|169\.254)\./u.test(ip),
+  }),
+  { virtual: true },
+);
+
 const VALUED = new Set(['ip4', 'tcp', 'p2p']);
-const RELAY = '/ip4/127.0.0.1/tcp/4001/ws/p2p/relay';
+const RELAY = '/ip4/93.184.215.14/tcp/4001/ws/p2p/relay';
 const CIRCUIT = `${RELAY}/p2p-circuit/p2p/peer-a`;
 const WEBRTC = `${RELAY}/p2p-circuit/webrtc/p2p/peer-a`;
-const DIRECT = '/ip4/192.0.2.1/tcp/4001/ws/p2p/peer-a';
+const DIRECT = '/ip4/93.184.215.15/tcp/4001/ws/p2p/peer-a';
+const LOCAL_RELAY = '/ip4/127.0.0.1/tcp/4001/ws/p2p/relay';
+const LOCAL = [
+  '/ip4/127.0.0.1/tcp/4001/ws/p2p/peer-a',
+  '/ip4/192.168.1.20/tcp/4001/ws/p2p/peer-a',
+  '/ip4/169.254.169.254/tcp/80/ws/p2p/peer-a',
+  `${LOCAL_RELAY}/p2p-circuit/webrtc/p2p/peer-a`,
+];
 
-function address(text: string) {
+interface FakeAddress {
+  kind: 'multiaddr';
+  text: string;
+  getComponents(): { name: string; value?: string }[];
+  encapsulate(suffix: string): FakeAddress;
+}
+
+function address(text: string): FakeAddress {
   const parts = text.split('/').filter(Boolean);
   const components: { name: string; value?: string }[] = [];
   for (let index = 0; index < parts.length; index++) {
@@ -30,7 +53,12 @@ function address(text: string) {
       VALUED.has(name) ? { name, value: parts[++index] } : { name },
     );
   }
-  return { kind: 'multiaddr', text, getComponents: () => components };
+  return {
+    kind: 'multiaddr',
+    text,
+    getComponents: () => components,
+    encapsulate: (suffix) => address(`${text}${suffix}`),
+  };
 }
 
 const peer = (id: string) => ({ kind: 'peer', toString: () => id });
@@ -52,7 +80,11 @@ function connection(
 
 type FakeConnection = ReturnType<typeof connection>;
 
-function node(connections: FakeConnection[], addresses: string[] = [CIRCUIT]) {
+function node(
+  connections: FakeConnection[],
+  addresses: string[] = [CIRCUIT],
+  options?: LimitedConnectionReuseOptions,
+) {
   const dialed = { dialed: true };
   const dialProtocol = jest.fn(async () => dialed as unknown);
   const upgradeDial = jest.fn(async () => connections[0] as unknown);
@@ -72,7 +104,7 @@ function node(connections: FakeConnection[], addresses: string[] = [CIRCUIT]) {
       })),
     },
   };
-  reuseLimitedConnections(libp2p as unknown as Libp2p);
+  reuseLimitedConnections(libp2p as unknown as Libp2p, options);
   const open = async (
     target: unknown,
     options: Record<string, unknown> = {},
@@ -174,10 +206,71 @@ describe('limited connection reuse', () => {
       expect(isDialable).toHaveBeenCalledWith([
         expect.objectContaining({ text: upgrade }),
       ]);
-      expect(upgradeDial).toHaveBeenCalledWith(target);
+      expect(upgradeDial).toHaveBeenCalledWith([
+        expect.objectContaining({ text: upgrade }),
+      ]);
       expect(dialProtocol).not.toHaveBeenCalled();
     },
   );
+
+  test('names the peer in an upgrade address from the peer store', async () => {
+    const relayed = connection('peer-a');
+    const { open, upgradeDial } = node(
+      [relayed],
+      [CIRCUIT, '/ip4/93.184.215.15/tcp/4001/ws'],
+    );
+
+    await open(peer('peer-a'), limitedOnly);
+
+    expect(upgradeDial).toHaveBeenCalledWith([
+      expect.objectContaining({ text: DIRECT }),
+    ]);
+  });
+
+  test('does not upgrade to loopback, private, link-local or locally relayed addresses', async () => {
+    const relayed = connection('peer-a');
+    const { open, upgradeDial, isDialable } = node(
+      [relayed],
+      [CIRCUIT, ...LOCAL],
+    );
+
+    await expect(open(peer('peer-a'), limitedOnly)).resolves.toBe(
+      relayed.stream,
+    );
+
+    expect(isDialable).not.toHaveBeenCalled();
+    expect(upgradeDial).not.toHaveBeenCalled();
+  });
+
+  test('upgrade-dials only the public addresses of a peer', async () => {
+    const relayed = connection('peer-a');
+    const { open, upgradeDial, isDialable } = node(
+      [relayed],
+      [...LOCAL, DIRECT, WEBRTC],
+    );
+
+    await open(peer('peer-a'), limitedOnly);
+
+    const expected = [
+      expect.objectContaining({ text: DIRECT }),
+      expect.objectContaining({ text: WEBRTC }),
+    ];
+    expect(isDialable).toHaveBeenCalledWith(expected);
+    expect(upgradeDial).toHaveBeenCalledWith(expected);
+  });
+
+  test('upgrades over local-network addresses when they are allowed', async () => {
+    const relayed = connection('peer-a');
+    const { open, upgradeDial } = node([relayed], [CIRCUIT, ...LOCAL], {
+      allowLocalNetworkUpgrades: true,
+    });
+
+    await open(peer('peer-a'), limitedOnly);
+
+    expect(upgradeDial).toHaveBeenCalledWith(
+      LOCAL.map((text) => expect.objectContaining({ text })),
+    );
+  });
 
   test('upgrades a relayed connection once when the upgrade dial leaves only limited connections', async () => {
     const relayed = connection('peer-a');

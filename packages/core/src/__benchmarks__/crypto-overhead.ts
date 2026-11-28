@@ -10,12 +10,15 @@
  */
 import { PaperBenchmarkRunner, BenchmarkSuiteResult } from './benchmark-runner.js';
 import { SubtleCrypto } from '../auth-subtlecrypto.js';
+import { documentPayloadAAD } from '../document-payload-aad.js';
 import { JSONSerializer } from '../json-serializer.js';
 import {
   generateSigningKeyPair,
   generateEncryptionKey,
   generatePayload,
 } from './crypto-setup.js';
+
+const PAYLOAD_AAD = documentPayloadAAD('/benchmark', new Uint8Array(16), 'frame');
 
 const PAYLOAD_SIZES: Array<{ label: string; bytes: number }> = [
   { label: '1kb', bytes: 1024 },
@@ -71,7 +74,7 @@ export async function runCryptoOverheadBenchmarks(
       ['encrypt', 'decrypt'],
     );
     // Re-encrypt with new key
-    await auth.encrypt(rotationPayload, newKey);
+    await auth.encrypt(rotationPayload, newKey, PAYLOAD_AAD);
   }, iterations);
 
   // --- Plaintext vs Encrypted change propagation ---
@@ -92,9 +95,9 @@ export async function runCryptoOverheadBenchmarks(
       // Sender side
       const changeBytes = serializer.serializeChanges(changeData);
       const sig = await auth.sign(changeBytes, signingKeyPair.privateKey);
-      const enc = await auth.encrypt(changeBytes, encryptionKey);
+      const enc = await auth.encrypt(changeBytes, encryptionKey, PAYLOAD_AAD);
       // Receiver side
-      const dec = await auth.decrypt(enc.data, encryptionKey, enc.nonce);
+      const dec = await auth.decrypt(enc.data, encryptionKey, enc.nonce, PAYLOAD_AAD);
       const valid = await auth.verify(dec, signingKeyPair.publicKey, sig);
       if (!valid) {
         throw new Error(`Signature verification failed for encrypted-pipeline-${label}`);
@@ -118,13 +121,13 @@ export async function runCryptoOverheadBenchmarks(
 
     // Isolated: encryption overhead only
     await runner.run(`isolated-encrypt-${label}`, async () => {
-      await auth.encrypt(payload, encryptionKey);
+      await auth.encrypt(payload, encryptionKey, PAYLOAD_AAD);
     }, iterations);
 
     // Isolated: decryption overhead only
-    const encrypted = await auth.encrypt(payload, encryptionKey);
+    const encrypted = await auth.encrypt(payload, encryptionKey, PAYLOAD_AAD);
     await runner.run(`isolated-decrypt-${label}`, async () => {
-      await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce);
+      await auth.decrypt(encrypted.data, encryptionKey, encrypted.nonce, PAYLOAD_AAD);
     }, iterations);
   }
 

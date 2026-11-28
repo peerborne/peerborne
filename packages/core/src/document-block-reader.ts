@@ -1,6 +1,7 @@
 import { unixfs } from '@helia/unixfs';
 import type { CID } from 'multiformats';
 import { assertPositiveSafeByteLimit } from './internal/byte-limits.js';
+import { concatenate } from './internal/canonical-encoding.js';
 import { canReserveDocumentOperation } from './policy/document-admission.js';
 import { readUint8Iterable } from './utils.js';
 
@@ -31,6 +32,19 @@ function blockBudget(byteLimit: number, description: string) {
     count++;
     bytes += length;
   };
+}
+
+/** @internal Assemble chunks already admitted by the block budget. */
+export async function assembleUnixFSOutput(
+  chunks: AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  for await (const chunk of chunks) {
+    if (chunk.byteLength > 0) parts.push(new Uint8Array(chunk));
+  }
+  signal?.throwIfAborted();
+  return parts.length === 1 ? parts[0]! : concatenate(parts);
 }
 
 /** Read the same logical file that UnixFS addBytes wrote. */
@@ -105,7 +119,10 @@ export async function readDocumentBlock(
       },
     });
     const catOptions = { signal, blockReadConcurrency: 1 };
-    return await readUint8Iterable(checkOutput(fs.cat(hash, catOptions)), maxBytes);
+    return await assembleUnixFSOutput(
+      checkOutput(fs.cat(hash, catOptions)),
+      signal,
+    );
   } finally {
     // Returning the iterator does not necessarily stop the exporter’s work.
     controller.abort();

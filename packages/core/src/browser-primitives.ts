@@ -1,4 +1,9 @@
-export { ACLMergeRejectedError, ACLOperationInProgressError } from './acl.js';
+export {
+  ACLActorUnavailableError,
+  ACLMergeDependencyError,
+  ACLMergeRejectedError,
+  ACLOperationInProgressError,
+} from './acl.js';
 export { PartialLocalChangeError } from './crdt-provider.js';
 export * from './crdt-actor-binding.js';
 export {

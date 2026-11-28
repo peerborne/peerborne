@@ -38,7 +38,7 @@ The eleven libraries are source workspaces and are not yet published to npm. Mos
 - [CRDT model](https://peerborne.io/concepts/crdts/): Yjs and Automerge integration, shadow sync graph, document.change() lifecycle, CRDTProvider interface, convergence boundaries, snapshots/compaction.
 - [Networking](https://peerborne.io/concepts/networking/): libp2p transports (WebSocket, WebRTC, WebTransport), Circuit Relay v2, GossipSub pubsub, peer discovery (bootstrap, Kademlia DHT, AutoNAT), NAT traversal (DCUtR, STUN/TURN), relay trust model.
 - [Storage](https://peerborne.io/concepts/storage/): Content-addressed blocks, Helia blockstore (IndexedDB), shadow sync graph, pinning status (incomplete), recovery requirements, compaction/GC.
-- [Security](https://peerborne.io/concepts/security/): ECDSA P-384 signing, AES-GCM encryption, reader/writer ACL, BeeKEM key encapsulation, UCAN capabilities (standalone), K-of-Q quorum loading, revocation (partial, memory-only BeeKEM state).
+- [Security](https://peerborne.io/concepts/security/): ECDSA P-384 signing, AES-GCM encryption, reader/writer ACL, BeeKEM key encapsulation, UCAN capabilities (standalone), K-of-Q quorum loading, revocation (partial; BeeKEM state survives restart only through an application checkpoint).
 - [Limitations](https://peerborne.io/concepts/limitations/): Complete catalog of current gaps — distribution, offline, storage, networking, auth, convergence, examples.
 
 ## Cookbook

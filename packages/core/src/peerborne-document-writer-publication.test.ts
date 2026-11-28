@@ -226,6 +226,7 @@ function publicationHarness(
         libp2p: { services: { pubsub: { publish } } },
       },
     }),
+    _holdsBlock: jest.fn(async () => true),
     _localHandlers: {},
     _maybeCompact: jest.fn(async () => undefined),
     _documentChangeCount: 0,
@@ -1347,6 +1348,7 @@ describe('writer ACL publication boundary', () => {
       documentPath: '/writer-publication',
       _createdLocally: true,
       _historyVisibility: 'full_history',
+      _hashes: new Set<string>(),
       _userPublicKey: owner,
       _mutationQueue: queue,
       _authProvider: {

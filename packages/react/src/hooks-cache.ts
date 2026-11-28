@@ -29,7 +29,15 @@ export type PeerborneHookCaches = {
   openTaskResults: Map<string, PeerborneContextOpenResultAny>;
   subscriberCounts: Map<string, number>;
   activationRetries: Map<string, Set<() => void>>;
+  createdPaths: Set<string>;
+  retainedDocuments: WeakSet<PeerborneDocument<any, any, any, any, any, any>>;
+  retentionTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** How long a created, undelivered document stays open with no subscriber. */
+  retainedCloseDelayMs: number;
 };
+
+/** Matches the default `undeliveredCloseDelay` of `@peerborne/store`. */
+export const RETAINED_DOCUMENT_CLOSE_DELAY_MS = 30 * 60 * 1000;
 
 let cachesByPeerborne = new WeakMap<object, PeerborneHookCaches>();
 let nextContextKeyPrefix = 0;
@@ -44,6 +52,10 @@ export function getPeerborneHookCaches(peerborne: object): PeerborneHookCaches {
       openTaskResults: new Map(),
       subscriberCounts: new Map(),
       activationRetries: new Map(),
+      createdPaths: new Set(),
+      retainedDocuments: new WeakSet(),
+      retentionTimers: new Map(),
+      retainedCloseDelayMs: RETAINED_DOCUMENT_CLOSE_DELAY_MS,
     };
     cachesByPeerborne.set(peerborne, caches);
   }

@@ -392,6 +392,7 @@ const observedProviderLifecycleIdentities = new WeakMap<
  */
 export class GroupSecurityCoordinator {
   private mutationTail: Promise<unknown> = Promise.resolve();
+  private outboxFlushTail: Promise<unknown> = Promise.resolve();
   private view!: CoordinatorView;
   private storeRevision = 0;
   private rollbackAnchorValue?: GroupSecurityRollbackAnchorValue;
@@ -534,6 +535,11 @@ export class GroupSecurityCoordinator {
 
   usesControlAuthorizer(authorizer: MembershipControlAuthorizer): boolean {
     return this.authorizeControl === authorizer;
+  }
+
+  /** Whether the provider reports its authenticated decrypting members. */
+  get reportsAuthenticatedMembers(): boolean {
+    return typeof this.provider.getAuthenticatedMemberIds === 'function';
   }
 
   get localMemberId(): Uint8Array {
@@ -949,13 +955,26 @@ export class GroupSecurityCoordinator {
     }
   }
 
+  /**
+   * Deliver pending transitions in order. Flushes run one at a time, and the
+   * application's `send` runs outside the coordinator's state lock so document
+   * operations and new transitions are not blocked by a slow recipient.
+   */
   flushOutbox(
     send: (
       delivery: GroupSecurityDelivery,
       signal: AbortSignal,
     ) => Promise<GroupSecurityDurableAcceptance>,
   ): Promise<GroupSecurityFlushResult> {
-    return this.runExclusive(() => this.flushOutboxInternal(send));
+    const flush = this.outboxFlushTail.then(
+      () => this.flushOutboxInternal(send),
+      () => this.flushOutboxInternal(send),
+    );
+    this.outboxFlushTail = flush.then(
+      () => undefined,
+      () => undefined,
+    );
+    return flush;
   }
 
   private async createPendingKeyPackageInternal(
@@ -2480,38 +2499,19 @@ export class GroupSecurityCoordinator {
       signal: AbortSignal,
     ) => Promise<GroupSecurityDurableAcceptance>,
   ): Promise<GroupSecurityFlushResult> {
-    const snapshot = await this.verifyCurrentStoreSnapshot();
-    await this.rejectPersistedFork(snapshot);
-    this.assertOutboxBound(snapshot.outbox.length);
-    const entries = [...snapshot.outbox].sort(compareOutboxEntries);
+    const entries = await this.runExclusive(async () => {
+      const snapshot = await this.verifyCurrentStoreSnapshot();
+      await this.rejectPersistedFork(snapshot);
+      this.assertOutboxBound(snapshot.outbox.length);
+      return [...snapshot.outbox].sort(compareOutboxEntries);
+    });
     let delivered = 0;
     let remaining = entries.length;
 
     for (const entry of entries) {
-      let delivery: GroupSecurityDelivery;
-      try {
-        delivery = await this.validateDelivery(
-          entry,
-          this.outboxCodec.decode(new Uint8Array(entry.payload)),
-        );
-        await this.verifyControlAuthenticity(delivery.controlRecord);
-        const accepted = this.view.recordsById.get(toHex(entry.id));
-        if (
-          accepted === undefined ||
-          !equalBytes(
-            serializeMembershipControlRecord(accepted),
-            serializeMembershipControlRecord(delivery.controlRecord),
-          )
-        ) {
-          throw new Error('outbox control record is not the accepted replay record');
-        }
-      } catch (error) {
-        fail(
-          'malformed-state',
-          `durable outbox entry ${toHex(entry.id)} is malformed`,
-          error,
-        );
-      }
+      const delivery = await this.runExclusive(() =>
+        this.validatedOutboxDelivery(entry),
+      );
       try {
         const acceptance = await this.sendOutboxDeliveryWithDeadline(
           send,
@@ -2528,122 +2528,157 @@ export class GroupSecurityCoordinator {
           { cause: error },
         );
       }
-
-      const ackBaseSnapshot = await this.verifyCurrentStoreSnapshot();
-      await this.rejectPersistedFork(ackBaseSnapshot);
-      const ackEncryptedState = ackBaseSnapshot.encryptedState;
-      if (ackEncryptedState === undefined) {
-        fail('malformed-state', 'encrypted state disappeared before ACK');
-      }
-      const expectedAckOutbox = ackBaseSnapshot.outbox.filter(
-        (candidate) => !equalBytes(candidate.id, entry.id),
-      );
-      if (expectedAckOutbox.length + 1 !== ackBaseSnapshot.outbox.length) {
-        fail('store-conflict', 'outbox entry disappeared before ACK');
-      }
-      const expectedAckPruneSet = new Set(
-        replayIdsToPrune(
-          ackBaseSnapshot.replay,
-          expectedAckOutbox,
-          ackEncryptedState.state.epoch,
-          this.replayWindowEpochs,
-        ).map(toHex),
-      );
-      const revision = this.storeRevision + 1;
-      const expectedAckCommitment =
-        await groupSecurityStoreSnapshotCommitment({
-          revision,
-          encryptedState: ackEncryptedState,
-          pendingKeyPackages: ackBaseSnapshot.pendingKeyPackages,
-          pendingKeyPackageRequests:
-            ackBaseSnapshot.pendingKeyPackageRequests,
-          consumedKeyPackageRefs: ackBaseSnapshot.consumedKeyPackageRefs,
-          outbox: expectedAckOutbox,
-          replay: ackBaseSnapshot.replay.filter(
-            (candidate) =>
-              !expectedAckPruneSet.has(toHex(candidate.recordId)),
-          ),
-          forkEvidence: ackBaseSnapshot.forkEvidence,
-        }, this.storeKey);
-      const priorAnchor = this.requireCurrentRollbackAnchor();
-      const anchorValue = rollbackAnchorValue(
-        revision,
-        this.view.publicState,
-        this.view.headRecordId,
-        expectedAckCommitment,
-      );
-      await this.recordRollbackIntent(priorAnchor, anchorValue);
-
-      let transactionInvoked = false;
-      let intendedStoreCommitment: Uint8Array | undefined;
-      let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
-      try {
-        await this.store.transaction(
-          this.storeKey,
-          async (transaction) => {
-            if (transactionInvoked) {
-              fail(
-                'store-conflict',
-                'outbox ACK transaction was invoked more than once',
-              );
-            }
-            transactionInvoked = true;
-            await this.assertTransactionBase(
-              transaction,
-              this.view.publicState,
-            );
-            if (transaction.removeOutbox(entry.id) !== true) {
-              fail('store-conflict', 'outbox entry disappeared before ACK');
-            }
-            const encryptedState = transaction.encryptedState;
-            if (encryptedState === undefined) {
-              fail('malformed-state', 'encrypted state disappeared during ACK');
-            }
-            pruneReplayTransaction(
-              transaction,
-              encryptedState.state.epoch,
-              this.replayWindowEpochs,
-            );
-            this.assertReplayBound(transaction.replay.length);
-            await this.buildVerifiedView(
-              encryptedState.state,
-              transaction.replay,
-              transaction.outbox,
-            );
-            const transactionCommitment =
-              await groupStateTransactionCommitment(
-                transaction,
-                this.storeKey,
-              );
-            if (!equalBytes(transactionCommitment, expectedAckCommitment)) {
-              fail(
-                'store-conflict',
-                'outbox ACK transaction produced an unexpected durable delta',
-              );
-            }
-            intendedStoreCommitment = new Uint8Array(expectedAckCommitment);
-          },
-        );
-      } catch (error) {
-        ambiguousStoreFailure = { cause: error };
-      }
-      const committed = await this.loadCommittedCoordinatorView(
-        revision,
-        this.view.publicState,
-        this.view.headRecordId,
-        intendedStoreCommitment,
-        'outbox ACK',
-        ambiguousStoreFailure,
-      );
-      await this.advanceRollbackAnchor(priorAnchor, anchorValue);
-      this.view = committed.view;
-      this.storeRevision = revision;
-      this.rollbackAnchorValue = cloneGroupSecurityRollbackAnchor(anchorValue);
+      await this.runExclusive(() => this.acknowledgeOutboxEntry(entry));
       delivered += 1;
       remaining -= 1;
     }
 
     return { delivered, remaining };
+  }
+
+  private async validatedOutboxDelivery(
+    entry: GroupStateOutboxEntry,
+  ): Promise<GroupSecurityDelivery> {
+    let delivery: GroupSecurityDelivery;
+    try {
+      delivery = await this.validateDelivery(
+        entry,
+        this.outboxCodec.decode(new Uint8Array(entry.payload)),
+      );
+      await this.verifyControlAuthenticity(delivery.controlRecord);
+      const accepted = this.view.recordsById.get(toHex(entry.id));
+      if (
+        accepted === undefined ||
+        !equalBytes(
+          serializeMembershipControlRecord(accepted),
+          serializeMembershipControlRecord(delivery.controlRecord),
+        )
+      ) {
+        throw new Error('outbox control record is not the accepted replay record');
+      }
+    } catch (error) {
+      fail(
+        'malformed-state',
+        `durable outbox entry ${toHex(entry.id)} is malformed`,
+        error,
+      );
+    }
+    return delivery;
+  }
+
+  private async acknowledgeOutboxEntry(
+    entry: GroupStateOutboxEntry,
+  ): Promise<void> {
+    const ackBaseSnapshot = await this.verifyCurrentStoreSnapshot();
+    await this.rejectPersistedFork(ackBaseSnapshot);
+    const ackEncryptedState = ackBaseSnapshot.encryptedState;
+    if (ackEncryptedState === undefined) {
+      fail('malformed-state', 'encrypted state disappeared before ACK');
+    }
+    const expectedAckOutbox = ackBaseSnapshot.outbox.filter(
+      (candidate) => !equalBytes(candidate.id, entry.id),
+    );
+    if (expectedAckOutbox.length + 1 !== ackBaseSnapshot.outbox.length) {
+      fail('store-conflict', 'outbox entry disappeared before ACK');
+    }
+    const expectedAckPruneSet = new Set(
+      replayIdsToPrune(
+        ackBaseSnapshot.replay,
+        expectedAckOutbox,
+        ackEncryptedState.state.epoch,
+        this.replayWindowEpochs,
+      ).map(toHex),
+    );
+    const revision = this.storeRevision + 1;
+    const expectedAckCommitment =
+      await groupSecurityStoreSnapshotCommitment({
+        revision,
+        encryptedState: ackEncryptedState,
+        pendingKeyPackages: ackBaseSnapshot.pendingKeyPackages,
+        pendingKeyPackageRequests:
+          ackBaseSnapshot.pendingKeyPackageRequests,
+        consumedKeyPackageRefs: ackBaseSnapshot.consumedKeyPackageRefs,
+        outbox: expectedAckOutbox,
+        replay: ackBaseSnapshot.replay.filter(
+          (candidate) =>
+            !expectedAckPruneSet.has(toHex(candidate.recordId)),
+        ),
+        forkEvidence: ackBaseSnapshot.forkEvidence,
+      }, this.storeKey);
+    const priorAnchor = this.requireCurrentRollbackAnchor();
+    const anchorValue = rollbackAnchorValue(
+      revision,
+      this.view.publicState,
+      this.view.headRecordId,
+      expectedAckCommitment,
+    );
+    await this.recordRollbackIntent(priorAnchor, anchorValue);
+
+    let transactionInvoked = false;
+    let intendedStoreCommitment: Uint8Array | undefined;
+    let ambiguousStoreFailure: AmbiguousStoreFailure | undefined;
+    try {
+      await this.store.transaction(
+        this.storeKey,
+        async (transaction) => {
+          if (transactionInvoked) {
+            fail(
+              'store-conflict',
+              'outbox ACK transaction was invoked more than once',
+            );
+          }
+          transactionInvoked = true;
+          await this.assertTransactionBase(
+            transaction,
+            this.view.publicState,
+          );
+          if (transaction.removeOutbox(entry.id) !== true) {
+            fail('store-conflict', 'outbox entry disappeared before ACK');
+          }
+          const encryptedState = transaction.encryptedState;
+          if (encryptedState === undefined) {
+            fail('malformed-state', 'encrypted state disappeared during ACK');
+          }
+          pruneReplayTransaction(
+            transaction,
+            encryptedState.state.epoch,
+            this.replayWindowEpochs,
+          );
+          this.assertReplayBound(transaction.replay.length);
+          await this.buildVerifiedView(
+            encryptedState.state,
+            transaction.replay,
+            transaction.outbox,
+          );
+          const transactionCommitment =
+            await groupStateTransactionCommitment(
+              transaction,
+              this.storeKey,
+            );
+          if (!equalBytes(transactionCommitment, expectedAckCommitment)) {
+            fail(
+              'store-conflict',
+              'outbox ACK transaction produced an unexpected durable delta',
+            );
+          }
+          intendedStoreCommitment = new Uint8Array(expectedAckCommitment);
+        },
+      );
+    } catch (error) {
+      ambiguousStoreFailure = { cause: error };
+    }
+    const committed = await this.loadCommittedCoordinatorView(
+      revision,
+      this.view.publicState,
+      this.view.headRecordId,
+      intendedStoreCommitment,
+      'outbox ACK',
+      ambiguousStoreFailure,
+    );
+    await this.advanceRollbackAnchor(priorAnchor, anchorValue);
+    this.view = committed.view;
+    this.storeRevision = revision;
+    this.rollbackAnchorValue = cloneGroupSecurityRollbackAnchor(anchorValue);
   }
 
   private async sendOutboxDeliveryWithDeadline(

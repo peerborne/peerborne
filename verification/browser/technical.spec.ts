@@ -200,10 +200,15 @@ test('cold browser process reopens encrypted IndexedDB history and measures time
       })(),
     ]);
     result.metrics.fixture = fixture;
-    expect(result.metrics.encodedHistoryBytes).toBeGreaterThanOrEqual(50 * 1024 * 1024);
+    expect(result.metrics.encodedHistoryBytes).toBeGreaterThanOrEqual(
+      50 * 1024 * 1024,
+    );
     expect(result.metrics.encodedHistoryBytes).toBe(
       fixture.encodedHistoryBytes,
     );
+    expect(result.metrics.historicalTextBytes).toBe(50 * 1024 * 1024);
+    expect(result.metrics.deferredBlockCount).toBe(fixture.deferredBlockCount);
+    expect(result.metrics.deferredBlockCount).toBeGreaterThan(1);
     expect(fixture.chunkedUnixFS).toBe(true);
     expect(result.metrics.documentTTIms).toBeGreaterThan(0);
     expect(Number.isFinite(result.metrics.documentTTIms)).toBe(true);

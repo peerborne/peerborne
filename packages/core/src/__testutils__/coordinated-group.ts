@@ -1,7 +1,10 @@
 import type { AuthProvider } from '../auth-provider.js';
 import type { ChangesSerializer } from '../changes-serializer.js';
 import type { CRDTProvider } from '../crdt-provider.js';
-import type { DocumentMemberAuthority } from '../coordinated-document.js';
+import type {
+  CoordinatedDocumentOptions,
+  DocumentMemberAuthority,
+} from '../coordinated-document.js';
 import {
   DocumentAuthorityLog,
   DocumentGroupControlAuthority,
@@ -186,6 +189,7 @@ type FakePubSub = EventTarget & {
   subscribe(topic: string): void;
   unsubscribe(topic: string): void;
   publish(topic: string, data: Uint8Array): Promise<{ recipients: string[] }>;
+  getSubscribers?(topic: string): string[];
 };
 
 export interface CoordinatedGroupOptions {
@@ -194,6 +198,13 @@ export interface CoordinatedGroupOptions {
   readonly journal?: boolean;
   /** Requires a CRDT session with detached snapshot merges. */
   readonly catchUp?: boolean;
+  /** Report topic subscribers, none while a member is offline. */
+  readonly subscribers?: boolean;
+  /** Extra security options for every member's document. */
+  readonly security?: Pick<
+    CoordinatedDocumentOptions,
+    'onPublicationsDropped' | 'authorizeCatchUp' | 'onCatchUpRefused'
+  >;
   /** Give each member a libp2p PeerId, which enables redelivery requests. */
   readonly peers?: boolean;
 }
@@ -213,6 +224,8 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
     members: size,
     journal = true,
     catchUp = false,
+    subscribers = false,
+    security,
     peers = false,
   }: CoordinatedGroupOptions,
 ) {
@@ -308,6 +321,8 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
       publications.push({ sender: index, topic, data: data.slice() });
       return { recipients: offline.has(index) ? [] : ['test-peer'] };
     };
+    if (subscribers)
+      pubsub.getSubscribers = () => (offline.has(index) ? [] : ['test-peer']);
     return pubsub;
   });
   const legacy = { initialize: () => ({}) } as never;
@@ -357,6 +372,7 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
         authority: logs[index],
         requireGroupRosterMatch: true,
         enableAuthenticatedCatchUp: catchUp,
+        ...security,
         ...(journal
           ? {
               journal: new DocumentReplayJournal(
@@ -494,16 +510,20 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
 
   /** Run the real pubsub handler for one publication at `recipient`. */
   const dispatch = (
-    publication: GroupPublication,
+    publication: Pick<GroupPublication, 'topic' | 'data'> &
+      Partial<Pick<GroupPublication, 'sender'>>,
     recipient: number,
-    from = groupPeer(publication.sender),
+    from = publication.sender === undefined
+      ? undefined
+      : groupPeer(publication.sender),
   ) => {
     const event = new CustomEvent('message', {
       detail: {
         topic: publication.topic,
         data: publication.data.slice(),
-        type: 'signed',
-        from: { toString: () => from },
+        ...(from === undefined
+          ? {}
+          : { type: 'signed', from: { toString: () => from } }),
       },
     });
     pubsubs[recipient].dispatchEvent(event);
@@ -539,6 +559,9 @@ export async function coordinatedGroupFixture<Document, Changes, Change>(
   return {
     path,
     members,
+    /** The signed roles; `renew` signs them for its new epoch. */
+    roster,
+    auth,
     coordinators,
     logs,
     pubsubs,

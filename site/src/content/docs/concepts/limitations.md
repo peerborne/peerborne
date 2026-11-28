@@ -25,18 +25,21 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
 - **No delivery acknowledgment.** There is no confirmation that remote peers received, verified, or applied a change. The `document.change()` promise covers the local mutation and storage pipeline, not the GossipSub publish call or remote receipt. A change that is committed locally but whose frame could not be published still resolves, and the failure is reported to `subscribeDeliveryFailures()` handlers.
 - **No general reconnect-and-replay guarantee.** Default documents request missed updates on open, on reconnect, on detected gaps and every 30 to 60 s, but a gap closes only while a member that holds the missing state is online and can answer or serve a load. Note resumes relay reservations after opening a retained note, and release acceptance verifies two writers repairing edits after an owned relay restart and browser-process relaunch. Applications must still reconnect their transport. Membership changes, key loss, multi-document histories and relay failover remain outside that gate.
 - **No guaranteed at-least-once delivery.** GossipSub is best-effort. Messages may be dropped, delayed, or duplicated.
-- **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key; it needs another recipient-bound Welcome or an explicit out-of-band recovery path.
-- **Recovery requires retained local state.** Note and the password-manager example test encrypted checkpoints across reload/relaunch. The installed-package Note gate additionally verifies an acknowledged write after forced Chromium termination, both replicas recovering concurrent same-epoch edits after an owned relay outage, and saved-note catch-up when inbound circuit reservations are exhausted. Note no longer waits for an inbound reservation to request history over its relay connection. Recovery remains experimental across browser/OS combinations; the [release evidence](https://github.com/Peerborne/peerborne/blob/main/verification/release/README.md#boundaries) records an earlier Linux/WebKit timeout whose cause remains unconfirmed. This does not establish crash consistency across every interrupted write, device loss or malicious storage rollback.
+- **Ordinary load is not a key-bootstrap or rotation-recovery protocol.** Load responses are encrypted under the responder's current document key. A recipient that misses its sealed Welcome or a key rotation cannot use a normal load to learn that unknown key, and a load response that would add a key is refused. A broadcast Welcome cannot add a key either once the recipient holds one, so the member needs a fresh invitation or an explicit out-of-band recovery path.
+- **Recovery requires retained local state.** IndexedDB blocks alone do not reopen a closed document; the application must restore a [checkpoint](../storage/#local-checkpoints) before `open()`. Note and the password-manager example test encrypted checkpoints across reload/relaunch. The installed-package Note gate additionally verifies an acknowledged write after forced Chromium termination, both replicas recovering concurrent same-epoch edits after an owned relay outage, and saved-note catch-up when inbound circuit reservations are exhausted. Note no longer waits for an inbound reservation to request history over its relay connection. Recovery remains experimental across browser/OS combinations; the [release evidence](https://github.com/Peerborne/peerborne/blob/main/verification/release/README.md#boundaries) records an earlier Linux/WebKit timeout whose cause remains unconfirmed. This does not establish crash consistency across every interrupted write, device loss or malicious storage rollback.
 - **Key loss may be unrecoverable.** Signing keys, KEM keys, and document keys are application-managed. Peerborne has no application-facing key backup or recovery service.
 
 ## Storage and persistence
 
 - **No replication factor guarantee.** Peerborne does not ensure encrypted payloads are stored on at least N origins. No peer can serve a local copy while every holder is offline, and data is lost if every copy is cleared or otherwise unrecoverable.
+- **Quorum-bound loads need every block from a reachable peer.** A replica stores the blocks of its own changes and of those it fetched, not of changes it received inline. A load with the quorum enabled discards inline changes and fetches each change of the served tree as a block, so it fails, at the first block no reachable peer stores, while the author of a served change is offline. Catch-up replies, invitations and loads with the quorum disabled use the inline history and a responder's snapshot instead.
+- **Some history reaches peers only through a snapshot.** A replica that restored a checkpoint, or recorded a change only once a later message supplied its dependency, no longer has that change's delivered history and covers it with a snapshot instead of carrying it. A catch-up reply that would not fit a frame with that snapshot is not sent. A reader or writer change in such history is not in the snapshot, so it does not reach a member who joins afterwards. See [which blocks a replica can serve](../storage/#which-blocks-a-replica-can-serve).
 - **Pinning is not implemented.** There is no authenticated pin-request protocol or core pinning publisher. No generic IPFS pinning client exists. See [pinning cookbook](../../cookbook/pinning/).
 - **Automatic compaction is off by default.** When enabled, snapshots can prune the in-memory shadow tree; stored blocks are deleted only with opt-in `gcAfterPrune`. A writer still snapshots and prunes once its retained tree reaches 256 levels, so a peer that misses more than about 128 consecutive changes cannot recover them from later messages and needs `requestSync()` or a reload.
 - **A forgotten change is applied again if it is redelivered.** A document forgets the CID of a change outside its retained tree, snapshot boundary, recent tips and newest 1,024 heads once about 1,024 to 2,048 newer CIDs arrive. If that change is delivered again, for example in a replayed GossipSub frame, it is merged again. CRDT, membership and key merges are idempotent, so content, access and what the document serves stay the same. Its change counters, remote-update notifications, recent tips and local frontier treat the change as new, as they already do for a peer that loaded the same snapshot.
 - **A change that waits for a missed dependency is recorded late or early.** An Automerge or Loro change whose dependency has not arrived stays unrecorded, and so does any node that references it in a delivered tree, so checkpoints omit them and later messages deliver them again. They are recorded, notified and served once the change integrates. A document keeps at most 4,096 such nodes; an evicted one is applied again if it is delivered again. A change the Loro provider drops, because it fails validation with the change that releases it, stops waiting the same way, while later changes that depend on it keep waiting. Yjs keeps a waiting update pending in its own state, including checkpoints, but Peerborne records, notifies and serves it before it becomes visible.
-- **Checkpoints hold at most 100,000 CIDs per set.** Trimming keeps both sets far below that. If a state ever exceeded a restore limit, `exportCheckpoint()` would reject instead of producing a checkpoint that would not restore.
+- **Checkpoints hold document keys.** A checkpoint carries the document's plaintext state and its raw document keys. `exportEncryptedCheckpoint()` seals it under an application AES-GCM key; `exportPlaintextCheckpoint()` does not, and its result must be encrypted before storage. Never transmit either.
+- **Checkpoints hold at most 100,000 CIDs per set.** Trimming keeps both sets far below that. If a state ever exceeded a restore limit, a checkpoint export would reject instead of producing a checkpoint that would not restore.
 - **Snapshot-only first load can fail.** A quorum-bound first load has no prior writer set for snapshot authentication and rejects a response that contains only a snapshot.
 - **No size-based garbage collection policy.** Opt-in post-prune GC is destructive for the local copy. There is no TTL, quota, or size-limit-based automatic cleanup.
 
@@ -83,8 +86,17 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   the ACL or BeeKEM state, and only resends the Welcome to an existing reader.
   Share a document through an invitation. Invitations require the attested
   Automerge capacity profile, which the bundled Yjs and Loro adapters do not
-  declare, so an application built on them, including the password-manager
-  example, has no supported way to share a document with another identity.
+  declare.
+- **Yjs and Loro documents are founder-only.** No supported path shares a
+  Yjs or Loro document with another identity, so an application built on them,
+  including the password-manager example, can only sync it between devices
+  that hold the founder's identity and keys.
+- **A removal's key stays on the device that made it.** `removeReader()`
+  derives the next key from fresh secrets on the removing device, and remote
+  PathUpdates cannot replay it on another device of the same founder. A
+  founder device that missed the removal, or that restores a checkpoint taken
+  before it, cannot recover that key and can neither read nor be read by
+  members using it. Restore a checkpoint taken after the last removal.
 - **Initial invitations require founder authority.** Note can restore its
   founding browser from an encrypted local checkpoint and issue a fresh offer
   while the note has no active collaborator. A founder restored from a
@@ -169,9 +181,9 @@ See the [feature audit](https://github.com/Peerborne/peerborne/blob/main/docs/fe
   only by its signer. A change function that applies another document's
   operations, such as `Y.applyUpdate` of an unrelated `Y.Doc`, is refused,
   and a Yjs or Loro instance is then retired; seed such content under an
-  actor from `document.reserveActor()`. Coordinator-backed documents, the ACL
-  and keychain CRDTs, `enableSigning: false`, and devices that share one
-  signer are not covered.
+  actor from `document.reserveActor()`. Reader and writer ACL changes are
+  bound the same way. Coordinator-backed documents, the keychain CRDT,
+  `enableSigning: false`, and devices that share one signer are not covered.
   See [actor binding](../security/#crdt-actors-are-bound-to-change-signers).
 - **Quorum is not Sybil-resistant.** Q-of-K frontier agreement can be subverted by one actor controlling multiple connected peer identities.
 - **BeeKEM restore depends on the application.** Checkpoints preserve the accepted generation. Rollback protection requires an independent current pin. Revoked readers retain access to content and keys they already received.
@@ -225,7 +237,8 @@ CI evidence exists at different scopes:
   Chromium process with a separate signing identity accepts it through Circuit
   Relay, loads existing history, and exchanges live bidirectional mutations.
 - **Browser smoke:** browser-test opens a document in one Chromium process; the
-  wiki, password-manager, and Peerborne Note suites assert startup and rendering.
+  wiki, password-manager, and Peerborne Note suites assert startup, rendering,
+  and single-browser local storage behavior.
 - **Focused component suites:** cover individual invitation, protocol,
   authorization, encryption, and transport behaviors.
 - **Transport integration:** exercises NAT and relay topologies independently of

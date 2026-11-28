@@ -5,6 +5,14 @@ export async function verifyMemberSignature<Key>(
   keys: readonly Key[],
   verify: (key: Key) => Promise<boolean>,
 ): Promise<boolean> {
+  return (await findMemberSignatureKey(keys, verify)) !== undefined;
+}
+
+/** The first key, in batch order, whose verification succeeds. */
+export async function findMemberSignatureKey<Key>(
+  keys: readonly Key[],
+  verify: (key: Key) => Promise<boolean>,
+): Promise<Key | undefined> {
   for (
     let offset = 0;
     offset < keys.length;
@@ -17,14 +25,12 @@ export async function verifyMemberSignature<Key>(
     const results = await Promise.allSettled(
       batch.map(async (key) => verify(key)),
     );
-    if (
-      results.some(
-        (result) => result.status === 'fulfilled' && result.value === true,
-      )
-    )
-      return true;
+    const verified = results.findIndex(
+      (result) => result.status === 'fulfilled' && result.value === true,
+    );
+    if (verified !== -1) return batch[verified];
     const failure = results.find((result) => result.status === 'rejected');
     if (failure) throw failure.reason;
   }
-  return false;
+  return undefined;
 }

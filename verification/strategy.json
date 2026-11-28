@@ -4,19 +4,20 @@
   "propertyGroups": [
     {
       "id": "coordinated-checkpoint-catch-up",
-      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. Replacing a conflicting shorter head with an offered one after verifying the writer's signed suffix chain is runtime logic beside that policy, exercised by generated forged, truncated, reordered and tampered suffixes. Native tests cover signed and encrypted binding, detached CRDT merge, acknowledged journal publication, replay, context changes and restart. Trusted controller behavior, group membership and cryptographic secrecy remain separate assumptions.",
+      "formalBoundary": "The production receipt policy admits exact matches and only adopts missing receipts for permitted identities. Checked finite histories preserve accepted heads and keep a receiver's absent own receipt empty. The checkpoint phase policy proves at most one live exposure after authorization, anchoring and a fresh authority check. The restart composition checks activation against accepted journal state, the independent anchor and current authority. Signed runtime schedules interrupt the anchor write, fail the native merge, rotate the epoch before or during acceptance and reconstruct under the current role history. Replacing a conflicting shorter head after verifying the writer's signed suffix chain remains runtime logic exercised by generated signed suffix cases. Cryptographic verification, anchor durability, the CRDT merge and independently protected storage remain runtime dependencies.",
       "evidence": ["packages/core/src/document-catch-up-properties.test.ts"],
       "sources": [
         "packages/core/src/coordinated-document.ts",
         "packages/core/src/document-catch-up-wire.ts",
         "packages/core/src/policy/document-catch-up.ts",
+        "packages/core/src/policy/document-journal.ts",
         "packages/core/src/document-crdt-session.ts",
         "verification/mls-provider/document-tests.ts"
       ]
     },
     {
       "id": "encrypted-unixfs-block-reads",
-      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. Runtime properties cover actual UnixFS exporter traversal, raw and chunked files, observed chunk lengths, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
+      "formalBoundary": "The admitted-prefix proof composes the production count and byte reservation policy over any finite chunk stream. The layout proof checks exact flattening offsets and bounds bytes written into owned buffers to twice the accepted content. Runtime properties cover segment ownership and backing size, actual UnixFS traversal, aggregate charging, abort delivery and native AES authentication. Logical limits do not establish total browser memory, third-party parser work or wall-clock latency.",
       "evidence": [
         "packages/core/src/document-block-reader.fixture.mjs"
       ],
@@ -48,7 +49,7 @@
     },
     {
       "id": "live-gc-lease-and-io",
-      "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, stale trees/snapshots, existing pins, coalescing, atomic metadata refusal, close quiescence, opaque provider failures and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
+      "formalBoundary": "Production retention-lease conjunction, candidate metadata admission and deletion phase transitions are verified. Exact finite transition histories prove at most one deletion entry per attempt and no entry when all observations deny a live unpinned lease. Native properties check the actual document mutation queue across pin and delete awaits, a lease captured again after a stale tree or snapshot, an edit between every deletion slot, one attempt per candidate per pass, existing pins, coalescing, atomic metadata refusal, close quiescence, provider failures described without trusting the thrown value, and explicit retry. The offline Helia fixture uses actual CIDs, pinning and blockstore deletion. Native pointer/Set ownership, truthful pin observations, provider I/O completion, Helia locks, persistence, global storage quotas, VM heap and UI latency remain assumptions or integration boundaries.",
       "evidence": [
         "packages/core/src/live-gc-properties.test.ts",
         "packages/core/src/live-gc-native.fixture.mjs"
@@ -248,6 +249,7 @@
       ],
       "sources": [
         "packages/core/src/auth-subtlecrypto.ts",
+        "packages/core/src/document-payload-aad.ts",
         "packages/core/src/ucan.ts"
       ]
     },
@@ -416,6 +418,19 @@
       ]
     },
     {
+      "id": "coordinated-topic-catch-up",
+      "formalBoundary": "Topic requests carry receipts in the same canonical receipt codec, and their checkpoints are merged through the same proved receipt admission and runtime suffix verification as relayed checkpoints. Request and checkpoint framing, the separate encryption domains, the GossipSub sender binding, issue-time freshness and replay, controller-only answers, the application authorization callback, signed refusals, the oversized-snapshot cache, the per-member interval, the per-document share of the process checkpoint budget, outstanding challenges, triggers and backoff are runtime state over network timing, so generated encodings and native scenarios exercise them. Real GossipSub delivery, clock skew between members, peer scoring and traffic analysis remain outside these checks.",
+      "evidence": [
+        "packages/core/src/coordinated-document-topic-catch-up.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/document-catch-up-wire.ts",
+        "packages/core/src/coordinated-document.ts",
+        "packages/core/src/peerborne-document.ts",
+        "packages/core/src/__testutils__/coordinated-scenarios.ts"
+      ]
+    },
+    {
       "id": "coordinated-held-frames",
       "formalBoundary": "The production sequence policy still classifies each frame as apply, replay, gap or parent mismatch. A gap or a native missing-dependency error after full authentication holds the frame instead of rejecting it, and a held frame is admitted later only through the same proved policy. The hold bounds, per-author shares, eviction, expiry, equivocation check, dependency-targeted retry, release order and context reset are runtime state over arbitrary arrival orders, and native Automerge and Yjs dependency detection and naming is adapter behavior, so generated arrival orders and focused bound, retry-cost and session tests exercise them. Network delivery and redelivery of frames that never arrive remain outside these checks.",
       "evidence": [
@@ -550,6 +565,17 @@
       ]
     },
     {
+      "id": "inline-cross-link-carry",
+      "formalBoundary": "Carrying a delivered remote tip inline has no formal proof. Generated pairs of retained and delivered trees over one acyclic history, with aliases, sparse citations and pruned or content-stripped descriptions, check that the merged change passes the production alias validator, that the copy describes no CID the retained tree already describes, that every delivered change reachable without passing a described CID stays inline, and that the copy cites without content only described or kept CIDs. Which blocks a replica stores, the frame budget, signature and actor checks, CID parsing and the network are covered by example and real-node tests or remain outside this evidence.",
+      "evidence": [
+        "packages/core/src/cross-link-carry-properties.test.ts"
+      ],
+      "sources": [
+        "packages/core/src/merkle-cross-links.ts",
+        "packages/core/src/peerborne-document.ts"
+      ]
+    },
+    {
       "id": "explicit-document-replacement",
       "formalBoundary": "The production locator classification and staged publication gate are exact. Finite histories from one pinned base prove monotone revision, at most one accepted successor and that it comes from an approved, content-matching, staged CAS attempt. Native checks cover bounded ownership, authorization and hashing, delayed preparation, distinct and identical concurrent preparations, and restart after interrupted staging or acknowledgment. The Yjs fixture reopens a fresh checkpoint and verifies selected content and a fresh epoch. The model trusts the application approval, private durable staging and independently protected atomic locator, and does not provide distributed branch selection, peer-assisted recovery, or browser storage durability.",
       "evidence": [
@@ -558,6 +584,15 @@
       "sources": [
         "packages/core/src/policy/document-recovery.ts",
         "packages/core/src/document-recovery.ts"
+      ]
+    },
+    {
+      "id": "held-acl-changes",
+      "formalBoundary": "Generated hold and release sequences check the held ACL change buffer directly: every per-signer and per-document count and byte bound holds after each step, a change leaves only by release or by an eviction the buffer reports, re-holding a change refreshes it without counting it twice, and eviction takes the offending signer's oldest change, or past the document bound the oldest change of the signer holding the most. Whether a held change's missing dependencies have arrived is decided by each ACL adapter's ready() check, which native Yjs and Automerge dependency tests calibrate; the buffer does not prove that check, signer authentication, merge order or CRDT convergence, and no policy file models it.",
+      "evidence": ["packages/core/src/held-acl-changes.test.ts"],
+      "sources": [
+        "packages/core/src/held-acl-changes.ts",
+        "packages/core/src/peerborne-document.ts"
       ]
     }
   ],
@@ -589,6 +624,13 @@
         "verification/advanced/EXECUTION.md",
         "verification/advanced/browser/eviction.spec.ts",
         "verification/browser/technical.spec.ts"
+      ]
+    },
+    {
+      "boundary": "Closing documents while they open, live block GC during continuous edits with and without a content router, and default GossipSub IP scoring on loopback libp2p TCP nodes",
+      "evidence": [
+        "packages/core/src/document-tcp.fixture.mjs",
+        "packages/core/src/gossip-colocation-defaults.fixture.mjs"
       ]
     },
     {

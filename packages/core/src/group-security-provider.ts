@@ -384,7 +384,9 @@ export interface GroupSecurityProvider {
    * Return every live member ID from protocol-authenticated credentials in
    * the current decrypting group. The same provider exclusively serves the
    * coordinator so this read describes the state reported by getPublicState.
-   * Strict coordinated documents require this read-only capability.
+   * Strict coordinated documents require this read-only capability, and a
+   * coordinated document with a signed authority log is strict by default
+   * when its provider implements it.
    */
   getAuthenticatedMemberIds?(): Promise<readonly Uint8Array[]>;
   exportEncryptedState(

@@ -13,8 +13,8 @@ Helia blockstore. The CID addresses those encrypted bytes. A separate
 signed-when-enabled, encrypted `CRDTSyncMessage` carries the CID and shadow
 graph metadata. A stored document change also carries its author's
 [change signature](../security/#crdt-actors-are-bound-to-change-signers); the
-stored payload has no parent links, and ACL and keychain payloads have no
-writer signature.
+stored payload has no parent links. A stored ACL change carries its author's
+signature the same way; keychain payloads have no writer signature.
 
 ## Implemented model
 
@@ -35,7 +35,37 @@ CRDT layer resolves concurrent edits.
 The encrypted wire message may carry history inline or defer it to Helia:
 
 - **Inline**: A `CRDTChangeNode` inside the encrypted `CRDTSyncMessage` carries the serialized CRDT change, allowing immediate application after any configured outer-signature check. A first load has no prior writer set for that check.
-- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it. An ordinary sync message fetches at most eight payloads within 10 seconds of its first fetch, and closing the document aborts the fetches. Loads and invitations need every payload and keep their own deadlines instead. A GossipSub frame fetches only after its writer signature verifies and before it takes the document's state queue, so local changes continue meanwhile. One frame fetches at a time, a frame waits at most 10 seconds for its turn, and the frames waiting to apply hold at most 64 MiB of prefetched payloads per document. A payload that cannot be fetched stays a missing dependency, and the message applies without it. A later message that cites the CID again skips it for 15 seconds, doubling up to 5 minutes, after a failure. Nothing re-requests the payload otherwise: once the tree that cites it is applied, later messages that extend that tree stop at its root.
+- **Deferred**: A shadow-tree node carries its kind but omits the change bytes. If the receiver does not already know that CID, it fetches the separately encrypted stored payload and decrypts it. An ordinary sync message fetches at most eight payloads within 10 seconds of its first fetch, and closing the document aborts the fetches. Loads and invitations need every payload and give up on one when none of its bytes arrive for 10 seconds; a load stops at the first payload it cannot fetch. A GossipSub frame fetches only after its writer signature verifies and before it takes the document's state queue, so local changes continue meanwhile. One frame fetches at a time, a frame waits at most 10 seconds for its turn, and the frames waiting to apply hold at most 64 MiB of prefetched payloads per document. A payload that cannot be fetched is a missing change. The message's inline changes still apply, but a node that references a missing change is not held: later messages and catch-up replies are walked down to it again, and catch-up keeps asking for it, until the change arrives or an applied snapshot covers it. A later message that cites the CID again skips it for 15 seconds, doubling up to 5 minutes, after a failure.
+
+### Which blocks a replica can serve
+
+A replica stores the blocks of its own changes and of the changes it fetched,
+but not of changes it received inline, whose encrypted payload never reached
+it. It therefore cites a recent tip without its change only when it stores the
+block. A remote tip it received inline is carried inline instead, with the
+delivered history that its tree does not carry yet, while the change and that
+history fit in the half frame a change may use. A replica keeps that history
+in memory for its recent tips, up to one such frame. This keeps every change a
+replica names fetchable from that replica, or carried in the frame, after the
+change's author leaves.
+
+A tip that cannot be carried is not cross-linked. This happens when its
+history does not fit, after a checkpoint restore, which does not keep that
+history, or when a change is recorded only once a later message delivers its
+dependency. A writer then takes a snapshot after its change, and catch-up
+replies, loads and invitations convey the tip through that snapshot.
+
+Before a replica answers a load or builds an invitation bootstrap, it checks
+that it stores every block its tree cites without the change above its latest
+snapshot. An invitation also needs every change the replica holds, so the
+inviter checks that its tree carries or cites each one, or that its latest
+snapshot covers it. When a check fails, a writer takes a snapshot first,
+which recipients apply instead. A replica that still cannot serve the tree
+declines the load, or rejects the invitation with an error, instead of
+leaving the recipient waiting or joining it with partial history. A snapshot
+covers document changes only: a reader or writer change that the tree no
+longer carries, such as one from a branch received just before a restore,
+still does not reach the new member.
 
 ### No graph links in stored payloads
 
@@ -58,17 +88,73 @@ const blockstore = new IDBBlockstore('/peerborne-blocks');
 ```
 
 The configured blockstore, datastore, and libp2p peer store use IndexedDB under
-the browser origin. Those backends can retain bytes across a tab refresh, but
-complete Peerborne reconstruction from that persisted state is not yet an
-end-to-end guarantee.
+the browser origin. Those backends retain encrypted blocks across a tab
+refresh, but Peerborne does not reconstruct a document from them: they hold
+neither the document keys nor the membership and CRDT state an instance needs
+to open. A document reopens locally only from a checkpoint the application
+saved.
 
 **Current status**: Local block storage works in single-session tests. The
-[password-manager example](../../cookbook/password-manager/) and Peerborne Note explicitly save
-encrypted, self-signed document checkpoints and tests reopening after Chromium
-relaunch with the same profile. This application-managed path restores keys,
-CRDT state, and membership before opening locally. Retaining blocks alone does
-not restore those things; other applications and peer-assisted recovery remain
-unverified.
+[password-manager example](../../cookbook/password-manager/) and Peerborne
+Note save encrypted, self-signed document checkpoints, and their CI suites
+reopen documents after a full Chromium relaunch with the same profile. This
+application-managed path restores keys, CRDT state, and membership before
+opening locally. Retaining blocks alone does not restore those things; other
+applications must test their own checkpoint path, and peer-assisted recovery
+remains unverified.
+
+### Local checkpoints
+
+A checkpoint is a bounded, self-signed capture of one document instance's
+local state. It holds the CRDT state, the reader and writer ACLs, BeeKEM
+membership state, and the raw document keys. Without one, a new
+`peerborne.doc(path).open()` after `close()` must load from a connected peer
+that holds the document; when no peer can serve it, `open()` rejects with
+`No document state is available`. Export a checkpoint after each committed
+change and restore it on a fresh instance before `open()`:
+
+```ts
+// A non-extractable 256-bit AES-GCM key that the application keeps, for
+// example in IndexedDB, separately from the checkpoints.
+const storageKey = await crypto.subtle.generateKey(
+  { name: 'AES-GCM', length: 256 },
+  false,
+  ['encrypt', 'decrypt'],
+);
+
+await document.change((doc) => doc.getMap('data').set('title', 'Saved'));
+await saveCheckpoint(path, await document.exportEncryptedCheckpoint(storageKey));
+
+// On the next start, before open():
+const restored = peerborne.doc(path);
+const saved = await loadCheckpoint(path);
+if (saved) await restored.restoreEncryptedCheckpoint(saved, storageKey);
+await restored.open();
+```
+
+`saveCheckpoint` and `loadCheckpoint` are application storage.
+`exportEncryptedCheckpoint()` seals the checkpoint with AES-GCM under the
+application's key, with associated data that binds it to the document path
+and checkpoint format, so it restores only under that key, into that path, for
+the identity that signed it. Restoration rejects bytes sealed under another
+key or for another path, signed by another identity, or altered in any byte. Protect the storage key as well
+as the checkpoint, and never send either to another party. A checkpoint is
+local recovery for the identity that exported it, not a backup or sharing
+format.
+
+`exportPlaintextCheckpoint()` returns the same checkpoint unencrypted: its
+payload is JSON that holds the document's state and its document keys in
+base64. Use it only when the application encrypts it at once with its own
+authenticated format. The Peerborne Note, password-manager and wiki examples
+do this in [`browser-checkpoint-store.ts`](https://github.com/Peerborne/peerborne/blob/main/examples/shared/browser-checkpoint-store.ts),
+which also binds a per-document revision so a stale save fails. Never store
+a plaintext checkpoint unencrypted and never transmit it.
+
+A signature does not prove that a checkpoint is the latest one. To reject an
+older checkpoint that storage replays, keep the
+`documentCheckpointCommitment(bytes)` of the latest saved bytes outside the
+checkpoint store and pass it as the third argument of
+`restoreEncryptedCheckpoint()`.
 
 A checkpoint is also what a retired document instance reopens from. A Yjs or
 Loro instance retires when a change cannot be stored or signed, including after
@@ -171,7 +257,7 @@ To issue new changes, a peer additionally needs:
 
 To participate in dynamic group membership (add/remove readers), a peer additionally needs:
 
-6. **The KEM state** — BeeKEM key material (memory-only currently; determining the set of active members requires this)
+6. **The KEM state** — BeeKEM key material and tree state, held in memory and carried across a restart only by a [checkpoint](#local-checkpoints) (determining the set of active members requires this)
 
 ### Configurable prerequisites
 
@@ -213,11 +299,11 @@ not apply one twice. Writers and readers bound that memory with or without
 compaction. They keep the CIDs of the retained tree, the snapshot boundary, the
 recent tips and the newest 1,024 heads, plus every CID learned in the current
 generation of 1,024. Older CIDs are forgotten when the next generation fills,
-so the encrypted checkpoint of a long-edited document stays small and
-restorable. `hasChange()` and `loadChangeBlock()` report only remembered CIDs.
-`exportCheckpoint()` rejects any state that `restoreCheckpoint()` would refuse,
-such as more than 100,000 remembered CIDs. An application that saves only after
-a successful export, as Peerborne Note does, keeps its previous checkpoint.
+so the checkpoint of a long-edited document stays small and restorable.
+`hasChange()` and `loadChangeBlock()` report only remembered CIDs. A
+checkpoint export rejects any state that restoration would refuse, such as
+more than 100,000 remembered CIDs. An application that saves only after a
+successful export, as Peerborne Note does, keeps its previous checkpoint.
 
 Snapshots can reduce replay work, but:
 
@@ -245,9 +331,14 @@ fetched from peers, other documents' blocks and application data stay in the
 blockstore. The document remembers at most 32,768 stored blocks; when that
 record is full, it forgets the oldest one, which then stays in the blockstore.
 
-Deletion pauses whenever the retained tree changes, so a writer that keeps
-editing can leave pruned blocks waiting; `document.collectGarbage()` retries
-them. The next `exportCheckpoint()` records the stored blocks and the blocks
+When the retained tree changes during a collection, the remaining blocks are
+checked again against the new tree and the collection continues, so a writer
+that keeps editing does not fall behind. A block that is still referenced or
+pinned, or that failed to delete, waits for the next prune or
+`document.collectGarbage()`; the first failure of each collection is logged
+with its cause. A node without a content router, such as a DHT, deletes blocks
+too: Helia refuses to cancel reproviding them, but such a node never provided
+them. The next checkpoint export records the stored blocks and the blocks
 still waiting, and an instance restored from that checkpoint deletes them at
 its next collection. Restoration refuses a checkpoint that lists a waiting
 block the document did not store. Blocks stored after the last export are
@@ -265,7 +356,7 @@ Verified in CI:
 
 Not verified:
 
-- Browser restart and document recovery outside the password-manager checkpoint path
+- Browser restart and document recovery outside the Note and password-manager checkpoint paths
 - Multi-device and peer-assisted recovery
 - Compaction and GC with subsequent recovery
 - Pinning publisher integration

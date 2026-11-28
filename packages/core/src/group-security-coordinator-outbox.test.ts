@@ -37,6 +37,49 @@ describe('GroupSecurityCoordinator outbox', () => {
     await expect(coordinator.pendingOutboxCount()).resolves.toBe(1);
   });
 
+  test('runs document operations and transitions while a send is pending, one flush at a time', async () => {
+    const value = await context();
+    const coordinator = await bootstrap(value);
+    await flushAndCollect(coordinator);
+    await createTransition(coordinator, control(2));
+    let entered!: () => void;
+    let release!: () => void;
+    const sending = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const sent: string[] = [];
+    const first = coordinator.flushOutbox(async (delivery) => {
+      sent.push(`first:${delivery.controlRecord.epoch}`);
+      entered();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return createGroupSecurityDurableAcceptance(delivery);
+    });
+    await sending;
+    let prepared = false;
+    await coordinator.runDocumentOperation(
+      coordinator.documentContext,
+      new Uint8Array([1]),
+      async () => {
+        prepared = true;
+        return { isAuthorizationCurrent: () => true, commit: () => {} };
+      },
+    );
+    expect(prepared).toBe(true);
+    await createTransition(coordinator, control(3));
+    await expect(coordinator.pendingOutboxCount()).resolves.toBe(2);
+    const second = coordinator.flushOutbox(async (delivery) => {
+      sent.push(`second:${delivery.controlRecord.epoch}`);
+      return createGroupSecurityDurableAcceptance(delivery);
+    });
+    release();
+    await expect(first).resolves.toEqual({ delivered: 1, remaining: 0 });
+    await expect(second).resolves.toEqual({ delivered: 1, remaining: 0 });
+    expect(sent).toEqual(['first:1', 'second:2']);
+    await expect(coordinator.pendingOutboxCount()).resolves.toBe(0);
+  });
+
   test('intrinsically snapshots bounded outbox codec bytes before validation', async () => {
     const oversized = await context();
     oversized.codec.encode = () => {

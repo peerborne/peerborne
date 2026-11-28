@@ -3,9 +3,9 @@ title: Build a collaborative wiki
 description: Run and assess the repository's Vite, Redux, and Automerge wiki example.
 ---
 
-**Status: Runnable from source (single-browser startup smoke only).**
+**Status: Runnable from source (single-browser tests only).**
 
-The current wiki is [`examples/wiki-swarm`](https://github.com/Peerborne/peerborne/tree/main/examples/wiki-swarm): a Vite application using Redux and Automerge. Its production build and strict Chromium startup smoke test pass. This evidence does **not** prove article mutation, two-browser synchronization, convergence, restart recovery, or a multi-user Yjs application. See [Limitations](../../concepts/limitations/).
+The current wiki is [`examples/wiki-swarm`](https://github.com/Peerborne/peerborne/tree/main/examples/wiki-swarm): a Vite application using Redux and Automerge. Its production build and single-browser Chromium tests pass: startup, article creation, title typing, reload from an encrypted checkpoint, reopening in the same tab, and refusing to create an existing article again. This evidence does **not** prove two-browser synchronization, convergence, concurrent editing, or a multi-user Yjs application. See [Limitations](../../concepts/limitations/).
 
 The workspace packages are unpublished. Work from a repository checkout with Node.js 26.13.1 and the locked dependencies installed as described in the [quick start](../../getting-started/quick-start/).
 
@@ -24,14 +24,14 @@ Vite prints the local URL. To build without starting a server:
 yarn workspace @peerborne/wiki-swarm build
 ```
 
-To run the exact application smoke path:
+To run the application tests:
 
 ```sh
 yarn exec playwright install chromium
 yarn test:e2e:wiki-swarm
 ```
 
-The last command builds the wiki and checks that it starts in Chromium without browser runtime errors. It is not a collaboration test.
+The last command builds the wiki and exercises it in one Chromium page. It is not a collaboration test.
 
 ## Relay configuration
 
@@ -48,21 +48,21 @@ Use the public, dialable multiaddr from [Run your own relay](../running-a-relay/
 
 - Vite can bundle the Automerge WASM application.
 - The current Redux reducer/provider stack initializes far enough to render the wiki shell.
-- The source maps a route document ID to one Automerge document, but the smoke test does not open or mutate an article.
-- Title, Slate content, metadata, and ACL display are application-level patterns.
+- The source maps a route document ID to one Automerge document. An opened article stays open for the tab, and each change saves an encrypted, self-signed checkpoint in IndexedDB, so the article reopens after navigation or a reload. Creating an ID that this browser already holds is refused with a warning.
+- Title edits are applied as text splices, and the Redux store receives the document only after each change is applied. Slate content, metadata, and ACL display are application-level patterns.
 
-The example must use one **stable, application-persisted ECDSA P-384 signing identity** across reloads. Generating a new key pair on each mount creates a new ACL identity and is not an account or recovery flow. Signing identity, KEM identity, document keys, and libp2p peer identity are distinct; see [Security](../../concepts/security/).
+The example keeps one **stable, non-extractable ECDSA P-384 signing identity** in IndexedDB, with a P-256 KEM key pair and an AES-GCM storage key, through the same browser checkpoint store as the password-manager and Peerborne Note examples. Clearing site data removes the identity and saved articles; this is not an account or recovery flow. Signing identity, KEM identity, document keys, and libp2p peer identity are distinct; see [Security](../../concepts/security/).
 
 ## Multi-user work still required
 
 **Status: Deferred/incomplete integration.** The wiki has no invitation UI,
-identity directory, key persistence, or account recovery. Sharing an article
+identity directory, key backup, or account recovery. Sharing an article
 path or signing public key does not transfer its document key. An application
 can use the core founder-plus-one onboarding API described in [Invite a
 collaborator](../invitations/), but it must still authenticate invitation
 delivery and persist both parties' signing and KEM key material.
 
-Do not describe full-string or editor-state replacement as a production-safe collaborative delta strategy. The current smoke test does not assert concurrent editor behavior. If adapting the design to Yjs, choose shared types and operations deliberately; see [Designing Yjs schemas](../yjs-schema-design/).
+The Slate body still replaces the whole editor value on each edit. Do not describe editor-state replacement as a production-safe collaborative delta strategy. The tests do not assert concurrent editor behavior. If adapting the design to Yjs, choose shared types and operations deliberately; see [Designing Yjs schemas](../yjs-schema-design/).
 
 ## Application design cautions
 

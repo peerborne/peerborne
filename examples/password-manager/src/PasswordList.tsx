@@ -39,6 +39,7 @@ export function PasswordVault({
       {selection ? (
         <PasswordList
           peerborne={peerborne}
+          session={session}
           indexPath={selection.path}
           initialization={selection.mode}
           kemKeyPair={kemKeyPair}
@@ -81,19 +82,22 @@ export function PasswordVault({
 export function PasswordList({
   indexPath,
   peerborne,
+  session,
   kemKeyPair,
   onLeave,
   initialization,
 }: {
   indexPath: string;
   peerborne: YjsPeerborne;
+  session: VaultSession;
   kemKeyPair: CryptoKeyPair;
   onLeave: () => void;
   initialization: 'open' | 'create';
 }) {
   const [currentPasswordId, setCurrentPasswordId] = React.useState<string>();
   const [viewedIds, setViewedIds] = React.useState<string[]>([]);
-  const [createdIds, setCreatedIds] = React.useState<Set<string>>(new Set());
+  const [creatingSecret, setCreatingSecret] = React.useState(false);
+  const [creationFailed, setCreationFailed] = React.useState(false);
   const selectPassword = (id: string) => {
     setViewedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
     setCurrentPasswordId(id);
@@ -151,22 +155,35 @@ export function PasswordList({
           </ListGroup>
           <ListGroup variant="flush">
             <ListGroup.Item>
+              {creationFailed && (
+                <Alert variant="danger">
+                  Could not create the secret. Your saved data was left
+                  unchanged.
+                </Alert>
+              )}
               <Button
                 variant="primary"
-                disabled={!passwords}
+                disabled={!passwords || creatingSecret}
                 onClick={() => {
                   const id = uuid.v4();
-                  setCreatedIds((ids) => new Set([...ids, id]));
-                  selectPassword(id);
-                  changePasswords((current) => {
-                    current.getArray<Y.Map<Y.Text>>('passwords').push([
-                      new Y.Map<Y.Text>(
-                        Object.entries({
-                          id: new Y.Text(id),
-                        }),
-                      ),
-                    ]);
-                  });
+                  setCreatingSecret(true);
+                  setCreationFailed(false);
+                  session
+                    .open(`/passwords/${id}`, 'create')
+                    .then(() => {
+                      selectPassword(id);
+                      changePasswords((current) => {
+                        current.getArray<Y.Map<Y.Text>>('passwords').push([
+                          new Y.Map<Y.Text>(
+                            Object.entries({
+                              id: new Y.Text(id),
+                            }),
+                          ),
+                        ]);
+                      });
+                    })
+                    .catch(() => setCreationFailed(true))
+                    .finally(() => setCreatingSecret(false));
                 }}
               >
                 New Secret
@@ -232,7 +249,6 @@ export function PasswordList({
                 indexPath={indexPath}
                 peerborne={peerborne}
                 passwordId={id}
-                initialization={createdIds.has(id) ? 'create' : 'open'}
                 kemKeyPair={kemKeyPair}
               />
             </div>

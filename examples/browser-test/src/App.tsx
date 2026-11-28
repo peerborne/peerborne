@@ -161,22 +161,41 @@ class App extends React.Component<
       // for libp2p peer discovery — NOT as a listen address.
       const relayAddr = import.meta.env.VITE_RELAY_MULTIADDR;
       const bootstrapPeers = relayAddr ? [relayAddr] : [];
-      const config = defaultConfig(defaultBootstrapConfig(bootstrapPeers));
-      if (import.meta.env.VITE_CROSS_NAT_TEST === '1') {
-        config.loadQuorumEnabled = false;
-        config.compaction = { enabled: false };
-        const libp2p = config.helia!.libp2p as any;
-        // This suite proves the circuit-relay path specifically. Remove
-        // peer-discovery and direct/hole-punch transports that can race the
-        // explicit circuit dial or accidentally make the test pass via a
-        // different data plane.
-        libp2p.addresses.listen = ['/p2p-circuit'];
-        libp2p.transports = libp2p.transports.slice(0, 2);
-        libp2p.peerDiscovery = libp2p.peerDiscovery.slice(0, 1);
-        delete libp2p.services.dcutr;
-        delete libp2p.services.autoNAT;
+      // This harness dials relays on loopback, Docker networks and plain /ws.
+      const base = defaultConfig(
+        defaultBootstrapConfig(bootstrapPeers),
+        undefined,
+        { allowLocalNetworkDials: true },
+      );
+      if (import.meta.env.VITE_CROSS_NAT_TEST !== '1') {
+        this.props.onInitialize(base);
+        return;
       }
-      this.props.onInitialize(config);
+      const libp2p = base.helia!.libp2p as any;
+      const services = Object.fromEntries(
+        Object.entries(libp2p.services).filter(
+          ([name]) => name !== 'dcutr' && name !== 'autoNAT',
+        ),
+      );
+      // This suite proves the circuit-relay path specifically. Remove
+      // peer-discovery and direct/hole-punch transports that can race the
+      // explicit circuit dial or accidentally make the test pass via a
+      // different data plane.
+      this.props.onInitialize({
+        ...base,
+        loadQuorumEnabled: false,
+        compaction: { enabled: false },
+        helia: {
+          ...base.helia,
+          libp2p: {
+            ...libp2p,
+            addresses: { ...libp2p.addresses, listen: ['/p2p-circuit'] },
+            transports: libp2p.transports.slice(0, 2),
+            peerDiscovery: libp2p.peerDiscovery.slice(0, 1),
+            services,
+          },
+        },
+      });
     }
   }
 

@@ -161,7 +161,6 @@ function invitationHarness(options: {
       _context: string,
       _onStateApplicationStart: (() => void) | undefined,
       continuePending: boolean,
-      _onLogicalKeychainChange: (() => void) | undefined,
       fetchOptions: {
         signal?: AbortSignal;
         getKey?: (keyId: Uint8Array) => unknown;
@@ -655,7 +654,7 @@ describe('invitation bootstrap keychain transaction', () => {
         ).toBeUndefined();
         expect(harness.document._invitationBootstrapReady).not.toBe(true);
         if (stage === 'sync') {
-          const fetchOptions = harness.syncUnlocked.mock.calls[0][6];
+          const fetchOptions = harness.syncUnlocked.mock.calls[0][5];
           expect(fetchOptions.signal?.aborted).toBe(true);
         }
         if (stage === 'membership') {
@@ -685,7 +684,7 @@ describe('invitation bootstrap keychain transaction', () => {
       ),
     ).resolves.toBeUndefined();
 
-    const signal = harness.syncUnlocked.mock.calls[0][6].signal;
+    const signal = harness.syncUnlocked.mock.calls[0][5].signal;
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(harness.assertMembership).toHaveBeenCalledWith(
       'issuer',

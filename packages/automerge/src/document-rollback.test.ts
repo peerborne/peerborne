@@ -111,6 +111,7 @@ function automergeDocument(): any {
       },
       _localHandlers: {},
       _deliveryFailureHandlers: {},
+      _deliveryStateHandlers: {},
       _fireOrDeferRemoteUpdateHandlers: jest.fn(async () => undefined),
       getReaders: jest.fn(async () => []),
       getWriters: async () => [],

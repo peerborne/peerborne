@@ -5,6 +5,7 @@ import {
 } from './peerborne.js';
 import {
   PeerborneConfig,
+  DefaultConfigOptions,
   DEFAULT_INBOUND_CONNECTION_THRESHOLD,
   DEFAULT_WEBRTC_ICE_SERVERS,
   IceServer,
@@ -17,6 +18,7 @@ import {
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -40,8 +42,12 @@ import { ACLProvider } from './acl-provider.js';
 import { KeychainProvider } from './keychain-provider.js';
 import {
   ACL,
+  ACLActorBinding,
+  ACLActorUnavailableError,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
+  mergeACLChanges,
   PreparedACLChange,
   retryACLConflict,
 } from './acl.js';
@@ -155,6 +161,7 @@ import {
 } from './compaction-config.js';
 
 export * from './beekem/index.js';
+export { denyLocalNetworkDial, isLocalNetworkAddress } from './dial-policy.js';
 export * from './crdt-actor-binding.js';
 export * from './invitation-capacity.js';
 export * from './invitation-wire.js';
@@ -180,8 +187,12 @@ export * from './webcrypto-group-state-protector.js';
 
 export {
   ACL,
+  ACLActorBinding,
+  ACLActorUnavailableError,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
+  mergeACLChanges,
   PreparedACLChange,
   retryACLConflict,
   ACLProvider,
@@ -190,10 +201,12 @@ export {
   PeerbornePeersHandler,
   DEFAULT_INVITATION_TTL_MS,
   PeerborneConfig,
+  DefaultConfigOptions,
   ChangeDeliveryFailure,
   PeerborneDocument,
   PeerborneDocumentChangeHandler,
   PeerborneDocumentDeliveryFailureHandler,
+  PeerborneDocumentDeliveryStateHandler,
   HistoryVisibility,
   LastWriterRemovalError,
   RemoveWriterOptions,
@@ -298,7 +311,10 @@ export {
 export type { NetworkStatsSnapshot } from './network-stats.js';
 export type { ConnectOptions, ConnectionProgress, ConnectionErrorType } from './connection.js';
 export type { CreateInvitationOptions } from './peerborne.js';
-export type { InvitationBootstrapBundle } from './peerborne-document.js';
+export type {
+  InvitationBootstrapBundle,
+  SecurityPublicationReport,
+} from './peerborne-document.js';
 export type {
   PeerLoadQuorumVote,
   LoadQuorumDecision,
@@ -456,6 +472,7 @@ export {
   snapshotDeepEnumerableData,
 } from './utils.js';
 export type { DeepDataSnapshotLimits } from './utils.js';
+export { NoDeliveryPeersError } from './delivery-evidence.js';
 export {
   GossipFrameLimitError,
   MAX_CHANGE_FRAME_BYTES,

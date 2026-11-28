@@ -8,7 +8,7 @@ Redux bindings for Peerborne — actions, thunks, and reducers that manage node 
 
 - **Async thunks** — `initializeAsync`, `connectAsync`, `openDocumentAsync`, `closeDocumentAsync`, and `changeDocumentAsync`
 - **Synchronous actions** — `CHANGE_DOCUMENT`, `SYNC_DOCUMENT`, `PEER_CONNECT`, etc. for direct Redux dispatching
-- **`peerborneReducer`** — holds the node, each open document's reference and latest state, and connected peer addresses
+- **`peerborneReducer`** — holds the node, each open document's reference, latest state, and latest undelivered local change (`deliveryFailure`), and connected peer addresses
 - **`PeerborneState`** — the reducer's state type, for typing your own selector
 
 ## Choose this package

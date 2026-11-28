@@ -7,13 +7,17 @@ import { usePeerborneStore } from '@peerborne/vue';
 
 // Inside setup(), using a shared, application-owned document store:
 const snapshot = usePeerborneStore(store);
-await store.change((doc) => doc.getMap('data').set('title', 'Hello'));
+const rename = (title: string) =>
+  store.change((doc) => doc.getMap('data').set('title', title));
 ```
 
 The returned shallow readonly ref contains the complete document snapshot. It
 does not proxy CRDT internals. Ownership starts in `onMounted`, and listeners
 and ownership are released when the component scope is disposed. Server
-rendering uses the idle snapshot without opening documents.
+rendering uses the idle snapshot without opening documents. Call
+`store.change` from an event handler once `snapshot.value.status` is `ready`:
+a change never opens the document, so one made in `setup()` rejects with
+`Document store is closed`.
 
 To follow a store prop, pass a getter or ref such as
 `usePeerborneStore(() => props.store)`. When it changes, the composable

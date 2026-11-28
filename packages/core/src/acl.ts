@@ -39,6 +39,87 @@ export class ACLMergeRejectedError extends Error {
 }
 
 /**
+ * A remote ACL merge that was not applied because the changes depend on
+ * history the ACL does not hold yet. Like {@link ACLMergeRejectedError}, it
+ * certifies that the live ACL is exactly as it was before the call, so the
+ * live ACL never depends on missing history. The caller may merge the same
+ * changes again once `ready()` reports that the dependencies it names are
+ * present; without `ready`, any later merge may have supplied them.
+ */
+export class ACLMergeDependencyError extends Error {
+  constructor(readonly ready?: () => boolean) {
+    super('ACL changes have missing causal dependencies');
+    this.name = 'ACLMergeDependencyError';
+  }
+}
+
+/**
+ * A staged ACL change could only reuse a position of the ACL's bound local
+ * actor that an earlier staged change may already have published. It is
+ * thrown before any state changes; bind a fresh actor and stage again.
+ */
+export class ACLActorUnavailableError extends Error {
+  constructor() {
+    super('The ACL local actor has no unpublished position left');
+    this.name = 'ACLActorUnavailableError';
+  }
+}
+
+/** Hooks an ACL implements so documents can bind its actors to signers. */
+export interface ACLActorBinding<ChangesType> {
+  /** Native actor identifier selected by a 32-byte derivation digest. */
+  actorFromDigest(digest: Uint8Array): string;
+  /**
+   * Make every later local change under `actor`. Once an actor is bound, a
+   * staged change that would reuse one of its positions throws
+   * {@link ACLActorUnavailableError} instead of choosing another actor.
+   */
+  setLocalActor(actor: string): void;
+  /**
+   * Actors `changes` adds operations for, decoded without merging them.
+   * Operations every replica authors identically are left out.
+   */
+  changeActors(changes: ChangesType): ReadonlySet<string>;
+  /** `changes` carrying `prefix`, an authored-change envelope. */
+  attach(changes: ChangesType, prefix: Uint8Array): ChangesType;
+  /** The prefix and bare changes. Throws when `changes` carries no prefix. */
+  detach(changes: ChangesType): readonly [Uint8Array, ChangesType];
+}
+
+/**
+ * Merge changes into `acl` in order, holding those that wait for missing
+ * dependencies and merging them again as soon as a later merge supplies
+ * those dependencies. Returns the changes that are still waiting.
+ */
+export function mergeACLChanges<ChangesType>(
+  acl: Pick<ACL<ChangesType, unknown>, 'merge'>,
+  changes: Iterable<ChangesType>,
+): ChangesType[] {
+  const waiting: Array<{ changes: ChangesType; ready?: () => boolean }> = [];
+  const attempt = (next: ChangesType): boolean => {
+    try {
+      acl.merge(next);
+      return true;
+    } catch (error) {
+      if (!(error instanceof ACLMergeDependencyError)) throw error;
+      waiting.push({ changes: next, ready: error.ready });
+      return false;
+    }
+  };
+  for (const next of changes) {
+    if (!attempt(next)) continue;
+    for (let progressed = true; progressed && waiting.length > 0;) {
+      progressed = false;
+      for (const entry of waiting.splice(0)) {
+        if (entry.ready?.() === false) waiting.push(entry);
+        else if (attempt(entry.changes)) progressed = true;
+      }
+    }
+  }
+  return waiting.map((entry) => entry.changes);
+}
+
+/**
  * Retry an external ACL operation across explicitly reported conflicts.
  * ACL implementations must emit this conflict only from a pre-invocation
  * admission boundary, certifying that the rejected operation made no state
@@ -81,6 +162,13 @@ export async function retryACLConflict<T>(
  * @typeParam PublicKey Type of a user's public key.
  */
 export interface ACL<ChangesType, PublicKey> {
+  /**
+   * Lets a document bind the actors of this ACL's changes to their signers.
+   * A document then makes its own changes under signer-derived actors and
+   * admits a remote change only when its authored envelope verifies.
+   */
+  readonly actorBinding?: ACLActorBinding<ChangesType>;
+
   /**
    * Add a new user to the ACL.
    *
@@ -141,7 +229,10 @@ export interface ACL<ChangesType, PublicKey> {
    * rejected at its pre-mutation admission boundary and can be retried after
    * settlement. A thrown {@link ACLMergeRejectedError} certifies that the
    * merge was rejected without changing the ACL and must not be retried with
-   * the same changes. Generic callers cannot assume any other exception left a
+   * the same changes. A thrown {@link ACLMergeDependencyError} certifies that
+   * the changes depend on history the ACL does not hold yet and were not
+   * applied; implementations must never let the live ACL depend on missing
+   * history. Generic callers cannot assume any other exception left a
    * custom implementation unchanged, so authorization-sensitive orchestration
    * must fail closed.
    *

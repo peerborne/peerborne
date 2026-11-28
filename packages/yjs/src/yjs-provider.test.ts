@@ -8,11 +8,15 @@ import {
   encodeStateAsUpdateV2,
   encodeStateVector,
   Map as YMap,
+  mergeUpdatesV2,
 } from 'yjs';
 import {
+  ACLActorUnavailableError,
+  ACLMergeDependencyError,
   ACLMergeRejectedError,
   ACLOperationInProgressError,
   MAX_KEYCHAIN_EPOCHS,
+  mergeACLChanges,
   PartialLocalChangeError,
   retryACLConflict,
   snapshotDeepEnumerableData,
@@ -784,7 +788,7 @@ describe('YjsACL', () => {
   });
 
   test.each(['missing structs', 'pending deletes'] as const)(
-    'prepareAdd() rejects ACL history with %s',
+    'prepareAdd() stays available after an update with %s is refused',
     async (dependencyType) => {
       const source = new Doc();
       const users = source.getMap('users');
@@ -801,11 +805,15 @@ describe('YjsACL', () => {
         beforeDependentUpdate,
       );
       const acl = new YjsACL();
-      acl.merge(dependencyIncomplete);
+      const before = acl.current();
 
-      await expect(acl.prepareAdd(key1)).rejects.toThrow(
-        'Yjs ACL has unresolved update dependencies',
+      expect(() => acl.merge(dependencyIncomplete)).toThrow(
+        ACLMergeDependencyError,
       );
+
+      expect(acl.current()).toEqual(before);
+      (await acl.prepareAdd(key1)).commit();
+      expect(await acl.check(key1)).toBe(true);
     },
   );
 
@@ -1300,7 +1308,147 @@ describe('YjsACL', () => {
     expect(await acl.check(key1)).toBe(true);
   });
 
-  test('merge() preserves dependency-incomplete updates until dependencies arrive', async () => {
+  test('a refused update is ready only once the exact origin it needs arrives', async () => {
+    const [first, second] = await Promise.all([
+      serializeKey(key1),
+      serializeKey(key2),
+    ]);
+    const author = new Doc({ gc: false });
+    author.clientID = 11;
+    const users = author.getMap('users');
+    users.set(first, true);
+    const earlier = encodeStateAsUpdateV2(author);
+    const beforeOrigin = encodeStateVector(author);
+    users.set(second, true);
+    const origin = encodeStateAsUpdateV2(author, beforeOrigin);
+    const overwriter = new Doc({ gc: false });
+    applyUpdateV2(overwriter, encodeStateAsUpdateV2(author));
+    overwriter.clientID = 22;
+    const beforeOverwrite = encodeStateVector(overwriter);
+    overwriter.getMap('users').set(second, true);
+    const overwrite = encodeStateAsUpdateV2(overwriter, beforeOverwrite);
+    const receiver = new YjsACL();
+
+    let refusal: unknown;
+    try {
+      receiver.merge(overwrite);
+    } catch (error) {
+      refusal = error;
+    }
+    const { ready } = refusal as ACLMergeDependencyError;
+    receiver.merge(earlier);
+    expect(ready?.()).toBe(false);
+    receiver.merge(origin);
+    expect(ready?.()).toBe(true);
+    expect(receiver.merge(overwrite)).toBe(true);
+    expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('ready() turns true as soon as a refused update can merge', async () => {
+    const extra = await Promise.all(
+      Array.from({ length: 2 }, async () =>
+        serializeKey(
+          (
+            await crypto.subtle.generateKey(
+              { name: 'ECDSA', namedCurve: 'P-384' },
+              true,
+              ['sign', 'verify'],
+            )
+          ).publicKey,
+        ),
+      ),
+    );
+    const names = [
+      await serializeKey(key1),
+      await serializeKey(key2),
+      ...extra,
+    ];
+    const writer = (clientID: number, ...updates: Uint8Array[]) => {
+      const doc = new Doc({ gc: false });
+      for (const update of updates) applyUpdateV2(doc, update);
+      doc.clientID = clientID;
+      return doc;
+    };
+    const edit = (doc: Doc, apply: (users: YMap<boolean>) => void) => {
+      const before = encodeStateVector(doc);
+      doc.transact(() => apply(doc.getMap<boolean>('users')));
+      return encodeStateAsUpdateV2(doc, before);
+    };
+    const probe = (change: Uint8Array, dependencies: Uint8Array[]) => {
+      const live = new YjsACL();
+      let refusal: unknown;
+      try {
+        live.merge(change);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(ACLMergeDependencyError);
+      const { ready } = refusal as ACLMergeDependencyError;
+      for (const dependency of dependencies) {
+        live.merge(dependency);
+        const copy = new YjsACL();
+        copy.merge(live.current());
+        let merges = true;
+        try {
+          copy.merge(change);
+        } catch {
+          merges = false;
+        }
+        expect(ready?.()).toBe(merges);
+      }
+      expect(live.merge(change)).toBe(true);
+    };
+
+    // One update whose first struct integrates and whose second waits for E:0.
+    const elsewhere = writer(500);
+    const origin = edit(elsewhere, (users) => users.set(names[1]!, true));
+    const both = writer(600, origin);
+    probe(
+      edit(both, (users) => {
+        users.set(names[2]!, true);
+        users.set(names[1]!, true);
+      }),
+      [origin],
+    );
+
+    // Merged updates of one client with a gap at C:0, then at C:2.
+    const chain = writer(700);
+    const steps = names.map((name) =>
+      edit(chain, (users) => users.set(name, true)),
+    );
+    probe(mergeUpdatesV2([steps[1]!, steps[2]!]), [steps[0]!]);
+    probe(mergeUpdatesV2([steps[1]!, steps[3]!]), [
+      steps[0]!,
+      mergeUpdatesV2([steps[1]!, steps[2]!]),
+    ]);
+
+    // Deletions spanning several structs of another client.
+    const added = writer(800);
+    const additions = edit(added, (users) => {
+      for (const name of names.slice(0, 3)) users.set(name, true);
+    });
+    probe(
+      edit(writer(801, additions), (users) => {
+        for (const name of names.slice(0, 3)) users.delete(name);
+      }),
+      [additions],
+    );
+
+    // A re-addition whose origin and deletion belong to other clients.
+    const first = writer(900);
+    const addition = edit(first, (users) => users.set(names[0]!, true));
+    const removal = edit(writer(901, addition), (users) =>
+      users.delete(names[0]!),
+    );
+    probe(
+      edit(writer(902, addition, removal), (users) =>
+        users.set(names[0]!, true),
+      ),
+      [addition, removal],
+    );
+  });
+
+  test('merge() refuses dependency-incomplete updates until dependencies arrive', async () => {
     const source = new Doc();
     const users = source.getMap('users');
     users.set(await serializeKey(key1), true);
@@ -1310,15 +1458,22 @@ describe('YjsACL', () => {
     const dependent = encodeStateAsUpdateV2(source, beforeDependent);
     const receiver = new YjsACL();
 
-    receiver.merge(dependent);
-    await expect(receiver.check(key1)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    await expect(receiver.check(key2)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
+    let refusal: unknown;
+    try {
+      receiver.merge(dependent);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(ACLMergeDependencyError);
+    const { ready } = refusal as ACLMergeDependencyError;
+    expect(ready?.()).toBe(false);
+    expect(await receiver.check(key1)).toBe(false);
+    expect(await receiver.check(key2)).toBe(false);
 
     receiver.merge(dependency);
+    expect(ready?.()).toBe(true);
+    expect(await receiver.check(key2)).toBe(false);
+    expect(receiver.merge(dependent)).toBe(true);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
@@ -1352,7 +1507,7 @@ describe('YjsACL', () => {
     receiver.merge(founder);
     const before = receiver.current();
 
-    expect(() => receiver.merge(invalidKey)).toThrow();
+    expect(() => receiver.merge(invalidKey)).toThrow(ACLMergeRejectedError);
     expect(() => receiver.merge(invalidValue)).toThrow(
       'Yjs ACL membership values must be true',
     );
@@ -1360,16 +1515,15 @@ describe('YjsACL', () => {
 
     users.set(await serializeKey(key1), true);
     const dependent = encodeStateAsUpdateV2(source, beforeDependent);
-    receiver.merge(dependent);
-    await expect(receiver.check(key1)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
+    expect(() => receiver.merge(dependent)).toThrow(ACLMergeDependencyError);
+    expect(receiver.current()).toEqual(before);
     receiver.merge(predecessor);
+    receiver.merge(dependent);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
 
-  test('merge() bounds members that pending structs could add', async () => {
+  test('merge() bounds members that dependency-incomplete updates could add', async () => {
     const serialized1 = await serializeKey(key1);
     const serialized2 = await serializeKey(key2);
     const extraKeys = Array.from({ length: MAX_YJS_ACL_MEMBERS }, () =>
@@ -1400,12 +1554,13 @@ describe('YjsACL', () => {
     ).toThrow(`${MAX_YJS_ACL_MEMBERS}-member limit`);
     expect(receiver.current()).toEqual(before);
 
+    expect(() => receiver.merge(firstHalf)).toThrow(ACLMergeDependencyError);
+    receiver.merge(predecessor);
     receiver.merge(firstHalf);
     expect(() => receiver.merge(secondHalf)).toThrow(
       `${MAX_YJS_ACL_MEMBERS}-member limit`,
     );
 
-    receiver.merge(predecessor);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
   });
@@ -1431,15 +1586,15 @@ describe('YjsACL', () => {
       'Yjs ACL membership values must be true',
     );
 
-    receiver.merge(overwrite(true));
-    await expect(receiver.check(key1)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
+    const valid = overwrite(true);
+    expect(() => receiver.merge(valid)).toThrow(ACLMergeDependencyError);
+    expect(await receiver.check(key1)).toBe(false);
     receiver.merge(founder);
+    receiver.merge(valid);
     expect(await receiver.check(key1)).toBe(true);
   });
 
-  test('a new dependency-incomplete update still stales prepared removal', async () => {
+  test('a refused dependency-incomplete update leaves a prepared removal current', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
     const prepared = await acl.prepareRemove(key1);
@@ -1449,39 +1604,32 @@ describe('YjsACL', () => {
       key2,
     );
 
-    acl.merge(dependent);
+    expect(() => acl.merge(dependent)).toThrow(ACLMergeDependencyError);
 
-    expect(() => prepared.commit()).toThrow(
-      'ACL changed while removal was staged',
-    );
-    expect(() => acl.current()).toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
+    prepared.commit();
+    expect(await acl.check(key1)).toBe(false);
   });
 
-  test('current(), check(), and users() reject a known-incomplete ACL history', async () => {
+  test('current(), check(), users() and add() keep the complete ACL after a refused update', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
+    const before = acl.current();
     const { dependent } = await makeOutOfOrderRemovalUpdates(
-      acl.current(),
+      before,
       key1,
       key2,
     );
 
-    acl.merge(dependent);
+    expect(() => acl.merge(dependent)).toThrow(ACLMergeDependencyError);
 
-    expect(() => acl.current()).toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    await expect(acl.check(key1)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    await expect(acl.users()).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
+    expect(acl.current()).toEqual(before);
+    await expect(acl.check(key1)).resolves.toBe(true);
+    await expect(acl.users()).resolves.toHaveLength(1);
+    await acl.add(key2);
+    await expect(acl.check(key2)).resolves.toBe(true);
   });
 
-  test('ACL reads recover after an out-of-order removal predecessor arrives', async () => {
+  test('an out-of-order removal merges once its predecessor arrives', async () => {
     const acl = new YjsACL();
     await acl.add(key1);
     const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
@@ -1489,32 +1637,12 @@ describe('YjsACL', () => {
       key1,
       key2,
     );
-    acl.merge(dependent);
 
-    acl.merge(predecessor);
+    expect(mergeACLChanges(acl, [dependent, predecessor])).toEqual([]);
 
-    expect(acl.current()).toBeInstanceOf(Uint8Array);
-    await expect(acl.check(key1)).resolves.toBe(false);
-    await expect(acl.users()).resolves.toEqual([]);
-  });
-
-  test('add() rejects a known-incomplete ACL history without reviving a member', async () => {
-    const acl = new YjsACL();
-    await acl.add(key1);
-    const { predecessor, dependent } = await makeOutOfOrderRemovalUpdates(
-      acl.current(),
-      key1,
-      key2,
-    );
-    acl.merge(dependent);
-
-    await expect(acl.add(key2)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-
-    acl.merge(predecessor);
     await expect(acl.check(key1)).resolves.toBe(false);
     await expect(acl.check(key2)).resolves.toBe(false);
+    await expect(acl.users()).resolves.toEqual([]);
   });
 
   test('check() reads the merged ACL when a merge lands during key serialization', async () => {
@@ -1598,20 +1726,21 @@ describe('YjsACL', () => {
     }
   });
 
-  test('merge() preserves pending deletes until their dependencies arrive', async () => {
+  test('merge() refuses pending deletes until their dependencies arrive', async () => {
     const source = new YjsACL();
     const dependency = await source.add(key1);
     const pendingDelete = await source.remove(key1);
     const receiver = new YjsACL();
 
-    receiver.merge(pendingDelete);
-    await expect(receiver.prepareRemove(key2)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
+    expect(() => receiver.merge(pendingDelete)).toThrow(
+      ACLMergeDependencyError,
     );
+    await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
 
     receiver.merge(dependency);
+    expect(await receiver.check(key1)).toBe(true);
+    receiver.merge(pendingDelete);
     expect(await receiver.check(key1)).toBe(false);
-    await expect(receiver.prepareRemove(key2)).resolves.toBeDefined();
   });
 
   test('prepareRemove() rejects a commit staled by a remote merge', async () => {
@@ -1643,7 +1772,7 @@ describe('YjsACL', () => {
   });
 
   test.each(['missing structs', 'pending deletes'] as const)(
-    'prepareRemove() rejects ACL history with %s',
+    'prepareRemove() stays available after an update with %s is refused',
     async (dependencyType) => {
       const source = new Doc();
       const users = source.getMap('users');
@@ -1660,11 +1789,14 @@ describe('YjsACL', () => {
         beforeDependentUpdate,
       );
       const acl = new YjsACL();
-      acl.merge(dependencyIncomplete);
+      await acl.add(key1);
 
-      await expect(acl.prepareRemove(key1)).rejects.toThrow(
-        'Yjs ACL has unresolved update dependencies',
+      expect(() => acl.merge(dependencyIncomplete)).toThrow(
+        ACLMergeDependencyError,
       );
+
+      (await acl.prepareRemove(key1)).commit();
+      expect(await acl.check(key1)).toBe(false);
     },
   );
 
@@ -1679,14 +1811,12 @@ describe('YjsACL', () => {
     const additionChild = await additionSender.prepareAdd(key2);
     const additionReceiver = new YjsACL();
 
-    additionReceiver.merge(additionChild.changes);
-    await expect(additionReceiver.check(key2)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    await expect(additionReceiver.check(key1)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    additionReceiver.merge(additionParent);
+    expect(
+      mergeACLChanges(additionReceiver, [
+        additionChild.changes,
+        additionParent,
+      ]),
+    ).toEqual([]);
     expect(await additionReceiver.check(key1)).toBe(true);
     expect(await additionReceiver.check(key2)).toBe(true);
 
@@ -1695,8 +1825,9 @@ describe('YjsACL', () => {
     const removalChild = await removalSender.prepareRemove(key1);
     const removalReceiver = new YjsACL();
 
-    removalReceiver.merge(removalChild.changes);
-    removalReceiver.merge(removalParent);
+    expect(
+      mergeACLChanges(removalReceiver, [removalChild.changes, removalParent]),
+    ).toEqual([]);
     expect(await removalReceiver.check(key1)).toBe(false);
   });
 
@@ -1770,20 +1901,33 @@ describe('YjsACL', () => {
     expect(acl.merge(acl.current())).toBe(false);
   });
 
-  test('merge() reports parked updates that leave the ACL incomplete', async () => {
+  test('merge() refuses updates that would leave the ACL incomplete', async () => {
     const sender = new YjsACL();
     const first = await sender.add(key1);
     const second = await sender.add(key2);
     const receiver = new YjsACL();
+    const before = receiver.current();
 
+    expect(() => receiver.merge(second)).toThrow(ACLMergeDependencyError);
+    expect(receiver.current()).toEqual(before);
+    expect(receiver.merge(first)).toBe(true);
     expect(receiver.merge(second)).toBe(true);
     expect(receiver.merge(second)).toBe(false);
-    await expect(receiver.check(key2)).rejects.toThrow(
-      'Yjs ACL has unresolved update dependencies',
-    );
-    expect(receiver.merge(first)).toBe(true);
     expect(await receiver.check(key1)).toBe(true);
     expect(await receiver.check(key2)).toBe(true);
+  });
+
+  test('mergeACLChanges() returns the changes still waiting for history', async () => {
+    const sender = new YjsACL();
+    await sender.add(key1);
+    const second = await sender.add(key2);
+    const receiver = new YjsACL();
+
+    expect(mergeACLChanges(receiver, [second])).toEqual([second]);
+    expect(await receiver.check(key2)).toBe(false);
+    expect(() => mergeACLChanges(receiver, [new Uint8Array([255])])).toThrow(
+      ACLMergeRejectedError,
+    );
   });
 
   test('merge() rejects a malformed update without hiding later updates', async () => {
@@ -1794,6 +1938,30 @@ describe('YjsACL', () => {
     expect(() => receiver.merge(new Uint8Array([255, 255, 255]))).toThrow();
     expect(receiver.merge(added)).toBe(true);
     expect(await receiver.check(key1)).toBe(true);
+  });
+
+  test('a bound ACL stages under its actor and never falls back to another', async () => {
+    const acl = new YjsACL();
+    acl.actorBinding.setLocalActor('4242');
+    const first = await acl.prepareAdd(key1);
+
+    expect([...acl.actorBinding.changeActors(first.changes)]).toEqual(['4242']);
+    await expect(acl.prepareAdd(key1)).rejects.toThrow(
+      ACLActorUnavailableError,
+    );
+    acl.actorBinding.setLocalActor('4343');
+    const retried = await acl.prepareAdd(key1);
+    expect([...acl.actorBinding.changeActors(retried.changes)]).toEqual([
+      '4343',
+    ]);
+    retried.commit();
+    const [prefix, bare] = acl.actorBinding.detach(
+      acl.actorBinding.attach(retried.changes, new Uint8Array([1, 2])),
+    );
+    expect([...prefix]).toEqual([1, 2]);
+    expect(bare).toEqual(retried.changes);
+    expect(() => acl.actorBinding.setLocalActor('-1')).toThrow(TypeError);
+    expect(() => acl.actorBinding.setLocalActor('01')).toThrow(TypeError);
   });
 
   test('YjsACLProvider.initialize() returns a new YjsACL', () => {

@@ -110,8 +110,10 @@ What needs to happen:
 **Status: Partial.** Four examples verify single-browser startup. Peerborne Note
 adds a deliberately bounded founder-plus-one invitation experience, while the
 browser-test harness drives the dedicated NAT-isolated distinct-identity
-invitation and live bidirectional convergence job. None establishes complete
-identity verification, restart recovery, revocation UX, or availability.
+invitation and live bidirectional convergence job. Note and the password
+manager reopen documents from their own encrypted checkpoints after a browser
+relaunch. None establishes complete identity verification, general restart
+recovery, revocation UX, or availability.
 
 What needs to happen:
 - Multi-browser CI tests for each example

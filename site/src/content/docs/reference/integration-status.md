@@ -10,17 +10,25 @@ examples against those packages. This establishes their named local browser
 flows. Note has a separate bounded multi-peer/recovery gate; its results do not
 establish those behaviors for every integration or production readiness.
 
+Every example in this table uses a Yjs or Loro document, and those documents
+cannot be shared with another identity: invitations require an Automerge
+document, and no other path admits a collaborator. Live multi-peer behavior is
+therefore not a pending acceptance test for the Loro and Yjs editor rows; it is
+unavailable until those engines support invitations. The framework bindings
+accept any Peerborne document, so they can carry an Automerge document shared
+by invitation, but no integration example exercises that.
+
 | Integration | Current scope | Remaining acceptance |
 | --- | --- | --- |
-| Plain web / document store | Dependency-free document snapshots, lifecycle/error tests, and a plain DOM browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Plain web / document store | Dependency-free document snapshots, lifecycle/error/retirement tests, a managed remount over a real document with an undelivered change, and a plain DOM browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | React | External-store hook, shared ownership, StrictMode test, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Vue | Shallow composable, SSR/lifecycle tests, and browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Svelte | Svelte 5 readable, server/lifecycle tests, and compiled browser example | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, local browser mutation, and an in-process three-replica checkpoint restore with a change waiting for a missed dependency | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| TanStack DB | Experimental collection adapter for `^1.0.0-rc.1.5`, tested with 1.0.0-rc.1.5; CRUD, rollback, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| Tiptap / ProseMirror | Tiptap/ProseMirror collaboration over the shared editor bridge | Live multi-peer behavior, restart recovery, and deployment acceptance |
-| Monaco | Monaco binding, worker configuration, module-path alias, and typing acceptance | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| Loro | Experimental provider: concurrency, snapshot, replay, reordered/corrupt updates, local browser mutation, and an in-process three-replica checkpoint restore with a change waiting for a missed dependency | Founder-only: no invitation path. Restart recovery and deployment acceptance |
+| TanStack DB | Experimental collection adapter for `^1.0.0-rc.1.5`, tested with 1.0.0-rc.1.5; CRUD, rollback, retired-document failure, and browser exercise | Live multi-peer behavior, restart recovery, and deployment acceptance |
+| CodeMirror | Mirrored Yjs bridge, failure/teardown tests, and actual CodeMirror typing | Founder-only: the Yjs bridge has no invitation path. Restart recovery and deployment acceptance |
+| Tiptap / ProseMirror | Tiptap/ProseMirror collaboration over the shared editor bridge, with one identity | Founder-only: the Yjs bridge has no invitation path. Restart recovery and deployment acceptance |
+| Monaco | Monaco binding, worker configuration, module-path alias, and typing acceptance | Founder-only: the Yjs bridge has no invitation path. Restart recovery and deployment acceptance |
 | Zustand | Vanilla-API snapshot projection recipe with explicit cleanup | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Jotai | Vanilla-API atom projection recipe with explicit cleanup | Live multi-peer behavior, restart recovery, and deployment acceptance |
 | Next.js | Server-rendered starter and hydrated browser mutation, using webpack | Live multi-peer behavior, restart recovery, and deployment acceptance |

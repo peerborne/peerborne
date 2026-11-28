@@ -5,6 +5,7 @@ import {
   REMOTE_BLOCK_RETRY_DELAY_MS,
   RemoteBlockFetchDeadlineError,
   RemoteBlockFetches,
+  readWithin,
 } from './remote-block-fetch.js';
 
 const block = new Uint8Array([1]);
@@ -285,5 +286,42 @@ describe('prefetching the blocks of received messages', () => {
     second.end();
     expect(fetches.heldBytes).toBe(0);
     expect(new PrefetchedBlockBudgetError()).toBeInstanceOf(RangeError);
+  });
+});
+
+describe('a load or invitation read', () => {
+  test('continues while bytes keep arriving and ends once they stall', async () => {
+    jest.useFakeTimers();
+    try {
+      let progress!: () => void;
+      let signal!: AbortSignal;
+      const reading = readWithin(
+        (readSignal, onProgress) => {
+          signal = readSignal;
+          progress = onProgress;
+          return wantBlock(readSignal);
+        },
+        undefined,
+        1_000,
+      );
+      const settled = reading.catch((error: unknown) => error);
+      for (let step = 0; step < 5; step++) {
+        await jest.advanceTimersByTimeAsync(900);
+        progress();
+      }
+      expect(signal.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(signal.aborted).toBe(true);
+      expect(await settled).toBeInstanceOf(RemoteBlockFetchDeadlineError);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('ends when the caller aborts', async () => {
+    const caller = new AbortController();
+    const reading = readWithin((signal) => wantBlock(signal), caller.signal);
+    caller.abort(new Error('closed'));
+    await expect(reading).rejects.toThrow('closed');
   });
 });

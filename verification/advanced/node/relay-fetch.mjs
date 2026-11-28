@@ -157,6 +157,7 @@ async function device(path, relayAddress, writers, founder, announce = []) {
         connectionGater: { denyDialMultiaddr: async () => false },
       },
     },
+    allowLocalNetworkDials: true,
     pubsubDocumentPrefix: DEFAULT_DOCUMENT_TOPIC_PREFIX,
     resolveTrustedDocumentWriters: () => writers,
     resolveLoadSecurityCommitments: () => ({

@@ -293,7 +293,10 @@ An outbound transition is ordered as follows:
 6. Publish only after durability. Remove an outbound entry only after an
    explicit acceptance binds its exact control-record ID and complete unique
    Welcome-recipient KeyPackage-reference set, returned after the receiver's
-   authenticated validation and durable commit.
+   authenticated validation and durable commit. Flushes run one at a time.
+   Each entry is validated and acknowledged under the coordinator's state
+   lock, but the application's send runs outside it, so document operations
+   and new transitions proceed while a recipient is slow.
 
 An error before durability restores an active provider checkpoint. Authenticated
 terminal removal never reloads its erased private state. If rollback fails,

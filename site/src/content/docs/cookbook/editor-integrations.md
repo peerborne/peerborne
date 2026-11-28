@@ -32,11 +32,15 @@ await bridge.destroy();
 await document.close();
 ```
 
-A collaborator binds the open document that
-[`acceptInvitation()`](../invitations/) returns. Without a restored checkpoint,
-`document.open()` loads the path from peers and requires
-`resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters` in the
-node configuration. If no connected peer can serve the path (a relay cannot),
+The bridge is Yjs, and a Yjs document cannot be shared with another identity:
+[invitations](../invitations/) require an Automerge document, and no other
+path admits a collaborator. After a restart, the founder reopens it from a
+checkpoint it saved with `exportEncryptedCheckpoint()` and restores with
+`restoreEncryptedCheckpoint()` before `open()`. See
+[limitations](../../concepts/limitations/#authorization-and-revocation).
+Without a restored checkpoint, `document.open()` loads the path from peers and
+requires `resolveLoadSecurityCommitments` and `resolveTrustedDocumentWriters`
+in the node configuration. If no connected peer can serve the path (a relay cannot),
 it rejects with `No document state is available…`; if one can and
 `resolveLoadSecurityCommitments` is missing, it rejects with
 `TrustedLoadSecurityCommitmentsError`. See

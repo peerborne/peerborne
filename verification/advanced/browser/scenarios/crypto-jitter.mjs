@@ -57,6 +57,7 @@ export async function run({ full, seed }) {
       const encrypted = await source.auth.encrypt(
         source.serializer.serializeSyncMessage(message),
         key,
+        source.document._payloadAAD(epoch, 'frame'),
       );
       const bytes = new Uint8Array(
         epoch.length + encrypted.nonce.length + encrypted.data.length,

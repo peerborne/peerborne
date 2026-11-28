@@ -18,6 +18,7 @@ import {
   loadConfig,
   relayPubsubOptions,
 } from './config.js'
+import { guardDiscoveryTopic } from './discovery-topic.js'
 import { loadOrCreateRelayIdentity } from './identity.js'
 import { IntervalGate } from './interval-gate.js'
 import { startReadinessServer } from './readiness.js'
@@ -66,6 +67,7 @@ async function main() {
       },
     })
     releaseReservationsOnDisconnect(libp2p)
+    guardDiscoveryTopic(libp2p, peerDiscoveryTopic)
 
     // Seed and operator-configured topics are permanent subscriptions.
     // The relay must be subscribed to these topics to forward messages between
@@ -226,7 +228,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Failed to start relay server:', err)
+main().catch(() => {
+  // Startup errors can contain environment values and identity paths.
+  console.error(
+    'Failed to start relay server. Check relay configuration, listener ports, and identity file permissions.',
+  )
   process.exit(1)
 })
